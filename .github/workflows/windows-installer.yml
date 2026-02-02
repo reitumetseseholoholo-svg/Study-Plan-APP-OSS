@@ -10,6 +10,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
 
 jobs:
   build:
@@ -26,8 +28,19 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ inputs.version }}"
+          if (-not $version) {
+            if ("${{ github.ref_type }}" -eq "tag") {
+              $version = "${{ github.ref_name }}"
+            }
+          }
+          if ($version -and $version.StartsWith("v")) {
+            $version = $version.Substring(1)
+          }
           if (-not $version) { $version = "0.1.0" }
+          $basename = "$env:APP_NAME-$version-Setup"
+          $basename = $basename -replace "\s+", "-"
           "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "INSTALLER_BASENAME=$basename" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Set up MSYS2
         uses: msys2/setup-msys2@v2
@@ -69,10 +82,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build\windows\Output | Out-Null
-          iscc "/DAppName=$env:APP_NAME" "/DAppVersion=$env:APP_VERSION" "/DPublisher=$env:PUBLISHER" "build\\windows\\installer.iss"
+          iscc "/DAppName=$env:APP_NAME" "/DAppVersion=$env:APP_VERSION" "/DPublisher=$env:PUBLISHER" "/DOutputBaseFilename=$env:INSTALLER_BASENAME" "build\\windows\\installer.iss"
 
       - name: Upload Installer
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installer
-          path: build\windows\Output\installer.exe
+          name: windows-installer-${{ env.APP_VERSION }}
+          path: build\windows\Output\${{ env.INSTALLER_BASENAME }}.exe

@@ -7,6 +7,9 @@
 #ifndef Publisher
   #define Publisher "Lereko Seholoholo"
 #endif
+#ifndef OutputBaseFilename
+  #define OutputBaseFilename "installer"
+#endif
 #define AppExeName "{#AppName}.exe"
 
 [Setup]
@@ -17,7 +20,7 @@ AppPublisher={#Publisher}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 UninstallDisplayIcon={app}\{#AppExeName}
-OutputBaseFilename=installer
+OutputBaseFilename={#OutputBaseFilename}
 OutputDir=build\windows\Output
 Compression=lzma
 SolidCompression=yes
