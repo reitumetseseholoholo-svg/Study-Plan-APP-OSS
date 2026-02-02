@@ -1,0 +1,78 @@
+name: Windows Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "App version for the installer"
+        default: "0.1.0"
+        required: false
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      APP_NAME: "ACCA Study Assistant"
+      PUBLISHER: "Lereko Seholoholo"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve Version
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version }}"
+          if (-not $version) { $version = "0.1.0" }
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          msystem: MINGW64
+          install: >-
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-python-pip
+            mingw-w64-x86_64-python-setuptools
+            mingw-w64-x86_64-python-wheel
+            mingw-w64-x86_64-python-gobject
+            mingw-w64-x86_64-gtk4
+
+      - name: Install PyInstaller
+        shell: msys2 {0}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+
+      - name: Build App (PyInstaller)
+        shell: msys2 {0}
+        run: |
+          pyinstaller --noconfirm --clean --windowed \
+            --name "$APP_NAME" \
+            --add-data "modules;modules" \
+            --collect-all gi \
+            --collect-all Gtk \
+            --collect-all Gdk \
+            --collect-all Gio \
+            --collect-all GLib \
+            studyplan_app.py
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes
+
+      - name: Build Installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build\windows\Output | Out-Null
+          iscc "/DAppName=$env:APP_NAME" "/DAppVersion=$env:APP_VERSION" "/DPublisher=$env:PUBLISHER" "build\\windows\\installer.iss"
+
+      - name: Upload Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: build\windows\Output\installer.exe
