@@ -1,0 +1,318 @@
+{
+  "title": "ACCA FR (F7) Financial Reporting",
+  "chapters": [
+    "A. Conceptual and Regulatory Framework for Financial Reporting",
+    "B. Accounting for Transactions in Financial Statements",
+    "C. Analysing and Interpreting Financial Statements",
+    "D. Preparation of Financial Statements",
+    "E. Employability and Technology Skills"
+  ],
+  "chapter_flow": {
+    "A. Conceptual and Regulatory Framework for Financial Reporting": [
+      "B. Accounting for Transactions in Financial Statements"
+    ],
+    "B. Accounting for Transactions in Financial Statements": [
+      "D. Preparation of Financial Statements"
+    ],
+    "D. Preparation of Financial Statements": [
+      "C. Analysing and Interpreting Financial Statements"
+    ],
+    "C. Analysing and Interpreting Financial Statements": [
+      "E. Employability and Technology Skills"
+    ]
+  },
+  "importance_weights": {
+    "A. Conceptual and Regulatory Framework for Financial Reporting": 15,
+    "B. Accounting for Transactions in Financial Statements": 35,
+    "C. Analysing and Interpreting Financial Statements": 20,
+    "D. Preparation of Financial Statements": 25,
+    "E. Employability and Technology Skills": 5
+  },
+  "questions": {
+    "A. Conceptual and Regulatory Framework for Financial Reporting": [
+      {
+        "question": "What is the main purpose of the Conceptual Framework?",
+        "options": [
+          "To provide detailed accounting rules for every transaction",
+          "To guide recognition, measurement, presentation, and disclosure",
+          "To replace all IFRS standards",
+          "To determine tax rules for companies"
+        ],
+        "correct": "To guide recognition, measurement, presentation, and disclosure",
+        "explanation": "The framework provides principles that underpin IFRS standards and reporting decisions."
+      },
+      {
+        "question": "Which are the fundamental qualitative characteristics of useful financial information?",
+        "options": [
+          "Comparability and timeliness",
+          "Relevance and faithful representation",
+          "Verifiability and understandability",
+          "Prudence and neutrality"
+        ],
+        "correct": "Relevance and faithful representation",
+        "explanation": "These are the core qualities that make information useful for decision-making."
+      },
+      {
+        "question": "Recognition in financial statements generally requires:",
+        "options": [
+          "A legal contract only",
+          "Probable future economic benefits and reliable measurement",
+          "Management intent alone",
+          "External audit approval"
+        ],
+        "correct": "Probable future economic benefits and reliable measurement",
+        "explanation": "Recognition depends on relevance and faithful representation, often assessed via probability and reliability."
+      },
+      {
+        "question": "Which body issues IFRS Accounting Standards?",
+        "options": [
+          "IAASB",
+          "IASB",
+          "IFAC",
+          "ACCA"
+        ],
+        "correct": "IASB",
+        "explanation": "The International Accounting Standards Board (IASB) issues IFRS standards."
+      },
+      {
+        "question": "In group accounting, the group is viewed as:",
+        "options": [
+          "Separate legal entities with no consolidation",
+          "A single economic entity",
+          "Only the parent company",
+          "Only subsidiaries"
+        ],
+        "correct": "A single economic entity",
+        "explanation": "Consolidated statements present the group as if it were a single entity."
+      }
+    ],
+    "B. Accounting for Transactions in Financial Statements": [
+      {
+        "question": "Property, plant and equipment is initially measured at:",
+        "options": [
+          "Fair value only",
+          "Cost",
+          "Net realizable value",
+          "Replacement cost"
+        ],
+        "correct": "Cost",
+        "explanation": "Initial recognition is at cost under IFRS."
+      },
+      {
+        "question": "Inventories are measured at the lower of:",
+        "options": [
+          "Cost and fair value",
+          "Cost and net realizable value",
+          "Net realizable value and replacement cost",
+          "Selling price and cost"
+        ],
+        "correct": "Cost and net realizable value",
+        "explanation": "IAS 2 requires inventories to be stated at lower of cost and NRV."
+      },
+      {
+        "question": "Recoverable amount for impairment is the higher of:",
+        "options": [
+          "Cost and value in use",
+          "Fair value less costs of disposal and value in use",
+          "Net realizable value and cost",
+          "Carrying amount and cost"
+        ],
+        "correct": "Fair value less costs of disposal and value in use",
+        "explanation": "IAS 36 defines recoverable amount as the higher of these two measures."
+      },
+      {
+        "question": "Revenue is recognized when:",
+        "options": [
+          "Cash is received",
+          "Control of goods or services transfers to the customer",
+          "A contract is signed",
+          "An invoice is issued"
+        ],
+        "correct": "Control of goods or services transfers to the customer",
+        "explanation": "IFRS 15 focuses on the transfer of control."
+      },
+      {
+        "question": "A provision is recognized when there is:",
+        "options": [
+          "A possible obligation",
+          "A present obligation, probable outflow, and reliable estimate",
+          "Only a legal obligation",
+          "Only a constructive obligation"
+        ],
+        "correct": "A present obligation, probable outflow, and reliable estimate",
+        "explanation": "IAS 37 recognition criteria include present obligation, probable outflow, and reliable estimate."
+      }
+    ],
+    "C. Analysing and Interpreting Financial Statements": [
+      {
+        "question": "The primary purpose of ratio analysis is to:",
+        "options": [
+          "Replace financial statements",
+          "Assess performance and position",
+          "Determine tax liabilities",
+          "Value inventory"
+        ],
+        "correct": "Assess performance and position",
+        "explanation": "Ratios help evaluate profitability, liquidity, and efficiency."
+      },
+      {
+        "question": "A key limitation of financial statements is that they:",
+        "options": [
+          "Are always forward-looking",
+          "Contain estimates and judgments",
+          "Never use historical cost",
+          "Exclude cash flows"
+        ],
+        "correct": "Contain estimates and judgments",
+        "explanation": "Accounting relies on estimates, which limits precision."
+      },
+      {
+        "question": "Trend analysis is most meaningful when:",
+        "options": [
+          "Accounting policies change frequently",
+          "Inflation is ignored",
+          "Consistent policies are used",
+          "Only one year is analyzed"
+        ],
+        "correct": "Consistent policies are used",
+        "explanation": "Consistency improves comparability across periods."
+      },
+      {
+        "question": "For not-for-profit entities, financial analysis should consider:",
+        "options": [
+          "Only profit",
+          "Achievement of objectives and service potential",
+          "Only dividends",
+          "Only market capitalization"
+        ],
+        "correct": "Achievement of objectives and service potential",
+        "explanation": "NFP entities focus on service outcomes rather than profit."
+      },
+      {
+        "question": "Non-financial information is useful because it:",
+        "options": [
+          "Eliminates the need for financial ratios",
+          "Provides context for sustainability and performance",
+          "Replaces audited statements",
+          "Is never subjective"
+        ],
+        "correct": "Provides context for sustainability and performance",
+        "explanation": "Non-financial data helps interpret long-term value and risks."
+      }
+    ],
+    "D. Preparation of Financial Statements": [
+      {
+        "question": "A complete set of financial statements includes:",
+        "options": [
+          "Statement of financial position, profit or loss and OCI, changes in equity, cash flows, and notes",
+          "Only statement of financial position",
+          "Only profit or loss and cash flow",
+          "Only notes"
+        ],
+        "correct": "Statement of financial position, profit or loss and OCI, changes in equity, cash flows, and notes",
+        "explanation": "IAS 1 defines a complete set of financial statements."
+      },
+      {
+        "question": "In consolidation, intra-group balances are:",
+        "options": [
+          "Included as revenue",
+          "Eliminated",
+          "Capitalized",
+          "Deferred"
+        ],
+        "correct": "Eliminated",
+        "explanation": "Group accounts exclude internal balances and transactions."
+      },
+      {
+        "question": "Goodwill on acquisition arises when:",
+        "options": [
+          "Net assets exceed consideration",
+          "Consideration exceeds net assets acquired",
+          "Parent loses control",
+          "Subsidiary is disposed"
+        ],
+        "correct": "Consideration exceeds net assets acquired",
+        "explanation": "Goodwill is the excess of consideration over fair value of net assets."
+      },
+      {
+        "question": "An associate is accounted for using:",
+        "options": [
+          "Cost model only",
+          "Equity method",
+          "Full consolidation",
+          "Fair value through profit or loss"
+        ],
+        "correct": "Equity method",
+        "explanation": "Associates are accounted for using the equity method under IAS 28."
+      },
+      {
+        "question": "Cash flow classification for purchase of equipment is:",
+        "options": [
+          "Operating",
+          "Investing",
+          "Financing",
+          "Other"
+        ],
+        "correct": "Investing",
+        "explanation": "Purchasing PPE is an investing cash flow."
+      }
+    ],
+    "E. Employability and Technology Skills": [
+      {
+        "question": "Which practice best supports accurate spreadsheet models?",
+        "options": [
+          "Hard-coding key assumptions in every formula",
+          "Using consistent cell references and clear labels",
+          "Hiding all calculations",
+          "Avoiding checks and controls"
+        ],
+        "correct": "Using consistent cell references and clear labels",
+        "explanation": "Consistency and clarity reduce errors and improve auditability."
+      },
+      {
+        "question": "When presenting results, the most professional approach is to:",
+        "options": [
+          "Use raw data only",
+          "Summarize key outputs with clear headings",
+          "Exclude assumptions",
+          "Avoid any formatting"
+        ],
+        "correct": "Summarize key outputs with clear headings",
+        "explanation": "Professional presentation highlights key information."
+      },
+      {
+        "question": "A simple reasonableness check might include:",
+        "options": [
+          "Ignoring totals",
+          "Comparing totals to prior periods or expectations",
+          "Deleting formulas",
+          "Disabling calculations"
+        ],
+        "correct": "Comparing totals to prior periods or expectations",
+        "explanation": "Reasonableness checks validate outputs."
+      },
+      {
+        "question": "Which tool is best for exploring relationships in data?",
+        "options": [
+          "A pivot table",
+          "A screenshot",
+          "A printout",
+          "A text editor"
+        ],
+        "correct": "A pivot table",
+        "explanation": "Pivot tables summarize and analyze data effectively."
+      },
+      {
+        "question": "Good digital exam technique includes:",
+        "options": [
+          "Skipping instructions",
+          "Using built-in tools to manage information",
+          "Avoiding navigation shortcuts",
+          "Leaving answers unformatted"
+        ],
+        "correct": "Using built-in tools to manage information",
+        "explanation": "Efficient tool use saves time and improves clarity."
+      }
+    ]
+  }
+}
