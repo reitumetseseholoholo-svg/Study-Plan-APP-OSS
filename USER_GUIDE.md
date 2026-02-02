@@ -114,4 +114,3 @@ Use **Import PDF scores** to parse ACCA Study Hub reports. This updates competen
 
 ---
 
-If you want a printable quick‑start sheet, say the word.
