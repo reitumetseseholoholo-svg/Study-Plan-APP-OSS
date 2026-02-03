@@ -499,6 +499,14 @@ window {
     padding: 12px;
     box-shadow: 0 1px 6px alpha(@theme_fg_color, 0.08);
 }
+.panel-left {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+.panel-right {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
 .card {
     background-color: alpha(@theme_bg_color, 0.7);
     border: 1px solid alpha(@theme_fg_color, 0.12);
@@ -995,6 +1003,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         left_panel.set_halign(Gtk.Align.START)
         left_panel.set_size_request(340, -1)
         left_panel.add_css_class("panel")
+        left_panel.add_css_class("panel-left")
 
         left_scroll = Gtk.ScrolledWindow()
         left_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -1512,6 +1521,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         dash_scroll.set_propagate_natural_height(False)
         dash_scroll.set_propagate_natural_width(False)
         dash_scroll.add_css_class("panel")
+        dash_scroll.add_css_class("panel-right")
         dash_scroll.set_margin_start(0)
         dash_scroll.set_margin_end(0)
         self.dashboard = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
