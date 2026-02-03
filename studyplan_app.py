@@ -1015,6 +1015,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         left_scroll.set_vexpand(True)
         left_scroll.set_propagate_natural_width(True)
         left_scroll.set_propagate_natural_height(False)
+        try:
+            left_scroll.set_overlay_scrolling(True)
+            left_scroll.set_placement(Gtk.CornerType.TOP_LEFT)
+        except Exception:
+            pass
         left_scroll.set_margin_start(0)
         left_scroll.set_margin_end(0)
         left_scroll.set_child(left_panel)
