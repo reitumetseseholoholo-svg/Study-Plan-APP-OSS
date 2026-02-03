@@ -901,6 +901,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.pomodoro_banner_enabled = True
         self.pomodoro_title_flash_enabled = True
         self.pomodoro_sound_enabled = True
+        self.session_intent_enabled = True
+        self._current_session_intent: str | None = None
+        self._intent_prompted_date: str | None = None
         self._banner_hide_id = None
         self._title_flash_id = None
         self.last_coach_date = None
@@ -6255,6 +6258,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.study_room_drill_btn.set_tooltip_text("Import questions to unlock drills.")
             else:
                 self.study_room_drill_btn.set_tooltip_text(None)
+        if getattr(self, "study_room_focus_btn", None):
+            guard = self._is_streak_guard_active()
+            try:
+                self.study_room_focus_btn.set_label("Save streak 10m" if guard else "Focus 25m")
+                self.study_room_focus_btn.set_tooltip_text(
+                    "Short focus to preserve your streak." if guard else "Start a 25-minute focus session."
+                )
+            except Exception:
+                pass
 
     def _should_show_onboarding(self) -> bool:
         if self.onboarding_dismissed:
@@ -6460,6 +6472,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             topic = self.current_topic or "Unknown topic"
             recap_lines.append(f"Topic: {topic}")
             recap_lines.append(f"Time: {minutes_spent:.0f}m")
+            intent = getattr(self, "_current_session_intent", None)
+            if intent:
+                recap_lines.append(f"Intent: {intent}")
             if focus_report:
                 recap_lines.append(focus_report)
             if counted and before_comp is not None and after_comp is not None:
@@ -6471,8 +6486,63 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._set_session_recap(session_label, recap_lines)
         except Exception:
             pass
+        self._current_session_intent = None
 
         return "\n".join(message_lines)
+
+    def _is_streak_guard_active(self) -> bool:
+        """Return True when a short session would preserve an active streak."""
+        today = datetime.date.today()
+        last = getattr(self, "last_study_date", None)
+        if isinstance(last, str):
+            try:
+                last = datetime.date.fromisoformat(last)
+            except Exception:
+                last = None
+        if not isinstance(last, datetime.date):
+            return False
+        if last == today:
+            return False
+        return last == (today - datetime.timedelta(days=1))
+
+    def _maybe_prompt_session_intent(self, minutes: int, action_kind: str) -> None:
+        """Prompt for a session intent (optional) before starting a new Pomodoro."""
+        if not getattr(self, "session_intent_enabled", True):
+            self._begin_pomodoro(minutes, action_kind)
+            return
+        today_iso = datetime.date.today().isoformat()
+        if self._intent_prompted_date == today_iso:
+            self._begin_pomodoro(minutes, action_kind)
+            return
+
+        dialog = self._new_dialog(title="Session Intent", transient_for=self, modal=True)
+        dialog.set_default_size(420, 140)
+        content = dialog.get_content_area()
+        prompt = Gtk.Label(label="What do you want to accomplish in this session?")
+        prompt.set_halign(Gtk.Align.START)
+        prompt.set_wrap(True)
+        content.append(prompt)
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("e.g., WACC formula drill or 10 MCQs")
+        content.append(entry)
+        dialog.add_button("Skip", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Start", Gtk.ResponseType.OK)
+
+        def _on_resp(d, r):
+            try:
+                text = entry.get_text().strip()
+            except Exception:
+                text = ""
+            if r == Gtk.ResponseType.OK and text:
+                self._current_session_intent = text
+            else:
+                self._current_session_intent = None
+            self._intent_prompted_date = today_iso
+            d.destroy()
+            self._begin_pomodoro(minutes, action_kind)
+
+        dialog.connect("response", _on_resp)
+        dialog.present()
 
     def on_pomodoro_start(self, button):
         self._ensure_coach_selection()
@@ -6506,7 +6576,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
             self.pomodoro_timer_id = None
-        self._begin_pomodoro(25, action_kind)
+        minutes = 25
+        if action_kind == "pomodoro_focus" and self._is_streak_guard_active():
+            minutes = 10
+        self._maybe_prompt_session_intent(minutes, action_kind)
     def _calculate_mastery_distribution(self):
         if not hasattr(self.engine, 'get_mastery_stats'):
             return {"mastered": 0, "learning": 0, "new": 0}
@@ -7216,11 +7289,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         # Containers for dynamic content
         self.quiz_content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.quiz_content_box.set_margin_top(4)
+        self.quiz_content_box.set_margin_bottom(2)
         content_area.append(self.quiz_content_box)
 
         self.quiz_feedback = Gtk.Label()
         self.quiz_feedback.set_wrap(True)
         self.quiz_feedback.set_halign(Gtk.Align.START)
+        self.quiz_feedback.set_margin_top(6)
         content_area.append(self.quiz_feedback)
 
         # Button row
