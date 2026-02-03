@@ -7558,13 +7558,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.quiz_next_btn.set_sensitive(False)
         btn_row.append(self.quiz_next_btn)
 
-        self.quiz_finish_btn = Gtk.Button(label="Finish")
-        def _finish_quiz(_b=None):
-            self._stop_action_timer(finalize=True)
-            dialog.destroy()
-        self.quiz_finish_btn.connect("clicked", _finish_quiz)
-        btn_row.append(self.quiz_finish_btn)
-
         content_area.append(btn_row)
 
         self.render_quiz_question()
