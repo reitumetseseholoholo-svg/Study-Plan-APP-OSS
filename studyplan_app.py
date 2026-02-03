@@ -502,10 +502,14 @@ window {
 .panel-left {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
+    border-right: none;
+    box-shadow: 0 1px 6px alpha(@theme_fg_color, 0.08);
 }
 .panel-right {
     border-top-left-radius: 0;
     border-bottom-left-radius: 0;
+    border-left: none;
+    box-shadow: 0 1px 6px alpha(@theme_fg_color, 0.08);
 }
 .card {
     background-color: alpha(@theme_bg_color, 0.7);
