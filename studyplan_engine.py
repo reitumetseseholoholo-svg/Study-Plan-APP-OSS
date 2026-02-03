@@ -1206,6 +1206,7 @@ class StudyPlanEngine:
         self.must_review: Dict[str, Dict[str, str]] = {chapter: {} for chapter in self.CHAPTERS}
         self.study_hub_stats: Dict[str, Any] = {}
         self.quiz_results: Dict[str, float] = {}
+        self.quiz_recent: Dict[str, List[int]] = {}
         self.chapter_notes: Dict[str, Dict[str, Any]] = {}
         self.difficulty_counts: Dict[str, Dict[str, int]] = {}
 
@@ -1528,6 +1529,26 @@ class StudyPlanEngine:
                 cleaned[k] = inner
         return cleaned
 
+    def _coerce_quiz_recent(self, raw, max_keep: int = 50):
+        """Normalize recent quiz history to {chapter: [idx, ...]}."""
+        if not isinstance(raw, dict):
+            return {}
+        cleaned: Dict[str, List[int]] = {}
+        for k, v in raw.items():
+            if not isinstance(k, str) or not isinstance(v, list):
+                continue
+            items: List[int] = []
+            for idx in v:
+                try:
+                    idx_int = int(idx)
+                except Exception:
+                    continue
+                if idx_int >= 0:
+                    items.append(idx_int)
+            if items:
+                cleaned[k] = items[-max_keep:]
+        return cleaned
+
     def _normalize_loaded_data(self):
         """Coerce all persisted data into safe, canonical formats."""
         # reset stats per normalization pass
@@ -1554,6 +1575,7 @@ class StudyPlanEngine:
             self.study_hub_stats = {}
         if not isinstance(self.quiz_results, dict):
             self.quiz_results = {}
+        self.quiz_recent = self._coerce_quiz_recent(getattr(self, "quiz_recent", {}))
         self._normalize_chapter_keys()
 
     def _normalize_chapter_keys(self) -> None:
@@ -1689,6 +1711,15 @@ class StudyPlanEngine:
                 fixed[nk] = v
             self.difficulty_counts = fixed
 
+        def _merge_quiz_recent():
+            if not isinstance(getattr(self, "quiz_recent", None), dict):
+                return
+            fixed = {}
+            for k, v in self.quiz_recent.items():
+                nk = _norm_key(k) or k
+                fixed[nk] = v
+            self.quiz_recent = fixed
+
         _merge_competence()
         _merge_srs()
         _merge_must_review()
@@ -1697,6 +1728,7 @@ class StudyPlanEngine:
         _merge_quiz_results()
         _merge_chapter_notes()
         _merge_difficulty_counts()
+        _merge_quiz_recent()
 
     def test_methods(self) -> None:
         """Quick test that all required methods exist."""
@@ -2010,14 +2042,21 @@ class StudyPlanEngine:
         except Exception:
             return None
 
-    def _question_key(self, q: Dict[str, Any]) -> Tuple[str, Tuple[str, ...], str, str]:
+    def _normalize_question_text(self, text: Any) -> str:
+        """Normalize question text for deduping."""
+        try:
+            cleaned = " ".join(str(text or "").split())
+        except Exception:
+            cleaned = ""
+        return cleaned.strip().lower()
+
+    def _question_key(self, q: Dict[str, Any]) -> Tuple[str, Tuple[str, ...], str]:
         """Stable key for deduplicating questions across imports."""
-        return (
-            str(q.get("question", "")).strip(),
-            tuple(str(opt).strip() for opt in (q.get("options") or [])),
-            str(q.get("correct", "")).strip(),
-            str(q.get("explanation", "")).strip(),
-        )
+        question = self._normalize_question_text(q.get("question", ""))
+        options = tuple(self._normalize_question_text(opt) for opt in (q.get("options") or []))
+        correct = self._normalize_question_text(q.get("correct", ""))
+        return (question, options, correct)
+
     def _deduplicate_questions(self, chapter, new_questions):
         """
         Remove questions that are too similar to existing ones.
@@ -2158,13 +2197,13 @@ class StudyPlanEngine:
         if chapter is None:
             raise ValueError(f"Could not find chapter '{chapter_name}'")
 
-        question_dicts: Dict[Tuple[str, Tuple[str, ...], str, str], Dict[str, Any]] = {
+        question_dicts: Dict[Tuple[str, Tuple[str, ...], str], Dict[str, Any]] = {
             self._question_key(question): dict(question)
             for question in questions
             if all(key in question for key in ("question", "options", "correct", "explanation"))
         }
 
-        existing_questions: Set[Tuple[str, Tuple[str, ...], str, str]] = {
+        existing_questions: Set[Tuple[str, Tuple[str, ...], str]] = {
             self._question_key(question) for question in self.QUESTIONS.get(chapter, [])
         }
 
@@ -3097,8 +3136,12 @@ class StudyPlanEngine:
         srs_list = self.srs_data.get(chapter, [])
         today = datetime.date.today()
         must_review = self.must_review.get(chapter, {})
+        recent_set = set(self.quiz_recent.get(chapter, [])) if isinstance(getattr(self, "quiz_recent", None), dict) else set()
 
         scored = []
+        has_due = False
+        has_overdue = False
+        all_new = True
         for idx in range(len(questions)):
             srs = srs_list[idx] if idx < len(srs_list) else {}
             overdue = 1 if self.is_overdue(srs, today) else 0
@@ -3108,11 +3151,29 @@ class StudyPlanEngine:
                 due_date = self._parse_date(must_review.get(str(idx)))
                 if due_date and due_date <= today:
                     due = 1
-            scored.append((idx, due, overdue, retention))
+            recent = 1 if idx in recent_set else 0
+            scored.append((idx, due, overdue, recent, retention))
+            has_due = has_due or bool(due)
+            has_overdue = has_overdue or bool(overdue)
+            if srs.get("last_review") is not None:
+                all_new = False
+
+        # If everything is new and nothing is due/overdue, randomize to avoid repeats.
+        if all_new and not has_due and not has_overdue:
+            indices = [i for i in range(len(questions)) if i not in recent_set]
+            if not indices:
+                indices = list(range(len(questions)))
+            random.shuffle(indices)
+            selected = indices[: min(count, len(indices))]
+            if len(selected) < min(count, len(questions)):
+                remaining = [i for i in range(len(questions)) if i not in selected]
+                random.shuffle(remaining)
+                selected.extend(remaining[: (count - len(selected))])
+            return selected
 
         # Sort: must-review first, then overdue, then lowest retention
-        scored.sort(key=lambda x: (-x[1], -x[2], x[3]))
-        selected = [idx for idx, _d, _o, _r in scored[:count]]
+        scored.sort(key=lambda x: (-x[1], -x[2], x[3], x[4]))
+        selected = [idx for idx, _d, _o, _recent, _r in scored[:count]]
 
         # If not enough unique (shouldn't happen), fill with random
         if len(selected) < min(count, len(questions)):
@@ -3121,6 +3182,41 @@ class StudyPlanEngine:
             selected.extend(remaining[: (count - len(selected))])
 
         return selected
+
+    def record_quiz_history(self, chapter: str, indices: list[int], max_keep: int = 50) -> None:
+        """Persist recently asked quiz question indices per chapter."""
+        if chapter not in self.CHAPTERS:
+            return
+        if not isinstance(indices, list) or not indices:
+            return
+        history = self.quiz_recent.get(chapter, [])
+        if not isinstance(history, list):
+            history = []
+        merged: list[int] = []
+        for idx in history:
+            try:
+                idx_int = int(idx)
+            except Exception:
+                continue
+            if idx_int >= 0:
+                merged.append(idx_int)
+        for idx in indices:
+            try:
+                idx_int = int(idx)
+            except Exception:
+                continue
+            if idx_int >= 0:
+                merged.append(idx_int)
+        # Keep last occurrence of each index, preserve order
+        seen = set()
+        dedup_rev = []
+        for idx in reversed(merged):
+            if idx in seen:
+                continue
+            seen.add(idx)
+            dedup_rev.append(idx)
+        dedup = list(reversed(dedup_rev))
+        self.quiz_recent[chapter] = dedup[-max_keep:]
 
     def get_retention_probability(self, chapter, idx):
         srs_list = self.srs_data.get(chapter, [])
@@ -3974,6 +4070,7 @@ class StudyPlanEngine:
                     self.must_review = data.get('must_review', self.must_review)
                     self.study_hub_stats = data.get('study_hub_stats', self.study_hub_stats)
                     self.quiz_results = data.get('quiz_results', self.quiz_results)
+                    self.quiz_recent = data.get('quiz_recent', self.quiz_recent)
                     self.progress_log = data.get('progress_log', self.progress_log)
                     self.chapter_notes = data.get('chapter_notes', self.chapter_notes)
                     self.difficulty_counts = data.get('difficulty_counts', self.difficulty_counts)
@@ -4013,6 +4110,7 @@ class StudyPlanEngine:
         self.completed_chapters_date = None
         self.daily_plan_cache = []
         self.daily_plan_cache_date = None
+        self.quiz_recent = {}
 
         self.save_data()
 
@@ -4034,6 +4132,7 @@ class StudyPlanEngine:
             "must_review": dict(self.must_review),
             "study_hub_stats": dict(self.study_hub_stats),
             "quiz_results": dict(self.quiz_results),
+            "quiz_recent": {k: list(v) for k, v in self.quiz_recent.items()},
             "progress_log": list(self.progress_log),
             "chapter_notes": dict(self.chapter_notes),
             "difficulty_counts": dict(self.difficulty_counts),

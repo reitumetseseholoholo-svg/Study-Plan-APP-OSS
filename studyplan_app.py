@@ -532,6 +532,15 @@ window {
     font-size: 11px;
     font-style: italic;
 }
+.plan-title {
+    font-weight: 600;
+}
+.plan-meta {
+    font-size: 11px;
+}
+.study-summary {
+    font-size: 12px;
+}
 .rule {
     color: alpha(@theme_fg_color, 0.15);
 }
@@ -553,6 +562,12 @@ window.compact .title {
 window.compact .section-title {
     font-size: 11px;
     letter-spacing: 0.5px;
+}
+window.compact .plan-meta {
+    font-size: 10px;
+}
+window.compact .study-summary {
+    font-size: 11px;
 }
 window.compact button {
     padding: 4px 6px;
@@ -661,6 +676,15 @@ window {
     font-size: 11px;
     font-style: italic;
 }
+.plan-title {
+    font-weight: 600;
+}
+.plan-meta {
+    font-size: 11px;
+}
+.study-summary {
+    font-size: 12px;
+}
 .rule {
     color: #3a3c43;
 }
@@ -688,6 +712,12 @@ window.compact .title {
 window.compact .section-title {
     font-size: 11px;
     letter-spacing: 0.5px;
+}
+window.compact .plan-meta {
+    font-size: 10px;
+}
+window.compact .study-summary {
+    font-size: 11px;
 }
 window.compact button {
     padding: 4px 6px;
@@ -1183,11 +1213,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_summary.set_halign(Gtk.Align.START)
         self.study_room_summary.set_wrap(True)
         self.study_room_summary.add_css_class("muted")
+        self.study_room_summary.add_css_class("study-summary")
+        self.study_room_details_label = Gtk.Label()
+        self.study_room_details_label.set_halign(Gtk.Align.START)
+        self.study_room_details_label.set_wrap(True)
+        self.study_room_details_label.add_css_class("muted")
+        self.study_room_details_label.add_css_class("study-summary")
+        self.study_room_details_expander = Gtk.Expander()
+        self.study_room_details_expander.set_label("Details")
+        self.study_room_details_expander.set_expanded(False)
+        self.study_room_details_expander.set_child(self.study_room_details_label)
         self.action_timer_label = Gtk.Label(label="Session: —")
         self.action_timer_label.set_halign(Gtk.Align.START)
         self.action_timer_label.add_css_class("action-timer")
         study_room_card.append(self.action_timer_label)
         study_room_card.append(self.study_room_summary)
+        study_room_card.append(self.study_room_details_expander)
 
         self.study_room_next_due_label = Gtk.Label()
         self.study_room_next_due_label.set_halign(Gtk.Align.START)
@@ -1206,7 +1247,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         study_room_card.append(self.study_room_mission_bar)
 
         study_room_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        study_room_actions.set_homogeneous(True)
         self.study_room_focus_btn = Gtk.Button(label="Focus now (25m)")
+        self.study_room_focus_btn.add_css_class("suggested-action")
         self.study_room_focus_btn.connect("clicked", self.on_focus_now)
         self.study_room_quiz_btn = Gtk.Button(label="Quick quiz")
         self.study_room_quiz_btn.connect("clicked", self.on_quick_quiz)
@@ -5839,10 +5882,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def update_study_room_card(self) -> None:
         if not getattr(self, "study_room_summary", None):
             return
+        if getattr(self, "study_room_details_expander", None):
+            try:
+                focus_mode = bool(getattr(self, "focus_mode", False))
+                self.study_room_details_expander.set_expanded(not focus_mode)
+                self.study_room_details_expander.set_visible(not focus_mode)
+            except Exception:
+                pass
         if not self._has_chapters():
             self.study_room_summary.set_text(
                 "No chapters loaded yet. Add a module JSON (Module → Manage Modules) to start."
             )
+            if getattr(self, "study_room_details_expander", None):
+                try:
+                    self.study_room_details_expander.set_visible(False)
+                except Exception:
+                    pass
             if getattr(self, "study_room_mission_label", None):
                 self.study_room_mission_label.set_text("Mission locked — no chapters loaded.")
             if getattr(self, "study_room_next_due_label", None):
@@ -5864,6 +5919,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if getattr(self, "study_room_focus_btn", None):
                 self.study_room_focus_btn.set_sensitive(False)
             return
+        if getattr(self, "study_room_details_expander", None):
+            try:
+                self.study_room_details_expander.set_visible(True)
+            except Exception:
+                pass
         try:
             self._ensure_daily_counters()
         except Exception:
@@ -5876,6 +5936,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if getattr(self, "study_room_next_due_label", None):
             next_due = self._get_topic_next_due_text(recommended)
             self.study_room_next_due_label.set_text(next_due or "")
+            try:
+                self.study_room_next_due_label.set_visible(bool(next_due))
+            except Exception:
+                pass
         try:
             self._update_coach_pick_card()
         except Exception:
@@ -5961,7 +6025,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if values:
                     best = max(values)
                     avg = sum(values) / len(values)
-                    quiz_summary = f"Quiz best: {best:.0f}% • Avg: {avg:.0f}%"
+                    quiz_summary = f"Best {best:.0f}% • Avg {avg:.0f}%"
         except Exception:
             quiz_summary = ""
 
@@ -5980,6 +6044,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             next_block = ""
 
+        due_count = 0
+        if has_questions:
+            try:
+                due_count = self._get_topic_due_count(recommended, today)
+            except Exception:
+                due_count = 0
+
         lines = [
             self._get_next_action_line(
                 recommended_topic=recommended,
@@ -5988,10 +6059,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 has_questions=has_questions,
             )
         ]
+        detail_lines = []
         if daily_plan:
-            lines.append(f"Daily plan: {completed}/{len(daily_plan)} completed")
+            lines.append(f"Plan: {completed}/{len(daily_plan)} done")
         try:
-            lines.append(f"Streak: {int(self.study_streak or 0)} days • XP: {int(self.xp_total)} (Lv {int(self.level)})")
+            lines.append(f"Session: {int(self.study_streak or 0)}d streak • XP {int(self.xp_total)} (Lv {int(self.level)})")
         except Exception:
             pass
         try:
@@ -6005,17 +6077,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
         if has_questions and not quiz_done:
-            lines.append(f"Quiz target: {quiz_target} questions")
-        if must_review_due:
-            lines.append(f"Must review today: {must_review_due}")
-        if has_questions:
-            due_count = self._get_topic_due_count(recommended, today)
+            lines.append(f"Quiz target: {quiz_target} q")
+        if must_review_due or due_count:
+            review_bits = []
+            if must_review_due:
+                review_bits.append(f"must-review {must_review_due}")
             if due_count:
-                lines.append(f"Topic reviews due: {due_count}")
+                review_bits.append(f"topic due {due_count}")
+            lines.append("Reviews: " + " • ".join(review_bits))
         if next_block:
             lines.append(next_block)
         if quiz_summary:
-            lines.append(quiz_summary)
+            lines.append(f"Quiz: {quiz_summary}")
 
         # Time-based targets and action mix (exam-aware coaching)
         try:
@@ -6024,7 +6097,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if avg_quiz:
                     sessions_target = max(1, int(math.ceil(quiz_target / 8.0)))
                     target_minutes = avg_quiz * sessions_target
-                    lines.append(
+                    detail_lines.append(
                         f"Quiz time target: ~{target_minutes:.0f}m ({sessions_target}×{avg_quiz:.0f}m avg)"
                     )
         except Exception:
@@ -6040,7 +6113,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             total_minutes = focus_minutes + retrieval_minutes
             if total_minutes >= 300:  # at least 5m total to avoid noisy ratios
                 retrieval_pct = (retrieval_minutes / total_minutes) * 100.0
-                lines.append(f"Action mix: retrieval {retrieval_pct:.0f}% today")
+                detail_lines.append(f"Action mix: retrieval {retrieval_pct:.0f}% today")
         except Exception:
             pass
 
@@ -6084,12 +6157,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pace_line = ""
 
         if proficiency_line:
-            lines.append(proficiency_line)
+            detail_lines.append(proficiency_line)
         if pace_line:
-            lines.append(pace_line)
+            detail_lines.append(pace_line)
         note = self._get_confidence_note(recommended)
         if note:
-            lines.append(f"Coach note: {note}")
+            detail_lines.append(f"Coach note: {note}")
         try:
             if isinstance(self.engine.exam_date, datetime.date):
                 pace_info = self._get_pace_info()
@@ -6098,18 +6171,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if required_avg > 0:
                     remaining = max(0.0, required_avg - verified_today)
                     if remaining <= 0.1:
-                        lines.append("Today target: met")
+                        detail_lines.append("Today target: met")
                     else:
-                        lines.append(f"Today target: {remaining:.0f} min remaining")
+                        detail_lines.append(f"Today target: {remaining:.0f} min remaining")
         except Exception:
             pass
         try:
             if self.pomodoro_remaining > 0:
                 current_report = self._format_focus_report()
                 if current_report:
-                    lines.append(current_report)
+                    detail_lines.append(current_report)
             elif self._last_focus_report:
-                lines.append(self._last_focus_report)
+                detail_lines.append(self._last_focus_report)
         except Exception:
             pass
 
@@ -6141,7 +6214,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             coach_line = ""
 
         if coach_line:
-            lines.append(coach_line)
+            detail_lines.append(coach_line)
         try:
             action_minutes = self._get_action_minutes_today()
             focus_minutes = action_minutes.get("pomodoro_focus", 0.0)
@@ -6154,11 +6227,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if total_minutes >= 300:
                 retrieval_pct = (retrieval_minutes / total_minutes) * 100.0
                 if retrieval_pct < 25 and focus_minutes >= 900:
-                    lines.append("Coach: add a 10‑min quiz block to rebalance retrieval.")
+                    detail_lines.append("Coach: add a 10‑min quiz block to rebalance retrieval.")
         except Exception:
             pass
 
         self.study_room_summary.set_text("\n".join(lines))
+        if getattr(self, "study_room_details_label", None):
+            if detail_lines:
+                self.study_room_details_label.set_text("\n".join(detail_lines))
+            else:
+                self.study_room_details_label.set_text("No extra details yet.")
         if getattr(self, "quiz_btn", None):
             self.quiz_btn.set_sensitive(has_questions)
             if not has_questions:
@@ -7395,7 +7473,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             try:
                 if hasattr(self.engine, "mark_completed_today"):
                     self.engine.mark_completed_today(self.current_topic)
-                    self.engine.save_data()
+                if hasattr(self.engine, "record_quiz_history"):
+                    self.engine.record_quiz_history(
+                        self.current_topic,
+                        list(self.quiz_session.get("indices", []))
+                    )
+                self.engine.save_data()
             except Exception:
                 pass
             bonus = 0
@@ -8342,7 +8425,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.availability_expander.set_visible(not self.focus_mode)
         if getattr(self, "rec_expander", None):
             self.rec_expander.set_visible(not self.focus_mode)
+        if getattr(self, "study_room_details_expander", None):
+            try:
+                self.study_room_details_expander.set_expanded(not self.focus_mode)
+                self.study_room_details_expander.set_visible(not self.focus_mode)
+            except Exception:
+                pass
         self.update_dashboard()
+        try:
+            self.update_study_room_card()
+        except Exception:
+            pass
 
     def update_dashboard(self) -> None:  # pyright: ignore[reportGeneralTypeIssues]
         # Clear old dashboard
@@ -8964,6 +9057,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         canvas.set_tooltip_text("Tip: hold Ctrl and scroll to zoom charts.")
                         canvas.set_size_request(430, 240)
                         self.dashboard.append(canvas)
+                        try:
+                            plt_module.close(fig)
+                        except Exception:
+                            pass
         except Exception:
             pass
 
@@ -9179,13 +9276,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         else:
             bar.add_css_class("success")
         self.dashboard.append(bar)
+        retention_label = None
         if retention_progress is not None:
             retention_label = Gtk.Label(
                 label=f"Retention progress (learning + mastered): {retention_progress:.1f}%"
             )
             retention_label.set_halign(Gtk.Align.START)
             retention_label.set_wrap(True)
-            retention_label.add_css_class("muted")
+            retention_label.add_css_class("hint")
+            retention_label.set_visible(False)
             self.dashboard.append(retention_label)
         mastery_note = Gtk.Label(
             label="Mastery = retention (SRS). Competence = performance."
@@ -9197,8 +9296,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         motion = Gtk.EventControllerMotion()
         def _show_hint(*_args):
             mastery_note.set_visible(True)
+            if retention_label is not None:
+                retention_label.set_visible(True)
         def _hide_hint(*_args):
             mastery_note.set_visible(False)
+            if retention_label is not None:
+                retention_label.set_visible(False)
         motion.connect("enter", _show_hint)
         motion.connect("leave", _hide_hint)
         bar.add_controller(motion)
@@ -9317,6 +9420,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     else:
                         canvas.set_size_request(400, 300)
                     self.dashboard.append(canvas)
+                    try:
+                        plt_module.close(fig)
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"Chart error: {e}")
 
@@ -9384,6 +9491,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     canvas.set_tooltip_text("Tip: hold Ctrl and scroll to zoom charts.")
                     canvas.set_size_request(400, 260)
                     self.dashboard.append(canvas)
+                    try:
+                        plt_module.close(fig)
+                    except Exception:
+                        pass
                 else:
                     empty_progress = Gtk.Label(label="Progress chart needs at least 2 days of data.")
                     empty_progress.set_halign(Gtk.Align.START)
@@ -9457,6 +9568,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 canvas.set_tooltip_text("Tip: hold Ctrl and scroll to zoom charts.")
                 canvas.set_size_request(430, 260)
                 self.dashboard.append(canvas)
+                try:
+                    plt_module.close(fig)
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"Per-topic chart error: {e}")
 
@@ -10098,6 +10213,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         summary_label = Gtk.Label()
         summary_label.set_halign(Gtk.Align.START)
         summary_label.set_wrap(True)
+        summary_label.add_css_class("plan-meta")
         mode = ""
         try:
             days_remaining = self.engine.get_days_remaining()
@@ -10149,11 +10265,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return summary_label
 
     def _create_clickable_chapter_label(self, chapter, num_topics):
-        label = Gtk.Label()
-        label.set_halign(Gtk.Align.START)
-        label.set_xalign(0.0)
-        label.set_margin_bottom(2)
-        label.set_wrap(True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        title = Gtk.Label()
+        title.set_halign(Gtk.Align.START)
+        title.set_xalign(0.0)
+        title.set_wrap(True)
+        title.add_css_class("plan-title")
+        meta = Gtk.Label()
+        meta.set_halign(Gtk.Align.START)
+        meta.set_xalign(0.0)
+        meta.set_wrap(True)
+        meta.add_css_class("muted")
+        meta.add_css_class("plan-meta")
+        meta.set_visible(False)
+        box.append(title)
+        box.append(meta)
 
         def update_markup():
             safe_chapter = chapter
@@ -10227,22 +10353,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
             for cls in ("status-bad", "status-warn"):
                 try:
-                    label.remove_css_class(cls)
+                    title.remove_css_class(cls)
                 except Exception:
                     pass
             if mandatory:
-                label.add_css_class("status-bad")
+                title.add_css_class("status-bad")
 
             base = safe_chapter
             if mandatory:
                 base = f"⚠ {base}"
             if high_priority:
                 base = f"<b>{base}</b>"
-
-            suffix = ""
-            if status_bits:
-                suffix = " — " + " • ".join(status_bits)
-            markup = f"{base}{suffix}"
+            markup = base
 
             if completed:
                 markup = f"<span foreground='#7f8792'>{markup}</span>"
@@ -10254,7 +10376,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if coach_pick and chapter == coach_pick:
                 markup = f"🎯 {markup}"
 
-            label.set_markup(markup)
+            title.set_markup(markup)
+            if status_bits:
+                meta.set_text(" • ".join(status_bits))
+                meta.set_visible(True)
+            else:
+                meta.set_text("")
+                meta.set_visible(False)
 
             tooltip_lines = []
             if comp_val is not None:
@@ -10271,11 +10399,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 tooltip_lines.append("Click to focus this chapter.")
             else:
                 tooltip_lines = ["Click to focus this chapter."]
-            label.set_tooltip_text("\n".join(tooltip_lines))
+            box.set_tooltip_text("\n".join(tooltip_lines))
 
         update_markup()  # initial render
         gesture = Gtk.GestureClick()
-        label.add_controller(gesture)
+        box.add_controller(gesture)
 
         def on_pressed(_g, _b, _x, _y):
             try:
@@ -10285,7 +10413,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.update_study_room_card()
 
         gesture.connect("pressed", on_pressed)
-        return label
+        return box
 
 
     def update_streak_display(self):
