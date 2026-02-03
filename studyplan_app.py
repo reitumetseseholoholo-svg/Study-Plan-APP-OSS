@@ -508,6 +508,7 @@ window {
 }
 .main-separator {
     background-color: alpha(@theme_fg_color, 0.18);
+    min-width: 1px;
 }
 .title {
     font-weight: 700;
@@ -1005,11 +1006,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         left_scroll.set_vexpand(True)
         left_scroll.set_propagate_natural_width(True)
         left_scroll.set_propagate_natural_height(False)
+        left_scroll.set_margin_start(0)
+        left_scroll.set_margin_end(0)
         left_scroll.set_child(left_panel)
         hbox.append(left_scroll)
 
         self.main_separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
         self.main_separator.add_css_class("main-separator")
+        self.main_separator.set_size_request(1, -1)
         hbox.append(self.main_separator)
 
         self.left_panel = left_panel
@@ -1517,6 +1521,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         dash_scroll.set_propagate_natural_height(False)
         dash_scroll.set_propagate_natural_width(False)
         dash_scroll.add_css_class("panel")
+        dash_scroll.set_margin_start(0)
+        dash_scroll.set_margin_end(0)
         self.dashboard = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.dashboard.set_halign(Gtk.Align.FILL)
         self.dashboard.set_valign(Gtk.Align.FILL)
