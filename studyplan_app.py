@@ -506,10 +506,6 @@ window {
     padding: 10px;
     box-shadow: 0 1px 4px alpha(@theme_fg_color, 0.06);
 }
-.main-separator {
-    background-color: alpha(@theme_fg_color, 0.18);
-    min-width: 1px;
-}
 .title {
     font-weight: 700;
     font-size: 20px;
@@ -1010,11 +1006,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         left_scroll.set_margin_end(0)
         left_scroll.set_child(left_panel)
         hbox.append(left_scroll)
-
-        self.main_separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-        self.main_separator.add_css_class("main-separator")
-        self.main_separator.set_size_request(1, -1)
-        hbox.append(self.main_separator)
 
         self.left_panel = left_panel
         self.left_scroll = left_scroll
