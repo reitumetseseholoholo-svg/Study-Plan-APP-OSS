@@ -5469,6 +5469,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 plan = self.engine.get_daily_plan(num_topics=3, current_topic=self.current_topic) or []
             except Exception:
                 plan = []
+        release_ok = False
+        if isinstance(self.last_coach_pick, str):
+            try:
+                release_ok = self._should_override_sticky_coach_pick(self.last_coach_pick)
+            except Exception:
+                release_ok = False
         try:
             today_iso = datetime.date.today().isoformat()
             if self.sticky_coach_pick and self.last_coach_pick_date == today_iso:
@@ -5486,13 +5492,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     and self.last_coach_pick_date == today_iso
                     and isinstance(self.last_coach_pick, str)
                     and self.last_coach_pick in plan
-                    and self._should_override_sticky_coach_pick(self.last_coach_pick)
+                    and release_ok
                 ):
                     for topic in plan:
                         if topic != self.last_coach_pick:
                             return topic
             except Exception:
                 pass
+            if release_ok and isinstance(self.last_coach_pick, str):
+                for topic in plan:
+                    if topic != self.last_coach_pick:
+                        return topic
             return plan[0]
         try:
             recs = self.engine.top_recommendations(1) or []
