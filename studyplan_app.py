@@ -5479,6 +5479,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
         if plan:
+            try:
+                today_iso = datetime.date.today().isoformat()
+                if (
+                    self.sticky_coach_pick
+                    and self.last_coach_pick_date == today_iso
+                    and self.last_coach_pick in plan
+                    and self._should_override_sticky_coach_pick(self.last_coach_pick)
+                ):
+                    for topic in plan:
+                        if topic != self.last_coach_pick:
+                            return topic
+            except Exception:
+                pass
             return plan[0]
         try:
             recs = self.engine.top_recommendations(1) or []
