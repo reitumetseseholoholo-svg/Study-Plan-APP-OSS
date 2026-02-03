@@ -9208,7 +9208,33 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             note_label.add_css_class("muted")
             coach_box.append(note_label)
 
-        # Daily mission targets are shown in the left panel Study Room.
+        mission_lines = []
+        mission_tasks = [(f"Focus {focus_goal}x Pomodoro", focus_done)]
+        if has_questions:
+            mission_tasks.append((f"Quiz {quiz_target} questions", quiz_done))
+        if must_review_due:
+            mission_tasks.append((f"Clear must-review ({must_review_due} due)", review_done))
+        else:
+            mission_tasks.append(("Clear must-review", review_done))
+        for title, done in mission_tasks:
+            icon = "x" if done else " "
+            mission_lines.append(f"[{icon}] {title}")
+        if not has_questions:
+            mission_lines.append("Quiz mission locked — import questions")
+        if weak_chapter:
+            mission_lines.append(f"⚠ Mandatory focus: {weak_chapter} (until ≥60%)")
+        coach_label = Gtk.Label(label="\n".join(mission_lines))
+        coach_label.set_halign(Gtk.Align.START)
+        coach_label.set_wrap(True)
+        coach_label.add_css_class("muted")
+        coach_box.append(coach_label)
+
+        mission_done = sum(1 for _t, done in mission_tasks if done)
+        mission_bar = Gtk.ProgressBar()
+        mission_bar.set_fraction(mission_done / max(1, len(mission_tasks)))
+        mission_bar.set_show_text(True)
+        mission_bar.set_text(f"Mission progress: {mission_done}/{len(mission_tasks)}")
+        coach_box.append(mission_bar)
 
         pace_label = Gtk.Label()
         pace_label.set_halign(Gtk.Align.START)
