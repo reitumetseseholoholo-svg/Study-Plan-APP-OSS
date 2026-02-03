@@ -6200,11 +6200,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.study_room_error_btn.set_label(f"Drill errors ({err_total})")
                     self.study_room_error_btn.set_sensitive(err_total > 0)
                     self.study_room_error_btn.set_tooltip_text(
-                        "Start a drill of tagged mistakes."
-                        if err_total > 0
-                        else "No tagged mistakes yet for this topic."
+                        "Start a drill of tagged mistakes." if err_total > 0 else ""
                     )
-                    self.study_room_error_btn.set_visible(True)
+                    self.study_room_error_btn.set_visible(err_total > 0)
                 self.study_room_leitner_box.set_visible(True)
             except Exception:
                 self.study_room_leitner_box.set_visible(False)
