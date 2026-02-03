@@ -955,7 +955,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.menu_bar = self._build_menu_bar()
 
         # Main layout
-        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         hbox.set_margin_top(16)
         hbox.set_margin_bottom(16)
         hbox.set_margin_start(16)
@@ -1004,6 +1004,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         left_scroll.set_propagate_natural_height(False)
         left_scroll.set_child(left_panel)
         hbox.append(left_scroll)
+
+        self.main_separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        hbox.append(self.main_separator)
 
         self.left_panel = left_panel
         self.left_scroll = left_scroll
