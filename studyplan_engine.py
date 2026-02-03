@@ -3305,6 +3305,17 @@ class StudyPlanEngine:
                         counts[key] = counts.get(key, 0) + 1
         return counts
 
+    def get_error_total(self, chapter: str | None = None) -> int:
+        """Return total error entries for a chapter or overall."""
+        if chapter:
+            items = self.error_notebook.get(chapter, [])
+            return len(items) if isinstance(items, list) else 0
+        total = 0
+        for items in self.error_notebook.values():
+            if isinstance(items, list):
+                total += len(items)
+        return total
+
     def get_error_indices(self, chapter: str, max_count: int = 12) -> list[int]:
         """Return question indices for errors in a chapter, most recent first."""
         if chapter not in self.CHAPTERS:

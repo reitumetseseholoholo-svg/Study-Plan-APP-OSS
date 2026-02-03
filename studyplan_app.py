@@ -1265,6 +1265,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_error_btn = Gtk.Button(label="Drill errors")
         self.study_room_error_btn.add_css_class("flat")
         self.study_room_error_btn.connect("clicked", self.on_error_drill)
+        self.study_room_error_btn.set_sensitive(False)
         self.study_room_leitner_box.append(self.study_room_error_btn)
         study_room_card.append(self.study_room_leitner_box)
         study_room_card.append(self.study_room_details_expander)
@@ -6188,6 +6189,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.study_room_leitner_label.set_text(f"Leitner: B1 {b1} • B2 {b2} • B3 {b3}")
                 if getattr(self, "study_room_leitner_btn", None):
                     self.study_room_leitner_btn.set_visible(b1 > 0)
+                if getattr(self, "study_room_error_btn", None):
+                    err_total = 0
+                    if hasattr(self.engine, "get_error_total"):
+                        err_total = int(self.engine.get_error_total(recommended))
+                    else:
+                        items = getattr(self.engine, "error_notebook", {}).get(recommended, [])
+                        if isinstance(items, list):
+                            err_total = len(items)
+                    self.study_room_error_btn.set_label(f"Drill errors ({err_total})")
+                    self.study_room_error_btn.set_sensitive(err_total > 0)
+                    self.study_room_error_btn.set_tooltip_text(
+                        "Start a drill of tagged mistakes."
+                        if err_total > 0
+                        else "No tagged mistakes yet for this topic."
+                    )
+                    self.study_room_error_btn.set_visible(True)
                 self.study_room_leitner_box.set_visible(True)
             except Exception:
                 self.study_room_leitner_box.set_visible(False)
