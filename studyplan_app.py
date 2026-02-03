@@ -493,8 +493,8 @@ window {
     color: @theme_fg_color;
 }
 .panel {
-    background-color: alpha(@theme_bg_color, 0.8);
-    border: 1px solid alpha(@theme_fg_color, 0.12);
+    background-color: alpha(@theme_bg_color, 0.86);
+    border: 1px solid alpha(@theme_fg_color, 0.1);
     border-radius: 12px;
     padding: 12px;
     box-shadow: 0 1px 6px alpha(@theme_fg_color, 0.08);
@@ -512,8 +512,8 @@ window {
     box-shadow: none;
 }
 .card {
-    background-color: alpha(@theme_bg_color, 0.7);
-    border: 1px solid alpha(@theme_fg_color, 0.12);
+    background-color: alpha(@theme_bg_color, 0.78);
+    border: 1px solid alpha(@theme_fg_color, 0.1);
     border-radius: 12px;
     padding: 10px;
     box-shadow: 0 1px 4px alpha(@theme_fg_color, 0.06);
@@ -530,14 +530,14 @@ window {
 .section-title {
     font-weight: 700;
     font-size: 13px;
-    letter-spacing: 0.8px;
+    letter-spacing: 0.6px;
     text-transform: uppercase;
     color: alpha(@theme_fg_color, 0.8);
-    margin-top: 8px;
-    margin-bottom: 6px;
+    margin-top: 6px;
+    margin-bottom: 4px;
 }
 .muted {
-    color: alpha(@theme_fg_color, 0.7);
+    color: alpha(@theme_fg_color, 0.75);
 }
 .hint {
     color: alpha(@theme_fg_color, 0.6);
@@ -628,7 +628,7 @@ window.compact button {
     min-height: 10px;
 }
 progressbar {
-    min-height: 12px;
+    min-height: 10px;
 }
 progressbar trough {
     border-radius: 999px;
@@ -647,15 +647,15 @@ window {
     font-family: "Libertinus Serif", "Times New Roman", "Georgia", serif;
 }
 .panel {
-    background: #2a2b2f;
-    border: 1px solid #3a3c43;
+    background: #2b2c31;
+    border: 1px solid #343740;
     border-radius: 12px;
     padding: 12px;
     box-shadow: 0 1px 6px rgba(0,0,0,0.35);
 }
 .card {
-    background: #232428;
-    border: 1px solid #3a3c43;
+    background: #24262b;
+    border: 1px solid #343740;
     border-radius: 12px;
     padding: 10px;
     box-shadow: 0 1px 4px rgba(0,0,0,0.35);
@@ -674,14 +674,14 @@ window {
 .section-title {
     font-weight: 700;
     font-size: 13px;
-    letter-spacing: 1px;
+    letter-spacing: 0.6px;
     text-transform: uppercase;
     color: #c9cdd4;
-    margin-top: 8px;
-    margin-bottom: 6px;
+    margin-top: 6px;
+    margin-bottom: 4px;
 }
 .muted {
-    color: #aab0bb;
+    color: #b0b6c2;
 }
 .hint {
     color: #8f95a1;
@@ -784,7 +784,7 @@ window.compact button {
     min-height: 10px;
 }
 progressbar {
-    min-height: 12px;
+    min-height: 10px;
 }
 progressbar trough {
     border-radius: 999px;
