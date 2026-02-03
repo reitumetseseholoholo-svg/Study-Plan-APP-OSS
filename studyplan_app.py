@@ -495,8 +495,8 @@ window {
 .panel {
     background-color: alpha(@theme_bg_color, 0.86);
     border: 1px solid alpha(@theme_fg_color, 0.1);
-    border-radius: 12px;
-    padding: 12px;
+    border-radius: 10px;
+    padding: 11px;
     box-shadow: 0 1px 6px alpha(@theme_fg_color, 0.08);
 }
 .panel-left {
@@ -514,8 +514,8 @@ window {
 .card {
     background-color: alpha(@theme_bg_color, 0.78);
     border: 1px solid alpha(@theme_fg_color, 0.1);
-    border-radius: 12px;
-    padding: 10px;
+    border-radius: 10px;
+    padding: 9px;
     box-shadow: 0 1px 4px alpha(@theme_fg_color, 0.06);
 }
 .title {
@@ -533,8 +533,8 @@ window {
     letter-spacing: 0.6px;
     text-transform: uppercase;
     color: alpha(@theme_fg_color, 0.8);
-    margin-top: 6px;
-    margin-bottom: 4px;
+    margin-top: 5px;
+    margin-bottom: 3px;
 }
 .muted {
     color: alpha(@theme_fg_color, 0.75);
@@ -630,6 +630,13 @@ window.compact button {
 progressbar {
     min-height: 10px;
 }
+button {
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+button.flat {
+    background: transparent;
+}
 progressbar trough {
     border-radius: 999px;
     background-color: alpha(@theme_fg_color, 0.12);
@@ -649,15 +656,15 @@ window {
 .panel {
     background: #2b2c31;
     border: 1px solid #343740;
-    border-radius: 12px;
-    padding: 12px;
+    border-radius: 10px;
+    padding: 11px;
     box-shadow: 0 1px 6px rgba(0,0,0,0.35);
 }
 .card {
     background: #24262b;
     border: 1px solid #343740;
-    border-radius: 12px;
-    padding: 10px;
+    border-radius: 10px;
+    padding: 9px;
     box-shadow: 0 1px 4px rgba(0,0,0,0.35);
 }
 .title {
@@ -677,8 +684,8 @@ window {
     letter-spacing: 0.6px;
     text-transform: uppercase;
     color: #c9cdd4;
-    margin-top: 6px;
-    margin-bottom: 4px;
+    margin-top: 5px;
+    margin-bottom: 3px;
 }
 .muted {
     color: #b0b6c2;
@@ -785,6 +792,13 @@ window.compact button {
 }
 progressbar {
     min-height: 10px;
+}
+button {
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+button.flat {
+    background: transparent;
 }
 progressbar trough {
     border-radius: 999px;
