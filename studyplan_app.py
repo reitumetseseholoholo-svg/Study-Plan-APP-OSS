@@ -1268,6 +1268,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_error_btn.set_sensitive(False)
         self.study_room_leitner_box.append(self.study_room_error_btn)
         study_room_card.append(self.study_room_leitner_box)
+        self.study_room_error_stats_label = Gtk.Label()
+        self.study_room_error_stats_label.set_halign(Gtk.Align.START)
+        self.study_room_error_stats_label.set_wrap(True)
+        self.study_room_error_stats_label.add_css_class("muted")
+        self.study_room_error_stats_label.add_css_class("study-summary")
+        study_room_card.append(self.study_room_error_stats_label)
         study_room_card.append(self.study_room_details_expander)
 
         self.study_room_next_due_label = Gtk.Label()
@@ -6203,6 +6209,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         "Start a drill of tagged mistakes." if err_total > 0 else ""
                     )
                     self.study_room_error_btn.set_visible(err_total > 0)
+                if getattr(self, "study_room_error_stats_label", None):
+                    stats_text = ""
+                    try:
+                        if hasattr(self.engine, "get_error_counts_recent"):
+                            counts = self.engine.get_error_counts_recent(7, recommended)
+                        else:
+                            counts = {}
+                        items = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                        if items:
+                            top = items[:3]
+                            stats_text = " • ".join([f"{k} {v}" for k, v in top])
+                    except Exception:
+                        stats_text = ""
+                    if stats_text:
+                        self.study_room_error_stats_label.set_text(f"Errors this week: {stats_text}")
+                        self.study_room_error_stats_label.set_visible(True)
+                    else:
+                        self.study_room_error_stats_label.set_text("")
+                        self.study_room_error_stats_label.set_visible(False)
                 self.study_room_leitner_box.set_visible(True)
             except Exception:
                 self.study_room_leitner_box.set_visible(False)

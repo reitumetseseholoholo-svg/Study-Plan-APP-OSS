@@ -3305,6 +3305,38 @@ class StudyPlanEngine:
                         counts[key] = counts.get(key, 0) + 1
         return counts
 
+    def get_error_counts_recent(self, days: int = 7, chapter: str | None = None) -> dict[str, int]:
+        """Return counts of error tags from the last N days."""
+        counts: Dict[str, int] = {}
+        cutoff = datetime.datetime.now() - datetime.timedelta(days=max(1, int(days)))
+        targets = [chapter] if chapter else list(self.error_notebook.keys())
+        for ch in targets:
+            items = self.error_notebook.get(ch, [])
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                ts = item.get("ts")
+                if not isinstance(ts, str) or not ts:
+                    continue
+                try:
+                    when = datetime.datetime.fromisoformat(ts)
+                except Exception:
+                    continue
+                if when < cutoff:
+                    continue
+                tags = item.get("tags") or []
+                if not tags:
+                    counts["untagged"] = counts.get("untagged", 0) + 1
+                else:
+                    for t in tags:
+                        key = str(t).strip().lower()
+                        if not key:
+                            continue
+                        counts[key] = counts.get(key, 0) + 1
+        return counts
+
     def get_error_total(self, chapter: str | None = None) -> int:
         """Return total error entries for a chapter or overall."""
         if chapter:
