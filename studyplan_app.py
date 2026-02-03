@@ -4744,6 +4744,29 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             f"Reviews due: {int(due)}",
             f"Pace: {pace_status}",
         ]
+        try:
+            daily_poms = int(self.daily_pomodoros_by_chapter.get(topic, 0) or 0)
+        except Exception:
+            daily_poms = 0
+        recall_credit = 0
+        if getattr(self, "recall_counts_for_release", False):
+            try:
+                recall_credit = 1 if int(self.daily_recall_by_chapter.get(topic, 0) or 0) >= 1 else 0
+            except Exception:
+                recall_credit = 0
+        try:
+            quiz_results = getattr(self.engine, "quiz_results", {}) or {}
+            last_quiz = float(quiz_results.get(topic, 0) or 0) if isinstance(quiz_results, dict) else 0.0
+        except Exception:
+            last_quiz = 0.0
+        tooltip_parts.append(f"Release check: poms {daily_poms}+{recall_credit} • quiz {last_quiz:.0f}%")
+        try:
+            if self._should_override_sticky_coach_pick(topic):
+                tooltip_parts.append("Release: YES (sticky override)")
+            else:
+                tooltip_parts.append("Release: NO (sticky holds)")
+        except Exception:
+            pass
         if pace_status == "behind":
             tooltip_parts.append(f"Delta: +{pace_delta:.0f} min/day")
             tip = self._format_pace_micro_target(pace_delta)
