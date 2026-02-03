@@ -1005,7 +1005,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         # Left panel
         left_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         left_panel.set_halign(Gtk.Align.FILL)
-        left_panel.set_size_request(340, -1)
+        left_panel.set_size_request(320, -1)
         left_panel.set_hexpand(True)
         left_panel.add_css_class("panel")
         left_panel.add_css_class("panel-left")
@@ -5284,9 +5284,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         else:
             if self.main_box.get_orientation() != Gtk.Orientation.HORIZONTAL:
                 self.main_box.set_orientation(Gtk.Orientation.HORIZONTAL)
-            self.left_panel.set_size_request(340, -1)
+            self.left_panel.set_size_request(320, -1)
             if getattr(self, "left_scroll", None):
-                self.left_scroll.set_size_request(340, -1)
+                self.left_scroll.set_size_request(320, -1)
                 self.left_scroll.set_hexpand(False)
                 self.left_scroll.set_halign(Gtk.Align.START)
                 self.left_scroll.set_propagate_natural_width(True)
