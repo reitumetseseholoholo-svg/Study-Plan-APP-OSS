@@ -518,6 +518,9 @@ window {
     padding: 9px;
     box-shadow: 0 1px 4px alpha(@theme_fg_color, 0.06);
 }
+.card:hover {
+    border-color: alpha(@theme_fg_color, 0.18);
+}
 .title {
     font-weight: 700;
     font-size: 20px;
@@ -535,6 +538,9 @@ window {
     color: alpha(@theme_fg_color, 0.8);
     margin-top: 5px;
     margin-bottom: 3px;
+}
+.section-title + .muted {
+    margin-top: 1px;
 }
 .muted {
     color: alpha(@theme_fg_color, 0.75);
@@ -672,6 +678,9 @@ window {
     padding: 9px;
     box-shadow: 0 1px 4px rgba(0,0,0,0.35);
 }
+.card:hover {
+    border-color: #3d404a;
+}
 .title {
     font-weight: 700;
     font-size: 19px;
@@ -691,6 +700,9 @@ window {
     color: #c9cdd4;
     margin-top: 5px;
     margin-bottom: 3px;
+}
+.section-title + .muted {
+    margin-top: 1px;
 }
 .muted {
     color: #b0b6c2;
