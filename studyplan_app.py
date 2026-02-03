@@ -1248,6 +1248,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_blocks_swap_btn.connect("clicked", lambda *_: self._toggle_preview_swap())
         self.study_room_blocks_box.append(self.study_room_blocks_swap_btn)
         study_room_card.append(self.study_room_blocks_box)
+        self.study_room_leitner_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.study_room_leitner_label = Gtk.Label(label="Leitner: —")
+        self.study_room_leitner_label.set_halign(Gtk.Align.START)
+        self.study_room_leitner_label.set_wrap(True)
+        self.study_room_leitner_label.add_css_class("muted")
+        self.study_room_leitner_label.add_css_class("study-summary")
+        self.study_room_leitner_box.append(self.study_room_leitner_label)
+        self.study_room_leitner_spacer = Gtk.Box()
+        self.study_room_leitner_spacer.set_hexpand(True)
+        self.study_room_leitner_box.append(self.study_room_leitner_spacer)
+        self.study_room_leitner_btn = Gtk.Button(label="Drill B1")
+        self.study_room_leitner_btn.add_css_class("flat")
+        self.study_room_leitner_btn.connect("clicked", self.on_leitner_drill)
+        self.study_room_leitner_box.append(self.study_room_leitner_btn)
+        study_room_card.append(self.study_room_leitner_box)
         study_room_card.append(self.study_room_details_expander)
 
         self.study_room_next_due_label = Gtk.Label()
@@ -6160,6 +6175,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.study_room_blocks_box.set_visible(False)
             except Exception:
                 pass
+        if getattr(self, "study_room_leitner_label", None):
+            try:
+                counts = self.engine.get_leitner_counts(recommended)
+                b1 = int(counts.get(1, 0))
+                b2 = int(counts.get(2, 0))
+                b3 = int(counts.get(3, 0))
+                self.study_room_leitner_label.set_text(f"Leitner: B1 {b1} • B2 {b2} • B3 {b3}")
+                if getattr(self, "study_room_leitner_btn", None):
+                    self.study_room_leitner_btn.set_visible(b1 > 0)
+                self.study_room_leitner_box.set_visible(True)
+            except Exception:
+                self.study_room_leitner_box.set_visible(False)
 
         # Time-based targets and action mix (exam-aware coaching)
         try:
@@ -6335,6 +6362,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             except Exception:
                 pass
+        if getattr(self, "study_room_leitner_btn", None):
+            try:
+                self.study_room_leitner_btn.set_tooltip_text("Start a quick drill from Leitner Box 1.")
+            except Exception:
+                pass
 
     def _should_show_onboarding(self) -> bool:
         if self.onboarding_dismissed:
@@ -6433,6 +6465,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._set_current_topic(topic)
         # Shorter burst focused on overdue cards
         self.start_quiz_session(topic=topic, total_override=6, kind="review")
+
+    def on_leitner_drill(self, _button):
+        self._ensure_coach_selection()
+        if not self._ensure_chapters_ready("Leitner Drill"):
+            return
+        topic = self.current_topic or self._get_recommended_topic()
+        if not topic:
+            return
+        self._set_current_topic(topic)
+        indices = []
+        try:
+            if hasattr(self.engine, "select_leitner_questions"):
+                indices = self.engine.select_leitner_questions(topic, 1, count=8)
+        except Exception:
+            indices = []
+        self.start_quiz_session(topic=topic, total_override=8, kind="review", indices_override=indices)
 
     def _finalize_pomodoro_session(
         self,
@@ -7226,7 +7274,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         self.start_quiz_session()
 
-    def start_quiz_session(self, topic: str | None = None, total_override: int | None = None, kind: str = "quiz"):
+    def start_quiz_session(self, topic: str | None = None, total_override: int | None = None, kind: str = "quiz", indices_override: list[int] | None = None):
         if not self._has_chapters():
             self.send_notification(
                 "Quiz",
@@ -7258,13 +7306,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             dialog.connect("response", _on_resp)
             dialog.present()
             return
-        if total_override is not None:
+        if indices_override:
+            indices_override = [i for i in indices_override if isinstance(i, int) and 0 <= i < len(questions)]
+        if indices_override:
+            total = min(len(indices_override), len(questions))
+        elif total_override is not None:
             total = min(int(total_override), len(questions))
         else:
             total = min(self._get_quiz_target_for_topic(self.current_topic, len(questions)), len(questions))
         if total <= 0:
             return
-        if hasattr(self.engine, "select_srs_questions"):
+        if indices_override:
+            session_indices = indices_override[:total]
+        elif hasattr(self.engine, "select_srs_questions"):
             try:
                 session_indices = self.engine.select_srs_questions(self.current_topic, total)
             except Exception:
@@ -7551,6 +7605,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.engine.record_difficulty(self.current_topic, idx)
             except Exception:
                 pass
+            try:
+                self._prompt_error_tags(question, self.selected_option)
+            except Exception:
+                pass
             self.quiz_session["current_streak"] = 0
 
         delta = 10 if is_correct else -5
@@ -7603,6 +7661,48 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         self.quiz_session["position"] -= 1
         self.render_quiz_question()
+
+    def _prompt_error_tags(self, question: dict, selected: str | None) -> None:
+        if not hasattr(self.engine, "record_error_notebook"):
+            return
+        dialog = self._new_dialog(title="Tag this mistake", transient_for=self, modal=True)
+        dialog.set_default_size(420, 160)
+        content = dialog.get_content_area()
+        prompt = Gtk.Label(label="Why did you miss it? Pick a quick tag:")
+        prompt.set_halign(Gtk.Align.START)
+        prompt.set_wrap(True)
+        content.append(prompt)
+        tags_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        tag_buttons = []
+        for tag in ("formula", "concept", "calc"):
+            btn = Gtk.ToggleButton(label=tag.title())
+            tag_buttons.append(btn)
+            tags_box.append(btn)
+        content.append(tags_box)
+        dialog.add_button("Skip", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Save", Gtk.ResponseType.OK)
+
+        def _on_resp(d, r):
+            tags = []
+            if r == Gtk.ResponseType.OK:
+                for btn, name in zip(tag_buttons, ("formula", "concept", "calc")):
+                    try:
+                        if btn.get_active():
+                            tags.append(name)
+                    except Exception:
+                        pass
+            if not tags and r == Gtk.ResponseType.OK:
+                tags = ["untagged"]
+            if r in (Gtk.ResponseType.OK, Gtk.ResponseType.CANCEL):
+                try:
+                    self.engine.record_error_notebook(self.current_topic, question, selected, tags if r == Gtk.ResponseType.OK else [])
+                    self.engine.save_data()
+                except Exception:
+                    pass
+            d.destroy()
+
+        dialog.connect("response", _on_resp)
+        dialog.present()
 
     def on_quiz_next(self, button, dialog):
         self.quiz_session["position"] += 1

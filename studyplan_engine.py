@@ -1207,6 +1207,7 @@ class StudyPlanEngine:
         self.study_hub_stats: Dict[str, Any] = {}
         self.quiz_results: Dict[str, float] = {}
         self.quiz_recent: Dict[str, List[int]] = {}
+        self.error_notebook: Dict[str, List[Dict[str, Any]]] = {}
         self.chapter_notes: Dict[str, Dict[str, Any]] = {}
         self.difficulty_counts: Dict[str, Dict[str, int]] = {}
 
@@ -1549,6 +1550,34 @@ class StudyPlanEngine:
                 cleaned[k] = items[-max_keep:]
         return cleaned
 
+    def _coerce_error_notebook(self, raw, max_keep: int = 200):
+        """Normalize error notebook to {chapter: [entry, ...]}."""
+        if not isinstance(raw, dict):
+            return {}
+        cleaned: Dict[str, List[Dict[str, Any]]] = {}
+        for k, v in raw.items():
+            if not isinstance(k, str) or not isinstance(v, list):
+                continue
+            entries = []
+            for item in v:
+                if not isinstance(item, dict):
+                    continue
+                question = str(item.get("question", "")).strip()
+                if not question:
+                    continue
+                entry = {
+                    "question": question,
+                    "correct": str(item.get("correct", "")).strip(),
+                    "selected": str(item.get("selected", "")).strip(),
+                    "tags": [str(t).strip() for t in (item.get("tags") or []) if str(t).strip()],
+                    "chapter": str(item.get("chapter", "")).strip() or k,
+                    "ts": str(item.get("ts", "")).strip(),
+                }
+                entries.append(entry)
+            if entries:
+                cleaned[k] = entries[-max_keep:]
+        return cleaned
+
     def _normalize_loaded_data(self):
         """Coerce all persisted data into safe, canonical formats."""
         # reset stats per normalization pass
@@ -1576,6 +1605,7 @@ class StudyPlanEngine:
         if not isinstance(self.quiz_results, dict):
             self.quiz_results = {}
         self.quiz_recent = self._coerce_quiz_recent(getattr(self, "quiz_recent", {}))
+        self.error_notebook = self._coerce_error_notebook(getattr(self, "error_notebook", {}))
         self._normalize_chapter_keys()
 
     def _normalize_chapter_keys(self) -> None:
@@ -1711,6 +1741,15 @@ class StudyPlanEngine:
                 fixed[nk] = v
             self.difficulty_counts = fixed
 
+        def _merge_error_notebook():
+            if not isinstance(getattr(self, "error_notebook", None), dict):
+                return
+            fixed = {}
+            for k, v in self.error_notebook.items():
+                nk = _norm_key(k) or k
+                fixed[nk] = v
+            self.error_notebook = fixed
+
         def _merge_quiz_recent():
             if not isinstance(getattr(self, "quiz_recent", None), dict):
                 return
@@ -1729,6 +1768,7 @@ class StudyPlanEngine:
         _merge_chapter_notes()
         _merge_difficulty_counts()
         _merge_quiz_recent()
+        _merge_error_notebook()
 
     def test_methods(self) -> None:
         """Quick test that all required methods exist."""
@@ -3218,6 +3258,53 @@ class StudyPlanEngine:
         dedup = list(reversed(dedup_rev))
         self.quiz_recent[chapter] = dedup[-max_keep:]
 
+    def record_error_notebook(self, chapter: str, question: dict, selected: str | None, tags: list[str] | None = None) -> None:
+        """Record a wrong answer into the error notebook."""
+        if chapter not in self.CHAPTERS:
+            return
+        if not isinstance(question, dict):
+            return
+        q_text = str(question.get("question", "")).strip()
+        if not q_text:
+            return
+        entry = {
+            "chapter": chapter,
+            "question": q_text,
+            "correct": str(question.get("correct", "")).strip(),
+            "selected": str(selected or "").strip(),
+            "tags": [str(t).strip() for t in (tags or []) if str(t).strip()],
+            "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        entries = self.error_notebook.get(chapter, [])
+        if not isinstance(entries, list):
+            entries = []
+        # Dedup by question text (keep latest)
+        entries = [e for e in entries if isinstance(e, dict) and str(e.get("question", "")).strip() != q_text]
+        entries.append(entry)
+        self.error_notebook[chapter] = entries[-200:]
+
+    def get_error_counts(self, chapter: str | None = None) -> dict[str, int]:
+        """Return counts of error tags."""
+        counts: Dict[str, int] = {}
+        targets = [chapter] if chapter else list(self.error_notebook.keys())
+        for ch in targets:
+            items = self.error_notebook.get(ch, [])
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                tags = item.get("tags") or []
+                if not tags:
+                    counts["untagged"] = counts.get("untagged", 0) + 1
+                else:
+                    for t in tags:
+                        key = str(t).strip().lower()
+                        if not key:
+                            continue
+                        counts[key] = counts.get(key, 0) + 1
+        return counts
+
     def get_retention_probability(self, chapter, idx):
         srs_list = self.srs_data.get(chapter, [])
         if idx >= len(srs_list): return 0.0
@@ -3272,6 +3359,73 @@ class StudyPlanEngine:
             srs['interval'] = interval
         except Exception as e:
             print(f"Error updating SRS for question {question_index} in chapter {chapter}: {e}", file=sys.stderr)
+
+    def _leitner_box(self, srs_item: dict) -> int:
+        """Map SRS item to a Leitner box (1-5)."""
+        if not isinstance(srs_item, dict):
+            return 1
+        if srs_item.get("last_review") is None:
+            return 1
+        try:
+            interval = float(srs_item.get("interval", 1) or 1)
+        except Exception:
+            interval = 1.0
+        if interval <= 2:
+            return 1
+        if interval <= 4:
+            return 2
+        if interval <= 7:
+            return 3
+        if interval <= 14:
+            return 4
+        return 5
+
+    def get_leitner_counts(self, chapter: str) -> dict[int, int]:
+        """Return counts per Leitner box for a chapter."""
+        counts = {i: 0 for i in range(1, 6)}
+        srs_list = self.srs_data.get(chapter, []) or []
+        for item in srs_list:
+            box = self._leitner_box(item)
+            counts[box] = counts.get(box, 0) + 1
+        return counts
+
+    def select_leitner_questions(self, chapter: str, box: int, count: int = 10) -> list[int]:
+        """Select questions from a Leitner box, prioritizing due/overdue then lowest retention."""
+        questions = self.QUESTIONS.get(chapter, [])
+        if not questions:
+            return []
+        srs_list = self.srs_data.get(chapter, [])
+        today = datetime.date.today()
+        must_review = self.must_review.get(chapter, {})
+
+        indices = []
+        for idx in range(len(questions)):
+            srs = srs_list[idx] if idx < len(srs_list) else {}
+            if self._leitner_box(srs) != box:
+                continue
+            indices.append(idx)
+        if not indices:
+            return []
+
+        scored = []
+        for idx in indices:
+            srs = srs_list[idx] if idx < len(srs_list) else {}
+            overdue = 1 if self.is_overdue(srs, today) else 0
+            retention = self.get_retention_probability(chapter, idx)
+            due = 0
+            if isinstance(must_review, dict):
+                due_date = self._parse_date(must_review.get(str(idx)))
+                if due_date and due_date <= today:
+                    due = 1
+            scored.append((idx, due, overdue, retention))
+
+        scored.sort(key=lambda x: (-x[1], -x[2], x[3]))
+        selected = [idx for idx, _d, _o, _r in scored[:count]]
+        if len(selected) < min(count, len(indices)):
+            remaining = [i for i in indices if i not in selected]
+            random.shuffle(remaining)
+            selected.extend(remaining[: (count - len(selected))])
+        return selected
 
     def flag_incorrect(self, chapter: str, question_index: int, days: int = 2) -> None:
         """Mark a question for forced review within N days."""
@@ -4071,6 +4225,7 @@ class StudyPlanEngine:
                     self.study_hub_stats = data.get('study_hub_stats', self.study_hub_stats)
                     self.quiz_results = data.get('quiz_results', self.quiz_results)
                     self.quiz_recent = data.get('quiz_recent', self.quiz_recent)
+                    self.error_notebook = data.get('error_notebook', self.error_notebook)
                     self.progress_log = data.get('progress_log', self.progress_log)
                     self.chapter_notes = data.get('chapter_notes', self.chapter_notes)
                     self.difficulty_counts = data.get('difficulty_counts', self.difficulty_counts)
@@ -4111,6 +4266,7 @@ class StudyPlanEngine:
         self.daily_plan_cache = []
         self.daily_plan_cache_date = None
         self.quiz_recent = {}
+        self.error_notebook = {}
 
         self.save_data()
 
@@ -4133,6 +4289,7 @@ class StudyPlanEngine:
             "study_hub_stats": dict(self.study_hub_stats),
             "quiz_results": dict(self.quiz_results),
             "quiz_recent": {k: list(v) for k, v in self.quiz_recent.items()},
+            "error_notebook": {k: list(v) for k, v in self.error_notebook.items()},
             "progress_log": list(self.progress_log),
             "chapter_notes": dict(self.chapter_notes),
             "difficulty_counts": dict(self.difficulty_counts),
