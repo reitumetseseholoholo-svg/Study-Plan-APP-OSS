@@ -8850,6 +8850,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             child = self.dashboard.get_first_child()
 
         focus_mode = bool(getattr(self, "focus_mode", False))
+        mission_tasks: list[tuple[str, bool]] = []
 
         try:
             self._update_risk_manager_progress()
