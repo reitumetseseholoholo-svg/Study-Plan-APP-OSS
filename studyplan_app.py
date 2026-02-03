@@ -6039,8 +6039,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if getattr(self, "study_room_details_expander", None):
             try:
                 focus_mode = bool(getattr(self, "focus_mode", False))
-                self.study_room_details_expander.set_expanded(not focus_mode)
                 self.study_room_details_expander.set_visible(not focus_mode)
+                self.study_room_details_expander.set_expanded(False)
             except Exception:
                 pass
         if not self._has_chapters():
