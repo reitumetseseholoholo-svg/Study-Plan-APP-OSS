@@ -5484,6 +5484,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if (
                     self.sticky_coach_pick
                     and self.last_coach_pick_date == today_iso
+                    and isinstance(self.last_coach_pick, str)
                     and self.last_coach_pick in plan
                     and self._should_override_sticky_coach_pick(self.last_coach_pick)
                 ):
