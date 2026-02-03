@@ -904,6 +904,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.session_intent_enabled = True
         self._current_session_intent: str | None = None
         self._intent_prompted_date: str | None = None
+        self._preview_swap = False
+        self._preview_swap_date: str | None = None
         self._banner_hide_id = None
         self._title_flash_id = None
         self.last_coach_date = None
@@ -1231,6 +1233,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.action_timer_label.add_css_class("action-timer")
         study_room_card.append(self.action_timer_label)
         study_room_card.append(self.study_room_summary)
+        self.study_room_blocks_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.study_room_blocks_label = Gtk.Label()
+        self.study_room_blocks_label.set_halign(Gtk.Align.START)
+        self.study_room_blocks_label.set_wrap(True)
+        self.study_room_blocks_label.add_css_class("muted")
+        self.study_room_blocks_label.add_css_class("study-summary")
+        self.study_room_blocks_box.append(self.study_room_blocks_label)
+        self.study_room_blocks_spacer = Gtk.Box()
+        self.study_room_blocks_spacer.set_hexpand(True)
+        self.study_room_blocks_box.append(self.study_room_blocks_spacer)
+        self.study_room_blocks_swap_btn = Gtk.Button(label="Swap next")
+        self.study_room_blocks_swap_btn.add_css_class("flat")
+        self.study_room_blocks_swap_btn.connect("clicked", lambda *_: self._toggle_preview_swap())
+        self.study_room_blocks_box.append(self.study_room_blocks_swap_btn)
+        study_room_card.append(self.study_room_blocks_box)
         study_room_card.append(self.study_room_details_expander)
 
         self.study_room_next_due_label = Gtk.Label()
@@ -4397,15 +4414,43 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
         try:
-            if isinstance(self.engine.exam_date, datetime.date) and self.engine.has_availability():
-                schedule = self.engine.generate_study_schedule(days=1)
-                if schedule:
-                    blocks = schedule[0].get("blocks", []) or []
-                    if blocks:
-                        return str(blocks[0].get("kind", "Focus"))
+            blocks = self._get_today_blocks_preview()
+            if blocks:
+                return str(blocks[0].get("kind", "Focus"))
         except Exception:
             pass
         return "Focus"
+
+    def _get_today_blocks_preview(self) -> list[dict]:
+        try:
+            if not (isinstance(self.engine.exam_date, datetime.date) and self.engine.has_availability()):
+                return []
+            schedule = self.engine.generate_study_schedule(days=1)
+            if not schedule:
+                return []
+            blocks = list(schedule[0].get("blocks", []) or [])
+            if not blocks:
+                return []
+            today_iso = datetime.date.today().isoformat()
+            if self._preview_swap_date != today_iso:
+                self._preview_swap = False
+                self._preview_swap_date = today_iso
+            if self._preview_swap and len(blocks) >= 2:
+                blocks[0], blocks[1] = blocks[1], blocks[0]
+            return blocks
+        except Exception:
+            return []
+
+    def _toggle_preview_swap(self) -> None:
+        today_iso = datetime.date.today().isoformat()
+        if self._preview_swap_date != today_iso:
+            self._preview_swap_date = today_iso
+            self._preview_swap = False
+        self._preview_swap = not self._preview_swap
+        try:
+            self.update_study_room_card()
+        except Exception:
+            pass
 
     def _count_action_sessions_today(self, kind: str, topic: str | None = None) -> int:
         sessions = getattr(self, "action_time_sessions", []) or []
@@ -6033,18 +6078,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             quiz_summary = ""
 
         next_block = ""
+        blocks_preview: list[dict] = []
         try:
-            if isinstance(self.engine.exam_date, datetime.date) and self.engine.has_availability():
-                schedule = self.engine.generate_study_schedule(days=1)
-                if schedule:
-                    blocks = schedule[0].get("blocks", []) or []
-                    if blocks:
-                        blk = blocks[0]
-                        kind = blk.get("kind", "Focus")
-                        mins = int(blk.get("minutes", 0) or 0)
-                        topic = blk.get("topic") or recommended
-                        next_block = f"Next block: {kind} {mins}m — {topic}"
+            blocks_preview = self._get_today_blocks_preview()
+            if blocks_preview:
+                blk = blocks_preview[0]
+                kind = blk.get("kind", "Focus")
+                mins = int(blk.get("minutes", 0) or 0)
+                topic = blk.get("topic") or recommended
+                next_block = f"Next block: {kind} {mins}m — {topic}"
         except Exception:
+            blocks_preview = []
             next_block = ""
 
         due_count = 0
@@ -6092,6 +6136,30 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             lines.append(next_block)
         if quiz_summary:
             lines.append(f"Quiz: {quiz_summary}")
+        if getattr(self, "study_room_blocks_swap_btn", None):
+            try:
+                self.study_room_blocks_swap_btn.set_visible(bool(blocks_preview) and len(blocks_preview) >= 2)
+            except Exception:
+                pass
+        if getattr(self, "study_room_blocks_label", None):
+            try:
+                if blocks_preview:
+                    preview = []
+                    for blk in blocks_preview[:3]:
+                        kind = str(blk.get("kind", "Focus"))
+                        mins = int(blk.get("minutes", 0) or 0)
+                        topic = blk.get("topic") or recommended
+                        if kind.lower() == "break":
+                            preview.append(f"{kind} {mins}m")
+                        else:
+                            preview.append(f"{kind} {mins}m — {topic}")
+                    self.study_room_blocks_label.set_text("Upcoming: " + " • ".join(preview))
+                    self.study_room_blocks_box.set_visible(True)
+                else:
+                    self.study_room_blocks_label.set_text("")
+                    self.study_room_blocks_box.set_visible(False)
+            except Exception:
+                pass
 
         # Time-based targets and action mix (exam-aware coaching)
         try:
@@ -10408,6 +10476,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 quiz_val = None
 
+            mastery_val = None
+            try:
+                mastery_val = self._get_topic_mastery_pct(chapter, min_total=0)
+            except Exception:
+                mastery_val = None
+
             must_due = 0
             overdue = 0
             today = datetime.date.today()
@@ -10431,6 +10505,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 overdue = 0
 
             status_bits = []
+            # Ready? blend (competence + quiz + mastery)
+            try:
+                weights = []
+                values = []
+                if comp_val is not None:
+                    weights.append(0.5)
+                    values.append(comp_val)
+                if quiz_val is not None and quiz_val > 0:
+                    weights.append(0.3)
+                    values.append(quiz_val)
+                if mastery_val is not None:
+                    weights.append(0.2)
+                    values.append(mastery_val)
+                if weights and values:
+                    wsum = sum(weights)
+                    ready = sum(v * w for v, w in zip(values, weights)) / max(1e-6, wsum)
+                    status_bits.append(f"Ready? {ready:.0f}%")
+            except Exception:
+                pass
             if comp_val is not None:
                 status_bits.append(f"{comp_val:.0f}% comp")
             if quiz_val is not None and quiz_val > 0:
