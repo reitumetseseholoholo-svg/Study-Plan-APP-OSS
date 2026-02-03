@@ -551,7 +551,8 @@ window {
     font-size: 11px;
 }
 .study-summary {
-    font-size: 12px;
+    font-size: 11px;
+    line-height: 1.3;
 }
 .rule {
     color: alpha(@theme_fg_color, 0.15);
@@ -645,6 +646,10 @@ progressbar progress {
     border-radius: 999px;
     background-color: @theme_selected_bg_color;
 }
+tooltip {
+    padding: 6px 8px;
+    border-radius: 8px;
+}
 """
 
 COACH_THEME_CSS = b"""
@@ -702,7 +707,8 @@ window {
     font-size: 11px;
 }
 .study-summary {
-    font-size: 12px;
+    font-size: 11px;
+    line-height: 1.3;
 }
 .rule {
     color: #3a3c43;
@@ -807,6 +813,10 @@ progressbar trough {
 progressbar progress {
     border-radius: 999px;
     background-color: #4fd1c5;
+}
+tooltip {
+    padding: 6px 8px;
+    border-radius: 8px;
 }
 """
 
@@ -1332,7 +1342,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_focus_btn = Gtk.Button(label="Focus 25m")
         self.study_room_focus_btn.add_css_class("suggested-action")
         self.study_room_focus_btn.connect("clicked", self.on_focus_now)
-        self.study_room_quiz_btn = Gtk.Button(label="Quiz")
+        self.study_room_quiz_btn = Gtk.Button(label="Quiz 8")
         self.study_room_quiz_btn.connect("clicked", self.on_quick_quiz)
         self.study_room_drill_btn = Gtk.Button(label="Drill weak")
         self.study_room_drill_btn.connect("clicked", self.on_drill_weak)
@@ -9153,7 +9163,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         today_label = Gtk.Label(label=f"Today focus: {recommended_topic or '—'}")
         today_label.set_halign(Gtk.Align.START)
-        today_label.add_css_class("muted")
+        today_label.add_css_class("coach-title")
         coach_box.append(today_label)
         note = self._get_confidence_note(recommended_topic)
         if note and recommended_topic:
@@ -9411,12 +9421,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         for spine in ax.spines.values():
                             spine.set_color("#3a3c43")
                         ax.grid(axis="y", color="#3a3c43", linestyle="--", linewidth=0.6, alpha=0.6)
-                        ax.set_title("Confidence Drift (Top Gaps)", color="#e6e6e6")
+                        ax.set_title("Confidence Drift (Top Gaps)", color="#e6e6e6", pad=8)
                         fig.tight_layout()
                         canvas = canvas_cls(fig)
                         canvas.set_tooltip_text("Tip: hold Ctrl and scroll to zoom charts.")
                         canvas.set_size_request(430, 240)
-                        self.dashboard.append(canvas)
+                        chart_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                        chart_wrap.append(canvas)
+                        self.dashboard.append(chart_wrap)
                         try:
                             plt_module.close(fig)
                         except Exception:
