@@ -4448,26 +4448,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             retrieval_pct = None
             target_pct = None
-        msg = "Retrieval block required to stay exam-ready."
+        msg = "Retrieval nudge: add a quiz block to stay exam-ready."
         if retrieval_pct is not None and target_pct is not None:
-            msg = f"Retrieval at {retrieval_pct:.0f}% (target {target_pct:.0f}%). Do a quiz block now."
-        dialog = self._new_message_dialog(
-            transient_for=self,
-            modal=True,
-            message_type=Gtk.MessageType.INFO,
-            buttons=Gtk.ButtonsType.NONE,
-            text="Retrieval Required",
-            secondary_text=msg,
-        )
-        dialog.add_button("Start Quiz", Gtk.ResponseType.OK)
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        def _on_resp(d, r):
-            d.destroy()
-            if r == Gtk.ResponseType.OK:
-                self.on_quick_quiz(self.quiz_btn)
-        dialog.connect("response", _on_resp)
-        dialog.present()
-        return False
+            msg = f"Retrieval at {retrieval_pct:.0f}% (target {target_pct:.0f}%). Add a quiz block next."
+        try:
+            self.send_notification("Retrieval Nudge", msg)
+        except Exception:
+            pass
+        return True
 
     def _get_next_block_kind(self) -> str:
         try:
