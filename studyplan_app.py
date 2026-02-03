@@ -1278,7 +1278,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_blocks_spacer = Gtk.Box()
         self.study_room_blocks_spacer.set_hexpand(True)
         self.study_room_blocks_box.append(self.study_room_blocks_spacer)
-        self.study_room_blocks_swap_btn = Gtk.Button(label="Swap +3")
+        self.study_room_blocks_swap_btn = Gtk.Button(label="Swap topic")
         self.study_room_blocks_swap_btn.add_css_class("flat")
         self.study_room_blocks_swap_btn.connect("clicked", lambda *_: self._toggle_preview_swap())
         self.study_room_blocks_box.append(self.study_room_blocks_swap_btn)
@@ -4488,14 +4488,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self._preview_swap = False
                 self._preview_swap_date = today_iso
             if self._preview_swap and len(blocks) >= 2:
-                if len(blocks) >= 4:
-                    moved = blocks.pop(3)
-                    blocks.insert(0, moved)
-                elif len(blocks) >= 3:
-                    moved = blocks.pop(2)
-                    blocks.insert(0, moved)
-                else:
-                    blocks[0], blocks[1] = blocks[1], blocks[0]
+                first = blocks[0]
+                first_topic = first.get("topic")
+                swap_idx = None
+                for idx in range(1, len(blocks)):
+                    if blocks[idx].get("topic") != first_topic:
+                        swap_idx = idx
+                        break
+                if swap_idx is None:
+                    swap_idx = 1
+                blocks[0], blocks[swap_idx] = blocks[swap_idx], blocks[0]
             return blocks
         except Exception:
             return []
