@@ -6146,6 +6146,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         focus_done = verified_today >= (focus_goal * 25)
         quiz_done = True if not has_questions else int(self.quiz_questions_today or 0) >= int(quiz_target)
         review_done = must_review_due == 0
+        mission_tasks = [(f"Focus {focus_goal}x Pomodoro", focus_done)]
+        if has_questions:
+            mission_tasks.append((f"Quiz {quiz_target} questions", quiz_done))
+        if must_review_due:
+            mission_tasks.append((f"Clear must-review ({must_review_due} due)", review_done))
+        else:
+            mission_tasks.append(("Clear must-review", review_done))
 
         mission_tasks = [(f"Focus {focus_goal}x Pomodoro", focus_done)]
         if has_questions:
