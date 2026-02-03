@@ -7208,6 +7208,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.quiz_progress.set_show_text(True)
         content_area.append(self.quiz_progress)
 
+        self.quiz_hint_label = Gtk.Label(label="Select an option, then Confirm.")
+        self.quiz_hint_label.set_halign(Gtk.Align.START)
+        self.quiz_hint_label.set_wrap(True)
+        self.quiz_hint_label.add_css_class("muted")
+        content_area.append(self.quiz_hint_label)
+
         # Containers for dynamic content
         self.quiz_content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         content_area.append(self.quiz_content_box)
@@ -7224,8 +7230,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.quiz_prev_btn.set_sensitive(False)
         btn_row.append(self.quiz_prev_btn)
 
-        self.quiz_confirm_btn = Gtk.Button(label="Confirm Answer")
+        self.quiz_confirm_btn = Gtk.Button(label="Confirm")
         self.quiz_confirm_btn.connect("clicked", self.on_quiz_confirm, dialog)
+        self.quiz_confirm_btn.set_sensitive(False)
         btn_row.append(self.quiz_confirm_btn)
 
         self.quiz_next_btn = Gtk.Button(label="Next")
@@ -7265,10 +7272,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             child = self.quiz_content_box.get_first_child()
 
         self.quiz_feedback.set_label("")
-        self.quiz_confirm_btn.set_sensitive(True)
+        if getattr(self, "quiz_confirm_btn", None):
+            self.quiz_confirm_btn.set_sensitive(False)
         self.quiz_next_btn.set_sensitive(False)
         if getattr(self, "quiz_prev_btn", None):
-            self.quiz_prev_btn.set_sensitive(True)
+            self.quiz_prev_btn.set_sensitive(self.quiz_session["position"] > 0)
         self.selected_option = None
         self.quiz_option_buttons = {}
 
@@ -7281,6 +7289,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.quiz_status_label.set_markup(f"<b>Question {pos}/{total}</b>   Score: {score}")
         self.quiz_progress.set_fraction(pos / max(1, total))
         self.quiz_progress.set_text(f"{pos}/{total}")
+        if getattr(self, "quiz_next_btn", None):
+            self.quiz_next_btn.set_label("Finish" if pos == total else "Next")
+        if getattr(self, "quiz_hint_label", None):
+            self.quiz_hint_label.set_visible(True)
 
         header = Gtk.Label(label=f"Question {pos} of {total}")
         header.set_halign(Gtk.Align.START)
@@ -7328,10 +7340,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         selected_btn.add_css_class("error")
                 self.quiz_confirm_btn.set_sensitive(False)
                 self.quiz_next_btn.set_sensitive(True)
+                if getattr(self, "quiz_hint_label", None):
+                    self.quiz_hint_label.set_visible(False)
 
     def on_option_toggled(self, button, opt):
         if button.get_active():
             self.selected_option = opt
+            if getattr(self, "quiz_confirm_btn", None):
+                self.quiz_confirm_btn.set_sensitive(True)
 
     def on_quiz_confirm(self, button, dialog):
         idx = self.quiz_session["indices"][self.quiz_session["position"]]
@@ -7435,6 +7451,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         self.quiz_confirm_btn.set_sensitive(False)
         self.quiz_next_btn.set_sensitive(True)
+        if getattr(self, "quiz_hint_label", None):
+            self.quiz_hint_label.set_visible(False)
 
     def on_quiz_prev(self, button, dialog):
         if self.quiz_session["position"] <= 0:
