@@ -1004,8 +1004,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         # Left panel
         left_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        left_panel.set_halign(Gtk.Align.START)
+        left_panel.set_halign(Gtk.Align.FILL)
         left_panel.set_size_request(340, -1)
+        left_panel.set_hexpand(True)
         left_panel.add_css_class("panel")
         left_panel.add_css_class("panel-left")
 
@@ -5293,8 +5294,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.left_scroll.set_min_content_height(0)
                 except Exception:
                     pass
-            self.left_panel.set_hexpand(False)
-            self.left_panel.set_halign(Gtk.Align.START)
+            self.left_panel.set_hexpand(True)
+            self.left_panel.set_halign(Gtk.Align.FILL)
             self.left_panel.set_vexpand(False)
         self.apply_compact_mode(compact)
 
