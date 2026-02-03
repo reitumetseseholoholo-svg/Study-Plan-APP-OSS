@@ -3146,7 +3146,6 @@ class StudyPlanEngine:
         except Exception:
             base = 0.0
         self.competence[chapter] = min(100, base + additional)
-        self.mark_completed_today(chapter)
 
     def select_srs_question(self, chapter):
         """Select question based on lowest retention probability (most forgotten)."""

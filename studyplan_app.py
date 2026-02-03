@@ -4630,6 +4630,43 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             return False
 
+    def _maybe_mark_topic_completed(self, topic: str | None) -> None:
+        if not topic:
+            return
+        try:
+            if hasattr(self.engine, "is_completed_today") and self.engine.is_completed_today(topic):
+                return
+        except Exception:
+            pass
+        try:
+            focus_poms = int(self.daily_pomodoros_by_chapter.get(topic, 0) or 0)
+        except Exception:
+            focus_poms = 0
+        try:
+            recall_or_quiz = int(self.daily_recall_by_chapter.get(topic, 0) or 0)
+        except Exception:
+            recall_or_quiz = 0
+        if focus_poms < 1 or recall_or_quiz < 1:
+            return
+        try:
+            if hasattr(self.engine, "mark_completed_today"):
+                self.engine.mark_completed_today(topic)
+            self.engine.save_data()
+        except Exception:
+            pass
+        try:
+            self.update_daily_plan()
+        except Exception:
+            pass
+        try:
+            self.update_dashboard()
+        except Exception:
+            pass
+        try:
+            self.update_study_room_card()
+        except Exception:
+            pass
+
     def _auto_advance_daily_focus(self, completed_topic: str | None) -> None:
         if not completed_topic:
             return
@@ -6685,10 +6722,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
             try:
-                self.daily_pomodoros_by_chapter.setdefault(self.current_topic, 0)
-                self.daily_pomodoros_by_chapter[self.current_topic] += 1
+                kind = str(getattr(self, "_pomodoro_kind", "pomodoro_focus"))
             except Exception:
-                pass
+                kind = "pomodoro_focus"
+            topic = self.current_topic
+            if topic:
+                try:
+                    if kind == "pomodoro_recall":
+                        self.daily_recall_by_chapter.setdefault(topic, 0)
+                        self.daily_recall_by_chapter[topic] += 1
+                    else:
+                        self.daily_pomodoros_by_chapter.setdefault(topic, 0)
+                        self.daily_pomodoros_by_chapter[topic] += 1
+                    try:
+                        self._maybe_mark_topic_completed(topic)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
             try:
                 today_iso = datetime.date.today().isoformat()
                 if (
@@ -7869,6 +7920,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if self.current_topic:
                     self.daily_recall_by_chapter.setdefault(self.current_topic, 0)
                     self.daily_recall_by_chapter[self.current_topic] += 1
+                    try:
+                        self._maybe_mark_topic_completed(self.current_topic)
+                    except Exception:
+                        pass
             except Exception:
                 pass
             try:
@@ -7876,8 +7931,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
             try:
-                if hasattr(self.engine, "mark_completed_today"):
-                    self.engine.mark_completed_today(self.current_topic)
                 if hasattr(self.engine, "record_quiz_history"):
                     self.engine.record_quiz_history(
                         self.current_topic,
