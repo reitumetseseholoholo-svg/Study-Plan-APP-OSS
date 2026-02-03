@@ -3305,6 +3305,32 @@ class StudyPlanEngine:
                         counts[key] = counts.get(key, 0) + 1
         return counts
 
+    def get_error_indices(self, chapter: str, max_count: int = 12) -> list[int]:
+        """Return question indices for errors in a chapter, most recent first."""
+        if chapter not in self.CHAPTERS:
+            return []
+        items = self.error_notebook.get(chapter, [])
+        if not isinstance(items, list) or not items:
+            return []
+        q_texts = [str(it.get("question", "")).strip() for it in items if isinstance(it, dict)]
+        q_texts = [q for q in q_texts if q]
+        if not q_texts:
+            return []
+        questions = self.QUESTIONS.get(chapter, []) or []
+        indices = []
+        seen = set()
+        for q_text in reversed(q_texts):
+            if q_text in seen:
+                continue
+            seen.add(q_text)
+            for idx, q in enumerate(questions):
+                if str(q.get("question", "")).strip() == q_text:
+                    indices.append(idx)
+                    break
+            if len(indices) >= max_count:
+                break
+        return indices
+
     def get_retention_probability(self, chapter, idx):
         srs_list = self.srs_data.get(chapter, [])
         if idx >= len(srs_list): return 0.0

@@ -1262,6 +1262,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_leitner_btn.add_css_class("flat")
         self.study_room_leitner_btn.connect("clicked", self.on_leitner_drill)
         self.study_room_leitner_box.append(self.study_room_leitner_btn)
+        self.study_room_error_btn = Gtk.Button(label="Drill errors")
+        self.study_room_error_btn.add_css_class("flat")
+        self.study_room_error_btn.connect("clicked", self.on_error_drill)
+        self.study_room_leitner_box.append(self.study_room_error_btn)
         study_room_card.append(self.study_room_leitner_box)
         study_room_card.append(self.study_room_details_expander)
 
@@ -6480,6 +6484,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 indices = self.engine.select_leitner_questions(topic, 1, count=8)
         except Exception:
             indices = []
+        self.start_quiz_session(topic=topic, total_override=8, kind="review", indices_override=indices)
+
+    def on_error_drill(self, _button):
+        self._ensure_coach_selection()
+        if not self._ensure_chapters_ready("Error Drill"):
+            return
+        topic = self.current_topic or self._get_recommended_topic()
+        if not topic:
+            return
+        self._set_current_topic(topic)
+        indices = []
+        try:
+            if hasattr(self.engine, "get_error_indices"):
+                indices = self.engine.get_error_indices(topic, max_count=8)
+        except Exception:
+            indices = []
+        if not indices:
+            self.send_notification("Error Drill", "No tagged mistakes yet for this topic.")
+            return
         self.start_quiz_session(topic=topic, total_override=8, kind="review", indices_override=indices)
 
     def _finalize_pomodoro_session(
