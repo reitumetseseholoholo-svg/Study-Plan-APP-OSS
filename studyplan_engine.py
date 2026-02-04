@@ -3172,12 +3172,27 @@ class StudyPlanEngine:
         questions = self.QUESTIONS.get(chapter, [])
         if not questions:
             return []
+        try:
+            count = int(count)
+        except Exception:
+            count = 10
+        if count <= 0:
+            return []
         srs_list = self.srs_data.get(chapter, [])
         today = datetime.date.today()
         must_review = self.must_review.get(chapter, {})
-        recent_history = self.quiz_recent.get(chapter, []) if isinstance(getattr(self, "quiz_recent", None), dict) else []
-        if not isinstance(recent_history, list):
-            recent_history = []
+        recent_history_raw = self.quiz_recent.get(chapter, []) if isinstance(getattr(self, "quiz_recent", None), dict) else []
+        if not isinstance(recent_history_raw, list):
+            recent_history_raw = []
+        # Defensive normalization in case legacy/corrupt data contains huge/non-int entries.
+        recent_history: list[int] = []
+        for item in recent_history_raw[-500:]:
+            try:
+                idx = int(item)
+            except Exception:
+                continue
+            if 0 <= idx < len(questions):
+                recent_history.append(idx)
         recent_set = set(recent_history)
         # Cooldown window: avoid immediate repeats across consecutive quizzes.
         cooldown_n = max(12, int(count) * 2)

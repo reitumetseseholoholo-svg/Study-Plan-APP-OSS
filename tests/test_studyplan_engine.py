@@ -202,3 +202,23 @@ def test_select_srs_questions_keeps_due_even_if_recent(engine_no_io):
     # Must-review questions should still be included despite cooldown.
     assert 0 in picked
     assert 1 in picked
+
+
+def test_select_srs_questions_handles_corrupt_recent_history(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    total = len(eng.QUESTIONS.get(chapter, []))
+    assert total >= 8
+
+    eng.srs_data[chapter] = [
+        {"last_review": datetime.date.today().isoformat(), "interval": 30, "efactor": 2.5}
+        for _ in range(total)
+    ]
+    eng.must_review[chapter] = {}
+    # Mix of garbage/non-int/out-of-range values should not break selection.
+    eng.quiz_recent[chapter] = ["x", None, -5, 999999, {"bad": 1}, 0, 1, 2]
+
+    picked = eng.select_srs_questions(chapter, count=5)
+    assert len(picked) == 5
+    assert all(isinstance(i, int) for i in picked)
+    assert all(0 <= i < total for i in picked)
