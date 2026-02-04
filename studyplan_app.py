@@ -1588,6 +1588,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         # Autosave on close
         self.connect("close-request", self.on_close_request)
         self._last_window_size = (0, 0)
+        self._dashboard_update_in_progress = False
+        self._last_dashboard_refresh_ts = 0.0
         GLib.timeout_add(700, self._poll_window_size)
         shortcut_controller = Gtk.ShortcutController()
         shortcut_controller.add_shortcut(
@@ -5355,6 +5357,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         return False
 
+    def _release_dashboard_update_lock(self):
+        self._dashboard_update_in_progress = False
+        return False
+
     def _poll_window_size(self):
         """Poll window size to adapt layout; avoids Gtk4 size-allocate signal issues."""
         try:
@@ -8911,6 +8917,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
 
     def update_dashboard(self) -> None:  # pyright: ignore[reportGeneralTypeIssues]
+        # Throttle burst refreshes from chained UI events to avoid jank/CPU spikes.
+        if getattr(self, "_dashboard_update_in_progress", False):
+            return
+        now = time.monotonic()
+        last_refresh = float(getattr(self, "_last_dashboard_refresh_ts", 0.0) or 0.0)
+        if now - last_refresh < 0.2:
+            return
+        self._dashboard_update_in_progress = True
+        self._last_dashboard_refresh_ts = now
+        GLib.idle_add(self._release_dashboard_update_lock)
+
         # Clear old dashboard
         child = self.dashboard.get_first_child()
         while child:
