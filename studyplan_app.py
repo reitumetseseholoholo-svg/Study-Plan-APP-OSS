@@ -518,6 +518,13 @@ window {
     padding: 9px;
     box-shadow: 0 1px 4px alpha(@theme_fg_color, 0.06);
 }
+.card-tight {
+    padding: 6px;
+}
+.chart-card {
+    padding-top: 6px;
+    padding-bottom: 6px;
+}
 .card:hover {
     border-color: alpha(@theme_fg_color, 0.18);
 }
@@ -641,8 +648,27 @@ button {
     border-radius: 8px;
     padding: 6px 10px;
 }
+button.suggested-action {
+    background: @theme_selected_bg_color;
+    color: @theme_selected_fg_color;
+    border-color: alpha(@theme_selected_fg_color, 0.25);
+}
+button.suggested-action:hover {
+    background: mix(@theme_selected_bg_color, @theme_fg_color, 0.08);
+}
 button.flat {
     background: transparent;
+    border-color: transparent;
+}
+button.flat:hover {
+    background: alpha(@theme_fg_color, 0.08);
+    border-color: alpha(@theme_fg_color, 0.12);
+}
+button.flat:active {
+    background: alpha(@theme_fg_color, 0.12);
+}
+button:focus-visible {
+    box-shadow: 0 0 0 2px alpha(@theme_selected_bg_color, 0.35);
 }
 progressbar trough {
     border-radius: 999px;
@@ -655,6 +681,20 @@ progressbar progress {
 tooltip {
     padding: 6px 8px;
     border-radius: 8px;
+}
+scrollbar {
+    min-width: 8px;
+    min-height: 8px;
+}
+scrollbar slider {
+    background-color: alpha(@theme_fg_color, 0.25);
+    border-radius: 999px;
+}
+scrollbar slider:hover {
+    background-color: alpha(@theme_fg_color, 0.38);
+}
+scrollbar slider:active {
+    background-color: alpha(@theme_fg_color, 0.5);
 }
 """
 
@@ -677,6 +717,13 @@ window {
     border-radius: 10px;
     padding: 9px;
     box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+}
+.card-tight {
+    padding: 6px;
+}
+.chart-card {
+    padding-top: 6px;
+    padding-bottom: 6px;
 }
 .card:hover {
     border-color: #3d404a;
@@ -730,6 +777,14 @@ button {
     border: 1px solid #3f424a;
     border-radius: 8px;
     color: #e6e6e6;
+}
+button.suggested-action {
+    background: #7b3aed;
+    border-color: #9657f0;
+    color: #f5efff;
+}
+button.suggested-action:hover {
+    background: #8a4cf2;
 }
 .error { background-color: #6d2a2a; }
 .warning { background-color: #6a4b1f; }
@@ -817,6 +872,17 @@ button {
 }
 button.flat {
     background: transparent;
+    border-color: transparent;
+}
+button.flat:hover {
+    background: #2f3138;
+    border-color: #3f424a;
+}
+button.flat:active {
+    background: #373941;
+}
+button:focus-visible {
+    box-shadow: 0 0 0 2px rgba(123, 58, 237, 0.45);
 }
 progressbar trough {
     border-radius: 999px;
@@ -829,6 +895,20 @@ progressbar progress {
 tooltip {
     padding: 6px 8px;
     border-radius: 8px;
+}
+scrollbar {
+    min-width: 8px;
+    min-height: 8px;
+}
+scrollbar slider {
+    background-color: #4a4d56;
+    border-radius: 999px;
+}
+scrollbar slider:hover {
+    background-color: #5a5e69;
+}
+scrollbar slider:active {
+    background-color: #6a6f7b;
 }
 """
 
@@ -860,6 +940,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.module_id = DEFAULT_MODULE_ID
         self.module_title = DEFAULT_MODULE_TITLE
         self.set_title(f"{self.module_title} Study Assistant")
+        self._left_panel_width = 308
 
         self.allow_lower_scores = False
         self.menu_bar_visible = True
@@ -1041,7 +1122,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         # Left panel
         left_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         left_panel.set_halign(Gtk.Align.FILL)
-        left_panel.set_size_request(320, -1)
+        left_panel.set_size_request(self._left_panel_width, -1)
         left_panel.set_hexpand(True)
         left_panel.add_css_class("panel")
         left_panel.add_css_class("panel-left")
@@ -5406,9 +5487,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         else:
             if self.main_box.get_orientation() != Gtk.Orientation.HORIZONTAL:
                 self.main_box.set_orientation(Gtk.Orientation.HORIZONTAL)
-            self.left_panel.set_size_request(320, -1)
+            self.left_panel.set_size_request(self._left_panel_width, -1)
             if getattr(self, "left_scroll", None):
-                self.left_scroll.set_size_request(320, -1)
+                self.left_scroll.set_size_request(self._left_panel_width, -1)
                 self.left_scroll.set_hexpand(False)
                 self.left_scroll.set_halign(Gtk.Align.START)
                 self.left_scroll.set_propagate_natural_width(True)
@@ -9678,7 +9759,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         canvas = canvas_cls(fig)
                         canvas.set_tooltip_text("Tip: hold Ctrl and scroll to zoom charts.")
                         canvas.set_size_request(430, 240)
-                        chart_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                        chart_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+                        chart_wrap.add_css_class("card")
+                        chart_wrap.add_css_class("card-tight")
+                        chart_wrap.add_css_class("chart-card")
                         chart_wrap.append(canvas)
                         self.dashboard.append(chart_wrap)
                         try:
@@ -10043,7 +10127,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         canvas.set_size_request(360, 260)
                     else:
                         canvas.set_size_request(400, 300)
-                    self.dashboard.append(canvas)
+                    pie_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+                    pie_card.add_css_class("card")
+                    pie_card.add_css_class("card-tight")
+                    pie_card.add_css_class("chart-card")
+                    pie_card.append(canvas)
+                    self.dashboard.append(pie_card)
                     try:
                         plt_module.close(fig)
                     except Exception:
@@ -10114,7 +10203,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     canvas = canvas_cls(fig)
                     canvas.set_tooltip_text("Tip: hold Ctrl and scroll to zoom charts.")
                     canvas.set_size_request(400, 260)
-                    self.dashboard.append(canvas)
+                    progress_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+                    progress_card.add_css_class("card")
+                    progress_card.add_css_class("card-tight")
+                    progress_card.add_css_class("chart-card")
+                    progress_card.append(canvas)
+                    self.dashboard.append(progress_card)
                     try:
                         plt_module.close(fig)
                     except Exception:
@@ -10123,7 +10217,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     empty_progress = Gtk.Label(label="Progress chart needs at least 2 days of data.")
                     empty_progress.set_halign(Gtk.Align.START)
                     empty_progress.add_css_class("muted")
-                    self.dashboard.append(empty_progress)
+                    progress_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+                    progress_card.add_css_class("card")
+                    progress_card.add_css_class("card-tight")
+                    progress_card.append(empty_progress)
+                    self.dashboard.append(progress_card)
             except Exception as e:
                 print(f"Progress chart error: {e}")
 
@@ -10191,7 +10289,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 canvas = canvas_cls(fig)
                 canvas.set_tooltip_text("Tip: hold Ctrl and scroll to zoom charts.")
                 canvas.set_size_request(430, 260)
-                self.dashboard.append(canvas)
+                topic_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+                topic_card.add_css_class("card")
+                topic_card.add_css_class("card-tight")
+                topic_card.add_css_class("chart-card")
+                topic_card.append(canvas)
+                self.dashboard.append(topic_card)
                 try:
                     plt_module.close(fig)
                 except Exception:
