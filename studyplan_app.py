@@ -7807,6 +7807,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.quiz_hint_label.add_css_class("muted")
         content_area.append(self.quiz_hint_label)
 
+        self.quiz_reason_label = Gtk.Label()
+        self.quiz_reason_label.set_halign(Gtk.Align.START)
+        self.quiz_reason_label.set_wrap(True)
+        self.quiz_reason_label.add_css_class("muted")
+        content_area.append(self.quiz_reason_label)
+
         # Containers for dynamic content
         self.quiz_content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.quiz_content_box.set_margin_top(4)
@@ -7883,6 +7889,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.quiz_next_btn.set_label("Finish" if pos == total else "Next")
         if getattr(self, "quiz_hint_label", None):
             self.quiz_hint_label.set_visible(True)
+        if getattr(self, "quiz_reason_label", None):
+            self.quiz_reason_label.set_text(self._get_quiz_pick_reason(self.current_topic, idx))
+            self.quiz_reason_label.set_visible(True)
 
         header = Gtk.Label(label=f"Question {pos} of {total}")
         header.set_halign(Gtk.Align.START)
@@ -7932,12 +7941,62 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.quiz_next_btn.set_sensitive(True)
                 if getattr(self, "quiz_hint_label", None):
                     self.quiz_hint_label.set_visible(False)
+                if getattr(self, "quiz_reason_label", None):
+                    self.quiz_reason_label.set_visible(False)
 
     def on_option_toggled(self, button, opt):
         if button.get_active():
             self.selected_option = opt
             if getattr(self, "quiz_confirm_btn", None):
                 self.quiz_confirm_btn.set_sensitive(True)
+
+    def _get_quiz_pick_reason(self, chapter: str, question_index: int) -> str:
+        """Explain why a question was chosen (overdue, low retention, miss risk, etc.)."""
+        reasons: list[str] = []
+        today = datetime.date.today()
+        try:
+            must_review = getattr(self.engine, "must_review", {}) or {}
+            if isinstance(must_review, dict):
+                due_date = self.engine._parse_date(must_review.get(chapter, {}).get(str(question_index)))
+                if due_date and due_date <= today:
+                    reasons.append("must‑review due")
+        except Exception:
+            pass
+        try:
+            srs_list = getattr(self.engine, "srs_data", {}).get(chapter, [])
+            if isinstance(srs_list, list) and 0 <= question_index < len(srs_list):
+                if self.engine.is_overdue(srs_list[question_index], today):
+                    reasons.append("overdue")
+        except Exception:
+            pass
+        try:
+            retention = float(self.engine.get_retention_probability(chapter, question_index))
+            if retention <= 0.45:
+                reasons.append("low retention")
+        except Exception:
+            pass
+        try:
+            stats_by_ch = getattr(self.engine, "question_stats", {}).get(chapter, {})
+            if isinstance(stats_by_ch, dict):
+                stats = stats_by_ch.get(str(question_index), {})
+                if isinstance(stats, dict):
+                    attempts = int(stats.get("attempts", 0) or 0)
+                    correct = int(stats.get("correct", 0) or 0)
+                    avg_time = float(stats.get("avg_time_sec", 0) or 0.0)
+                    streak = int(stats.get("streak", 0) or 0)
+                    if attempts >= 3:
+                        miss_rate = 1.0 - min(1.0, max(0.0, correct / max(1, attempts)))
+                        if miss_rate >= 0.4:
+                            reasons.append("high miss‑rate")
+                    if avg_time >= 40:
+                        reasons.append("slow response")
+                    if attempts and streak == 0:
+                        reasons.append("recent miss")
+        except Exception:
+            pass
+        if not reasons:
+            return "Picked for balanced practice."
+        return "Picked because: " + " • ".join(dict.fromkeys(reasons))
 
     def on_quiz_confirm(self, button, dialog):
         idx = self.quiz_session["indices"][self.quiz_session["position"]]
