@@ -1210,6 +1210,11 @@ class StudyPlanEngine:
         self.quiz_recent: Dict[str, List[int]] = {}
         self.error_notebook: Dict[str, List[Dict[str, Any]]] = {}
         self.question_stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self.adaptive_quiz_prioritization: bool = True
+        self.recall_model_json: Dict[str, Any] | None = None
+        self.recall_model_sklearn: Any | None = None
+        self.recall_model_path = os.path.join(self.DEFAULT_DATA_DIR, "recall_model.json")
+        self.recall_model_sklearn_path = os.path.join(self.DEFAULT_DATA_DIR, "recall_model.pkl")
         self.chapter_notes: Dict[str, Dict[str, Any]] = {}
         self.difficulty_counts: Dict[str, Dict[str, int]] = {}
 
@@ -1228,6 +1233,9 @@ class StudyPlanEngine:
             self.load_data()
         except Exception as e:
             print(f"Unexpected error loading data: {e}")
+
+        self._load_recall_model()
+        self._load_recall_model_sklearn()
 
         # Populate missing chapters safely
         missing_chapters = set(self.CHAPTERS) - set(self.srs_data.keys())
@@ -3278,6 +3286,8 @@ class StudyPlanEngine:
         cooldown_set = set(recent_history[-cooldown_n:])
 
         def _miss_risk(idx: int) -> float:
+            if not getattr(self, "adaptive_quiz_prioritization", True):
+                return 0.0
             stats_by_ch = self.question_stats.get(chapter, {})
             if not isinstance(stats_by_ch, dict):
                 return 0.0
@@ -3307,6 +3317,9 @@ class StudyPlanEngine:
             time_factor = min(1.0, max(0.0, avg_time / 60.0))
             streak_factor = 1.0 - min(1.0, max(0.0, streak / 5.0))
             risk = (0.65 * miss_rate) + (0.2 * time_factor) + (0.15 * streak_factor)
+            model_prob = self.predict_recall_prob(chapter, idx)
+            if model_prob is not None:
+                risk = max(risk, 1.0 - model_prob)
             return max(0.0, min(1.0, risk))
 
         scored = []
@@ -3373,6 +3386,158 @@ class StudyPlanEngine:
             selected.extend(remaining[: (count - len(selected))])
 
         return selected
+
+    def get_question_difficulty(self, chapter: str, idx: int) -> str:
+        stats_by_ch = self.question_stats.get(chapter, {})
+        if not isinstance(stats_by_ch, dict):
+            return "unknown"
+        stats = stats_by_ch.get(str(idx))
+        if not isinstance(stats, dict):
+            return "unknown"
+        try:
+            attempts = int(stats.get("attempts", 0) or 0)
+        except Exception:
+            attempts = 0
+        if attempts <= 0:
+            return "unknown"
+        try:
+            correct = int(stats.get("correct", 0) or 0)
+        except Exception:
+            correct = 0
+        try:
+            streak = int(stats.get("streak", 0) or 0)
+        except Exception:
+            streak = 0
+        try:
+            avg_time = float(stats.get("avg_time_sec", 0) or 0.0)
+        except Exception:
+            avg_time = 0.0
+        miss_rate = 1.0 - min(1.0, max(0.0, correct / max(1, attempts)))
+        time_factor = min(1.0, max(0.0, avg_time / 60.0))
+        streak_factor = 1.0 - min(1.0, max(0.0, streak / 5.0))
+        score = (0.7 * miss_rate) + (0.2 * time_factor) + (0.1 * streak_factor)
+        if score >= 0.6:
+            return "hard"
+        if score >= 0.35:
+            return "medium"
+        return "easy"
+
+    def get_chapter_difficulty_mix(self, chapter: str) -> dict[str, int]:
+        questions = self.QUESTIONS.get(chapter, [])
+        if not questions:
+            return {"easy": 0, "medium": 0, "hard": 0, "unknown": 0}
+        counts = {"easy": 0, "medium": 0, "hard": 0, "unknown": 0}
+        for idx in range(len(questions)):
+            label = self.get_question_difficulty(chapter, idx)
+            counts[label] = counts.get(label, 0) + 1
+        return counts
+
+    def _load_recall_model(self) -> None:
+        try:
+            path = self.recall_model_path
+            if not path or not os.path.exists(path):
+                self.recall_model_json = None
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                self.recall_model_json = None
+                return
+            weights = data.get("weights")
+            intercept = data.get("intercept")
+            if not isinstance(weights, list) or not isinstance(intercept, (int, float)):
+                self.recall_model_json = None
+                return
+            self.recall_model_json = {
+                "weights": [float(x) for x in weights],
+                "intercept": float(intercept),
+                "features": data.get("features", []),
+            }
+        except Exception:
+            self.recall_model_json = None
+
+    def _load_recall_model_sklearn(self) -> None:
+        try:
+            path = self.recall_model_sklearn_path
+            if not path or not os.path.exists(path):
+                return
+            try:
+                import joblib  # type: ignore
+            except Exception:
+                return
+            model = joblib.load(path)
+            if hasattr(model, "predict_proba"):
+                self.recall_model_sklearn = model
+        except Exception:
+            return
+
+    def predict_recall_prob(self, chapter: str, idx: int) -> float | None:
+        if not self.recall_model_json and not self.recall_model_sklearn:
+            return None
+        stats_by_ch = self.question_stats.get(chapter, {})
+        if not isinstance(stats_by_ch, dict):
+            return None
+        stats = stats_by_ch.get(str(idx))
+        if not isinstance(stats, dict):
+            return None
+        try:
+            attempts = float(stats.get("attempts", 0) or 0)
+        except Exception:
+            attempts = 0.0
+        try:
+            correct = float(stats.get("correct", 0) or 0)
+        except Exception:
+            correct = 0.0
+        try:
+            streak = float(stats.get("streak", 0) or 0)
+        except Exception:
+            streak = 0.0
+        try:
+            avg_time = float(stats.get("avg_time_sec", 0) or 0.0)
+        except Exception:
+            avg_time = 0.0
+        last_seen = stats.get("last_seen")
+        days_since = 999.0
+        if isinstance(last_seen, str) and last_seen:
+            try:
+                last_date = datetime.date.fromisoformat(last_seen)
+                days_since = float((datetime.date.today() - last_date).days)
+            except Exception:
+                days_since = 999.0
+        correct_rate = 0.0 if attempts <= 0 else (correct / max(1.0, attempts))
+        features = [
+            math.log1p(max(0.0, attempts)),
+            max(0.0, correct_rate),
+            max(0.0, streak),
+            math.log1p(max(0.0, avg_time)),
+            math.log1p(max(0.0, days_since)),
+        ]
+        if self.recall_model_sklearn is not None:
+            try:
+                prob = float(self.recall_model_sklearn.predict_proba([features])[0][1])
+                return max(0.0, min(1.0, prob))
+            except Exception:
+                pass
+
+        prob_json = None
+        if self.recall_model_json is not None:
+            weights = self.recall_model_json.get("weights", [])
+            intercept = float(self.recall_model_json.get("intercept", 0.0) or 0.0)
+            if len(weights) == len(features):
+                z = intercept
+                for w, x in zip(weights, features):
+                    try:
+                        z += float(w) * float(x)
+                    except Exception:
+                        continue
+                try:
+                    prob_json = 1.0 / (1.0 + math.exp(-z))
+                except Exception:
+                    prob_json = None
+            if prob_json is not None:
+                prob_json = max(0.0, min(1.0, prob_json))
+
+        return prob_json
 
     def record_quiz_history(self, chapter: str, indices: list[int], max_keep: int = 50) -> None:
         """Persist recently asked quiz question indices per chapter."""

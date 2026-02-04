@@ -45,6 +45,15 @@ Global app data:
 - `last_hub_import_date`: ISO date used to gate quiz‑lag signals
 - Daily plan cache: `_last_daily_plan` + `_last_daily_plan_date`
 
+### Optional recall model (offline)
+
+- Training script: `tools/train_recall_model.py`
+- Scikit-learn trainer: `tools/train_recall_model_sklearn.py`
+- Output: `~/.config/studyplan/recall_model.json`
+- Output (sklearn): `~/.config/studyplan/recall_model.pkl`
+- Runtime: engine loads model if present; otherwise falls back to heuristics.
+- Model features: `log1p_attempts`, `correct_rate`, `streak`, `log1p_avg_time_sec`, `log1p_days_since_last_seen`
+
 ## Module system
 
 ### Config format

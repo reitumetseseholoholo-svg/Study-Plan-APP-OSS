@@ -968,6 +968,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.use_system_theme = True
         self.coach_only_view = False
         self.sticky_coach_pick = True
+        self.adaptive_quiz_prioritization = True
         self.last_coach_pick = None
         self.last_coach_pick_date = None
         self.onboarding_dismissed = False
@@ -1077,6 +1078,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             module_id=self.module_id,
             module_title=self.module_title,
         )
+        self.engine.adaptive_quiz_prioritization = bool(self.adaptive_quiz_prioritization)
         if self.exam_date is not None:
             self.engine.exam_date = self.exam_date
             try:
@@ -1761,6 +1763,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._add_action("import_snapshot", self.on_menu_import_snapshot)
         self._add_action("export_csv", self.on_menu_export_csv)
         self._add_action("export_template", self.on_menu_export_template)
+        self._add_action("export_question_stats", self.on_menu_export_question_stats)
         self._add_action("weekly_report", self.on_view_weekly_report)
         self._add_action("reset_data", self.on_menu_reset_data)
         self._add_action("preferences", self.on_open_preferences)
@@ -1793,6 +1796,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         file_menu.append("Import Data Snapshot…", "win.import_snapshot")
         file_menu.append("Export data (CSV)…", "win.export_csv")
         file_menu.append("Export import template…", "win.export_template")
+        file_menu.append("Export question stats (CSV)…", "win.export_question_stats")
         file_menu.append("Weekly Report…", "win.weekly_report")
         file_menu.append("Reset Data…", "win.reset_data")
         file_menu.append("Quit", "win.quit_app")
@@ -1861,6 +1865,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_menu_export_template(self, _action, _param):
         self.on_export_template(None)
+
+    def on_menu_export_question_stats(self, _action, _param):
+        self.on_export_question_stats(None)
 
     def on_view_weekly_report(self, _action, _param):
         report_path = os.path.expanduser("~/.config/studyplan/weekly_report.txt")
@@ -2817,6 +2824,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         coach_only.set_active(bool(self.coach_only_view))
         sticky_pick = Gtk.CheckButton(label="Sticky coach pick (keep today’s focus on restart)")
         sticky_pick.set_active(bool(self.sticky_coach_pick))
+        adaptive_quiz = Gtk.CheckButton(label="Adaptive quiz prioritization (use recent miss-risk)")
+        adaptive_quiz.set_active(bool(self.adaptive_quiz_prioritization))
         recall_release = Gtk.CheckButton(
             label="Recall counts for coach release (2 focus + recall)"
         )
@@ -2828,6 +2837,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         content.append(system_theme)
         content.append(coach_only)
         content.append(sticky_pick)
+        content.append(adaptive_quiz)
         content.append(recall_release)
 
         pomodoro_title = Gtk.Label(label="Pomodoro")
@@ -3093,6 +3103,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.use_system_theme = bool(system_theme.get_active())
             self.coach_only_view = bool(coach_only.get_active())
             self.sticky_coach_pick = bool(sticky_pick.get_active())
+            self.adaptive_quiz_prioritization = bool(adaptive_quiz.get_active())
             self.recall_counts_for_release = bool(recall_release.get_active())
             self.focus_tracking_enabled = bool(focus_tracking.get_active())
             self.focus_auto_pause_enabled = bool(focus_autopause.get_active())
@@ -3111,6 +3122,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.coach_only_toggle.set_active(bool(self.coach_only_view))
                 self.coach_only_toggle.set_visible(not self.coach_only_view)
             apply_theme(bool(self.use_system_theme))
+            if getattr(self, "engine", None) is not None:
+                self.engine.adaptive_quiz_prioritization = bool(self.adaptive_quiz_prioritization)
             self.save_preferences()
             dialog.destroy()
 
@@ -3335,6 +3348,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.use_system_theme = bool(data.get("use_system_theme", True))
                     self.coach_only_view = bool(data.get("coach_only_view", False))
                     self.sticky_coach_pick = bool(data.get("sticky_coach_pick", True))
+                    self.adaptive_quiz_prioritization = bool(
+                        data.get("adaptive_quiz_prioritization", True)
+                    )
                     self.last_coach_pick = data.get("last_coach_pick")
                     self.last_coach_pick_date = data.get("last_coach_pick_date")
                     self.onboarding_dismissed = bool(data.get("onboarding_dismissed", False))
@@ -3437,6 +3453,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "use_system_theme": bool(self.use_system_theme),
                 "coach_only_view": bool(self.coach_only_view),
                 "sticky_coach_pick": bool(self.sticky_coach_pick),
+                "adaptive_quiz_prioritization": bool(self.adaptive_quiz_prioritization),
                 "last_coach_pick": self.last_coach_pick,
                 "last_coach_pick_date": self.last_coach_pick_date,
                 "onboarding_dismissed": bool(self.onboarding_dismissed),
@@ -8890,6 +8907,131 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             error_dialog.connect("response", lambda d, r: d.destroy())
             error_dialog.present()
 
+    def on_export_question_stats(self, _button):
+        if getattr(self, "_dialog_smoke_mode", False):
+            dialog = self._harden_window(Gtk.FileChooserDialog(  # gtk4_lint:ignore
+                title="Export Question Stats (CSV)",
+                transient_for=self,
+                action=Gtk.FileChooserAction.SAVE,
+            ))
+            dialog.add_buttons(
+                "_Cancel", Gtk.ResponseType.CANCEL, "_Save", Gtk.ResponseType.ACCEPT
+            )
+            dialog.connect("response", self.on_export_question_stats_response)
+            dialog.present()
+            return
+        dialog = Gtk.FileChooserNative(
+            title="Export Question Stats (CSV)",
+            transient_for=self,
+            action=Gtk.FileChooserAction.SAVE,
+            accept_label="_Save",
+            cancel_label="_Cancel",
+        )
+        self._active_native_dialog = dialog
+        dialog.connect("response", self.on_export_question_stats_response)
+        dialog.connect("response", lambda *_args: setattr(self, "_active_native_dialog", None))
+        dialog.show()
+
+    def on_export_question_stats_response(self, dialog, response):
+        if response != Gtk.ResponseType.ACCEPT:
+            dialog.destroy()
+            return
+        file_path = self._get_file_path(dialog)
+        dialog.destroy()
+        try:
+            if not file_path:
+                raise ValueError("No file selected.")
+            stats = getattr(self.engine, "question_stats", {}) or {}
+            questions = getattr(self.engine, "QUESTIONS", {}) or {}
+            with open(file_path, "w", newline="", encoding="utf-8") as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(
+                    [
+                        "Chapter",
+                        "Question Index",
+                        "Question",
+                        "Attempts",
+                        "Correct",
+                        "Miss Rate",
+                        "Streak",
+                        "Avg Time (sec)",
+                        "Last Time (sec)",
+                        "Last Seen",
+                    ]
+                )
+                for chapter, chapter_stats in stats.items():
+                    if not isinstance(chapter_stats, dict):
+                        continue
+                    q_list = questions.get(chapter, []) if isinstance(questions, dict) else []
+                    for key, entry in chapter_stats.items():
+                        if not isinstance(entry, dict):
+                            continue
+                        try:
+                            idx = int(key)
+                        except Exception:
+                            continue
+                        q_text = ""
+                        if isinstance(q_list, list) and 0 <= idx < len(q_list):
+                            try:
+                                q_text = str(q_list[idx].get("question", ""))
+                            except Exception:
+                                q_text = ""
+                        try:
+                            attempts = int(entry.get("attempts", 0) or 0)
+                        except Exception:
+                            attempts = 0
+                        try:
+                            correct = int(entry.get("correct", 0) or 0)
+                        except Exception:
+                            correct = 0
+                        miss_rate = 0.0 if attempts <= 0 else 1.0 - (correct / max(1, attempts))
+                        try:
+                            streak = int(entry.get("streak", 0) or 0)
+                        except Exception:
+                            streak = 0
+                        try:
+                            avg_time = float(entry.get("avg_time_sec", 0) or 0.0)
+                        except Exception:
+                            avg_time = 0.0
+                        try:
+                            last_time = float(entry.get("last_time_sec", 0) or 0.0)
+                        except Exception:
+                            last_time = 0.0
+                        last_seen = entry.get("last_seen") or ""
+                        writer.writerow(
+                            [
+                                chapter,
+                                idx,
+                                q_text,
+                                attempts,
+                                correct,
+                                f"{miss_rate:.2f}",
+                                streak,
+                                f"{avg_time:.1f}",
+                                f"{last_time:.1f}",
+                                last_seen,
+                            ]
+                        )
+            success_dialog = self._new_message_dialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text="Question stats exported successfully.",
+            )
+            success_dialog.connect("response", lambda d, r: d.destroy())
+            success_dialog.present()
+        except Exception as e:
+            error_dialog = self._new_message_dialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.ERROR,
+                buttons=Gtk.ButtonsType.OK,
+                text=f"Error exporting question stats: {e}",
+            )
+            error_dialog.connect("response", lambda d, r: d.destroy())
+            error_dialog.present()
+
     def on_reset_data(self, button):
         confirm_dialog = self._new_message_dialog(
             transient_for=self,
@@ -9111,6 +9253,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ("Import AI Questions", lambda: self.on_import_ai_questions(None)),
             ("Export Data", lambda: self.on_export_data(None)),
             ("Export Template", lambda: self.on_export_template(None)),
+            ("Export Question Stats", lambda: self.on_export_question_stats(None)),
             ("Reset Data", lambda: self.on_reset_data(None)),
             ("Health Log", lambda: self.on_view_health_log(None)),
             ("Debug Info", lambda: self.on_debug_info(None, None)),
@@ -9732,6 +9875,76 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     label.add_css_class("muted")
                     analytics.append(label)
                     self.dashboard.append(analytics)
+        except Exception:
+            pass
+        try:
+            stats = getattr(self.engine, "question_stats", {}) or {}
+            risk_rows: list[tuple[str, float, int]] = []
+            if isinstance(stats, dict):
+                for chapter, chapter_stats in stats.items():
+                    if not isinstance(chapter_stats, dict):
+                        continue
+                    risks: list[float] = []
+                    for entry in chapter_stats.values():
+                        if not isinstance(entry, dict):
+                            continue
+                        try:
+                            attempts = int(entry.get("attempts", 0) or 0)
+                        except Exception:
+                            attempts = 0
+                        if attempts <= 0:
+                            continue
+                        try:
+                            correct = int(entry.get("correct", 0) or 0)
+                        except Exception:
+                            correct = 0
+                        try:
+                            streak = int(entry.get("streak", 0) or 0)
+                        except Exception:
+                            streak = 0
+                        try:
+                            avg_time = float(entry.get("avg_time_sec", 0) or 0.0)
+                        except Exception:
+                            avg_time = 0.0
+                        miss_rate = 1.0 - min(1.0, max(0.0, correct / max(1, attempts)))
+                        time_factor = min(1.0, max(0.0, avg_time / 60.0))
+                        streak_factor = 1.0 - min(1.0, max(0.0, streak / 5.0))
+                        risk = (0.65 * miss_rate) + (0.2 * time_factor) + (0.15 * streak_factor)
+                        risks.append(max(0.0, min(1.0, risk)))
+                    if risks:
+                        risk_rows.append((chapter, sum(risks) / len(risks), len(risks)))
+            risk_rows.sort(key=lambda x: x[1], reverse=True)
+            if risk_rows:
+                insights = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                insights.add_css_class("card")
+                title = Gtk.Label(label="Quiz Insights")
+                title.set_halign(Gtk.Align.START)
+                title.add_css_class("section-title")
+                insights.append(title)
+                lines = []
+                for idx, (chapter, risk, count) in enumerate(risk_rows[:3], start=1):
+                    mix_text = ""
+                    try:
+                        mix = self.engine.get_chapter_difficulty_mix(chapter)
+                        total_known = mix.get("easy", 0) + mix.get("medium", 0) + mix.get("hard", 0)
+                        if total_known > 0:
+                            mix_text = f" • E/M/H {mix.get('easy', 0)}/{mix.get('medium', 0)}/{mix.get('hard', 0)}"
+                    except Exception:
+                        mix_text = ""
+                    lines.append(
+                        f"{idx}. {chapter} — miss‑risk {risk*100:.0f}% • {count} Qs{mix_text}"
+                    )
+                label = Gtk.Label(label="\n".join(lines))
+                label.set_halign(Gtk.Align.START)
+                label.set_wrap(True)
+                label.add_css_class("muted")
+                insights.append(label)
+                if not getattr(self, "adaptive_quiz_prioritization", True):
+                    note = Gtk.Label(label="Adaptive quiz prioritization is off (Preferences → General).")
+                    note.set_halign(Gtk.Align.START)
+                    note.add_css_class("muted")
+                    insights.append(note)
+                self.dashboard.append(insights)
         except Exception:
             pass
         try:
