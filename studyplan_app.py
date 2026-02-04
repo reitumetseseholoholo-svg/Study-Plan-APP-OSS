@@ -16,6 +16,7 @@ import subprocess
 import shutil
 import math
 import time
+import warnings
 import wave
 import struct
 from typing import Optional, Any
@@ -3619,12 +3620,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if chooser is None:
             return None
         try:
-            if hasattr(chooser, "get_files"):
-                files = chooser.get_files()
-                if files is not None and files.get_n_items() > 0:
-                    gfile = files.get_item(0)
+            # Gtk4 deprecates parts of FileChooser API in favor of FileDialog.
+            # Keep compatibility across chooser widgets, but avoid noisy warnings.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                if hasattr(chooser, "get_file"):
+                    gfile = chooser.get_file()
                     if gfile is not None:
-                        return gfile.get_path()
+                        path = gfile.get_path()
+                        if path:
+                            return path
+                if hasattr(chooser, "get_files"):
+                    files = chooser.get_files()
+                    if files is not None and files.get_n_items() > 0:
+                        gfile = files.get_item(0)
+                        if gfile is not None:
+                            path = gfile.get_path()
+                            if path:
+                                return path
         except Exception:
             pass
         return None
@@ -8024,8 +8037,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.engine.save_data()
         self.update_streak()
         self.update_streak_display()
-        self.update_dashboard()
-        self.update_recommendations()
+        # Keep quiz interactions responsive: full dashboard rebuild (charts/cards)
+        # is expensive when done on every single answer.
+        # We do lightweight card updates per-answer and a full dashboard refresh
+        # once at quiz completion in `on_quiz_next`.
+        self._update_coach_pick_card()
         self.update_study_room_card()
 
         self.quiz_confirm_btn.set_sensitive(False)
