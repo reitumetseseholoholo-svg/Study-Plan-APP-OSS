@@ -75,6 +75,7 @@ class StudyPlanEngine:
     DEFAULT_DATA_FILE = os.path.join(DEFAULT_DATA_DIR, "data.json")
     DEFAULT_QUESTIONS_FILE = os.path.join(DEFAULT_DATA_DIR, "questions.json")
     MODULES_DIR = os.path.join(DEFAULT_DATA_DIR, "modules")
+    BACKUP_RETENTION = 20
     DATA_FILE = DEFAULT_DATA_FILE
     QUESTIONS_FILE = DEFAULT_QUESTIONS_FILE
     CHAPTER_ALIASES = {
@@ -4429,8 +4430,11 @@ class StudyPlanEngine:
         if os.path.exists(path):
             try:
                 bak_path = f"{path}.bak"
-                with open(path, "rb") as src, open(bak_path, "wb") as dst:
-                    dst.write(src.read())
+                with open(path, "rb") as src:
+                    payload = src.read()
+                with open(bak_path, "wb") as dst:
+                    dst.write(payload)
+                self._write_rolling_backup(path, payload)
                 self.last_backup_ok = True
                 self.last_backup_error = None
             except OSError:
@@ -4440,6 +4444,48 @@ class StudyPlanEngine:
             # No existing file to back up
             self.last_backup_ok = True
             self.last_backup_error = None
+
+    def _write_rolling_backup(self, path: str, payload: bytes) -> None:
+        """Write timestamped backup snapshots and keep only the most recent N."""
+        data_dir = os.path.dirname(path)
+        if not data_dir:
+            return
+
+        backups_dir = os.path.join(data_dir, "backups")
+        os.makedirs(backups_dir, exist_ok=True)
+
+        base = os.path.basename(path)
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        snapshot_name = f"{base}.{stamp}.bak"
+        snapshot_path = os.path.join(backups_dir, snapshot_name)
+
+        # Defend against very rare timestamp collisions.
+        if os.path.exists(snapshot_path):
+            snapshot_name = f"{base}.{stamp}-{random.randint(1000, 9999)}.bak"
+            snapshot_path = os.path.join(backups_dir, snapshot_name)
+
+        with open(snapshot_path, "wb") as f:
+            f.write(payload)
+
+        prefix = f"{base}."
+        suffix = ".bak"
+        try:
+            entries = [
+                name for name in os.listdir(backups_dir)
+                if name.startswith(prefix) and name.endswith(suffix)
+            ]
+        except OSError:
+            return
+        entries.sort()
+        keep = int(getattr(self, "BACKUP_RETENTION", 20) or 20)
+        if len(entries) <= keep:
+            return
+        stale = entries[: len(entries) - keep]
+        for name in stale:
+            try:
+                os.remove(os.path.join(backups_dir, name))
+            except OSError:
+                pass
 
     def _append_health_log(self) -> None:
         """Append a one-line health log entry when corrections occur."""

@@ -162,6 +162,27 @@ def test_save_data_writes_json_structure(tmp_path, monkeypatch):
     assert "FM Function" in payload["competence"]
 
 
+def test_save_data_creates_and_prunes_rolling_backups(tmp_path, monkeypatch):
+    monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+    data_file = tmp_path / "data.json"
+    monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
+
+    eng = StudyPlanEngine()
+    eng.BACKUP_RETENTION = 5
+
+    # First save creates data file; subsequent saves should create snapshots.
+    for i in range(12):
+        eng.pomodoro_log["total_minutes"] = i
+        eng.save_data()
+
+    backups_dir = tmp_path / "backups"
+    assert backups_dir.exists()
+    snapshots = [p for p in backups_dir.iterdir() if p.name.startswith("data.json.") and p.name.endswith(".bak")]
+    assert snapshots, "Expected at least one rolling backup snapshot"
+    assert len(snapshots) <= 5, "Expected rolling backups to be pruned to retention limit"
+
+
 def test_select_srs_questions_avoids_recent_when_possible(engine_no_io):
     eng = engine_no_io
     chapter = "FM Function"
