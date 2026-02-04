@@ -3277,6 +3277,38 @@ class StudyPlanEngine:
         cooldown_n = max(12, int(count) * 2)
         cooldown_set = set(recent_history[-cooldown_n:])
 
+        def _miss_risk(idx: int) -> float:
+            stats_by_ch = self.question_stats.get(chapter, {})
+            if not isinstance(stats_by_ch, dict):
+                return 0.0
+            stats = stats_by_ch.get(str(idx))
+            if not isinstance(stats, dict):
+                return 0.0
+            try:
+                attempts = int(stats.get("attempts", 0) or 0)
+            except Exception:
+                attempts = 0
+            try:
+                correct = int(stats.get("correct", 0) or 0)
+            except Exception:
+                correct = 0
+            try:
+                streak = int(stats.get("streak", 0) or 0)
+            except Exception:
+                streak = 0
+            try:
+                avg_time = float(stats.get("avg_time_sec", 0) or 0.0)
+            except Exception:
+                avg_time = 0.0
+            if attempts <= 0:
+                miss_rate = 0.5
+            else:
+                miss_rate = 1.0 - min(1.0, max(0.0, correct / max(1, attempts)))
+            time_factor = min(1.0, max(0.0, avg_time / 60.0))
+            streak_factor = 1.0 - min(1.0, max(0.0, streak / 5.0))
+            risk = (0.65 * miss_rate) + (0.2 * time_factor) + (0.15 * streak_factor)
+            return max(0.0, min(1.0, risk))
+
         scored = []
         has_due = False
         has_overdue = False
@@ -3293,7 +3325,8 @@ class StudyPlanEngine:
             recent = 1 if idx in recent_set else 0
             in_cooldown = 1 if idx in cooldown_set else 0
             is_new = 1 if srs.get("last_review") is None else 0
-            scored.append((idx, due, overdue, in_cooldown, recent, is_new, retention))
+            risk = _miss_risk(idx)
+            scored.append((idx, due, overdue, in_cooldown, recent, is_new, retention, risk))
             has_due = has_due or bool(due)
             has_overdue = has_overdue or bool(overdue)
             if srs.get("last_review") is not None:
@@ -3314,7 +3347,7 @@ class StudyPlanEngine:
 
         # Phase 1: always include must-review first (even if in cooldown).
         due_items = [item for item in scored if item[1] == 1]
-        due_items.sort(key=lambda x: (-x[2], x[6]))  # overdue first, then lower retention.
+        due_items.sort(key=lambda x: (-x[2], -x[7], x[6]))  # overdue, higher risk, lower retention
         selected = [idx for idx, *_rest in due_items[:count]]
 
         # Phase 2: fill from non-cooldown pool for diversity.
@@ -3322,15 +3355,15 @@ class StudyPlanEngine:
             remaining_slots = count - len(selected)
             non_due = [item for item in scored if item[1] == 0 and item[0] not in selected]
             non_cooldown = [item for item in non_due if item[3] == 0]
-            # Sort: overdue, then new cards, then not-recent, then low retention.
-            non_cooldown.sort(key=lambda x: (-x[2], -x[5], x[4], x[6]))
+            # Sort: overdue, higher risk, new cards, not-recent, low retention.
+            non_cooldown.sort(key=lambda x: (-x[2], -x[7], -x[5], x[4], x[6]))
             selected.extend([idx for idx, *_rest in non_cooldown[:remaining_slots]])
 
         # Phase 3: fallback to cooldown items if chapter is exhausted.
         if len(selected) < min(count, len(questions)):
             remaining_slots = count - len(selected)
             fallback = [item for item in scored if item[0] not in selected]
-            fallback.sort(key=lambda x: (-x[1], -x[2], x[4], x[6]))
+            fallback.sort(key=lambda x: (-x[1], -x[2], -x[7], x[4], x[6]))
             selected.extend([idx for idx, *_rest in fallback[:remaining_slots]])
 
         # If not enough unique (shouldn't happen), fill with random
