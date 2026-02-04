@@ -1581,15 +1581,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         self.update_exam_date_display()
         self.update_availability_display()
-        self.update_dashboard()
-        self.update_recommendations()
-        self.update_study_room_card()
+        # Defer the heavier dashboard build until GTK is idle so the window paints quickly.
+        GLib.idle_add(self._run_initial_refresh)
         GLib.idle_add(self._maybe_show_first_run)
 
         # Autosave on close
         self.connect("close-request", self.on_close_request)
         self._last_window_size = (0, 0)
-        GLib.timeout_add(300, self._poll_window_size)
+        GLib.timeout_add(700, self._poll_window_size)
         shortcut_controller = Gtk.ShortcutController()
         shortcut_controller.add_shortcut(
             Gtk.Shortcut.new(
@@ -5339,6 +5338,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         title = milestones.get(self.study_streak)
         if title and self.study_streak > previous:
             self._unlock_achievement(f"streak_{self.study_streak}", title, f"{self.study_streak} days in a row!")
+
+    def _run_initial_refresh(self):
+        """Populate dashboard data after the window can paint."""
+        try:
+            self.update_recommendations()
+        except Exception:
+            pass
+        try:
+            self.update_study_room_card()
+        except Exception:
+            pass
+        try:
+            self.update_dashboard()
+        except Exception:
+            pass
+        return False
 
     def _poll_window_size(self):
         """Poll window size to adapt layout; avoids Gtk4 size-allocate signal issues."""
