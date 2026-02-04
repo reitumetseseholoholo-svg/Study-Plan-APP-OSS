@@ -525,6 +525,14 @@ window {
     padding-top: 6px;
     padding-bottom: 6px;
 }
+.hero-card {
+    border-color: alpha(@theme_selected_bg_color, 0.34);
+    box-shadow: 0 2px 10px alpha(@theme_selected_bg_color, 0.14);
+}
+.hero-card .coach-title,
+.hero-card .section-title {
+    color: @theme_selected_bg_color;
+}
 .card:hover {
     border-color: alpha(@theme_fg_color, 0.18);
 }
@@ -724,6 +732,14 @@ window {
 .chart-card {
     padding-top: 6px;
     padding-bottom: 6px;
+}
+.hero-card {
+    border-color: #5a4a90;
+    box-shadow: 0 2px 10px rgba(123, 58, 237, 0.28);
+}
+.hero-card .coach-title,
+.hero-card .section-title {
+    color: #cfc5ff;
 }
 .card:hover {
     border-color: #3d404a;
@@ -1237,6 +1253,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         # Coach pick summary
         coach_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         coach_card.add_css_class("card")
+        coach_card.add_css_class("hero-card")
         coach_title = Gtk.Label(label="Coach Pick")
         coach_title.set_halign(Gtk.Align.START)
         coach_title.add_css_class("section-title")
@@ -1352,6 +1369,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         study_room_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         study_room_card.add_css_class("card")
+        study_room_card.add_css_class("hero-card")
         self.study_room_summary = Gtk.Label()
         self.study_room_summary.set_halign(Gtk.Align.START)
         self.study_room_summary.set_wrap(True)
@@ -9289,6 +9307,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         coach_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         coach_box.add_css_class("card")
+        coach_box.add_css_class("hero-card")
         coach_warnings: list[str] = []
 
         coach_title = Gtk.Label(label="Coach Briefing")
