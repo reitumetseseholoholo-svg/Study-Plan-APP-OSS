@@ -3168,14 +3168,20 @@ class StudyPlanEngine:
         return min(retention_scores, key=lambda x: x[1])[0]
 
     def select_srs_questions(self, chapter: str, count: int = 10) -> list[int]:
-        """Select multiple questions prioritizing overdue then lowest retention."""
+        """Select multiple questions prioritizing due/overdue, with anti-repeat cooldown."""
         questions = self.QUESTIONS.get(chapter, [])
         if not questions:
             return []
         srs_list = self.srs_data.get(chapter, [])
         today = datetime.date.today()
         must_review = self.must_review.get(chapter, {})
-        recent_set = set(self.quiz_recent.get(chapter, [])) if isinstance(getattr(self, "quiz_recent", None), dict) else set()
+        recent_history = self.quiz_recent.get(chapter, []) if isinstance(getattr(self, "quiz_recent", None), dict) else []
+        if not isinstance(recent_history, list):
+            recent_history = []
+        recent_set = set(recent_history)
+        # Cooldown window: avoid immediate repeats across consecutive quizzes.
+        cooldown_n = max(12, int(count) * 2)
+        cooldown_set = set(recent_history[-cooldown_n:])
 
         scored = []
         has_due = False
@@ -3191,7 +3197,9 @@ class StudyPlanEngine:
                 if due_date and due_date <= today:
                     due = 1
             recent = 1 if idx in recent_set else 0
-            scored.append((idx, due, overdue, recent, retention))
+            in_cooldown = 1 if idx in cooldown_set else 0
+            is_new = 1 if srs.get("last_review") is None else 0
+            scored.append((idx, due, overdue, in_cooldown, recent, is_new, retention))
             has_due = has_due or bool(due)
             has_overdue = has_overdue or bool(overdue)
             if srs.get("last_review") is not None:
@@ -3210,9 +3218,26 @@ class StudyPlanEngine:
                 selected.extend(remaining[: (count - len(selected))])
             return selected
 
-        # Sort: must-review first, then overdue, then lowest retention
-        scored.sort(key=lambda x: (-x[1], -x[2], x[3], x[4]))
-        selected = [idx for idx, _d, _o, _recent, _r in scored[:count]]
+        # Phase 1: always include must-review first (even if in cooldown).
+        due_items = [item for item in scored if item[1] == 1]
+        due_items.sort(key=lambda x: (-x[2], x[6]))  # overdue first, then lower retention.
+        selected = [idx for idx, *_rest in due_items[:count]]
+
+        # Phase 2: fill from non-cooldown pool for diversity.
+        if len(selected) < min(count, len(questions)):
+            remaining_slots = count - len(selected)
+            non_due = [item for item in scored if item[1] == 0 and item[0] not in selected]
+            non_cooldown = [item for item in non_due if item[3] == 0]
+            # Sort: overdue, then new cards, then not-recent, then low retention.
+            non_cooldown.sort(key=lambda x: (-x[2], -x[5], x[4], x[6]))
+            selected.extend([idx for idx, *_rest in non_cooldown[:remaining_slots]])
+
+        # Phase 3: fallback to cooldown items if chapter is exhausted.
+        if len(selected) < min(count, len(questions)):
+            remaining_slots = count - len(selected)
+            fallback = [item for item in scored if item[0] not in selected]
+            fallback.sort(key=lambda x: (-x[1], -x[2], x[4], x[6]))
+            selected.extend([idx for idx, *_rest in fallback[:remaining_slots]])
 
         # If not enough unique (shouldn't happen), fill with random
         if len(selected) < min(count, len(questions)):

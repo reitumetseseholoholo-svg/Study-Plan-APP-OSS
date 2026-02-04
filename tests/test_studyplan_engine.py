@@ -160,3 +160,45 @@ def test_save_data_writes_json_structure(tmp_path, monkeypatch):
 
     assert payload["pomodoro_log"]["total_minutes"] == 25
     assert "FM Function" in payload["competence"]
+
+
+def test_select_srs_questions_avoids_recent_when_possible(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    total = len(eng.QUESTIONS.get(chapter, []))
+    assert total >= 12
+
+    # Make everything previously reviewed and not overdue to isolate cooldown behavior.
+    eng.srs_data[chapter] = [
+        {"last_review": datetime.date.today().isoformat(), "interval": 30, "efactor": 2.5}
+        for _ in range(total)
+    ]
+    eng.must_review[chapter] = {}
+    # Recent history contains first 12 indices (cooldown window for count=6 is 12).
+    eng.quiz_recent[chapter] = list(range(12))
+
+    picked = eng.select_srs_questions(chapter, count=6)
+    assert len(picked) == 6
+    # Should prefer non-cooldown questions when available.
+    assert all(idx >= 12 for idx in picked)
+
+
+def test_select_srs_questions_keeps_due_even_if_recent(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    total = len(eng.QUESTIONS.get(chapter, []))
+    assert total >= 10
+
+    eng.srs_data[chapter] = [
+        {"last_review": datetime.date.today().isoformat(), "interval": 30, "efactor": 2.5}
+        for _ in range(total)
+    ]
+    today_iso = datetime.date.today().isoformat()
+    eng.must_review[chapter] = {"0": today_iso, "1": today_iso}
+    eng.quiz_recent[chapter] = list(range(12))
+
+    picked = eng.select_srs_questions(chapter, count=6)
+    assert len(picked) == 6
+    # Must-review questions should still be included despite cooldown.
+    assert 0 in picked
+    assert 1 in picked
