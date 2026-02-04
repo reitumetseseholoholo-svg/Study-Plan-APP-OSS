@@ -243,3 +243,30 @@ def test_select_srs_questions_handles_corrupt_recent_history(engine_no_io):
     assert len(picked) == 5
     assert all(isinstance(i, int) for i in picked)
     assert all(0 <= i < total for i in picked)
+
+
+def test_import_data_snapshot_clamps_srs_to_question_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+    data_file = tmp_path / "data.json"
+    monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
+
+    eng = StudyPlanEngine()
+    chapter = "FM Function"
+    q_count = len(eng.QUESTIONS.get(chapter, []))
+    assert q_count > 0
+
+    snapshot = {
+        "competence": {chapter: 55},
+        "srs_data": {
+            chapter: [{"last_review": None, "interval": 1, "efactor": 2.5} for _ in range(q_count + 200)]
+        },
+        "study_days": [datetime.date.today().isoformat()],
+    }
+    snap_path = tmp_path / "snapshot.json"
+    with open(snap_path, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f)
+
+    result = eng.import_data_snapshot(str(snap_path))
+    assert isinstance(result, dict)
+    assert len(eng.srs_data[chapter]) == q_count

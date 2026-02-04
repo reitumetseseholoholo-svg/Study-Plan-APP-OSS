@@ -1333,10 +1333,14 @@ class StudyPlanEngine:
             if not isinstance(raw_list, list):
                 raw_list = []
                 self.data_health["srs_fixed"] += 1
-            max_len = max(len(raw_list), len(self.QUESTIONS_DEFAULT.get(chapter, [])))
-            cleaned_list = [self._coerce_srs_item(item) for item in raw_list[:max_len]]
-            # Ensure at least one SRS item per question default
-            while len(cleaned_list) < max_len:
+            question_len = len(self.QUESTIONS.get(chapter, []) or self.QUESTIONS_DEFAULT.get(chapter, []))
+            if question_len < 0:
+                question_len = 0
+            if len(raw_list) > question_len:
+                self.data_health["srs_fixed"] += 1
+            cleaned_list = [self._coerce_srs_item(item) for item in raw_list[:question_len]]
+            # Align SRS cardinality to current question pool exactly.
+            while len(cleaned_list) < question_len:
                 cleaned_list.append(self._coerce_srs_item({}))
             cleaned[chapter] = cleaned_list
         return cleaned
@@ -4319,31 +4323,57 @@ class StudyPlanEngine:
         print(f"  Questions: {self.QUESTIONS}")
 
 
+    def _apply_loaded_payload(self, data: dict) -> None:
+        """Apply persisted payload onto current engine state, then normalize."""
+        if not isinstance(data, dict):
+            raise ValueError("Invalid data payload: expected JSON object")
+        self.competence = {**data.get('competence', self.competence)}
+        self.pomodoro_log = {**data.get('pomodoro_log', self.pomodoro_log)}
+        self.srs_data = {**data.get('srs_data', self.srs_data or {ch: [] for ch in self.CHAPTERS})}
+        self.study_days = data.get('study_days', self.study_days)
+        self.exam_date = data.get('exam_date')
+        self.must_review = data.get('must_review', self.must_review)
+        self.study_hub_stats = data.get('study_hub_stats', self.study_hub_stats)
+        self.quiz_results = data.get('quiz_results', self.quiz_results)
+        self.quiz_recent = data.get('quiz_recent', self.quiz_recent)
+        self.error_notebook = data.get('error_notebook', self.error_notebook)
+        self.progress_log = data.get('progress_log', self.progress_log)
+        self.chapter_notes = data.get('chapter_notes', self.chapter_notes)
+        self.difficulty_counts = data.get('difficulty_counts', self.difficulty_counts)
+        self.availability = data.get('availability', self.availability)
+        self.completed_chapters = data.get('completed_chapters', self.completed_chapters)
+        self.completed_chapters_date = data.get('completed_chapters_date', self.completed_chapters_date)
+        self.daily_plan_cache = data.get("daily_plan_cache", self.daily_plan_cache) or []
+        self.daily_plan_cache_date = data.get("daily_plan_cache_date", self.daily_plan_cache_date)
+        self._normalize_loaded_data()
+        # Final cardinality guard after coercion.
+        self.sync_srs_with_questions()
+
+    def import_data_snapshot(self, file_path: str) -> dict[str, Any]:
+        """
+        Safely import a data snapshot JSON with normalization.
+        Returns a small summary for UI feedback.
+        """
+        if not file_path or not os.path.exists(file_path):
+            raise FileNotFoundError("Snapshot file not found")
+        with open(file_path, "r", newline="", encoding="utf-8") as f:
+            payload = json.load(f)
+        self._apply_loaded_payload(payload)
+        self.save_data()
+        return {
+            "chapters": len(self.CHAPTERS),
+            "study_days": len(self.study_days),
+            "quiz_results": len(self.quiz_results) if isinstance(self.quiz_results, dict) else 0,
+            "progress_points": len(self.progress_log) if isinstance(self.progress_log, list) else 0,
+        }
+
     def load_data(self):
         """Load user data from JSON file."""
         if os.path.exists(self.DATA_FILE):
             try:
                 with open(self.DATA_FILE, 'r', newline='', encoding='utf-8') as f:
                     data = json.load(f)
-                    self.competence = {**data.get('competence', self.competence)}
-                    self.pomodoro_log = {**data.get('pomodoro_log', self.pomodoro_log)}
-                    self.srs_data = {**data.get('srs_data', self.srs_data or {ch: [] for ch in self.CHAPTERS})}
-                    self.study_days = data.get('study_days', self.study_days)
-                    self.exam_date = data.get('exam_date')
-                    self.must_review = data.get('must_review', self.must_review)
-                    self.study_hub_stats = data.get('study_hub_stats', self.study_hub_stats)
-                    self.quiz_results = data.get('quiz_results', self.quiz_results)
-                    self.quiz_recent = data.get('quiz_recent', self.quiz_recent)
-                    self.error_notebook = data.get('error_notebook', self.error_notebook)
-                    self.progress_log = data.get('progress_log', self.progress_log)
-                    self.chapter_notes = data.get('chapter_notes', self.chapter_notes)
-                    self.difficulty_counts = data.get('difficulty_counts', self.difficulty_counts)
-                    self.availability = data.get('availability', self.availability)
-                    self.completed_chapters = data.get('completed_chapters', self.completed_chapters)
-                    self.completed_chapters_date = data.get('completed_chapters_date', self.completed_chapters_date)
-                    self.daily_plan_cache = data.get("daily_plan_cache", self.daily_plan_cache) or []
-                    self.daily_plan_cache_date = data.get("daily_plan_cache_date", self.daily_plan_cache_date)
-                self._normalize_loaded_data()
+                self._apply_loaded_payload(data)
             except (OSError, json.JSONDecodeError) as e:
                 print(f"Error loading data: {e}")
             except Exception as e:

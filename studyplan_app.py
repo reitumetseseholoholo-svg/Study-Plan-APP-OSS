@@ -1657,6 +1657,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _create_actions(self) -> None:
         self._add_action("import_pdf", self.on_menu_import_pdf)
         self._add_action("import_ai", self.on_menu_import_ai)
+        self._add_action("import_snapshot", self.on_menu_import_snapshot)
         self._add_action("export_csv", self.on_menu_export_csv)
         self._add_action("export_template", self.on_menu_export_template)
         self._add_action("weekly_report", self.on_view_weekly_report)
@@ -1688,6 +1689,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         file_menu = Gio.Menu()
         file_menu.append("Import PDF scores…", "win.import_pdf")
         file_menu.append("Import AI questions…", "win.import_ai")
+        file_menu.append("Import Data Snapshot…", "win.import_snapshot")
         file_menu.append("Export data (CSV)…", "win.export_csv")
         file_menu.append("Export import template…", "win.export_template")
         file_menu.append("Weekly Report…", "win.weekly_report")
@@ -1749,6 +1751,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_menu_import_ai(self, _action, _param):
         self.on_import_ai_questions(None)
+
+    def on_menu_import_snapshot(self, _action, _param):
+        self.on_import_data_snapshot(None)
 
     def on_menu_export_csv(self, _action, _param):
         self.on_export_data(None)
@@ -8487,6 +8492,75 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 error_dialog.present()
         else:
             dialog.destroy()
+
+    def on_import_data_snapshot(self, button):
+        if getattr(self, "_dialog_smoke_mode", False):
+            dialog = self._harden_window(Gtk.FileChooserDialog(  # gtk4_lint:ignore
+                title="Import Data Snapshot (JSON)",
+                transient_for=self,
+                action=Gtk.FileChooserAction.OPEN,
+            ))
+            dialog.add_buttons(
+                "_Cancel", Gtk.ResponseType.CANCEL, "_Open", Gtk.ResponseType.ACCEPT
+            )
+            dialog.connect("response", self.on_import_data_snapshot_response)
+            dialog.present()
+            return
+        dialog = Gtk.FileChooserNative(
+            title="Import Data Snapshot (JSON)",
+            transient_for=self,
+            action=Gtk.FileChooserAction.OPEN,
+            accept_label="_Open",
+            cancel_label="_Cancel",
+        )
+        self._active_native_dialog = dialog
+        dialog.connect("response", self.on_import_data_snapshot_response)
+        dialog.connect("response", lambda *_args: setattr(self, "_active_native_dialog", None))
+        dialog.show()
+
+    def on_import_data_snapshot_response(self, dialog, response):
+        if response != Gtk.ResponseType.ACCEPT:
+            dialog.destroy()
+            return
+        file_path = self._get_file_path(dialog)
+        dialog.destroy()
+        try:
+            if not file_path:
+                raise ValueError("No file selected.")
+            result = self.engine.import_data_snapshot(file_path)
+            self.exam_date = self.engine.exam_date
+            self.update_exam_date_display()
+            self.update_availability_display()
+            self.update_recommendations()
+            self.update_study_room_card()
+            self.update_dashboard()
+            msg = (
+                f"Snapshot imported safely.\n\n"
+                f"Chapters: {int(result.get('chapters', 0) or 0)}\n"
+                f"Study days: {int(result.get('study_days', 0) or 0)}\n"
+                f"Quiz results: {int(result.get('quiz_results', 0) or 0)}\n"
+                f"Progress points: {int(result.get('progress_points', 0) or 0)}"
+            )
+            ok = self._new_message_dialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text=msg,
+            )
+            ok.connect("response", lambda d, _r: d.destroy())
+            ok.present()
+        except Exception as e:
+            self._log_error("import_data_snapshot", e)
+            err = self._new_message_dialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.ERROR,
+                buttons=Gtk.ButtonsType.OK,
+                text=f"Failed to import snapshot: {e}",
+            )
+            err.connect("response", lambda d, _r: d.destroy())
+            err.present()
 
 
     def on_export_data(self, button):
