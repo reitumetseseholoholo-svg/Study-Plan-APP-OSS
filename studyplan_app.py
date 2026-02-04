@@ -1290,7 +1290,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.action_timer_label.add_css_class("action-timer")
         study_room_card.append(self.action_timer_label)
         study_room_card.append(self.study_room_summary)
-        self.study_room_blocks_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.study_room_blocks_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.study_room_blocks_label = Gtk.Label()
         self.study_room_blocks_label.set_halign(Gtk.Align.START)
         self.study_room_blocks_label.set_wrap(True)
