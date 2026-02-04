@@ -4799,10 +4799,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             last_quiz = 0.0
         tooltip_parts.append(f"Release check: poms {daily_poms}+{recall_credit} • quiz {last_quiz:.0f}%")
         try:
-            if self._should_override_sticky_coach_pick(topic):
+            release, reason = self._sticky_release_status(topic)
+            if release:
                 tooltip_parts.append("Release: YES (sticky override)")
             else:
                 tooltip_parts.append("Release: NO (sticky holds)")
+            if reason:
+                tooltip_parts.append(f"Release reason: {reason}")
         except Exception:
             pass
         if pace_status == "behind":
@@ -5481,6 +5484,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.update_study_room_card()
 
     def _should_override_sticky_coach_pick(self, topic: str) -> bool:
+        release, _reason = self._sticky_release_status(topic)
+        return bool(release)
+
+    def _sticky_release_status(self, topic: str) -> tuple[bool, str]:
         try:
             daily_poms = int(self.daily_pomodoros_by_chapter.get(topic, 0) or 0)
         except Exception:
@@ -5497,22 +5504,68 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             last_quiz = 0.0
         effective_poms = daily_poms + recall_credit
-        if effective_poms >= 3 and last_quiz >= 80:
-            return True
+
+        # Hard-stop and soft-stop guards to prevent all-day lock-in on a single topic.
+        if daily_poms >= 7:
+            return True, "hard cap reached (7+ focus blocks)"
+        if daily_poms >= 5 and effective_poms >= 3:
+            return True, "soft cap reached (5+ focus blocks)"
+
+        # Mastery checkpoint release: 2-3 deep blocks + decent quiz = rotate.
+        if effective_poms >= 3 and last_quiz >= 75:
+            return True, "mastery checkpoint met"
+        if effective_poms >= 4:
+            return True, "sustained deep focus complete"
+
         try:
             today = datetime.date.today()
             must_due = self._get_must_review_due_count(today)
             if must_due > 0:
-                return True
+                return True, "must-review items are due"
         except Exception:
             pass
         try:
             weak = self._get_weak_chapter(60.0)
             if weak and weak != topic:
-                return True
+                return True, f"weaker chapter exists ({weak})"
         except Exception:
             pass
-        return False
+        return False, "continue deep focus"
+
+    def _pick_topic_after_sticky_release(self, sticky_topic: str, plan: list[str]) -> str:
+        """Pick the next topic when sticky coach is released."""
+        if not self._has_chapters():
+            return ""
+
+        # Prefer mandatory weak chapter first.
+        try:
+            threshold = float(getattr(self.engine, "mandatory_weak_threshold", 60.0) or 60.0)
+            weak = self._get_weak_chapter(threshold)
+            if weak and weak != sticky_topic:
+                return weak
+        except Exception:
+            pass
+
+        # Then daily plan candidates (in order), excluding the sticky topic.
+        for chapter in plan:
+            if chapter in self.engine.CHAPTERS and chapter != sticky_topic:
+                return chapter
+
+        # Then urgency model candidates.
+        try:
+            recs = self.engine.top_recommendations(max(3, len(self.engine.CHAPTERS))) or []
+            for chapter, _score in recs:
+                if chapter in self.engine.CHAPTERS and chapter != sticky_topic:
+                    return chapter
+        except Exception:
+            pass
+
+        # Final fallback: least-studied chapter today (excluding sticky topic).
+        candidates = [ch for ch in self.engine.CHAPTERS if ch != sticky_topic]
+        if not candidates:
+            return ""
+        candidates.sort(key=lambda ch: int(self.daily_pomodoros_by_chapter.get(ch, 0) or 0))
+        return candidates[0]
 
     def _get_recommended_topic(self) -> str:
         if not self._has_chapters():
@@ -5531,9 +5584,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             today_iso = datetime.date.today().isoformat()
             if self.sticky_coach_pick and self.last_coach_pick_date == today_iso:
                 if self.last_coach_pick in self.engine.CHAPTERS:
-                    if not self._should_override_sticky_coach_pick(self.last_coach_pick):
+                    release, _reason = self._sticky_release_status(self.last_coach_pick)
+                    if not release:
                         if not plan or self.last_coach_pick in plan:
                             return self.last_coach_pick
+                    else:
+                        rotated = self._pick_topic_after_sticky_release(self.last_coach_pick, plan)
+                        if rotated:
+                            return rotated
         except Exception:
             pass
         if plan:
