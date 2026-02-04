@@ -35,6 +35,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **Pomodoro**: focus timer, break timer, alerts, streaks
 - **Focus verification**: Hyprland allowlist + idle detection for verified minutes
 - **Quizzes**: SRS‑weighted questions, streak bonuses, weak‑area drill
+- **Responsive quiz flow**: lightweight per‑question updates, full dashboard refresh on quiz completion
 - **Gamification**: XP, levels, badges, daily quests
 - **Daily plan**: coach‑aligned topic list with **automatic** daily completion
 - **Plan stability**: stays consistent for the day unless a major import refreshes it
@@ -151,6 +152,12 @@ pytest -q
 - **Notifications not showing**: enable desktop notifications in Preferences
 - **Charts missing**: install `matplotlib`
 - **PDF import missing**: install `PyMuPDF (fitz)`
+
+## Recent stability updates (Feb 2026)
+
+- Fixed a quiz runtime issue where full dashboard rebuilds could trigger high CPU/jank during answer confirmation.
+- Added defensive quiz selection/history handling to reduce repetitive card loops and corrupted history impact.
+- Hardened file chooser path handling to avoid noisy GTK deprecation warnings in normal use.
 
 ## Files
 

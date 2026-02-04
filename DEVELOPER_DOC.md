@@ -102,6 +102,11 @@ Global app data:
 - `flag_incorrect` adds must‑review items
 - `record_difficulty` tracks repeated misses for “Hardest Concepts”
 
+### Runtime stability guardrails
+- Avoid calling `update_dashboard()` inside per-question quiz confirmation paths.
+- Keep per-answer refreshes lightweight (`_update_coach_pick_card`, `update_study_room_card`) and refresh full dashboard once at quiz completion.
+- In file chooser helpers, prefer `get_file()` first and isolate legacy chooser calls to avoid noisy GTK deprecation warnings.
+
 ### Study Hub import
 - PDF parsing updates quiz/practice stats and competence
 - Import history logged to `import_history.jsonl`

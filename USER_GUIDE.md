@@ -66,6 +66,7 @@ Toggle in **Preferences** or from the **Coach‑only** button in the plan header
 ## 5) Quizzes and reviews
 
 - Quizzes use spaced repetition to prioritize weak/overdue questions.
+- During a quiz, the app now applies lightweight UI updates per answer and does a full dashboard refresh at quiz end (keeps the dialog responsive on long sessions).
 - Incorrect answers create **must‑review** items.
 - The **Hardest Concepts** card tracks repeated misses by chapter.
 
@@ -113,4 +114,3 @@ Use **Import PDF scores** to parse ACCA Study Hub reports. This updates competen
 - **PDF import missing** → install `PyMuPDF (fitz)`
 
 ---
-
