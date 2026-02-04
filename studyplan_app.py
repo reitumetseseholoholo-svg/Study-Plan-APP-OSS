@@ -995,6 +995,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._action_timer_id = None
         self._pomodoro_target_minutes = 25
         self._pomodoro_kind = "pomodoro_focus"
+        self._quiz_question_started_at = None
         self._recall_prompted_date = None
         self._recall_prompted_topic = None
         self.focus_integrity_log = []
@@ -7870,6 +7871,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         idx = self.quiz_session["indices"][self.quiz_session["position"]]
         question = self.quiz_session["questions"][idx]
+        self._quiz_question_started_at = time.monotonic()
 
         pos = self.quiz_session["position"] + 1
         total = len(self.quiz_session["indices"])
@@ -8005,6 +8007,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         before_comp = float(getattr(self.engine, "competence", {}).get(self.current_topic, 0) or 0)
         try:
             self.engine.update_competence(self.current_topic, delta, question_index=idx)
+        except Exception:
+            pass
+        try:
+            elapsed = None
+            started = getattr(self, "_quiz_question_started_at", None)
+            if isinstance(started, (int, float)):
+                elapsed = time.monotonic() - started
+            if hasattr(self.engine, "record_question_event"):
+                self.engine.record_question_event(self.current_topic, idx, is_correct, elapsed_sec=elapsed)
         except Exception:
             pass
         after_comp = float(getattr(self.engine, "competence", {}).get(self.current_topic, 0) or 0)

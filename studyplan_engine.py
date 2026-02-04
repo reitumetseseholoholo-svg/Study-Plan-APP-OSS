@@ -1209,6 +1209,7 @@ class StudyPlanEngine:
         self.quiz_results: Dict[str, float] = {}
         self.quiz_recent: Dict[str, List[int]] = {}
         self.error_notebook: Dict[str, List[Dict[str, Any]]] = {}
+        self.question_stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.chapter_notes: Dict[str, Dict[str, Any]] = {}
         self.difficulty_counts: Dict[str, Dict[str, int]] = {}
 
@@ -1583,6 +1584,68 @@ class StudyPlanEngine:
                 cleaned[k] = entries[-max_keep:]
         return cleaned
 
+    def _coerce_question_stats(self, raw):
+        """Normalize per-question stats to {chapter: {idx: stats}}."""
+        if not isinstance(raw, dict):
+            return {}
+        cleaned: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for ch, items in raw.items():
+            if not isinstance(ch, str) or not isinstance(items, dict):
+                continue
+            inner: Dict[str, Dict[str, Any]] = {}
+            for idx, stats in items.items():
+                try:
+                    idx_int = int(idx)
+                except Exception:
+                    continue
+                if idx_int < 0:
+                    continue
+                if not isinstance(stats, dict):
+                    continue
+                try:
+                    attempts = int(stats.get("attempts", 0) or 0)
+                except Exception:
+                    attempts = 0
+                try:
+                    correct = int(stats.get("correct", 0) or 0)
+                except Exception:
+                    correct = 0
+                try:
+                    streak = int(stats.get("streak", 0) or 0)
+                except Exception:
+                    streak = 0
+                try:
+                    time_count = int(stats.get("time_count", 0) or 0)
+                except Exception:
+                    time_count = 0
+                try:
+                    avg_time = float(stats.get("avg_time_sec", 0) or 0.0)
+                except Exception:
+                    avg_time = 0.0
+                try:
+                    last_time = float(stats.get("last_time_sec", 0) or 0.0)
+                except Exception:
+                    last_time = 0.0
+                attempts = max(0, attempts)
+                correct = max(0, min(correct, attempts))
+                streak = max(0, streak)
+                time_count = max(0, time_count)
+                avg_time = max(0.0, avg_time)
+                last_time = max(0.0, last_time)
+                last_seen = self._parse_date(stats.get("last_seen"))
+                inner[str(idx_int)] = {
+                    "attempts": attempts,
+                    "correct": correct,
+                    "streak": streak,
+                    "time_count": time_count,
+                    "avg_time_sec": avg_time,
+                    "last_time_sec": last_time,
+                    "last_seen": last_seen.isoformat() if last_seen else None,
+                }
+            if inner:
+                cleaned[ch] = inner
+        return cleaned
+
     def _normalize_loaded_data(self):
         """Coerce all persisted data into safe, canonical formats."""
         # reset stats per normalization pass
@@ -1611,6 +1674,7 @@ class StudyPlanEngine:
             self.quiz_results = {}
         self.quiz_recent = self._coerce_quiz_recent(getattr(self, "quiz_recent", {}))
         self.error_notebook = self._coerce_error_notebook(getattr(self, "error_notebook", {}))
+        self.question_stats = self._coerce_question_stats(getattr(self, "question_stats", {}))
         self._normalize_chapter_keys()
 
     def _normalize_chapter_keys(self) -> None:
@@ -1755,6 +1819,15 @@ class StudyPlanEngine:
                 fixed[nk] = v
             self.error_notebook = fixed
 
+        def _merge_question_stats():
+            if not isinstance(getattr(self, "question_stats", None), dict):
+                return
+            fixed = {}
+            for k, v in self.question_stats.items():
+                nk = _norm_key(k) or k
+                fixed[nk] = v
+            self.question_stats = fixed
+
         def _merge_quiz_recent():
             if not isinstance(getattr(self, "quiz_recent", None), dict):
                 return
@@ -1774,6 +1847,7 @@ class StudyPlanEngine:
         _merge_difficulty_counts()
         _merge_quiz_recent()
         _merge_error_notebook()
+        _merge_question_stats()
 
     def test_methods(self) -> None:
         """Quick test that all required methods exist."""
@@ -3327,6 +3401,82 @@ class StudyPlanEngine:
         entries.append(entry)
         self.error_notebook[chapter] = entries[-200:]
 
+    def record_question_event(
+        self,
+        chapter: str,
+        question_index: int,
+        is_correct: bool,
+        elapsed_sec: float | None = None,
+    ) -> None:
+        """Log per-question attempt stats for later ML/analytics."""
+        if chapter not in self.CHAPTERS:
+            return
+        if not isinstance(question_index, int) or question_index < 0:
+            return
+        stats_by_ch = self.question_stats.get(chapter)
+        if not isinstance(stats_by_ch, dict):
+            stats_by_ch = {}
+            self.question_stats[chapter] = stats_by_ch
+        key = str(question_index)
+        entry = stats_by_ch.get(key, {}) if isinstance(stats_by_ch.get(key, {}), dict) else {}
+
+        try:
+            attempts = int(entry.get("attempts", 0) or 0)
+        except Exception:
+            attempts = 0
+        try:
+            correct = int(entry.get("correct", 0) or 0)
+        except Exception:
+            correct = 0
+        try:
+            streak = int(entry.get("streak", 0) or 0)
+        except Exception:
+            streak = 0
+        try:
+            time_count = int(entry.get("time_count", 0) or 0)
+        except Exception:
+            time_count = 0
+        try:
+            avg_time = float(entry.get("avg_time_sec", 0) or 0.0)
+        except Exception:
+            avg_time = 0.0
+        try:
+            last_time = float(entry.get("last_time_sec", 0) or 0.0)
+        except Exception:
+            last_time = 0.0
+
+        attempts = max(0, attempts) + 1
+        if is_correct:
+            correct = max(0, correct) + 1
+            streak = max(0, streak) + 1
+        else:
+            streak = 0
+
+        elapsed_val: float | None = None
+        if elapsed_sec is not None:
+            try:
+                elapsed_val = float(elapsed_sec)
+            except Exception:
+                elapsed_val = None
+        if elapsed_val is not None and elapsed_val >= 0:
+            last_time = elapsed_val
+            time_count = max(0, time_count) + 1
+            if time_count <= 1:
+                avg_time = elapsed_val
+            else:
+                avg_time = ((avg_time * (time_count - 1)) + elapsed_val) / time_count
+
+        correct = min(correct, attempts)
+        stats_by_ch[key] = {
+            "attempts": attempts,
+            "correct": correct,
+            "streak": streak,
+            "time_count": time_count,
+            "avg_time_sec": max(0.0, avg_time),
+            "last_time_sec": max(0.0, last_time),
+            "last_seen": datetime.date.today().isoformat(),
+        }
+
     def get_error_counts(self, chapter: str | None = None) -> dict[str, int]:
         """Return counts of error tags."""
         counts: Dict[str, int] = {}
@@ -4337,6 +4487,7 @@ class StudyPlanEngine:
         self.quiz_results = data.get('quiz_results', self.quiz_results)
         self.quiz_recent = data.get('quiz_recent', self.quiz_recent)
         self.error_notebook = data.get('error_notebook', self.error_notebook)
+        self.question_stats = data.get('question_stats', self.question_stats)
         self.progress_log = data.get('progress_log', self.progress_log)
         self.chapter_notes = data.get('chapter_notes', self.chapter_notes)
         self.difficulty_counts = data.get('difficulty_counts', self.difficulty_counts)
@@ -4406,6 +4557,7 @@ class StudyPlanEngine:
         self.daily_plan_cache_date = None
         self.quiz_recent = {}
         self.error_notebook = {}
+        self.question_stats = {}
 
         self.save_data()
 
@@ -4429,6 +4581,7 @@ class StudyPlanEngine:
             "quiz_results": dict(self.quiz_results),
             "quiz_recent": {k: list(v) for k, v in self.quiz_recent.items()},
             "error_notebook": {k: list(v) for k, v in self.error_notebook.items()},
+            "question_stats": {k: dict(v) for k, v in self.question_stats.items()},
             "progress_log": list(self.progress_log),
             "chapter_notes": dict(self.chapter_notes),
             "difficulty_counts": dict(self.difficulty_counts),
