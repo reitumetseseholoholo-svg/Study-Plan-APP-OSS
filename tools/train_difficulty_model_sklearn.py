@@ -60,7 +60,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Train difficulty clustering model (KMeans).")
     parser.add_argument(
         "--data",
-        default=os.path.expanduser("~/.config/studyplan/data.json"),
+        default=os.path.expanduser("~/.config/studyplan/acca_f9/data.json"),
         help="Path to data.json",
     )
     parser.add_argument(

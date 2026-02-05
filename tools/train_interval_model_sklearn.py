@@ -13,23 +13,49 @@ def _log1p_safe(val: float) -> float:
         return 0.0
 
 
-def _load_stats(data_path: str) -> dict:
+def _load_data(data_path: str) -> dict:
     with open(data_path, "r", encoding="utf-8") as f:
         data = json.load(f)
+    return data if isinstance(data, dict) else {}
+
+
+def _build_dataset(data: dict) -> tuple[list[list[float]], list[float]]:
     stats = data.get("question_stats", {}) if isinstance(data, dict) else {}
-    return stats if isinstance(stats, dict) else {}
-
-
-def _build_dataset(stats: dict, threshold: float) -> tuple[list[list[float]], list[int]]:
+    srs = data.get("srs_data", {}) if isinstance(data, dict) else {}
     X: list[list[float]] = []
-    y: list[int] = []
+    y: list[float] = []
     today = datetime.date.today()
-    for chapter_stats in stats.values():
+    if not isinstance(stats, dict) or not isinstance(srs, dict):
+        return X, y
+    for chapter, chapter_stats in stats.items():
         if not isinstance(chapter_stats, dict):
             continue
-        for entry in chapter_stats.values():
+        srs_list = srs.get(chapter, [])
+        if not isinstance(srs_list, list):
+            continue
+        for idx_str, entry in chapter_stats.items():
             if not isinstance(entry, dict):
                 continue
+            try:
+                idx = int(idx_str)
+            except Exception:
+                continue
+            if idx < 0 or idx >= len(srs_list):
+                continue
+            srs_item = srs_list[idx]
+            if not isinstance(srs_item, dict):
+                continue
+            last_review = srs_item.get("last_review")
+            if not last_review:
+                continue
+            try:
+                interval = float(srs_item.get("interval", 1) or 1)
+            except Exception:
+                interval = 1.0
+            try:
+                efactor = float(srs_item.get("efactor", 2.5) or 2.5)
+            except Exception:
+                efactor = 2.5
             try:
                 attempts = float(entry.get("attempts", 0) or 0)
             except Exception:
@@ -63,14 +89,16 @@ def _build_dataset(stats: dict, threshold: float) -> tuple[list[list[float]], li
                 max(0.0, streak),
                 _log1p_safe(avg_time),
                 _log1p_safe(days_since),
+                _log1p_safe(max(1.0, interval)),
+                max(1.3, min(2.5, efactor)),
             ]
             X.append(features)
-            y.append(1 if correct_rate >= threshold else 0)
+            y.append(_log1p_safe(interval))
     return X, y
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Train recall prediction model using scikit-learn.")
+    parser = argparse.ArgumentParser(description="Train interval calibration model (Ridge).")
     parser.add_argument(
         "--data",
         default=os.path.expanduser("~/.config/studyplan/acca_f9/data.json"),
@@ -78,31 +106,29 @@ def main() -> int:
     )
     parser.add_argument(
         "--out",
-        default=os.path.expanduser("~/.config/studyplan/recall_model.pkl"),
+        default=os.path.expanduser("~/.config/studyplan/interval_model.pkl"),
         help="Output model path (.pkl)",
     )
-    parser.add_argument("--threshold", type=float, default=0.7)
-    parser.add_argument("--max_iter", type=int, default=400)
-    parser.add_argument("--C", type=float, default=1.0)
+    parser.add_argument("--alpha", type=float, default=1.0)
     args = parser.parse_args()
 
-    stats = _load_stats(args.data)
-    X, y = _build_dataset(stats, threshold=float(args.threshold))
-    if len(X) < 25:
-        print("Not enough samples to train (need 25+).")
+    data = _load_data(args.data)
+    X, y = _build_dataset(data)
+    if len(X) < 30:
+        print("Not enough samples to train (need 30+).")
         return 1
 
     try:
-        from sklearn.linear_model import LogisticRegression
+        from sklearn.linear_model import Ridge
         import joblib
     except Exception as exc:
         print(f"Missing dependency: {exc}")
         return 2
 
-    model = LogisticRegression(max_iter=int(args.max_iter), C=float(args.C))
+    model = Ridge(alpha=float(args.alpha))
     model.fit(X, y)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    joblib.dump(model, args.out)
+    joblib.dump({"model": model, "feature_count": len(X[0])}, args.out)
     print(f"Model saved to {args.out} ({len(X)} samples).")
     return 0
 

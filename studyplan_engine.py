@@ -1217,6 +1217,8 @@ class StudyPlanEngine:
         self.recall_model_sklearn_path = os.path.join(self.DEFAULT_DATA_DIR, "recall_model.pkl")
         self.difficulty_model: Dict[str, Any] | None = None
         self.difficulty_model_path = os.path.join(self.DEFAULT_DATA_DIR, "difficulty_model.pkl")
+        self.interval_model: Dict[str, Any] | None = None
+        self.interval_model_path = os.path.join(self.DEFAULT_DATA_DIR, "interval_model.pkl")
         self.chapter_notes: Dict[str, Dict[str, Any]] = {}
         self.difficulty_counts: Dict[str, Dict[str, int]] = {}
 
@@ -1239,6 +1241,7 @@ class StudyPlanEngine:
         self._load_recall_model()
         self._load_recall_model_sklearn()
         self._load_difficulty_model()
+        self._load_interval_model()
 
         # Populate missing chapters safely
         missing_chapters = set(self.CHAPTERS) - set(self.srs_data.keys())
@@ -1259,6 +1262,7 @@ class StudyPlanEngine:
             "recall_model_json",
             "recall_model_sklearn",
             "difficulty_model",
+            "interval_model",
         }  # Add any vars that can be None
         for key, value in self.__dict__.items():
             if value is None and key not in none_allowed:
@@ -3364,10 +3368,12 @@ class StudyPlanEngine:
                 selected.extend(remaining[: (count - len(selected))])
             return selected
 
-        # Phase 1: always include must-review first (even if in cooldown).
+        # Phase 1: include must-review first, but cap to preserve variety.
         due_items = [item for item in scored if item[1] == 1]
-        due_items.sort(key=lambda x: (-x[2], -x[7], x[6]))  # overdue, higher risk, lower retention
-        selected = [idx for idx, *_rest in due_items[:count]]
+        # Prefer not-in-cooldown, then overdue, higher risk, lower retention.
+        due_items.sort(key=lambda x: (x[3], -x[2], -x[7], x[6]))
+        max_due = min(count, max(3, int(count * 0.5)))
+        selected = [idx for idx, *_rest in due_items[:max_due]]
 
         # Phase 2: fill from non-cooldown pool for diversity.
         if len(selected) < min(count, len(questions)):
@@ -3522,6 +3528,32 @@ class StudyPlanEngine:
         except Exception:
             self.difficulty_model = None
 
+    def _load_interval_model(self) -> None:
+        try:
+            path = self.interval_model_path
+            if not path or not os.path.exists(path):
+                self.interval_model = None
+                return
+            try:
+                import joblib  # type: ignore
+            except Exception:
+                self.interval_model = None
+                return
+            payload = joblib.load(path)
+            if not isinstance(payload, dict):
+                self.interval_model = None
+                return
+            model = payload.get("model")
+            if model is None or not hasattr(model, "predict"):
+                self.interval_model = None
+                return
+            self.interval_model = {
+                "model": model,
+                "feature_count": int(payload.get("feature_count", 0) or 0),
+            }
+        except Exception:
+            self.interval_model = None
+
     def predict_recall_prob(self, chapter: str, idx: int) -> float | None:
         if not self.recall_model_json and not self.recall_model_sklearn:
             return None
@@ -3589,6 +3621,60 @@ class StudyPlanEngine:
                 prob_json = max(0.0, min(1.0, prob_json))
 
         return prob_json
+
+    def predict_interval_days(self, chapter: str, idx: int, current_interval: float, efactor: float) -> float | None:
+        if self.interval_model is None:
+            return None
+        stats_by_ch = self.question_stats.get(chapter, {})
+        if not isinstance(stats_by_ch, dict):
+            return None
+        stats = stats_by_ch.get(str(idx))
+        if not isinstance(stats, dict):
+            return None
+        try:
+            attempts = float(stats.get("attempts", 0) or 0)
+        except Exception:
+            attempts = 0.0
+        try:
+            correct = float(stats.get("correct", 0) or 0)
+        except Exception:
+            correct = 0.0
+        try:
+            streak = float(stats.get("streak", 0) or 0)
+        except Exception:
+            streak = 0.0
+        try:
+            avg_time = float(stats.get("avg_time_sec", 0) or 0.0)
+        except Exception:
+            avg_time = 0.0
+        last_seen = stats.get("last_seen")
+        days_since = 999.0
+        if isinstance(last_seen, str) and last_seen:
+            try:
+                last_date = datetime.date.fromisoformat(last_seen)
+                days_since = float((datetime.date.today() - last_date).days)
+            except Exception:
+                days_since = 999.0
+        correct_rate = 0.0 if attempts <= 0 else (correct / max(1.0, attempts))
+        features = [
+            math.log1p(max(0.0, attempts)),
+            max(0.0, correct_rate),
+            max(0.0, streak),
+            math.log1p(max(0.0, avg_time)),
+            math.log1p(max(0.0, days_since)),
+            math.log1p(max(1.0, float(current_interval))),
+            max(1.3, min(2.5, float(efactor))),
+        ]
+        model = self.interval_model.get("model")
+        try:
+            pred = float(model.predict([features])[0])
+        except Exception:
+            return None
+        try:
+            pred_interval = max(1.0, math.expm1(pred))
+        except Exception:
+            return None
+        return pred_interval
 
     def record_quiz_history(self, chapter: str, indices: list[int], max_keep: int = 50) -> None:
         """Persist recently asked quiz question indices per chapter."""
@@ -3863,7 +3949,17 @@ class StudyPlanEngine:
                 if chapter in self.must_review:
                     self.must_review[chapter].pop(str(question_index), None)
                 efactor = min(efactor + 0.1, 2.5)
-                interval = max(interval * min(efactor, 2.0), 3)
+                sm2_interval = max(interval * min(efactor, 2.0), 3)
+                interval = sm2_interval
+                try:
+                    pred_interval = self.predict_interval_days(chapter, question_index, interval, efactor)
+                except Exception:
+                    pred_interval = None
+                if pred_interval is not None:
+                    # Blend ML prediction with SM-2, cap for stability.
+                    max_cap = 30.0
+                    blended = (0.6 * sm2_interval) + (0.4 * pred_interval)
+                    interval = max(3.0, min(max_cap, blended))
             else:
                 efactor = max(efactor - 0.2, 1.3)
                 interval = 1.0

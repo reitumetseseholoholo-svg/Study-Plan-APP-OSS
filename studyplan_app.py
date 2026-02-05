@@ -3221,9 +3221,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         recall_sklearn_btn = Gtk.Button(label="Train Recall (sklearn)")
         diff_btn = Gtk.Button(label="Train Difficulty (sklearn)")
         recall_py_btn = Gtk.Button(label="Train Recall (Python)")
+        interval_btn = Gtk.Button(label="Train Interval (sklearn)")
         button_row.append(recall_sklearn_btn)
         button_row.append(diff_btn)
         button_row.append(recall_py_btn)
+        button_row.append(interval_btn)
         content.append(button_row)
 
         status_label = Gtk.Label()
@@ -3266,17 +3268,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             recall_json = getattr(self.engine, "recall_model_path", "")
             recall_pkl = getattr(self.engine, "recall_model_sklearn_path", "")
             diff_pkl = getattr(self.engine, "difficulty_model_path", "")
+            interval_pkl = getattr(self.engine, "interval_model_path", "")
             samples = _count_samples()
             info_label.set_text(
                 "Data samples: %d questions with attempts\n"
                 "Recall model (json): %s\n"
                 "Recall model (sklearn): %s\n"
-                "Difficulty model (sklearn): %s"
+                "Difficulty model (sklearn): %s\n"
+                "Interval model (sklearn): %s"
                 % (
                     samples,
                     _fmt_status(recall_json),
                     _fmt_status(recall_pkl),
                     _fmt_status(diff_pkl),
+                    _fmt_status(interval_pkl),
                 )
             )
 
@@ -3327,6 +3332,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         recall_py_btn.connect(
             "clicked", lambda _btn: _run_trainer("train_recall_model.py", "Recall (python)")
+        )
+        interval_btn.connect(
+            "clicked", lambda _btn: _run_trainer("train_interval_model_sklearn.py", "Interval (sklearn)")
         )
 
         _refresh_info()
@@ -6555,14 +6563,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         else:
             mission_tasks.append(("Clear must-review", review_done))
 
-        mission_tasks = [(f"Focus {focus_goal}x Pomodoro", focus_done)]
-        if has_questions:
-            mission_tasks.append((f"Quiz {quiz_target} questions", quiz_done))
-        if must_review_due:
-            mission_tasks.append((f"Clear must-review ({must_review_due} due)", review_done))
-        else:
-            mission_tasks.append(("Clear must-review", review_done))
-
         if getattr(self, "study_room_mission_label", None):
             mission_lines = []
             for title, done in mission_tasks:
@@ -6801,7 +6801,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if getattr(self.engine, "difficulty_model", None) is not None
                 else "heuristic"
             )
-            detail_lines.append(f"Models: recall {recall_active} • difficulty {diff_active}")
+            model_line = f"Models: recall {recall_active} • difficulty {diff_active}"
+            last_trained = getattr(self, "_last_ml_train_at", None) or getattr(self, "_last_ml_train_date", None)
+            if last_trained:
+                model_line += f" • trained {last_trained}"
+            detail_lines.append(model_line)
         except Exception:
             pass
         note = self._get_confidence_note(recommended)
@@ -9450,6 +9454,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _auto_train_ml_models(self) -> None:
         try:
+            if getattr(self, "focus_mode", False):
+                return
             if getattr(self, "pomodoro_remaining", 0) > 0:
                 return
             if getattr(self, "_action_timer_kind", None) in ("quiz", "drill", "review"):
@@ -9485,7 +9491,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             def _worker():
                 ok1 = _run_script("train_recall_model_sklearn.py")
                 ok2 = _run_script("train_difficulty_model_sklearn.py")
-                if ok1 or ok2:
+                ok3 = _run_script("train_interval_model_sklearn.py")
+                if ok1 or ok2 or ok3:
                     now = datetime.datetime.now().isoformat(timespec="seconds")
                     def _finish():
                         self._last_ml_train_at = now

@@ -114,7 +114,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Train recall prediction model from question_stats.")
     parser.add_argument(
         "--data",
-        default=os.path.expanduser("~/.config/studyplan/data.json"),
+        default=os.path.expanduser("~/.config/studyplan/acca_f9/data.json"),
         help="Path to data.json",
     )
     parser.add_argument(
