@@ -19,6 +19,7 @@ import time
 import warnings
 import wave
 import struct
+import threading
 from typing import Optional, Any
 
 # Suppress known noisy GTK/GLib warnings without hiding real errors.
@@ -1065,6 +1066,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._active_native_dialog = None
         self._dialog_smoke_mode = False
         self.risk_baselines = {}
+        self._last_ml_train_date = None
+        self._last_ml_train_at = None
+        self._last_ml_train_sample_count = 0
         self.load_preferences()
         apply_theme(bool(self.use_system_theme))
 
@@ -1687,6 +1691,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         # Defer the heavier dashboard build until GTK is idle so the window paints quickly.
         GLib.idle_add(self._run_initial_refresh)
         GLib.idle_add(self._maybe_show_first_run)
+        GLib.timeout_add(30_000, self._auto_train_ml_tick)
 
         # Autosave on close
         self.connect("close-request", self.on_close_request)
@@ -1770,6 +1775,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._add_action("debug_info", self.on_debug_info)
         self._add_action("view_logs", self.on_view_logs)
         self._add_action("view_reflections", self.on_view_reflections)
+        self._add_action("train_ml_models", self.on_train_ml_models)
         self._add_action("toggle_menu", self.on_toggle_menu_action)
         self._add_action("edit_focus_allowlist", self.on_edit_focus_allowlist)
         self._add_action("set_confidence_note", self.on_set_confidence_note)
@@ -1818,6 +1824,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         app_menu.append("Debug Info…", "win.debug_info")
         app_menu.append("View Logs…", "win.view_logs")
         app_menu.append("Review Reflections…", "win.view_reflections")
+        app_menu.append("Train ML Models…", "win.train_ml_models")
         app_menu.append("Toggle Menu Bar", "win.toggle_menu")
 
         help_menu = Gio.Menu()
@@ -3193,6 +3200,139 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             lines.append("")
         self._show_scrolling_text("Reflections", "\n".join(lines).strip())
 
+    def on_train_ml_models(self, _action, _param):
+        dialog = self._new_dialog(title="Train ML Models", transient_for=self, modal=True)
+        dialog.add_buttons("_Close", Gtk.ResponseType.CLOSE)
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+
+        title = Gtk.Label(label="Model Training (optional)")
+        title.set_halign(Gtk.Align.START)
+        title.add_css_class("section-title")
+        content.append(title)
+
+        info_label = Gtk.Label()
+        info_label.set_halign(Gtk.Align.START)
+        info_label.set_wrap(True)
+        info_label.add_css_class("muted")
+        content.append(info_label)
+
+        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        recall_sklearn_btn = Gtk.Button(label="Train Recall (sklearn)")
+        diff_btn = Gtk.Button(label="Train Difficulty (sklearn)")
+        recall_py_btn = Gtk.Button(label="Train Recall (Python)")
+        button_row.append(recall_sklearn_btn)
+        button_row.append(diff_btn)
+        button_row.append(recall_py_btn)
+        content.append(button_row)
+
+        status_label = Gtk.Label()
+        status_label.set_halign(Gtk.Align.START)
+        status_label.set_wrap(True)
+        status_label.add_css_class("muted")
+        content.append(status_label)
+
+        def _fmt_status(path: str) -> str:
+            if not path:
+                return "missing"
+            if not os.path.exists(path):
+                return "missing"
+            try:
+                mtime = os.path.getmtime(path)
+                when = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                return f"present ({when})"
+            except Exception:
+                return "present"
+
+        def _count_samples() -> int:
+            stats = getattr(self.engine, "question_stats", {}) or {}
+            total = 0
+            if isinstance(stats, dict):
+                for ch_stats in stats.values():
+                    if not isinstance(ch_stats, dict):
+                        continue
+                    for entry in ch_stats.values():
+                        if not isinstance(entry, dict):
+                            continue
+                        try:
+                            attempts = int(entry.get("attempts", 0) or 0)
+                        except Exception:
+                            attempts = 0
+                        if attempts > 0:
+                            total += 1
+            return total
+
+        def _refresh_info():
+            recall_json = getattr(self.engine, "recall_model_path", "")
+            recall_pkl = getattr(self.engine, "recall_model_sklearn_path", "")
+            diff_pkl = getattr(self.engine, "difficulty_model_path", "")
+            samples = _count_samples()
+            info_label.set_text(
+                "Data samples: %d questions with attempts\n"
+                "Recall model (json): %s\n"
+                "Recall model (sklearn): %s\n"
+                "Difficulty model (sklearn): %s"
+                % (
+                    samples,
+                    _fmt_status(recall_json),
+                    _fmt_status(recall_pkl),
+                    _fmt_status(diff_pkl),
+                )
+            )
+
+        def _run_trainer(script_name: str, label: str):
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            script_path = os.path.join(base_dir, "tools", script_name)
+            if not os.path.exists(script_path):
+                status_label.set_text(f"{label}: script not found ({script_path})")
+                return
+            status_label.set_text(f"{label}: running…")
+
+            def _worker():
+                try:
+                    proc = subprocess.run(
+                        [sys.executable, script_path],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    out = (proc.stdout or "").strip()
+                    err = (proc.stderr or "").strip()
+                    ok = proc.returncode == 0
+                except Exception as exc:
+                    ok = False
+                    out = ""
+                    err = str(exc)
+                def _finish():
+                    if ok:
+                        status_label.set_text(f"{label}: done. {out or ''}".strip())
+                        now = datetime.datetime.now().isoformat(timespec="seconds")
+                        self._last_ml_train_at = now
+                        self._last_ml_train_date = now.split("T")[0]
+                        self._last_ml_train_sample_count = self._count_question_samples()
+                        self.save_preferences()
+                    else:
+                        status_label.set_text(f"{label}: failed. {err or out or 'unknown error'}")
+                    _refresh_info()
+                    return False
+                GLib.idle_add(_finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        recall_sklearn_btn.connect(
+            "clicked", lambda _btn: _run_trainer("train_recall_model_sklearn.py", "Recall (sklearn)")
+        )
+        diff_btn.connect(
+            "clicked", lambda _btn: _run_trainer("train_difficulty_model_sklearn.py", "Difficulty (sklearn)")
+        )
+        recall_py_btn.connect(
+            "clicked", lambda _btn: _run_trainer("train_recall_model.py", "Recall (python)")
+        )
+
+        _refresh_info()
+        dialog.connect("response", lambda d, _r: d.destroy())
+        dialog.present()
+
     def on_show_competence_table(self, _action, _param):
         comp = getattr(self.engine, "competence", {}) or {}
         rows = []
@@ -3403,6 +3543,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.last_weekly_summary_week = data.get("last_weekly_summary_week")
                     baselines = data.get("risk_baselines", {}) or {}
                     self.risk_baselines = baselines if isinstance(baselines, dict) else {}
+                    self._last_ml_train_date = data.get("last_ml_train_date")
+                    self._last_ml_train_at = data.get("last_ml_train_at")
+                    self._last_ml_train_sample_count = int(data.get("last_ml_train_sample_count", 0) or 0)
                     self.focus_tracking_enabled = bool(data.get("focus_tracking_enabled", True))
                     self.focus_auto_pause_enabled = bool(data.get("focus_auto_pause_enabled", True))
                     idle_threshold = data.get("focus_idle_threshold", FOCUS_IDLE_THRESHOLD_SECONDS)
@@ -3488,6 +3631,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "last_break_adjust_note": self.last_break_adjust_note,
                 "last_weekly_summary_week": self.last_weekly_summary_week,
                 "risk_baselines": self.risk_baselines,
+                "last_ml_train_date": self._last_ml_train_date,
+                "last_ml_train_at": self._last_ml_train_at,
+                "last_ml_train_sample_count": int(self._last_ml_train_sample_count or 0),
                 "focus_tracking_enabled": bool(self.focus_tracking_enabled),
                 "focus_auto_pause_enabled": bool(self.focus_auto_pause_enabled),
                 "focus_idle_threshold": int(self.focus_idle_threshold),
@@ -5495,6 +5641,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         return False
 
+    def _auto_train_ml_tick(self):
+        self._auto_train_ml_models()
+        return True
+
     def _release_dashboard_update_lock(self):
         self._dashboard_update_in_progress = False
         return False
@@ -6640,6 +6790,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             detail_lines.append(proficiency_line)
         if pace_line:
             detail_lines.append(pace_line)
+        try:
+            recall_active = (
+                "sklearn"
+                if getattr(self.engine, "recall_model_sklearn", None) is not None
+                else ("json" if getattr(self.engine, "recall_model_json", None) is not None else "off")
+            )
+            diff_active = (
+                "sklearn"
+                if getattr(self.engine, "difficulty_model", None) is not None
+                else "heuristic"
+            )
+            detail_lines.append(f"Models: recall {recall_active} • difficulty {diff_active}")
+        except Exception:
+            pass
         note = self._get_confidence_note(recommended)
         if note:
             detail_lines.append(f"Coach note: {note}")
@@ -9257,6 +9421,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ("Reset Data", lambda: self.on_reset_data(None)),
             ("Health Log", lambda: self.on_view_health_log(None)),
             ("Debug Info", lambda: self.on_debug_info(None, None)),
+            ("Train ML Models", lambda: self.on_train_ml_models(None, None)),
             ("First Run Tour", lambda: self.on_first_run_tour("smoke", None)),
             ("Quiz", lambda: self.on_take_quiz(None)),
         ]
@@ -9264,6 +9429,75 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         GLib.timeout_add(200, self._run_next_dialog_smoke_step)
         GLib.timeout_add(6000, self._force_end_smoke_test)
         return False
+
+    def _count_question_samples(self) -> int:
+        stats = getattr(self.engine, "question_stats", {}) or {}
+        total = 0
+        if isinstance(stats, dict):
+            for ch_stats in stats.values():
+                if not isinstance(ch_stats, dict):
+                    continue
+                for entry in ch_stats.values():
+                    if not isinstance(entry, dict):
+                        continue
+                    try:
+                        attempts = int(entry.get("attempts", 0) or 0)
+                    except Exception:
+                        attempts = 0
+                    if attempts > 0:
+                        total += 1
+        return total
+
+    def _auto_train_ml_models(self) -> None:
+        try:
+            if getattr(self, "pomodoro_remaining", 0) > 0:
+                return
+            if getattr(self, "_action_timer_kind", None) in ("quiz", "drill", "review"):
+                return
+            if getattr(self, "_dialog_smoke_mode", False):
+                return
+            today = datetime.date.today().isoformat()
+            if self._last_ml_train_date == today:
+                return
+            samples = self._count_question_samples()
+            if samples < 25:
+                return
+            delta = samples - int(self._last_ml_train_sample_count or 0)
+            if delta < 50:
+                return
+
+            def _run_script(script_name: str) -> bool:
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                script_path = os.path.join(base_dir, "tools", script_name)
+                if not os.path.exists(script_path):
+                    return False
+                try:
+                    proc = subprocess.run(
+                        [sys.executable, script_path],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    return proc.returncode == 0
+                except Exception:
+                    return False
+
+            def _worker():
+                ok1 = _run_script("train_recall_model_sklearn.py")
+                ok2 = _run_script("train_difficulty_model_sklearn.py")
+                if ok1 or ok2:
+                    now = datetime.datetime.now().isoformat(timespec="seconds")
+                    def _finish():
+                        self._last_ml_train_at = now
+                        self._last_ml_train_date = now.split("T")[0]
+                        self._last_ml_train_sample_count = samples
+                        self.save_preferences()
+                        return False
+                    GLib.idle_add(_finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
+        except Exception:
+            pass
 
     def _force_end_smoke_test(self) -> bool:
         if not getattr(self, "_dialog_smoke_mode", False):
@@ -9939,6 +10173,34 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 label.set_wrap(True)
                 label.add_css_class("muted")
                 insights.append(label)
+                try:
+                    model_lines = []
+                    recall_active = (
+                        "sklearn"
+                        if getattr(self.engine, "recall_model_sklearn", None) is not None
+                        else ("json" if getattr(self.engine, "recall_model_json", None) is not None else "off")
+                    )
+                    diff_active = (
+                        "sklearn"
+                        if getattr(self.engine, "difficulty_model", None) is not None
+                        else "heuristic"
+                    )
+                    model_lines.append(f"Recall model: {recall_active}")
+                    model_lines.append(f"Difficulty model: {diff_active}")
+                    model_label = Gtk.Label(label=" • ".join(model_lines))
+                    model_label.set_halign(Gtk.Align.START)
+                    model_label.add_css_class("muted")
+                    insights.append(model_label)
+                    last_trained = getattr(self, "_last_ml_train_at", None) or getattr(self, "_last_ml_train_date", None)
+                    if last_trained:
+                        train_label = Gtk.Label(label=f"Last trained: {last_trained}")
+                    else:
+                        train_label = Gtk.Label(label="Last trained: —")
+                    train_label.set_halign(Gtk.Align.START)
+                    train_label.add_css_class("muted")
+                    insights.append(train_label)
+                except Exception:
+                    pass
                 if not getattr(self, "adaptive_quiz_prioritization", True):
                     note = Gtk.Label(label="Adaptive quiz prioritization is off (Preferences → General).")
                     note.set_halign(Gtk.Align.START)

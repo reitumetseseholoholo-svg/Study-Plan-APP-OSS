@@ -1215,6 +1215,8 @@ class StudyPlanEngine:
         self.recall_model_sklearn: Any | None = None
         self.recall_model_path = os.path.join(self.DEFAULT_DATA_DIR, "recall_model.json")
         self.recall_model_sklearn_path = os.path.join(self.DEFAULT_DATA_DIR, "recall_model.pkl")
+        self.difficulty_model: Dict[str, Any] | None = None
+        self.difficulty_model_path = os.path.join(self.DEFAULT_DATA_DIR, "difficulty_model.pkl")
         self.chapter_notes: Dict[str, Dict[str, Any]] = {}
         self.difficulty_counts: Dict[str, Dict[str, int]] = {}
 
@@ -1236,6 +1238,7 @@ class StudyPlanEngine:
 
         self._load_recall_model()
         self._load_recall_model_sklearn()
+        self._load_difficulty_model()
 
         # Populate missing chapters safely
         missing_chapters = set(self.CHAPTERS) - set(self.srs_data.keys())
@@ -1253,6 +1256,9 @@ class StudyPlanEngine:
             "last_backup_error",
             "completed_chapters_date",
             "daily_plan_cache_date",
+            "recall_model_json",
+            "recall_model_sklearn",
+            "difficulty_model",
         }  # Add any vars that can be None
         for key, value in self.__dict__.items():
             if value is None and key not in none_allowed:
@@ -3415,6 +3421,21 @@ class StudyPlanEngine:
         miss_rate = 1.0 - min(1.0, max(0.0, correct / max(1, attempts)))
         time_factor = min(1.0, max(0.0, avg_time / 60.0))
         streak_factor = 1.0 - min(1.0, max(0.0, streak / 5.0))
+        if self.difficulty_model is not None:
+            try:
+                features = [
+                    max(0.0, miss_rate),
+                    math.log1p(max(0.0, avg_time)),
+                    max(0.0, streak_factor),
+                ]
+                model = self.difficulty_model.get("model")
+                label_map = self.difficulty_model.get("label_map", {})
+                cluster = int(model.predict([features])[0])
+                mapped = label_map.get(cluster)
+                if isinstance(mapped, str):
+                    return mapped
+            except Exception:
+                pass
         score = (0.7 * miss_rate) + (0.2 * time_factor) + (0.1 * streak_factor)
         if score >= 0.6:
             return "hard"
@@ -3470,6 +3491,36 @@ class StudyPlanEngine:
                 self.recall_model_sklearn = model
         except Exception:
             return
+
+    def _load_difficulty_model(self) -> None:
+        try:
+            path = self.difficulty_model_path
+            if not path or not os.path.exists(path):
+                self.difficulty_model = None
+                return
+            try:
+                import joblib  # type: ignore
+            except Exception:
+                self.difficulty_model = None
+                return
+            payload = joblib.load(path)
+            if not isinstance(payload, dict):
+                self.difficulty_model = None
+                return
+            model = payload.get("model")
+            label_map = payload.get("label_map")
+            if model is None or not isinstance(label_map, dict):
+                self.difficulty_model = None
+                return
+            if not hasattr(model, "predict"):
+                self.difficulty_model = None
+                return
+            self.difficulty_model = {
+                "model": model,
+                "label_map": {int(k): str(v) for k, v in label_map.items()},
+            }
+        except Exception:
+            self.difficulty_model = None
 
     def predict_recall_prob(self, chapter: str, idx: int) -> float | None:
         if not self.recall_model_json and not self.recall_model_sklearn:

@@ -54,6 +54,13 @@ Global app data:
 - Runtime: engine loads model if present; otherwise falls back to heuristics.
 - Model features: `log1p_attempts`, `correct_rate`, `streak`, `log1p_avg_time_sec`, `log1p_days_since_last_seen`
 
+### Optional difficulty clustering (offline)
+
+- Trainer: `tools/train_difficulty_model_sklearn.py`
+- Output: `~/.config/studyplan/difficulty_model.pkl`
+- Runtime: engine uses model if present; otherwise uses heuristic thresholds.
+- Features: `miss_rate`, `log1p_avg_time_sec`, `streak_factor`
+
 ## Module system
 
 ### Config format
