@@ -1074,6 +1074,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._last_ml_train_date = None
         self._last_ml_train_at = None
         self._last_ml_train_sample_count = 0
+        self._ml_train_in_progress = False
         self.load_preferences()
         apply_theme(bool(self.use_system_theme))
 
@@ -1513,6 +1514,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.pomodoro_timer_id = None
         self.pomodoro_paused = False
         self._glib_sources: set[int] = set()
+        self._dashboard_debounce_id = None
+        self._study_room_debounce_id = None
 
         # Take Quiz button
         self.quiz_btn = Gtk.Button(label="Take quiz")
@@ -3318,9 +3321,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not os.path.exists(script_path):
                 status_label.set_text(f"{label}: script not found ({script_path})")
                 return
+            if getattr(self, "_ml_train_in_progress", False):
+                status_label.set_text("Training already in progress…")
+                return
             status_label.set_text(f"{label}: running…")
 
             def _worker():
+                self._ml_train_in_progress = True
                 try:
                     proc = subprocess.run(
                         [sys.executable, script_path],
@@ -3336,6 +3343,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     out = ""
                     err = str(exc)
                 def _finish():
+                    self._ml_train_in_progress = False
                     if ok:
                         status_label.set_text(f"{label}: done. {out or ''}".strip())
                         now = datetime.datetime.now().isoformat(timespec="seconds")
@@ -6640,9 +6648,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
 
     def update_study_room_card(self) -> None:
-        if getattr(self, "_study_room_update_source", None):
+        if getattr(self, "_study_room_debounce_id", None):
             return
+        self._study_room_debounce_id = GLib.timeout_add(120, self._debounced_study_room_refresh)
+
+    def _debounced_study_room_refresh(self) -> bool:
+        self._study_room_debounce_id = None
+        if getattr(self, "_study_room_update_source", None):
+            return False
         self._study_room_update_source = GLib.idle_add(self._render_study_room_card)
+        return False
 
     def _render_study_room_card(self) -> bool:
         self._study_room_update_source = None
@@ -6660,8 +6675,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
         if not self._has_chapters():
-            self.study_room_summary.set_text(
-                "No chapters loaded yet. Add a module JSON (Module → Manage Modules) to start."
+            self._set_label_text_if_changed(
+                self.study_room_summary,
+                "No chapters loaded yet. Add a module JSON (Module → Manage Modules) to start.",
             )
             if getattr(self, "study_room_details_expander", None):
                 try:
@@ -6669,9 +6685,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     pass
             if getattr(self, "study_room_mission_label", None):
-                self.study_room_mission_label.set_text("Mission locked — no chapters loaded.")
+                self._set_label_text_if_changed(
+                    self.study_room_mission_label,
+                    "Mission locked — no chapters loaded.",
+                )
             if getattr(self, "study_room_next_due_label", None):
-                self.study_room_next_due_label.set_text("")
+                self._set_label_text_if_changed(self.study_room_next_due_label, "")
             if getattr(self, "study_room_mission_bar", None):
                 try:
                     self.study_room_mission_bar.set_fraction(0.0)
@@ -6705,7 +6724,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             recommended = self.current_topic or (self.engine.CHAPTERS[0] if self.engine.CHAPTERS else "")
         if getattr(self, "study_room_next_due_label", None):
             next_due = self._get_topic_next_due_text(recommended)
-            self.study_room_next_due_label.set_text(next_due or "")
+            self._set_label_text_if_changed(self.study_room_next_due_label, next_due or "")
             try:
                 self.study_room_next_due_label.set_visible(bool(next_due))
             except Exception:
@@ -6779,7 +6798,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 mission_lines.append("Quiz mission locked — import questions")
             if weak_chapter:
                 mission_lines.append(f"⚠ Mandatory focus: {weak_chapter} (until ≥60%)")
-            self.study_room_mission_label.set_text("\n".join(mission_lines))
+            self._set_label_text_if_changed(self.study_room_mission_label, "\n".join(mission_lines))
 
         if getattr(self, "study_room_mission_bar", None):
             mission_done = sum(1 for _t, done in mission_tasks if done)
@@ -7086,12 +7105,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
-        self.study_room_summary.set_text("\n".join(lines))
+        self._set_label_text_if_changed(self.study_room_summary, "\n".join(lines))
         if getattr(self, "study_room_details_label", None):
             if detail_lines:
-                self.study_room_details_label.set_text("\n".join(detail_lines))
+                self._set_label_text_if_changed(self.study_room_details_label, "\n".join(detail_lines))
             else:
-                self.study_room_details_label.set_text("No extra details yet.")
+                self._set_label_text_if_changed(self.study_room_details_label, "No extra details yet.")
         if getattr(self, "quiz_btn", None):
             self.quiz_btn.set_sensitive(has_questions)
             if not has_questions:
@@ -7128,7 +7147,36 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _should_show_onboarding(self) -> bool:
         if self.onboarding_dismissed:
             return False
+        if self._has_study_history():
+            return False
         return not isinstance(self.engine.exam_date, datetime.date)
+
+    def _has_study_history(self) -> bool:
+        try:
+            if self._count_question_samples() > 0:
+                return True
+        except Exception:
+            pass
+        try:
+            pomodoro = getattr(self.engine, "pomodoro_log", {}) or {}
+            total = float(pomodoro.get("total_minutes", 0) or 0)
+            if total > 0:
+                return True
+        except Exception:
+            pass
+        try:
+            progress = getattr(self.engine, "progress_log", []) or []
+            if isinstance(progress, list) and progress:
+                return True
+        except Exception:
+            pass
+        try:
+            quiz_results = getattr(self.engine, "quiz_results", {}) or {}
+            if isinstance(quiz_results, dict) and quiz_results:
+                return True
+        except Exception:
+            pass
+        return False
 
     # --- Onboarding ---
     def _build_onboarding_card(self) -> Gtk.Widget:
@@ -9735,6 +9783,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return
             if getattr(self, "_dialog_smoke_mode", False):
                 return
+            if getattr(self, "_ml_train_in_progress", False):
+                return
             last_ts = getattr(self, "_last_ml_train_at", None)
             if isinstance(last_ts, str):
                 try:
@@ -9767,16 +9817,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     return False
 
             def _worker():
-                ok1 = _run_script("train_recall_model_sklearn.py")
-                ok2 = _run_script("train_difficulty_model_sklearn.py")
-                ok3 = _run_script("train_interval_model_sklearn.py")
-                if ok1 or ok2 or ok3:
+                self._ml_train_in_progress = True
+                ok1 = ok2 = ok3 = False
+                try:
+                    ok1 = _run_script("train_recall_model_sklearn.py")
+                    ok2 = _run_script("train_difficulty_model_sklearn.py")
+                    ok3 = _run_script("train_interval_model_sklearn.py")
+                finally:
                     now = datetime.datetime.now().isoformat(timespec="seconds")
                     def _finish():
-                        self._last_ml_train_at = now
-                        self._last_ml_train_date = now.split("T")[0]
-                        self._last_ml_train_sample_count = samples
-                        self.save_preferences()
+                        self._ml_train_in_progress = False
+                        if ok1 or ok2 or ok3:
+                            self._last_ml_train_at = now
+                            self._last_ml_train_date = now.split("T")[0]
+                            self._last_ml_train_sample_count = samples
+                            self.save_preferences()
                         return False
                     GLib.idle_add(_finish)
 
@@ -9897,9 +9952,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def update_dashboard(self) -> None:  # pyright: ignore[reportGeneralTypeIssues]
         # Coalesce multiple refresh requests into a single idle render.
-        if getattr(self, "_dashboard_update_source", None):
+        if getattr(self, "_dashboard_debounce_id", None):
             return
+        self._dashboard_debounce_id = GLib.timeout_add(120, self._debounced_dashboard_refresh)
+
+    def _debounced_dashboard_refresh(self) -> bool:
+        self._dashboard_debounce_id = None
+        if getattr(self, "_dashboard_update_source", None):
+            return False
         self._dashboard_update_source = GLib.idle_add(self._render_dashboard)
+        return False
 
     def _render_dashboard(self) -> bool:  # pyright: ignore[reportGeneralTypeIssues]
         self._dashboard_update_source = None
@@ -10163,9 +10225,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if getattr(self.engine, "interval_model", None) is not None:
                 ml_models.append("Interval")
             ml_state = "ML: off" if not ml_models else "ML: " + ", ".join(ml_models)
-            sample_count = int(getattr(self, "_last_ml_train_sample_count", 0) or 0)
+            live_samples = int(self._count_question_samples() or 0)
+            trained_samples = int(getattr(self, "_last_ml_train_sample_count", 0) or 0)
+            sample_count = max(live_samples, trained_samples)
             trained_at = getattr(self, "_last_ml_train_at", None) or "never"
-            ml_label = Gtk.Label(label=f"{ml_state} • samples {sample_count} • trained {trained_at}")
+            training_note = " • training…" if getattr(self, "_ml_train_in_progress", False) else ""
+            ml_label = Gtk.Label(
+                label=f"{ml_state} • samples {sample_count} • trained {trained_at}{training_note}"
+            )
             ml_label.set_halign(Gtk.Align.START)
             ml_label.add_css_class("muted")
             coach_box.append(ml_label)
