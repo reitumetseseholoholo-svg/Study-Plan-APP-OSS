@@ -20,7 +20,21 @@ def _log1p_safe(val: float) -> float:
         return 0.0
 
 
+def _resolve_data_path(data_path: str) -> str:
+    if data_path and os.path.exists(data_path):
+        return data_path
+    default_path = os.path.expanduser("~/.config/studyplan/data.json")
+    if os.path.exists(default_path):
+        return default_path
+    fallback = os.path.expanduser("~/.config/studyplan/acca_f9/data.json")
+    if os.path.exists(fallback):
+        return fallback
+    return data_path
+
+
 def _load_stats(data_path: str) -> dict:
+    if not data_path or not os.path.exists(data_path):
+        return {}
     with open(data_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     stats = data.get("question_stats", {}) if isinstance(data, dict) else {}
@@ -34,7 +48,10 @@ def _build_dataset(stats: dict, threshold: float) -> tuple[list[list[float]], li
     for chapter_stats in stats.values():
         if not isinstance(chapter_stats, dict):
             continue
-        for entry in chapter_stats.values():
+        has_qid = any(str(k).startswith("q:") for k in chapter_stats.keys())
+        for key, entry in chapter_stats.items():
+            if has_qid and not str(key).startswith("q:"):
+                continue
             if not isinstance(entry, dict):
                 continue
             try:
@@ -128,7 +145,11 @@ def main() -> int:
     parser.add_argument("--threshold", type=float, default=0.7)
     args = parser.parse_args()
 
-    stats = _load_stats(args.data)
+    data_path = _resolve_data_path(args.data)
+    if not data_path or not os.path.exists(data_path):
+        print(f"Data file not found: {args.data}")
+        return 1
+    stats = _load_stats(data_path)
     X, y = _build_dataset(stats, threshold=float(args.threshold))
     if len(X) < 25:
         print("Not enough samples to train (need 25+).")

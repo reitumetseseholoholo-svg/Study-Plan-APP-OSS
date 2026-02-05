@@ -10,11 +10,15 @@ import csv
 import sys
 import tempfile
 import copy
-from typing import Dict, Any, List, Union, Set, Tuple
+import hashlib
+from typing import Dict, Any, List, Union, Set, Tuple, cast
 
 class StudyPlanEngine:
 
     VERSION = "1.0.0"
+    QUESTION_ID_PREFIX = "q:"
+    ML_MIN_ATTEMPTS = 3
+    ML_MIN_SAMPLES = 100
     CHAPTERS = [
         "FM Function",
         "FM Environment",
@@ -1277,6 +1281,7 @@ class StudyPlanEngine:
 
         # Load questions (syncs SRS as part of load)
         self.load_questions()
+        self._migrate_question_stats_to_qid()
 
         # Save data (do this after all inits/loads)
         self.save_data()
@@ -1603,7 +1608,7 @@ class StudyPlanEngine:
         return cleaned
 
     def _coerce_question_stats(self, raw):
-        """Normalize per-question stats to {chapter: {idx: stats}}."""
+        """Normalize per-question stats to {chapter: {key: stats}}."""
         if not isinstance(raw, dict):
             return {}
         cleaned: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -1612,12 +1617,17 @@ class StudyPlanEngine:
                 continue
             inner: Dict[str, Dict[str, Any]] = {}
             for idx, stats in items.items():
-                try:
-                    idx_int = int(idx)
-                except Exception:
+                key = str(idx).strip()
+                if not key:
                     continue
-                if idx_int < 0:
-                    continue
+                if not key.startswith(self.QUESTION_ID_PREFIX):
+                    try:
+                        idx_int = int(key)
+                    except Exception:
+                        idx_int = None
+                    if idx_int is None or idx_int < 0:
+                        continue
+                    key = str(idx_int)
                 if not isinstance(stats, dict):
                     continue
                 try:
@@ -1651,7 +1661,7 @@ class StudyPlanEngine:
                 avg_time = max(0.0, avg_time)
                 last_time = max(0.0, last_time)
                 last_seen = self._parse_date(stats.get("last_seen"))
-                inner[str(idx_int)] = {
+                inner[key] = {
                     "attempts": attempts,
                     "correct": correct,
                     "streak": streak,
@@ -1663,6 +1673,146 @@ class StudyPlanEngine:
             if inner:
                 cleaned[ch] = inner
         return cleaned
+
+    def _question_id(self, question: Dict[str, Any]) -> str | None:
+        """Return a stable ID for a question based on its content."""
+        if not isinstance(question, dict):
+            return None
+        text = str(question.get("question", "")).strip()
+        if not text:
+            return None
+        options = question.get("options") or []
+        if isinstance(options, list):
+            opt_text = "|".join(str(o).strip() for o in options if str(o).strip())
+        else:
+            opt_text = ""
+        correct = str(question.get("correct", "")).strip()
+        base = f"{text}||{opt_text}||{correct}"
+        digest = hashlib.sha1(base.encode("utf-8")).hexdigest()[:12]
+        return f"{self.QUESTION_ID_PREFIX}{digest}"
+
+    def _question_qid(self, chapter: str, idx: int) -> str | None:
+        """Return stable question ID for a question, falling back to index if missing."""
+        questions = self.QUESTIONS.get(chapter, [])
+        if isinstance(questions, list) and 0 <= idx < len(questions):
+            qid = self._question_id(questions[idx])
+            if qid:
+                return qid
+        return None
+
+    def _get_question_stats(self, chapter: str, idx: int) -> Dict[str, Any] | None:
+        stats_by_ch = self.question_stats.get(chapter, {})
+        if not isinstance(stats_by_ch, dict):
+            return None
+        qid = self._question_qid(chapter, idx)
+        if qid and qid in stats_by_ch and isinstance(stats_by_ch.get(qid), dict):
+            return stats_by_ch.get(qid)
+        key = str(idx)
+        if key in stats_by_ch and isinstance(stats_by_ch.get(key), dict):
+            return stats_by_ch.get(key)
+        return None
+
+    def _count_question_samples(self) -> int:
+        total = 0
+        for stats_by_ch in self.question_stats.values():
+            if not isinstance(stats_by_ch, dict):
+                continue
+            has_qid = any(
+                isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX)
+                for k in stats_by_ch.keys()
+            )
+            for key, entry in stats_by_ch.items():
+                if has_qid and isinstance(key, str) and not key.startswith(self.QUESTION_ID_PREFIX):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    attempts = int(entry.get("attempts", 0) or 0)
+                except Exception:
+                    attempts = 0
+                if attempts > 0:
+                    total += 1
+        return total
+
+    def get_due_today_by_chapter(self, day: datetime.date | None = None) -> dict[str, int]:
+        """Return counts of cards due today (includes new + overdue + must-review)."""
+        today = day or datetime.date.today()
+        counts: dict[str, int] = {}
+        for chapter in self.CHAPTERS:
+            due_count = 0
+            srs_list = self.srs_data.get(chapter, [])
+            if not isinstance(srs_list, list):
+                srs_list = []
+            for item in srs_list:
+                if not isinstance(item, dict):
+                    continue
+                last = item.get("last_review")
+                if last is None:
+                    due_count += 1
+                    continue
+                try:
+                    last_date = datetime.date.fromisoformat(str(last))
+                except Exception:
+                    continue
+                try:
+                    interval = int(item.get("interval", 1) or 1)
+                except Exception:
+                    interval = 1
+                interval = max(1, interval)
+                due_date = last_date + datetime.timedelta(days=interval)
+                if due_date <= today:
+                    due_count += 1
+            must_map = self.must_review.get(chapter, {})
+            if isinstance(must_map, dict):
+                for due in must_map.values():
+                    due_date = self._parse_date(due)
+                    if due_date and due_date <= today:
+                        due_count += 1
+            if due_count:
+                counts[chapter] = due_count
+        return counts
+
+    def get_leech_counts(
+        self,
+        days: int = 7,
+        min_attempts: int = 5,
+        max_accuracy: float = 0.4,
+    ) -> dict[str, int]:
+        """Return counts of likely leech questions by chapter."""
+        today = datetime.date.today()
+        counts: dict[str, int] = {}
+        for chapter, stats_by_ch in self.question_stats.items():
+            if not isinstance(stats_by_ch, dict):
+                continue
+            has_qid = any(
+                isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX)
+                for k in stats_by_ch.keys()
+            )
+            for key, entry in stats_by_ch.items():
+                if has_qid and isinstance(key, str) and not key.startswith(self.QUESTION_ID_PREFIX):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    attempts = int(entry.get("attempts", 0) or 0)
+                except Exception:
+                    attempts = 0
+                if attempts < min_attempts:
+                    continue
+                try:
+                    correct = int(entry.get("correct", 0) or 0)
+                except Exception:
+                    correct = 0
+                accuracy = 0.0 if attempts <= 0 else (correct / max(1, attempts))
+                if accuracy > max_accuracy:
+                    continue
+                last_seen = self._parse_date(entry.get("last_seen"))
+                if not last_seen:
+                    continue
+                if (today - last_seen).days > days:
+                    continue
+                counts[chapter] = counts.get(chapter, 0) + 1
+        return counts
 
     def _normalize_loaded_data(self):
         """Coerce all persisted data into safe, canonical formats."""
@@ -1694,6 +1844,40 @@ class StudyPlanEngine:
         self.error_notebook = self._coerce_error_notebook(getattr(self, "error_notebook", {}))
         self.question_stats = self._coerce_question_stats(getattr(self, "question_stats", {}))
         self._normalize_chapter_keys()
+
+    def _migrate_question_stats_to_qid(self) -> None:
+        """Backfill stable question IDs for existing stats (keeps old idx keys)."""
+        if not isinstance(self.question_stats, dict):
+            return
+        for chapter in self.CHAPTERS:
+            stats_by_ch = self.question_stats.get(chapter)
+            if not isinstance(stats_by_ch, dict):
+                continue
+            questions = self.QUESTIONS.get(chapter, [])
+            if not isinstance(questions, list) or not questions:
+                continue
+            for idx, question in enumerate(questions):
+                qid = self._question_id(question)
+                if not qid:
+                    continue
+                idx_key = str(idx)
+                idx_entry = stats_by_ch.get(idx_key) if isinstance(stats_by_ch.get(idx_key), dict) else None
+                qid_entry = stats_by_ch.get(qid) if isinstance(stats_by_ch.get(qid), dict) else None
+                if idx_entry is None:
+                    continue
+                if qid_entry is None:
+                    stats_by_ch[qid] = idx_entry
+                else:
+                    try:
+                        idx_attempts = int(idx_entry.get("attempts", 0) or 0)
+                    except Exception:
+                        idx_attempts = 0
+                    try:
+                        qid_attempts = int(qid_entry.get("attempts", 0) or 0)
+                    except Exception:
+                        qid_attempts = 0
+                    if idx_attempts > qid_attempts:
+                        stats_by_ch[qid] = idx_entry
 
     def _normalize_chapter_keys(self) -> None:
         """Normalize chapter key casing/aliases across stored dictionaries."""
@@ -2187,7 +2371,7 @@ class StudyPlanEngine:
             cleaned = ""
         return cleaned.strip().lower()
 
-    def _question_key(self, q: Dict[str, Any]) -> Tuple[str, Tuple[str, ...], str]:
+    def _question_dedupe_key(self, q: Dict[str, Any]) -> Tuple[str, Tuple[str, ...], str]:
         """Stable key for deduplicating questions across imports."""
         question = self._normalize_question_text(q.get("question", ""))
         options = tuple(self._normalize_question_text(opt) for opt in (q.get("options") or []))
@@ -2204,12 +2388,12 @@ class StudyPlanEngine:
         if not existing:
             return new_questions  # No existing questions, all are unique
 
-        existing_keys = {self._question_key(q) for q in existing}
+        existing_keys = {self._question_dedupe_key(q) for q in existing}
         unique_questions = []
         duplicates_found = 0
 
         for q in new_questions:
-            key = self._question_key(q)
+            key = self._question_dedupe_key(q)
             if key not in existing_keys:
                 unique_questions.append(q)
                 existing_keys.add(key)
@@ -2335,17 +2519,17 @@ class StudyPlanEngine:
             raise ValueError(f"Could not find chapter '{chapter_name}'")
 
         question_dicts: Dict[Tuple[str, Tuple[str, ...], str], Dict[str, Any]] = {
-            self._question_key(question): dict(question)
+            self._question_dedupe_key(question): dict(question)
             for question in questions
             if all(key in question for key in ("question", "options", "correct", "explanation"))
         }
 
         existing_questions: Set[Tuple[str, Tuple[str, ...], str]] = {
-            self._question_key(question) for question in self.QUESTIONS.get(chapter, [])
+            self._question_dedupe_key(question) for question in self.QUESTIONS.get(chapter, [])
         }
 
         new_questions: List[Dict[str, Any]] = [
-            q for q in question_dicts.values() if self._question_key(q) not in existing_questions
+            q for q in question_dicts.values() if self._question_dedupe_key(q) not in existing_questions
         ]
 
         self.QUESTIONS.setdefault(chapter, []).extend(new_questions)
@@ -3298,10 +3482,7 @@ class StudyPlanEngine:
         def _miss_risk(idx: int) -> float:
             if not getattr(self, "adaptive_quiz_prioritization", True):
                 return 0.0
-            stats_by_ch = self.question_stats.get(chapter, {})
-            if not isinstance(stats_by_ch, dict):
-                return 0.0
-            stats = stats_by_ch.get(str(idx))
+            stats = self._get_question_stats(chapter, idx)
             if not isinstance(stats, dict):
                 return 0.0
             try:
@@ -3400,10 +3581,7 @@ class StudyPlanEngine:
         return selected
 
     def get_question_difficulty(self, chapter: str, idx: int) -> str:
-        stats_by_ch = self.question_stats.get(chapter, {})
-        if not isinstance(stats_by_ch, dict):
-            return "unknown"
-        stats = stats_by_ch.get(str(idx))
+        stats = self._get_question_stats(chapter, idx)
         if not isinstance(stats, dict):
             return "unknown"
         try:
@@ -3427,7 +3605,11 @@ class StudyPlanEngine:
         miss_rate = 1.0 - min(1.0, max(0.0, correct / max(1, attempts)))
         time_factor = min(1.0, max(0.0, avg_time / 60.0))
         streak_factor = 1.0 - min(1.0, max(0.0, streak / 5.0))
-        if self.difficulty_model is not None:
+        if (
+            self.difficulty_model is not None
+            and attempts >= self.ML_MIN_ATTEMPTS
+            and self._count_question_samples() >= self.ML_MIN_SAMPLES
+        ):
             try:
                 features = [
                     max(0.0, miss_rate),
@@ -3436,6 +3618,9 @@ class StudyPlanEngine:
                 ]
                 model = self.difficulty_model.get("model")
                 label_map = self.difficulty_model.get("label_map", {})
+                if model is None or not hasattr(model, "predict"):
+                    raise AttributeError("difficulty model missing predict")
+                model = cast(Any, model)
                 cluster = int(model.predict([features])[0])
                 mapped = label_map.get(cluster)
                 if isinstance(mapped, str):
@@ -3557,16 +3742,15 @@ class StudyPlanEngine:
     def predict_recall_prob(self, chapter: str, idx: int) -> float | None:
         if not self.recall_model_json and not self.recall_model_sklearn:
             return None
-        stats_by_ch = self.question_stats.get(chapter, {})
-        if not isinstance(stats_by_ch, dict):
-            return None
-        stats = stats_by_ch.get(str(idx))
+        stats = self._get_question_stats(chapter, idx)
         if not isinstance(stats, dict):
             return None
         try:
             attempts = float(stats.get("attempts", 0) or 0)
         except Exception:
             attempts = 0.0
+        if attempts < self.ML_MIN_ATTEMPTS or self._count_question_samples() < self.ML_MIN_SAMPLES:
+            return None
         try:
             correct = float(stats.get("correct", 0) or 0)
         except Exception:
@@ -3625,16 +3809,15 @@ class StudyPlanEngine:
     def predict_interval_days(self, chapter: str, idx: int, current_interval: float, efactor: float) -> float | None:
         if self.interval_model is None:
             return None
-        stats_by_ch = self.question_stats.get(chapter, {})
-        if not isinstance(stats_by_ch, dict):
-            return None
-        stats = stats_by_ch.get(str(idx))
+        stats = self._get_question_stats(chapter, idx)
         if not isinstance(stats, dict):
             return None
         try:
             attempts = float(stats.get("attempts", 0) or 0)
         except Exception:
             attempts = 0.0
+        if attempts < self.ML_MIN_ATTEMPTS or self._count_question_samples() < self.ML_MIN_SAMPLES:
+            return None
         try:
             correct = float(stats.get("correct", 0) or 0)
         except Exception:
@@ -3666,6 +3849,9 @@ class StudyPlanEngine:
             max(1.3, min(2.5, float(efactor))),
         ]
         model = self.interval_model.get("model")
+        if model is None or not hasattr(model, "predict"):
+            return None
+        model = cast(Any, model)
         try:
             pred = float(model.predict([features])[0])
         except Exception:
@@ -3752,8 +3938,13 @@ class StudyPlanEngine:
         if not isinstance(stats_by_ch, dict):
             stats_by_ch = {}
             self.question_stats[chapter] = stats_by_ch
-        key = str(question_index)
+        qid = self._question_qid(chapter, question_index)
+        key = qid or str(question_index)
         entry = stats_by_ch.get(key, {}) if isinstance(stats_by_ch.get(key, {}), dict) else {}
+        if not entry and qid:
+            idx_key = str(question_index)
+            if isinstance(stats_by_ch.get(idx_key, {}), dict):
+                entry = stats_by_ch.get(idx_key, {})
 
         try:
             attempts = int(entry.get("attempts", 0) or 0)
@@ -3811,6 +4002,10 @@ class StudyPlanEngine:
             "last_time_sec": max(0.0, last_time),
             "last_seen": datetime.date.today().isoformat(),
         }
+        if qid:
+            idx_key = str(question_index)
+            if idx_key != key:
+                stats_by_ch[idx_key] = stats_by_ch[key]
 
     def get_error_counts(self, chapter: str | None = None) -> dict[str, int]:
         """Return counts of error tags."""
@@ -4034,6 +4229,76 @@ class StudyPlanEngine:
             random.shuffle(remaining)
             selected.extend(remaining[: (count - len(selected))])
         return selected
+
+    def select_due_review_questions(self, chapter: str, count: int = 10) -> list[int]:
+        """Select due/overdue questions only (recall mode)."""
+        questions = self.QUESTIONS.get(chapter, [])
+        if not questions:
+            return []
+        srs_list = self.srs_data.get(chapter, [])
+        if not isinstance(srs_list, list):
+            srs_list = []
+        today = datetime.date.today()
+        must_review = self.must_review.get(chapter, {}) if isinstance(self.must_review, dict) else {}
+        recent = set()
+        history = self.quiz_recent.get(chapter, [])
+        if isinstance(history, list):
+            for idx in history:
+                try:
+                    recent.add(int(idx))
+                except Exception:
+                    pass
+
+        due_indices: list[int] = []
+        for idx in range(len(questions)):
+            srs = srs_list[idx] if idx < len(srs_list) else {}
+            # must-review due
+            if isinstance(must_review, dict):
+                due_date = self._parse_date(must_review.get(str(idx)))
+                if due_date and due_date <= today:
+                    due_indices.append(idx)
+                    continue
+            # overdue standard SRS
+            if self.is_overdue(srs, today):
+                due_indices.append(idx)
+                continue
+            # due today (non-overdue but scheduled)
+            last = srs.get("last_review")
+            if last:
+                try:
+                    last_date = datetime.date.fromisoformat(last)
+                    interval = int(srs.get("interval", 1) or 1)
+                except Exception:
+                    continue
+                interval = max(1, interval)
+                due_date = last_date + datetime.timedelta(days=interval)
+                if due_date <= today:
+                    due_indices.append(idx)
+
+        if not due_indices:
+            # Fallback: lowest retention (still avoid brand-new if possible)
+            scored: list[tuple[float, int]] = []
+            for idx in range(len(questions)):
+                srs = srs_list[idx] if idx < len(srs_list) else {}
+                if srs.get("last_review") is None:
+                    continue
+                try:
+                    retention = float(self.get_retention_probability(chapter, idx))
+                except Exception:
+                    retention = 1.0
+                scored.append((retention, idx))
+            scored.sort(key=lambda x: x[0])
+            due_indices = [idx for _r, idx in scored[:count]]
+
+        # Prefer not-recent first, then fill.
+        ordered = [idx for idx in due_indices if idx not in recent]
+        if len(ordered) < min(count, len(due_indices)):
+            ordered.extend([idx for idx in due_indices if idx in recent])
+        if len(ordered) < count:
+            remaining = [i for i in range(len(questions)) if i not in ordered]
+            random.shuffle(remaining)
+            ordered.extend(remaining[: max(0, count - len(ordered))])
+        return ordered[: min(count, len(questions))]
 
     def flag_incorrect(self, chapter: str, question_index: int, days: int = 2) -> None:
         """Mark a question for forced review within N days."""
@@ -5047,6 +5312,21 @@ class StudyPlanEngine:
                 f.write(line + "\n")
         except OSError:
             pass
+
+    def run_data_health_check(self) -> Dict[str, Any]:
+        """Re-run normalization/migrations and persist; returns health snapshot."""
+        self._normalize_loaded_data()
+        try:
+            self.sync_srs_with_questions()
+        except Exception as exc:
+            self.data_health["notes"].append(f"sync_srs_with_questions: {exc}")
+        try:
+            self._migrate_question_stats_to_qid()
+        except Exception as exc:
+            self.data_health["notes"].append(f"migrate_question_stats: {exc}")
+        self.save_data()
+        self._append_health_log()
+        return dict(self.data_health)
 
     def _atomic_write_json(self, path: str, payload: dict, indent: int = 2) -> None:
         """Write JSON atomically to avoid partial/corrupt files."""
