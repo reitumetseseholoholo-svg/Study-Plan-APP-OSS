@@ -1507,6 +1507,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.pomodoro_remaining = 0
         self.pomodoro_timer_id = None
         self.pomodoro_paused = False
+        self._glib_sources: set[int] = set()
 
         # Take Quiz button
         self.quiz_btn = Gtk.Button(label="Take quiz")
@@ -4891,6 +4892,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._pomodoro_notified: set[int] = set()
         self.update_pomodoro_timer_label()
         self.pomodoro_timer_id = GLib.timeout_add_seconds(1, self.pomodoro_tick)
+        self._register_glib_source(self.pomodoro_timer_id)
         self._set_pomodoro_active_state(True)
         self._start_focus_tracking()
         self._start_action_timer(kind, topic=self.current_topic)
@@ -7270,10 +7272,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
 
         if self.pomodoro_timer_id:
-            try:
-                GLib.source_remove(self.pomodoro_timer_id)
-            except Exception:
-                pass
+            self._remove_glib_source(self.pomodoro_timer_id)
             self.pomodoro_timer_id = None
         minutes = 25
         if action_kind == "pomodoro_focus" and self._is_streak_guard_active():
@@ -7328,7 +7327,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_pomodoro_stop(self, button):
         if self.pomodoro_timer_id:
-            GLib.source_remove(self.pomodoro_timer_id)
+            self._remove_glib_source(self.pomodoro_timer_id)
             self.pomodoro_timer_id = None
         self._stop_break_timer()
         self._set_pomodoro_active_state(False)
@@ -7394,6 +7393,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
                 return False
         return True
+
+    def _register_glib_source(self, source_id: int | None) -> None:
+        if isinstance(source_id, int) and source_id > 0:
+            self._glib_sources.add(source_id)
+
+    def _remove_glib_source(self, source_id: int | None) -> None:
+        if not isinstance(source_id, int) or source_id <= 0:
+            return
+        if source_id not in self._glib_sources:
+            return
+        try:
+            GLib.source_remove(source_id)
+        finally:
+            self._glib_sources.discard(source_id)
 
     def _finish_pomodoro_completion(
         self,
