@@ -972,6 +972,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.adaptive_quiz_prioritization = True
         self.last_coach_pick = None
         self.last_coach_pick_date = None
+        self._last_coach_debug_topic = None
+        self._last_coach_debug_date = None
         self.onboarding_dismissed = False
         self.first_run_completed = False
         self._last_session_recap = None
@@ -3868,6 +3870,77 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.contract_log = self.contract_log[-30:]
         self.save_preferences()
 
+    def _log_coach_decision(self, topic: str, plan: list[str], release: bool | None, release_reason: str | None) -> None:
+        try:
+            today_iso = datetime.date.today().isoformat()
+        except Exception:
+            today_iso = ""
+        if self._last_coach_debug_topic == topic and self._last_coach_debug_date == today_iso:
+            return
+        self._last_coach_debug_topic = topic
+        self._last_coach_debug_date = today_iso
+        try:
+            path = os.path.join(self.DEFAULT_DATA_DIR, "coach_debug.log")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            ts = datetime.datetime.now().isoformat(timespec="seconds")
+            try:
+                daily_poms = int(self.daily_pomodoros_by_chapter.get(topic, 0) or 0)
+            except Exception:
+                daily_poms = 0
+            try:
+                recall = int(self.daily_recall_by_chapter.get(topic, 0) or 0)
+            except Exception:
+                recall = 0
+            try:
+                quiz_results = getattr(self.engine, "quiz_results", {}) or {}
+                quiz_score = float(quiz_results.get(topic, 0) or 0) if isinstance(quiz_results, dict) else 0.0
+            except Exception:
+                quiz_score = 0.0
+            try:
+                must_due = int(self._get_must_review_due_count(datetime.date.today()))
+            except Exception:
+                must_due = 0
+            try:
+                weak = self._get_weak_chapter(60.0) or ""
+            except Exception:
+                weak = ""
+            try:
+                due_count = int(self._get_topic_due_count(topic, datetime.date.today()))
+            except Exception:
+                due_count = 0
+            try:
+                pace_info = self._get_pace_info()
+                pace_status = pace_info.get("status", "unknown") if isinstance(pace_info, dict) else "unknown"
+                pace_delta = float(pace_info.get("delta", 0) or 0)
+            except Exception:
+                pace_status = "unknown"
+                pace_delta = 0.0
+            try:
+                verified = float(getattr(self, "pomodoro_minutes_today_verified", 0) or 0.0)
+            except Exception:
+                verified = 0.0
+            entry = {
+                "ts": ts,
+                "topic": topic,
+                "plan": plan,
+                "sticky": bool(self.sticky_coach_pick),
+                "release": release,
+                "release_reason": release_reason,
+                "daily_poms": daily_poms,
+                "daily_recall": recall,
+                "quiz": round(quiz_score, 1),
+                "must_due": must_due,
+                "weak": weak,
+                "due_count": due_count,
+                "pace": pace_status,
+                "pace_delta": round(pace_delta, 1),
+                "verified_min": round(verified, 1),
+            }
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
     def _maybe_show_rescue_prompt(self) -> None:
         if self._rescue_prompted:
             return
@@ -5875,31 +5948,48 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 plan = self.engine.get_daily_plan(num_topics=3, current_topic=self.current_topic) or []
             except Exception:
                 plan = []
+        release_flag = None
+        release_reason = None
         try:
             today_iso = datetime.date.today().isoformat()
             if self.sticky_coach_pick and self.last_coach_pick_date == today_iso:
                 if self.last_coach_pick in self.engine.CHAPTERS:
                     release, _reason = self._sticky_release_status(self.last_coach_pick)
+                    release_flag = bool(release)
+                    release_reason = _reason
                     if not release:
                         if not plan or self.last_coach_pick in plan:
-                            return self.last_coach_pick
+                            topic = self.last_coach_pick
+                            self._log_coach_decision(topic, plan, release_flag, release_reason)
+                            return topic
                     else:
                         rotated = self._pick_topic_after_sticky_release(self.last_coach_pick, plan)
                         if rotated:
-                            return rotated
+                            topic = rotated
+                            self._log_coach_decision(topic, plan, release_flag, release_reason)
+                            return topic
         except Exception:
             pass
         if plan:
-            return plan[0]
+            topic = plan[0]
+            self._log_coach_decision(topic, plan, release_flag, release_reason)
+            return topic
         try:
             recs = self.engine.top_recommendations(1) or []
             if recs:
-                return recs[0][0]
+                topic = recs[0][0]
+                self._log_coach_decision(topic, plan, release_flag, release_reason)
+                return topic
         except Exception:
             pass
         if self.current_topic in self.engine.CHAPTERS:
-            return self.current_topic
-        return self.engine.CHAPTERS[0] if self.engine.CHAPTERS else ""
+            topic = self.current_topic
+            self._log_coach_decision(topic, plan, release_flag, release_reason)
+            return topic
+        topic = self.engine.CHAPTERS[0] if self.engine.CHAPTERS else ""
+        if topic:
+            self._log_coach_decision(topic, plan, release_flag, release_reason)
+        return topic
 
     def _get_next_action_line(
         self,
