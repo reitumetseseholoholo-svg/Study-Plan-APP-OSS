@@ -126,6 +126,26 @@ def _safe_prob_list(values: Any, size: int) -> list[float]:
     return probs
 
 
+def _parse_c_grid(raw: str, fallback_c: float) -> list[float]:
+    values: list[float] = []
+    text = str(raw or "").strip()
+    if text:
+        for part in text.split(","):
+            p = part.strip()
+            if not p:
+                continue
+            try:
+                v = float(p)
+            except Exception:
+                continue
+            if v > 0:
+                values.append(v)
+    if not values:
+        values = [max(1e-6, float(fallback_c))]
+    uniq = sorted({round(v, 10) for v in values})
+    return [float(v) for v in uniq]
+
+
 def _brier_score(y_true: list[int], probs: list[float]) -> float:
     n = max(1, len(y_true))
     total = 0.0
@@ -202,6 +222,17 @@ def main() -> int:
     parser.add_argument("--threshold", type=float, default=0.7)
     parser.add_argument("--max_iter", type=int, default=400)
     parser.add_argument("--C", type=float, default=1.0)
+    parser.add_argument(
+        "--c_grid",
+        default="0.25,0.5,1.0,2.0,4.0",
+        help="Comma-separated C candidates. Empty uses --C only.",
+    )
+    parser.add_argument(
+        "--class_weight",
+        choices=["none", "balanced"],
+        default="balanced",
+        help="Class weighting strategy for LogisticRegression.",
+    )
     parser.add_argument("--test_size", type=float, default=0.2)
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument(
@@ -278,15 +309,47 @@ def main() -> int:
         y_test = y_train
         w_test = w_train
 
-    model = LogisticRegression(max_iter=int(args.max_iter), C=float(args.C))
-    model.fit(X_train, y_train, sample_weight=w_train)
-
-    new_probs = _predict_probs(model, X_test)
-    if new_probs is None:
-        print("Training failed: could not produce probabilities.")
+    if len(set(int(v) for v in y_train)) < 2:
+        print("Not enough class diversity in training split (need both positive and negative labels).")
         return 1
-    new_brier = _brier_score(y_test, new_probs)
-    new_auc = _roc_auc(y_test, new_probs)
+
+    class_weight: str | None = None if args.class_weight == "none" else "balanced"
+    c_grid = _parse_c_grid(args.c_grid, float(args.C))
+
+    best_model: Any | None = None
+    best_probs: list[float] | None = None
+    best_c: float | None = None
+    best_brier: float | None = None
+    best_auc: float | None = None
+    for c_val in c_grid:
+        try:
+            candidate = LogisticRegression(
+                max_iter=int(args.max_iter),
+                C=float(c_val),
+                class_weight=class_weight,
+            )
+            candidate.fit(X_train, y_train, sample_weight=w_train)
+        except Exception:
+            continue
+        probs = _predict_probs(candidate, X_test)
+        if probs is None:
+            continue
+        brier = _brier_score(y_test, probs)
+        auc = _roc_auc(y_test, probs)
+        if best_brier is None or brier < best_brier:
+            best_model = candidate
+            best_probs = probs
+            best_c = float(c_val)
+            best_brier = float(brier)
+            best_auc = auc
+
+    if best_model is None or best_probs is None or best_brier is None or best_c is None:
+        print("Training failed: no valid model candidate produced probabilities.")
+        return 1
+    model = best_model
+    new_probs = best_probs
+    new_brier = best_brier
+    new_auc = best_auc
 
     train_pos_rate = (sum(int(v) for v in y_train) / max(1, len(y_train))) if y_train else 0.5
     baseline_probs = [train_pos_rate] * len(y_test)
@@ -316,6 +379,9 @@ def main() -> int:
         "threshold": float(args.threshold),
         "test_size": test_size,
         "random_state": random_state,
+        "class_weight": args.class_weight,
+        "selected_c": round(float(best_c), 6),
+        "c_grid": [round(float(v), 6) for v in c_grid],
         "recency_weighting": {
             "half_life_days": round(float(recency_half_life_days), 3),
             "min_weight": round(float(recency_min_weight), 3),
