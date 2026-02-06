@@ -11335,7 +11335,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if isinstance(last_ts, str):
                 try:
                     last_dt = datetime.datetime.fromisoformat(last_ts)
-                    if (datetime.datetime.now() - last_dt).total_seconds() < 2 * 3600:
+                    if (datetime.datetime.now() - last_dt).total_seconds() < 1 * 3600:
                         return
                 except Exception:
                     pass
@@ -11343,7 +11343,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if samples < 25:
                 return
             delta = samples - int(self._last_ml_train_sample_count or 0)
-            if delta < 30:
+            if delta < 20:
                 return
 
             def _run_script(script_name: str) -> bool:
