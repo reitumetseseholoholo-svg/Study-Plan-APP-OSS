@@ -59,6 +59,7 @@ Global app data:
 - Model features: `log1p_attempts`, `correct_rate`, `streak`, `log1p_avg_time_sec`, `log1p_days_since_last_seen`
 - Recency weighting (sklearn trainer): exponential sample weights with `--recency_half_life_days` and `--recency_min_weight`.
 - Trainer robustness: holdout-gated promotion, optional class balancing (`--class_weight`), and auto-`C` selection via `--c_grid`.
+- Calibration: optional probability calibration (`--calibration`), plus ECE gate (`--max_ece`) before promotion.
 
 ### Optional difficulty clustering (offline)
 

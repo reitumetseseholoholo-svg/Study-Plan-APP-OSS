@@ -154,6 +154,25 @@ def _brier_score(y_true: list[int], probs: list[float]) -> float:
     return total / n
 
 
+def _expected_calibration_error(y_true: list[int], probs: list[float], bins: int = 10) -> float:
+    n = max(1, len(y_true))
+    b = max(2, int(bins))
+    ece = 0.0
+    for i in range(b):
+        lo = i / b
+        hi = (i + 1) / b
+        in_bin: list[int] = []
+        for idx, p in enumerate(probs):
+            if (p >= lo and p < hi) or (i == b - 1 and p == hi):
+                in_bin.append(idx)
+        if not in_bin:
+            continue
+        acc = sum(float(y_true[j]) for j in in_bin) / len(in_bin)
+        conf = sum(float(probs[j]) for j in in_bin) / len(in_bin)
+        ece += (len(in_bin) / n) * abs(acc - conf)
+    return float(ece)
+
+
 def _roc_auc(y_true: list[int], probs: list[float]) -> float | None:
     if len(y_true) < 2:
         return None
@@ -207,6 +226,84 @@ def _load_existing_model(path: str) -> Any | None:
     return None
 
 
+def _resolve_calibration_mode(requested: str, train_size: int) -> str:
+    if requested != "auto":
+        return requested
+    return "isotonic" if train_size >= 500 else "sigmoid"
+
+
+def _fit_logistic_candidate(
+    LogisticRegression: Any,
+    CalibratedClassifierCV: Any | None,
+    X_train: list[list[float]],
+    y_train: list[int],
+    w_train: list[float],
+    c_val: float,
+    max_iter: int,
+    class_weight: str | None,
+    calibration_mode: str,
+) -> Any | None:
+    try:
+        base = LogisticRegression(
+            max_iter=max_iter,
+            C=float(c_val),
+            class_weight=class_weight,
+        )
+    except Exception:
+        return None
+
+    mode = str(calibration_mode or "none").strip().lower()
+    if mode == "none" or CalibratedClassifierCV is None:
+        try:
+            base.fit(X_train, y_train, sample_weight=w_train)
+            return base
+        except Exception:
+            return None
+
+    positive = sum(1 for v in y_train if int(v) == 1)
+    negative = len(y_train) - positive
+    min_class = min(positive, negative)
+    if min_class < 2:
+        try:
+            base.fit(X_train, y_train, sample_weight=w_train)
+            return base
+        except Exception:
+            return None
+
+    cv = 3 if min_class >= 3 else 2
+    try:
+        calibrated = CalibratedClassifierCV(estimator=base, method=mode, cv=cv)
+    except TypeError:
+        try:
+            calibrated = CalibratedClassifierCV(base_estimator=base, method=mode, cv=cv)
+        except Exception:
+            calibrated = None
+    except Exception:
+        calibrated = None
+    if calibrated is None:
+        try:
+            base.fit(X_train, y_train, sample_weight=w_train)
+            return base
+        except Exception:
+            return None
+    try:
+        calibrated.fit(X_train, y_train, sample_weight=w_train)
+        return calibrated
+    except TypeError:
+        try:
+            calibrated.fit(X_train, y_train)
+            return calibrated
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        base.fit(X_train, y_train, sample_weight=w_train)
+        return base
+    except Exception:
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train recall prediction model using scikit-learn.")
     parser.add_argument(
@@ -232,6 +329,18 @@ def main() -> int:
         choices=["none", "balanced"],
         default="balanced",
         help="Class weighting strategy for LogisticRegression.",
+    )
+    parser.add_argument(
+        "--calibration",
+        choices=["none", "sigmoid", "isotonic", "auto"],
+        default="auto",
+        help="Probability calibration method for logistic outputs.",
+    )
+    parser.add_argument(
+        "--max_ece",
+        type=float,
+        default=0.20,
+        help="Maximum expected calibration error required for promotion.",
     )
     parser.add_argument("--test_size", type=float, default=0.2)
     parser.add_argument("--random_state", type=int, default=42)
@@ -281,6 +390,10 @@ def main() -> int:
     try:
         from sklearn.linear_model import LogisticRegression
         from sklearn.model_selection import train_test_split
+        try:
+            from sklearn.calibration import CalibratedClassifierCV
+        except Exception:
+            CalibratedClassifierCV = None
         import joblib
     except Exception as exc:
         print(f"Missing dependency: {exc}")
@@ -314,6 +427,8 @@ def main() -> int:
         return 1
 
     class_weight: str | None = None if args.class_weight == "none" else "balanced"
+    calibration_used = _resolve_calibration_mode(str(args.calibration), len(X_train))
+    max_ece = max(0.0, float(args.max_ece))
     c_grid = _parse_c_grid(args.c_grid, float(args.C))
 
     best_model: Any | None = None
@@ -321,35 +436,47 @@ def main() -> int:
     best_c: float | None = None
     best_brier: float | None = None
     best_auc: float | None = None
+    best_ece: float | None = None
     for c_val in c_grid:
-        try:
-            candidate = LogisticRegression(
-                max_iter=int(args.max_iter),
-                C=float(c_val),
-                class_weight=class_weight,
-            )
-            candidate.fit(X_train, y_train, sample_weight=w_train)
-        except Exception:
+        candidate = _fit_logistic_candidate(
+            LogisticRegression=LogisticRegression,
+            CalibratedClassifierCV=CalibratedClassifierCV,
+            X_train=X_train,
+            y_train=y_train,
+            w_train=w_train,
+            c_val=float(c_val),
+            max_iter=int(args.max_iter),
+            class_weight=class_weight,
+            calibration_mode=calibration_used,
+        )
+        if candidate is None:
             continue
         probs = _predict_probs(candidate, X_test)
         if probs is None:
             continue
         brier = _brier_score(y_test, probs)
         auc = _roc_auc(y_test, probs)
-        if best_brier is None or brier < best_brier:
+        ece = _expected_calibration_error(y_test, probs, bins=10)
+        if (
+            best_brier is None
+            or brier < best_brier
+            or (abs(brier - best_brier) < 1e-9 and (best_ece is None or ece < best_ece))
+        ):
             best_model = candidate
             best_probs = probs
             best_c = float(c_val)
             best_brier = float(brier)
             best_auc = auc
+            best_ece = float(ece)
 
-    if best_model is None or best_probs is None or best_brier is None or best_c is None:
+    if best_model is None or best_probs is None or best_brier is None or best_c is None or best_ece is None:
         print("Training failed: no valid model candidate produced probabilities.")
         return 1
     model = best_model
     new_probs = best_probs
     new_brier = best_brier
     new_auc = best_auc
+    new_ece = best_ece
 
     train_pos_rate = (sum(int(v) for v in y_train) / max(1, len(y_train))) if y_train else 0.5
     baseline_probs = [train_pos_rate] * len(y_test)
@@ -358,18 +485,21 @@ def main() -> int:
     existing_model = _load_existing_model(args.out)
     old_brier = None
     old_auc = None
+    old_ece = None
     if existing_model is not None:
         old_probs = _predict_probs(existing_model, X_test)
         if old_probs is not None:
             old_brier = _brier_score(y_test, old_probs)
             old_auc = _roc_auc(y_test, old_probs)
+            old_ece = _expected_calibration_error(y_test, old_probs, bins=10)
 
     beats_baseline = (baseline_brier - new_brier) >= float(args.min_baseline_gain)
     beats_existing = (
         old_brier is None
         or (old_brier - new_brier) >= float(args.min_improvement_brier)
     )
-    should_promote = beats_baseline and beats_existing
+    beats_calibration = new_ece <= max_ece
+    should_promote = beats_baseline and beats_existing and beats_calibration
 
     new_meta = {
         "trained_at": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -380,6 +510,7 @@ def main() -> int:
         "test_size": test_size,
         "random_state": random_state,
         "class_weight": args.class_weight,
+        "calibration": calibration_used,
         "selected_c": round(float(best_c), 6),
         "c_grid": [round(float(v), 6) for v in c_grid],
         "recency_weighting": {
@@ -390,11 +521,15 @@ def main() -> int:
         "metrics": {
             "brier": round(float(new_brier), 6),
             "auc": round(float(new_auc), 6) if new_auc is not None else None,
+            "ece": round(float(new_ece), 6),
             "baseline_brier": round(float(baseline_brier), 6),
             "beats_baseline": bool(beats_baseline),
             "old_brier": round(float(old_brier), 6) if old_brier is not None else None,
             "old_auc": round(float(old_auc), 6) if old_auc is not None else None,
+            "old_ece": round(float(old_ece), 6) if old_ece is not None else None,
             "beats_existing": bool(beats_existing),
+            "max_ece": round(float(max_ece), 6),
+            "beats_calibration": bool(beats_calibration),
             "promoted": bool(should_promote),
         },
     }
@@ -405,13 +540,14 @@ def main() -> int:
         joblib.dump(payload, args.out)
         print(
             f"Model promoted -> {args.out} "
-            f"(samples={len(X)}, brier={new_brier:.4f}, auc={new_auc if new_auc is not None else 'n/a'})"
+            f"(samples={len(X)}, brier={new_brier:.4f}, ece={new_ece:.4f}, "
+            f"auc={new_auc if new_auc is not None else 'n/a'})"
         )
     else:
         print(
             "Model not promoted "
-            f"(new_brier={new_brier:.4f}, baseline_brier={baseline_brier:.4f}, "
-            f"old_brier={old_brier if old_brier is not None else 'n/a'})."
+            f"(new_brier={new_brier:.4f}, new_ece={new_ece:.4f}, baseline_brier={baseline_brier:.4f}, "
+            f"old_brier={old_brier if old_brier is not None else 'n/a'}, max_ece={max_ece:.4f})."
         )
     return 0
 
