@@ -4140,6 +4140,21 @@ class StudyPlanEngine:
                 if chapter:
                     total_added += self._add_questions(chapter, data.get("questions", []))
                     chapters_touched.add(chapter)
+        elif isinstance(data, dict) and "questions_by_chapter" in data:
+            payload = data.get("questions_by_chapter")
+            if isinstance(payload, dict):
+                for ch_key, questions in payload.items():
+                    if not isinstance(ch_key, str) or not ch_key.strip():
+                        continue
+                    if not isinstance(questions, list):
+                        continue
+                    chapter = self._try_match_chapter(ch_key)
+                    if not chapter:
+                        continue
+                    added = self._add_questions(chapter, questions)
+                    if added:
+                        chapters_touched.add(chapter)
+                    total_added += added
         elif isinstance(data, dict):
             for ch_key, questions in data.items():
                 if not isinstance(ch_key, str) or not ch_key.strip():
