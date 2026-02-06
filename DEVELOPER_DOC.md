@@ -57,6 +57,7 @@ Global app data:
 - Output (sklearn): `~/.config/studyplan/recall_model.pkl`
 - Runtime: engine loads model if present; otherwise falls back to heuristics.
 - Model features: `log1p_attempts`, `correct_rate`, `streak`, `log1p_avg_time_sec`, `log1p_days_since_last_seen`
+- Recency weighting (sklearn trainer): exponential sample weights with `--recency_half_life_days` and `--recency_min_weight`.
 
 ### Optional difficulty clustering (offline)
 

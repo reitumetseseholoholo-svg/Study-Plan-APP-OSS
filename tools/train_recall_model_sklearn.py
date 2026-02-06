@@ -26,6 +26,17 @@ def _resolve_data_path(data_path: str) -> str:
     return data_path
 
 
+def _recency_weight(days_since: float, half_life_days: float, min_weight: float) -> float:
+    half_life = max(1.0, float(half_life_days))
+    floor = max(0.0, min(1.0, float(min_weight)))
+    ds = max(0.0, float(days_since))
+    try:
+        decay = math.exp(-math.log(2.0) * ds / half_life)
+    except Exception:
+        decay = floor
+    return max(floor, min(1.0, decay))
+
+
 def _load_stats(data_path: str) -> dict:
     if not data_path or not os.path.exists(data_path):
         return {}
@@ -35,9 +46,15 @@ def _load_stats(data_path: str) -> dict:
     return stats if isinstance(stats, dict) else {}
 
 
-def _build_dataset(stats: dict, threshold: float) -> tuple[list[list[float]], list[int]]:
+def _build_dataset(
+    stats: dict,
+    threshold: float,
+    recency_half_life_days: float,
+    recency_min_weight: float,
+) -> tuple[list[list[float]], list[int], list[float]]:
     X: list[list[float]] = []
     y: list[int] = []
+    w: list[float] = []
     today = datetime.date.today()
     for chapter_stats in stats.values():
         if not isinstance(chapter_stats, dict):
@@ -84,7 +101,14 @@ def _build_dataset(stats: dict, threshold: float) -> tuple[list[list[float]], li
             ]
             X.append(features)
             y.append(1 if correct_rate >= threshold else 0)
-    return X, y
+            w.append(
+                _recency_weight(
+                    days_since=days_since,
+                    half_life_days=recency_half_life_days,
+                    min_weight=recency_min_weight,
+                )
+            )
+    return X, y, w
 
 
 def _safe_prob_list(values: Any, size: int) -> list[float]:
@@ -181,6 +205,18 @@ def main() -> int:
     parser.add_argument("--test_size", type=float, default=0.2)
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument(
+        "--recency_half_life_days",
+        type=float,
+        default=30.0,
+        help="Half-life in days for sample recency weighting.",
+    )
+    parser.add_argument(
+        "--recency_min_weight",
+        type=float,
+        default=0.35,
+        help="Minimum sample weight after recency decay.",
+    )
+    parser.add_argument(
         "--min_improvement_brier",
         type=float,
         default=0.001,
@@ -199,7 +235,14 @@ def main() -> int:
         print(f"Data file not found: {args.data}")
         return 1
     stats = _load_stats(data_path)
-    X, y = _build_dataset(stats, threshold=float(args.threshold))
+    recency_half_life_days = float(args.recency_half_life_days)
+    recency_min_weight = float(args.recency_min_weight)
+    X, y, w = _build_dataset(
+        stats,
+        threshold=float(args.threshold),
+        recency_half_life_days=recency_half_life_days,
+        recency_min_weight=recency_min_weight,
+    )
     if len(X) < 25:
         print("Not enough samples to train (need 25+).")
         return 1
@@ -217,9 +260,10 @@ def main() -> int:
     y_unique = set(int(v) for v in y)
     stratify = y if len(y_unique) > 1 else None
     try:
-        X_train, X_test, y_train, y_test = train_test_split(
+        X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
             X,
             y,
+            w,
             test_size=test_size,
             random_state=random_state,
             stratify=stratify,
@@ -228,12 +272,14 @@ def main() -> int:
         split_idx = max(1, int(len(X) * (1.0 - test_size)))
         X_train, X_test = X[:split_idx], X[split_idx:]
         y_train, y_test = y[:split_idx], y[split_idx:]
+        w_train, w_test = w[:split_idx], w[split_idx:]
     if not X_test:
         X_test = X_train
         y_test = y_train
+        w_test = w_train
 
     model = LogisticRegression(max_iter=int(args.max_iter), C=float(args.C))
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, sample_weight=w_train)
 
     new_probs = _predict_probs(model, X_test)
     if new_probs is None:
@@ -270,6 +316,11 @@ def main() -> int:
         "threshold": float(args.threshold),
         "test_size": test_size,
         "random_state": random_state,
+        "recency_weighting": {
+            "half_life_days": round(float(recency_half_life_days), 3),
+            "min_weight": round(float(recency_min_weight), 3),
+            "train_weight_mean": round(sum(float(v) for v in w_train) / max(1, len(w_train)), 6),
+        },
         "metrics": {
             "brier": round(float(new_brier), 6),
             "auc": round(float(new_auc), 6) if new_auc is not None else None,
