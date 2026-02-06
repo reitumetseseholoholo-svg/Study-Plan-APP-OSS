@@ -11119,6 +11119,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             detail = f"fresh (+{delta})"
         return (f"ML freshness: {detail}", stale)
 
+    def _get_recall_model_quality_status(self) -> tuple[str, bool]:
+        try:
+            meta = getattr(self.engine, "recall_model_sklearn_meta", None)
+            if not isinstance(meta, dict):
+                return ("Recall quality: n/a", False)
+            metrics = meta.get("metrics", {})
+            if not isinstance(metrics, dict):
+                return ("Recall quality: n/a", False)
+            brier = metrics.get("brier")
+            ece = metrics.get("ece")
+            auc = metrics.get("auc")
+            parts = []
+            if isinstance(auc, (int, float)):
+                parts.append(f"AUC {float(auc):.3f}")
+            if isinstance(brier, (int, float)):
+                parts.append(f"Brier {float(brier):.3f}")
+            if isinstance(ece, (int, float)):
+                parts.append(f"ECE {float(ece):.3f}")
+            if not parts:
+                return ("Recall quality: n/a", False)
+            warn = False
+            if isinstance(ece, (int, float)) and float(ece) > 0.22:
+                warn = True
+            if isinstance(auc, (int, float)) and float(auc) < 0.58:
+                warn = True
+            return (f"Recall quality: {' • '.join(parts)}", warn)
+        except Exception:
+            return ("Recall quality: n/a", False)
+
     def _auto_train_ml_models(self) -> None:
         try:
             if getattr(self, "focus_mode", False):
@@ -11597,6 +11626,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if fresh_warn:
                 fresh_label.add_css_class("status-warn")
             coach_box.append(fresh_label)
+            quality_text, quality_warn = self._get_recall_model_quality_status()
+            quality_label = Gtk.Label(label=quality_text)
+            quality_label.set_halign(Gtk.Align.START)
+            quality_label.add_css_class("muted")
+            if quality_warn:
+                quality_label.add_css_class("status-warn")
+            coach_box.append(quality_label)
             try:
                 chapter_ml = self.engine.get_chapter_ml_status(recommended_topic)
                 ch_ready = bool(chapter_ml.get("ready", False))
@@ -12108,6 +12144,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if fresh_warn:
                         fresh_label.add_css_class("status-warn")
                     insights.append(fresh_label)
+                    quality_text, quality_warn = self._get_recall_model_quality_status()
+                    quality_label = Gtk.Label(label=quality_text)
+                    quality_label.set_halign(Gtk.Align.START)
+                    quality_label.add_css_class("muted")
+                    if quality_warn:
+                        quality_label.add_css_class("status-warn")
+                    insights.append(quality_label)
                     try:
                         if risk_rows:
                             top_chapter = str(risk_rows[0][0])
