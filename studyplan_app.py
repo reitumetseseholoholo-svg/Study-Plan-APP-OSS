@@ -12500,7 +12500,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 spine.set_color("#3a3c43")
                             ax.grid(axis="y", color="#3a3c43", linestyle="--", linewidth=0.6, alpha=0.6)
                             ax.set_title("Confidence Drift (Top Gaps)", color="#e6e6e6", pad=8)
-                            fig.tight_layout()
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore", UserWarning)
+                                fig.tight_layout()
                             canvas = canvas_cls(fig)
                             canvas.set_tooltip_text("Tip: hold Ctrl and scroll to zoom charts.")
                             canvas.set_size_request(430, 240)
@@ -12991,7 +12993,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         ax.grid(color="#3a3c43", linestyle="--", linewidth=0.6, alpha=0.6)
                         ax.legend(handles=[mastery_line, minutes_line], loc="upper left", fontsize=8, facecolor="#232428", framealpha=0.6)
                         fig.autofmt_xdate()
-                        fig.tight_layout()
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", UserWarning)
+                            fig.tight_layout()
                         canvas = canvas_cls(fig)
                         canvas.set_tooltip_text("Tip: hold Ctrl and scroll to zoom charts.")
                         canvas.set_size_request(400, 260)
@@ -13091,7 +13095,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     ax.grid(axis="y", color="#3a3c43", linestyle="--", linewidth=0.6, alpha=0.6)
                     ax.set_title(f"Per-Topic Snapshot ({subtitle})", color="#e6e6e6")
                     ax.legend(loc="upper right", fontsize=8, facecolor="#232428", framealpha=0.6)
-                    fig.tight_layout()
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        fig.tight_layout()
                     canvas = canvas_cls(fig)
                     canvas.set_tooltip_text("Tip: hold Ctrl and scroll to zoom charts.")
                     canvas.set_size_request(430, 260)

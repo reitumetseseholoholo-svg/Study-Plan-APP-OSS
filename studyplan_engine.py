@@ -1785,6 +1785,96 @@ class StudyPlanEngine:
         syllabus_structure = parsed.get("syllabus_structure", {})
         if not isinstance(syllabus_structure, dict):
             syllabus_structure = {}
+        mapping_warnings: list[str] = []
+
+        # Preserve existing module chapters if present; map syllabus capabilities onto them.
+        preserve_existing = False
+        existing_chapters: list[str] = []
+        base_chapters = (config.get("chapters") if isinstance(config, dict) else None)
+        if isinstance(base_chapters, list):
+            existing_chapters = [str(ch).strip() for ch in base_chapters if str(ch).strip()]
+        if existing_chapters and len(existing_chapters) >= len(chapters):
+            preserve_existing = True
+
+        if preserve_existing:
+            # Map capability chapters to the closest existing chapters.
+            def _best_match_to_existing(name: str) -> tuple[str | None, float]:
+                if not name or not existing_chapters:
+                    return None, 0.0
+                name_low = name.strip().lower()
+                stripped = re.sub(r"^[A-H]\.\s*", "", name_low).strip()
+                best_ch = None
+                best_score = 0.0
+                for ch in existing_chapters:
+                    ch_low = ch.lower()
+                    score = max(
+                        difflib.SequenceMatcher(None, ch_low, name_low).ratio(),
+                        difflib.SequenceMatcher(None, ch_low, stripped).ratio() if stripped else 0.0,
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best_ch = ch
+                # Rule-based fallback for broad capability labels.
+                if best_score < 0.45:
+                    def _has(kw: str) -> bool:
+                        return kw in name_low
+                    def _pick(*candidates: str) -> str | None:
+                        for cand in candidates:
+                            for ch in existing_chapters:
+                                if ch.lower() == cand.lower():
+                                    return ch
+                        return None
+                    if _has("environment"):
+                        mapped = _pick("FM Environment")
+                        if mapped:
+                            return mapped, 0.5
+                    if _has("business finance") or _has("sources of finance"):
+                        mapped = _pick("Equity Finance", "Debt Finance", "Cost of Capital")
+                        if mapped:
+                            return mapped, 0.5
+                    if _has("valuation"):
+                        mapped = _pick("Business Valuation")
+                        if mapped:
+                            return mapped, 0.5
+                    if _has("risk management"):
+                        mapped = _pick("Risk Management")
+                        if mapped:
+                            return mapped, 0.5
+                    if _has("working capital"):
+                        mapped = _pick("Working Capital Management")
+                        if mapped:
+                            return mapped, 0.5
+                    if _has("investment appraisal") or _has("investment"):
+                        mapped = _pick("Investment Decisions", "DCF Methods", "DCF Applications", "Project Appraisal Under Risk")
+                        if mapped:
+                            return mapped, 0.5
+                    if _has("cash management"):
+                        mapped = _pick("Cash Management")
+                        if mapped:
+                            return mapped, 0.5
+                return best_ch, best_score
+
+            remapped_structure: Dict[str, Dict[str, Any]] = {}
+            remapped_chapter_map: Dict[str, str] = {}
+            for cap_letter, cap_ch in chapter_map.items():
+                target, score = _best_match_to_existing(str(cap_ch))
+                if target and score >= 0.35:
+                    remapped_chapter_map[cap_letter] = target
+                else:
+                    mapping_warnings.append(f"Could not map capability {cap_letter} to existing chapter.")
+
+            for cap_ch, info in syllabus_structure.items():
+                target, score = _best_match_to_existing(str(cap_ch))
+                if not target or score < 0.35:
+                    mapping_warnings.append(f"Unmapped syllabus chapter: {cap_ch}")
+                    continue
+                # If multiple capability chapters map to the same target, keep the larger outcome set.
+                existing = remapped_structure.get(target)
+                if not isinstance(existing, dict) or int(existing.get("outcome_count", 0) or 0) < int(info.get("outcome_count", 0) or 0):
+                    remapped_structure[target] = info
+            syllabus_structure = remapped_structure
+            chapter_map = remapped_chapter_map
+            chapters = existing_chapters
 
         chapter_flow: Dict[str, List[str]] = {}
         for idx, chapter in enumerate(chapters[:-1]):
@@ -1827,6 +1917,8 @@ class StudyPlanEngine:
             "parsed_at": datetime.datetime.now().isoformat(timespec="seconds"),
             "parse_confidence": round(confidence, 4),
         }
+        if mapping_warnings:
+            config["syllabus_meta"]["mapping_warnings"] = mapping_warnings
         # Preserve existing question bank by default.
         if "questions" in config and not isinstance(config.get("questions"), dict):
             config.pop("questions", None)
@@ -1988,6 +2080,25 @@ class StudyPlanEngine:
             base_config = {}
         else:
             base_config = cast(Dict[str, Any], base_config)
+        # Prefer existing question-bank chapters if they are richer than the module config.
+        try:
+            _, questions_path = self._resolve_module_paths(target_module_id)
+            q_chapters: list[str] = []
+            if questions_path and os.path.exists(questions_path):
+                with open(questions_path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                if isinstance(payload, dict):
+                    q_chapters = [str(k).strip() for k in payload.keys() if str(k).strip()]
+            base_chapters = base_config.get("chapters") if isinstance(base_config, dict) else None
+            if isinstance(base_chapters, list):
+                base_chapters = [str(ch).strip() for ch in base_chapters if str(ch).strip()]
+            else:
+                base_chapters = []
+            if len(q_chapters) > len(base_chapters):
+                base_config = copy.deepcopy(base_config)
+                base_config["chapters"] = q_chapters
+        except Exception:
+            pass
         text_hash = hashlib.sha1(str(pdf_text).encode("utf-8", errors="ignore")).hexdigest()
         try:
             base_signature = hashlib.sha1(
@@ -3755,11 +3866,13 @@ class StudyPlanEngine:
         JSON questions are ADDED to defaults, not replacements.
         """
         questions_from_json = {}
+        raw_question_keys: list[str] = []
         if os.path.exists(self.QUESTIONS_FILE):
             try:
                 with open(self.QUESTIONS_FILE, 'r', encoding='utf-8') as f:
                     raw = json.load(f)
                     if isinstance(raw, dict):
+                        raw_question_keys = [str(k).strip() for k in raw.keys() if str(k).strip()]
                         for k, v in raw.items():
                             if not isinstance(v, list):
                                 continue
@@ -3772,6 +3885,13 @@ class StudyPlanEngine:
             except OSError as e:
                 print(f"Error loading questions from JSON: {e}")
         self.QUESTIONS = {k: self.QUESTIONS_DEFAULT.get(k, []) + questions_from_json.get(k, []) for k in self.QUESTIONS_DEFAULT}
+
+        # If syllabus-only chapters are active but the question bank has legacy chapters, restore them.
+        try:
+            if raw_question_keys and len(raw_question_keys) > len(self.CHAPTERS):
+                self.CHAPTERS = raw_question_keys
+        except Exception:
+            pass
 
         total_added = sum(len(q) for q in questions_from_json.values())
         print(f"Total questions from JSON: {total_added}")
