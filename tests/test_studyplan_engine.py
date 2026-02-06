@@ -3,6 +3,7 @@ import types
 import builtins
 import json
 import sys
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -335,6 +336,49 @@ def test_import_syllabus_from_sparse_text_returns_fallback_draft(engine_no_io):
     assert isinstance(warnings, list)
     assert any("fallback draft generated" in str(w).lower() for w in warnings)
     assert eng.recall_model_sklearn_meta is None
+
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "syllabus"
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "min_chapters", "min_confidence", "expect_warning"),
+    [
+        ("clean_fm_like.txt", 8, 0.70, False),
+        ("ocr_noisy_fm_like.txt", 6, 0.30, True),
+        ("sparse_extract.txt", 1, 0.00, True),
+    ],
+)
+def test_import_syllabus_fixture_regression(
+    engine_no_io,
+    fixture_name,
+    min_chapters,
+    min_confidence,
+    expect_warning,
+):
+    eng = engine_no_io
+    fixture_path = FIXTURE_DIR / fixture_name
+    text = fixture_path.read_text(encoding="utf-8")
+
+    result = eng.import_syllabus_from_pdf_text(text, module_id=f"acca_{fixture_name.split('.')[0]}")
+
+    assert isinstance(result, dict)
+    config = result.get("config", {})
+    assert isinstance(config, dict)
+    chapters = config.get("chapters", [])
+    assert isinstance(chapters, list)
+    assert len(chapters) >= min_chapters
+
+    diagnostics = result.get("diagnostics", {})
+    assert isinstance(diagnostics, dict)
+    confidence = float(diagnostics.get("confidence", 0.0) or 0.0)
+    assert 0.0 <= confidence <= 1.0
+    assert confidence >= min_confidence
+
+    warnings = diagnostics.get("warnings", [])
+    assert isinstance(warnings, list)
+    if expect_warning:
+        assert warnings
 
 
 def test_load_recall_model_sklearn_accepts_matching_feature_count(engine_no_io, monkeypatch, tmp_path):
