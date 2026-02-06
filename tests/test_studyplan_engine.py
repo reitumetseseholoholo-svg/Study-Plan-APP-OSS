@@ -322,6 +322,66 @@ def test_load_recall_model_sklearn_rejects_bad_feature_count(engine_no_io, monke
     assert eng.recall_model_sklearn is None
 
 
+def test_predict_recall_prob_requires_chapter_ml_confidence(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    today = datetime.date.today().isoformat()
+    eng.recall_model_sklearn = types.SimpleNamespace(predict_proba=lambda X: [[0.2, 0.8] for _ in X])
+    eng.recall_model_sklearn_meta = {"feature_count": 5}
+    eng.recall_model_json = None
+
+    eng.ML_MIN_SAMPLES = 1
+    eng.ML_MIN_ATTEMPTS = 1
+    eng.ML_MIN_CHAPTER_SAMPLES = 6
+    eng.ML_MIN_CHAPTER_COVERAGE = 0.20
+    eng.ML_MIN_CHAPTER_CONFIDENCE = 0.70
+
+    eng.question_stats[chapter] = {
+        "0": {"attempts": 3, "correct": 2, "streak": 1, "avg_time_sec": 20, "last_seen": today}
+    }
+    assert eng.predict_recall_prob(chapter, 0) is None
+
+    expanded = {}
+    for idx in range(min(12, len(eng.QUESTIONS.get(chapter, [])))):
+        expanded[str(idx)] = {
+            "attempts": 3,
+            "correct": 2,
+            "streak": 1,
+            "avg_time_sec": 20,
+            "last_seen": today,
+        }
+    eng.question_stats[chapter] = expanded
+    prob = eng.predict_recall_prob(chapter, 0)
+    assert prob is not None
+    assert 0.0 <= prob <= 1.0
+
+
+def test_get_question_difficulty_falls_back_when_chapter_ml_not_ready(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    today = datetime.date.today().isoformat()
+    eng.difficulty_model = {
+        "model": types.SimpleNamespace(predict=lambda X: [1 for _ in X]),
+        "label_map": {1: "hard"},
+    }
+
+    eng.ML_MIN_SAMPLES = 1
+    eng.ML_MIN_ATTEMPTS = 1
+    eng.ML_MIN_CHAPTER_SAMPLES = 10
+    eng.ML_MIN_CHAPTER_COVERAGE = 0.50
+    eng.ML_MIN_CHAPTER_CONFIDENCE = 0.90
+    eng.question_stats[chapter] = {
+        "0": {"attempts": 1, "correct": 1, "streak": 1, "avg_time_sec": 10, "last_seen": today}
+    }
+
+    assert eng.get_question_difficulty(chapter, 0) == "easy"
+
+    eng.ML_MIN_CHAPTER_SAMPLES = 1
+    eng.ML_MIN_CHAPTER_COVERAGE = 0.01
+    eng.ML_MIN_CHAPTER_CONFIDENCE = 0.10
+    assert eng.get_question_difficulty(chapter, 0) == "hard"
+
+
 def test_import_syllabus_from_sparse_text_returns_fallback_draft(engine_no_io):
     eng = engine_no_io
     sparse_text = "This is a scanned syllabus extract with weak structure and no explicit section headers."

@@ -21,6 +21,9 @@ class StudyPlanEngine:
     RECALL_FEATURE_COUNT = 5
     ML_MIN_ATTEMPTS = 3
     ML_MIN_SAMPLES = 100
+    ML_MIN_CHAPTER_SAMPLES = 8
+    ML_MIN_CHAPTER_COVERAGE = 0.10
+    ML_MIN_CHAPTER_CONFIDENCE = 0.45
     SYLLABUS_PARSE_CACHE_MAX = 12
     SYLLABUS_IMPORT_CACHE_MAX = 12
     SYLLABUS_IMPORT_CACHE_DISK_MAX = 24
@@ -2878,6 +2881,58 @@ class StudyPlanEngine:
                     total += 1
         return total
 
+    def _chapter_question_sample_count(self, chapter: str) -> int:
+        if chapter not in self.CHAPTERS:
+            return 0
+        stats_by_ch = self.question_stats.get(chapter, {})
+        if not isinstance(stats_by_ch, dict):
+            return 0
+        has_qid = any(
+            isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX)
+            for k in stats_by_ch.keys()
+        )
+        total = 0
+        for key, entry in stats_by_ch.items():
+            if has_qid and isinstance(key, str) and not key.startswith(self.QUESTION_ID_PREFIX):
+                continue
+            if not isinstance(entry, dict):
+                continue
+            try:
+                attempts = int(entry.get("attempts", 0) or 0)
+            except Exception:
+                attempts = 0
+            if attempts > 0:
+                total += 1
+        return total
+
+    def _chapter_ml_confidence(self, chapter: str) -> float:
+        questions = self.QUESTIONS.get(chapter, [])
+        if not isinstance(questions, list) or not questions:
+            return 0.0
+        sample_count = self._chapter_question_sample_count(chapter)
+        try:
+            min_samples = max(1.0, float(self.ML_MIN_CHAPTER_SAMPLES))
+        except Exception:
+            min_samples = 1.0
+        try:
+            min_coverage = max(0.01, float(self.ML_MIN_CHAPTER_COVERAGE))
+        except Exception:
+            min_coverage = 0.10
+        sample_ratio = min(1.0, float(sample_count) / min_samples)
+        coverage = float(sample_count) / max(1.0, float(len(questions)))
+        coverage_ratio = min(1.0, coverage / min_coverage)
+        confidence = (0.65 * sample_ratio) + (0.35 * coverage_ratio)
+        return max(0.0, min(1.0, confidence))
+
+    def _is_chapter_ml_ready(self, chapter: str) -> bool:
+        if self._count_question_samples() < self.ML_MIN_SAMPLES:
+            return False
+        try:
+            threshold = float(self.ML_MIN_CHAPTER_CONFIDENCE)
+        except Exception:
+            threshold = 0.45
+        return self._chapter_ml_confidence(chapter) >= max(0.0, min(1.0, threshold))
+
     def _chapter_capability(self, chapter: str) -> str:
         """Return chapter capability letter when available."""
         info = self.syllabus_structure.get(chapter, {}) if isinstance(self.syllabus_structure, dict) else {}
@@ -5107,7 +5162,7 @@ class StudyPlanEngine:
         if (
             self.difficulty_model is not None
             and attempts >= self.ML_MIN_ATTEMPTS
-            and self._count_question_samples() >= self.ML_MIN_SAMPLES
+            and self._is_chapter_ml_ready(chapter)
         ):
             try:
                 features = [
@@ -5200,7 +5255,7 @@ class StudyPlanEngine:
             random.shuffle(indices)
             indices = indices[:max_samples]
         risks = []
-        use_ml = self._count_question_samples() >= self.ML_MIN_SAMPLES
+        use_ml = self._is_chapter_ml_ready(chapter)
         for idx in indices:
             stats = self._get_question_stats(chapter, idx)
             if not isinstance(stats, dict):
@@ -5237,7 +5292,7 @@ class StudyPlanEngine:
             return None
         if chapter not in self.CHAPTERS:
             return None
-        if self._count_question_samples() < self.ML_MIN_SAMPLES:
+        if not self._is_chapter_ml_ready(chapter):
             return None
         srs_list = self.srs_data.get(chapter, [])
         if not isinstance(srs_list, list) or not srs_list:
@@ -5440,6 +5495,8 @@ class StudyPlanEngine:
     def predict_recall_prob(self, chapter: str, idx: int) -> float | None:
         if not self.recall_model_json and not self.recall_model_sklearn:
             return None
+        if not self._is_chapter_ml_ready(chapter):
+            return None
         stats = self._get_question_stats(chapter, idx)
         if not isinstance(stats, dict):
             return None
@@ -5447,7 +5504,7 @@ class StudyPlanEngine:
             attempts = float(stats.get("attempts", 0) or 0)
         except Exception:
             attempts = 0.0
-        if attempts < self.ML_MIN_ATTEMPTS or self._count_question_samples() < self.ML_MIN_SAMPLES:
+        if attempts < self.ML_MIN_ATTEMPTS:
             return None
         try:
             correct = float(stats.get("correct", 0) or 0)
@@ -5512,6 +5569,8 @@ class StudyPlanEngine:
     def predict_interval_days(self, chapter: str, idx: int, current_interval: float, efactor: float) -> float | None:
         if self.interval_model is None:
             return None
+        if not self._is_chapter_ml_ready(chapter):
+            return None
         stats = self._get_question_stats(chapter, idx)
         if not isinstance(stats, dict):
             return None
@@ -5519,7 +5578,7 @@ class StudyPlanEngine:
             attempts = float(stats.get("attempts", 0) or 0)
         except Exception:
             attempts = 0.0
-        if attempts < self.ML_MIN_ATTEMPTS or self._count_question_samples() < self.ML_MIN_SAMPLES:
+        if attempts < self.ML_MIN_ATTEMPTS:
             return None
         try:
             correct = float(stats.get("correct", 0) or 0)
