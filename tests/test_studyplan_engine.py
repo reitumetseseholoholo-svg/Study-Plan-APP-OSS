@@ -3,6 +3,7 @@ import types
 import builtins
 import json
 import sys
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -419,6 +420,8 @@ def test_parse_syllabus_cache_is_bounded(engine_no_io):
 
 def test_import_syllabus_cache_skips_reparse_and_returns_copy(engine_no_io, monkeypatch):
     eng = engine_no_io
+    eng._syllabus_import_cache = {}
+    eng._syllabus_import_cache_order = []
     parse_calls = 0
     original_parse = eng.parse_syllabus_pdf_text
 
@@ -479,6 +482,31 @@ def test_import_syllabus_exposes_perf_diagnostics(engine_no_io):
     for key in ("import_cache_hit", "parse_cache_hit", "parse_ms", "build_ms", "validate_ms", "total_ms"):
         assert key in perf
     assert perf.get("import_cache_hit") is False
+
+
+def test_import_syllabus_disk_cache_roundtrip(engine_no_io, monkeypatch, tmp_path):
+    eng = engine_no_io
+    eng.syllabus_import_cache_file = str(tmp_path / "syllabus_import_cache.json")
+    eng._syllabus_import_cache = {}
+    eng._syllabus_import_cache_order = []
+
+    first = eng.import_syllabus_from_pdf_text(SAMPLE_SYLLABUS_TEXT, module_id="acca_f9")
+    assert isinstance(first, dict)
+    assert os.path.exists(eng.syllabus_import_cache_file)
+
+    eng._syllabus_import_cache = {}
+    eng._syllabus_import_cache_order = []
+    eng._load_syllabus_import_cache_disk()
+    assert eng._syllabus_import_cache
+
+    def _should_not_parse(_text):
+        raise AssertionError("parse_syllabus_pdf_text should not run on disk-cache hit")
+
+    monkeypatch.setattr(eng, "parse_syllabus_pdf_text", _should_not_parse)
+    second = eng.import_syllabus_from_pdf_text(SAMPLE_SYLLABUS_TEXT, module_id="acca_f9")
+    perf = second.get("diagnostics", {}).get("perf", {})
+    assert isinstance(perf, dict)
+    assert perf.get("import_cache_hit") is True
 
 
 def test_load_recall_model_sklearn_accepts_matching_feature_count(engine_no_io, monkeypatch, tmp_path):

@@ -23,6 +23,7 @@ class StudyPlanEngine:
     ML_MIN_SAMPLES = 100
     SYLLABUS_PARSE_CACHE_MAX = 12
     SYLLABUS_IMPORT_CACHE_MAX = 12
+    SYLLABUS_IMPORT_CACHE_DISK_MAX = 24
     CHAPTERS = [
         "FM Function",
         "FM Environment",
@@ -1410,6 +1411,66 @@ class StudyPlanEngine:
             self._syllabus_parse_cache.pop(stale, None)
         return result
 
+    def _load_syllabus_import_cache_disk(self) -> None:
+        path = str(getattr(self, "syllabus_import_cache_file", "") or "").strip()
+        if not path or not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            return
+        if not isinstance(payload, dict):
+            return
+        raw_cache = payload.get("cache", {})
+        raw_order = payload.get("order", [])
+        if not isinstance(raw_cache, dict) or not isinstance(raw_order, list):
+            return
+        limit = max(1, int(getattr(self, "SYLLABUS_IMPORT_CACHE_DISK_MAX", 24) or 24))
+        loaded_cache: Dict[str, Dict[str, Any]] = {}
+        loaded_order: List[str] = []
+        for key in raw_order:
+            if len(loaded_order) >= limit:
+                break
+            if not isinstance(key, str):
+                continue
+            item = raw_cache.get(key)
+            if not isinstance(item, dict):
+                continue
+            loaded_cache[key] = copy.deepcopy(item)
+            loaded_order.append(key)
+        if loaded_cache and loaded_order:
+            self._syllabus_import_cache = loaded_cache
+            self._syllabus_import_cache_order = loaded_order
+
+    def _save_syllabus_import_cache_disk(self) -> None:
+        path = str(getattr(self, "syllabus_import_cache_file", "") or "").strip()
+        if not path:
+            return
+        order = [k for k in self._syllabus_import_cache_order if k in self._syllabus_import_cache]
+        limit = max(1, int(getattr(self, "SYLLABUS_IMPORT_CACHE_DISK_MAX", 24) or 24))
+        if len(order) > limit:
+            order = order[-limit:]
+        cache_obj: Dict[str, Dict[str, Any]] = {}
+        for key in order:
+            value = self._syllabus_import_cache.get(key)
+            if isinstance(value, dict):
+                cache_obj[key] = value
+        payload = {
+            "version": 1,
+            "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "order": order,
+            "cache": cache_obj,
+        }
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=True)
+            os.replace(tmp, path)
+        except Exception:
+            return
+
     def _build_importance_weights_from_syllabus(self, syllabus_structure: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
         raw_weights: Dict[str, float] = {}
         for chapter, info in syllabus_structure.items():
@@ -1706,6 +1767,9 @@ class StudyPlanEngine:
         cache_key = f"{target_module_id}:{text_hash}:{base_signature}"
         cached = self._syllabus_import_cache.get(cache_key)
         if isinstance(cached, dict):
+            if cache_key in self._syllabus_import_cache_order:
+                self._syllabus_import_cache_order.remove(cache_key)
+            self._syllabus_import_cache_order.append(cache_key)
             out = copy.deepcopy(cached)
             diagnostics = out.get("diagnostics", {})
             if isinstance(diagnostics, dict):
@@ -1790,6 +1854,7 @@ class StudyPlanEngine:
         while len(self._syllabus_import_cache_order) > import_limit:
             stale = self._syllabus_import_cache_order.pop(0)
             self._syllabus_import_cache.pop(stale, None)
+        self._save_syllabus_import_cache_disk()
         return result
 
     def _get_syllabus_signals(self, chapter: str) -> Dict[str, float]:
@@ -2042,6 +2107,7 @@ class StudyPlanEngine:
         self._syllabus_parse_cache_order: List[str] = []
         self._syllabus_import_cache: Dict[str, Dict[str, Any]] = {}
         self._syllabus_import_cache_order: List[str] = []
+        self.syllabus_import_cache_file = os.path.join(self.DEFAULT_DATA_DIR, "syllabus_import_cache.json")
 
         # Data health stats
         self.data_health = {
@@ -2100,6 +2166,7 @@ class StudyPlanEngine:
         # Load questions (syncs SRS as part of load)
         self.load_questions()
         self._migrate_question_stats_to_qid()
+        self._load_syllabus_import_cache_disk()
 
         # Save data (do this after all inits/loads)
         self.save_data()
