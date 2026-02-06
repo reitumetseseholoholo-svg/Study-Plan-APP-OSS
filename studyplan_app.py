@@ -9949,8 +9949,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     return []
 
-            binary = morphology.remove_small_objects(binary, min_size=24)
-            binary = morphology.remove_small_holes(binary, area_threshold=48)
+            try:
+                binary = morphology.remove_small_objects(binary, min_size=24)
+            except TypeError:
+                # skimage >= 0.26 deprecates min_size in favor of max_size
+                binary = morphology.remove_small_objects(binary, max_size=24)
+            try:
+                binary = morphology.remove_small_holes(binary, area_threshold=48)
+            except TypeError:
+                # skimage >= 0.26 deprecates area_threshold in favor of max_size
+                binary = morphology.remove_small_holes(binary, max_size=48)
             ocr_img = np.where(binary, 255, 0).astype("uint8")
             text = pytesseract.image_to_string(Image.fromarray(ocr_img), config="--oem 3 --psm 6")
             lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
