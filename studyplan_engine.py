@@ -21,6 +21,7 @@ class StudyPlanEngine:
     ML_MIN_ATTEMPTS = 3
     ML_MIN_SAMPLES = 100
     SYLLABUS_PARSE_CACHE_MAX = 12
+    SYLLABUS_IMPORT_CACHE_MAX = 12
     CHAPTERS = [
         "FM Function",
         "FM Environment",
@@ -1684,13 +1685,27 @@ class StudyPlanEngine:
 
     def import_syllabus_from_pdf_text(self, pdf_text: str, module_id: str | None = None) -> Dict[str, Any]:
         """Parse syllabus text and return a validated draft module config (no file writes)."""
-        parsed = self.parse_syllabus_pdf_text(pdf_text)
         target_module_id = self._sanitize_module_id(module_id or self.module_id)
         base_config: Dict[str, Any] | Any = self._load_module_config(target_module_id)
         if not isinstance(base_config, dict):
-            base_config = {"title": f"ACCA {str(parsed.get('exam_code') or target_module_id).upper()}"}
+            base_config = {}
         else:
             base_config = cast(Dict[str, Any], base_config)
+        text_hash = hashlib.sha1(str(pdf_text).encode("utf-8", errors="ignore")).hexdigest()
+        try:
+            base_signature = hashlib.sha1(
+                json.dumps(base_config, sort_keys=True, ensure_ascii=True).encode("utf-8")
+            ).hexdigest()
+        except Exception:
+            base_signature = hashlib.sha1(repr(base_config).encode("utf-8", errors="ignore")).hexdigest()
+        cache_key = f"{target_module_id}:{text_hash}:{base_signature}"
+        cached = self._syllabus_import_cache.get(cache_key)
+        if isinstance(cached, dict):
+            return copy.deepcopy(cached)
+
+        parsed = self.parse_syllabus_pdf_text(pdf_text)
+        if not base_config:
+            base_config = {"title": f"ACCA {str(parsed.get('exam_code') or target_module_id).upper()}"}
         try:
             draft = self.build_module_config_from_syllabus(parsed, base_config=base_config)
         except ValueError as exc:
@@ -1726,7 +1741,7 @@ class StudyPlanEngine:
         validation = self.validate_syllabus_config(draft)
         notes = list(parsed.get("warnings", []))
         notes.extend(validation.get("notes", []))
-        return {
+        result = {
             "module_id": target_module_id,
             "parsed": parsed,
             "config": validation.get("config", {}),
@@ -1736,6 +1751,15 @@ class StudyPlanEngine:
                 "warnings": notes,
             },
         }
+        self._syllabus_import_cache[cache_key] = copy.deepcopy(result)
+        if cache_key in self._syllabus_import_cache_order:
+            self._syllabus_import_cache_order.remove(cache_key)
+        self._syllabus_import_cache_order.append(cache_key)
+        import_limit = max(1, int(getattr(self, "SYLLABUS_IMPORT_CACHE_MAX", 12) or 12))
+        while len(self._syllabus_import_cache_order) > import_limit:
+            stale = self._syllabus_import_cache_order.pop(0)
+            self._syllabus_import_cache.pop(stale, None)
+        return result
 
     def _get_syllabus_signals(self, chapter: str) -> Dict[str, float]:
         """Return syllabus-driven weighting signals for planning/recommendations."""
@@ -1985,6 +2009,8 @@ class StudyPlanEngine:
         self.hourly_quiz_stats: Dict[str, Dict[str, int]] = {}
         self._syllabus_parse_cache: Dict[str, Dict[str, Any]] = {}
         self._syllabus_parse_cache_order: List[str] = []
+        self._syllabus_import_cache: Dict[str, Dict[str, Any]] = {}
+        self._syllabus_import_cache_order: List[str] = []
 
         # Data health stats
         self.data_health = {

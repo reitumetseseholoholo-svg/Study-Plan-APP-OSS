@@ -417,6 +417,55 @@ def test_parse_syllabus_cache_is_bounded(engine_no_io):
     assert len(eng._syllabus_parse_cache_order) <= limit
 
 
+def test_import_syllabus_cache_skips_reparse_and_returns_copy(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    parse_calls = 0
+    original_parse = eng.parse_syllabus_pdf_text
+
+    def _wrapped_parse(text):
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_parse(text)
+
+    monkeypatch.setattr(eng, "parse_syllabus_pdf_text", _wrapped_parse)
+
+    first = eng.import_syllabus_from_pdf_text(SAMPLE_SYLLABUS_TEXT, module_id="acca_f9")
+    second = eng.import_syllabus_from_pdf_text(SAMPLE_SYLLABUS_TEXT, module_id="acca_f9")
+
+    assert parse_calls == 1
+    assert isinstance(first, dict)
+    assert isinstance(second, dict)
+
+    first_warnings = first.get("diagnostics", {}).get("warnings", [])
+    assert isinstance(first_warnings, list)
+    first_warnings.append("mutated in test")
+
+    third = eng.import_syllabus_from_pdf_text(SAMPLE_SYLLABUS_TEXT, module_id="acca_f9")
+    third_warnings = third.get("diagnostics", {}).get("warnings", [])
+    assert isinstance(third_warnings, list)
+    assert "mutated in test" not in third_warnings
+
+
+def test_import_syllabus_cache_is_bounded(engine_no_io):
+    eng = engine_no_io
+    limit = int(eng.SYLLABUS_IMPORT_CACHE_MAX)
+    for idx in range(limit + 4):
+        payload = (
+            "2. Main capabilities\n"
+            f"A Capability {idx}\n"
+            "4. The syllabus\n"
+            f"A Capability {idx}\n"
+            "5. Detailed study guide\n"
+            f"A Capability {idx}\n"
+            "a) Explain the capability.[2]\n"
+            "6. Summary of changes\n"
+        )
+        parsed = eng.import_syllabus_from_pdf_text(payload, module_id=f"acca_cache_{idx}")
+        assert isinstance(parsed, dict)
+    assert len(eng._syllabus_import_cache) <= limit
+    assert len(eng._syllabus_import_cache_order) <= limit
+
+
 def test_load_recall_model_sklearn_accepts_matching_feature_count(engine_no_io, monkeypatch, tmp_path):
     eng = engine_no_io
     model = types.SimpleNamespace(predict_proba=lambda X: [[0.3, 0.7] for _ in X])
