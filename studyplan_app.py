@@ -975,6 +975,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.last_coach_pick_date = None
         self._last_coach_debug_topic = None
         self._last_coach_debug_date = None
+        self._last_coach_mismatch_key = None
         self.onboarding_dismissed = False
         self.first_run_completed = False
         self._last_session_recap = None
@@ -3994,6 +3995,34 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
+    def _log_coach_mismatch(self, left_topic: str, briefing_topic: str, source: str) -> None:
+        """Log coach pick mismatch once per day/topic pair to aid diagnosis."""
+        if not left_topic or not briefing_topic or left_topic == briefing_topic:
+            return
+        try:
+            today_iso = datetime.date.today().isoformat()
+        except Exception:
+            today_iso = ""
+        key = f"{today_iso}|{left_topic}|{briefing_topic}"
+        if key == getattr(self, "_last_coach_mismatch_key", None):
+            return
+        self._last_coach_mismatch_key = key
+        try:
+            path = os.path.join(self.DEFAULT_DATA_DIR, "coach_debug.log")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            ts = datetime.datetime.now().isoformat(timespec="seconds")
+            entry = {
+                "ts": ts,
+                "type": "mismatch",
+                "left_topic": left_topic,
+                "briefing_topic": briefing_topic,
+                "source": source,
+            }
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception:
+            pass
+
     def _maybe_show_rescue_prompt(self) -> None:
         if self._rescue_prompted:
             return
@@ -5249,13 +5278,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             reasons.append("highest urgency overall")
         return reasons
 
-    def _update_coach_pick_card(self) -> None:
+    def _update_coach_pick_card(
+        self,
+        forced_topic: str | None = None,
+        forced_source: str | None = None,
+    ) -> None:
         if not getattr(self, "coach_pick_label", None):
             return
         if not self._has_chapters():
             self.coach_pick_label.set_text("Coach pick: N/A")
             return
-        topic, source = self._get_coach_pick_meta()
+        if isinstance(forced_topic, str) and forced_topic:
+            topic = forced_topic
+            source = str(forced_source or getattr(self, "_last_coach_pick_source", "forced"))
+        else:
+            topic, source = self._get_coach_pick_meta()
         if not topic:
             self.coach_pick_label.set_text("Coach pick: —")
             return
@@ -10393,6 +10430,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             recommended_topic = weak_chapter or self.current_topic
             pick_source = "unknown"
+        try:
+            left_topic = str(getattr(self, "_coach_pick_topic", "") or "")
+        except Exception:
+            left_topic = ""
+        if left_topic and recommended_topic and left_topic != recommended_topic:
+            self._log_coach_mismatch(left_topic, recommended_topic, pick_source)
+        try:
+            self._update_coach_pick_card(forced_topic=recommended_topic, forced_source=pick_source)
+        except Exception:
+            pass
         try:
             questions = self.engine.get_questions(recommended_topic)
             base_quiz_target = self._get_quiz_target_for_topic(recommended_topic, len(questions))
