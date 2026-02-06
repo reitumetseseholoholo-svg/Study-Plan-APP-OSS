@@ -1795,6 +1795,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._add_action("import_pdf", self.on_menu_import_pdf)
         self._add_action("import_ai", self.on_menu_import_ai)
         self._add_action("import_snapshot", self.on_menu_import_snapshot)
+        self._add_action("restore_latest_snapshot", self.on_menu_restore_latest_snapshot)
         self._add_action("export_csv", self.on_menu_export_csv)
         self._add_action("export_template", self.on_menu_export_template)
         self._add_action("export_question_stats", self.on_menu_export_question_stats)
@@ -1829,6 +1830,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         file_menu.append("Import PDF scores…", "win.import_pdf")
         file_menu.append("Import AI questions…", "win.import_ai")
         file_menu.append("Import Data Snapshot…", "win.import_snapshot")
+        file_menu.append("Restore Latest Snapshot…", "win.restore_latest_snapshot")
         file_menu.append("Export data (CSV)…", "win.export_csv")
         file_menu.append("Export import template…", "win.export_template")
         file_menu.append("Export question stats (CSV)…", "win.export_question_stats")
@@ -1895,6 +1897,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_menu_import_snapshot(self, _action, _param):
         self.on_import_data_snapshot(None)
+
+    def on_menu_restore_latest_snapshot(self, _action, _param):
+        self.on_restore_latest_snapshot(None)
 
     def on_menu_export_csv(self, _action, _param):
         self.on_export_data(None)
@@ -9403,28 +9408,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not file_path:
                 raise ValueError("No file selected.")
             result = self.engine.import_data_snapshot(file_path)
-            self.exam_date = self.engine.exam_date
-            self.update_exam_date_display()
-            self.update_availability_display()
-            self.update_recommendations()
-            self.update_study_room_card()
-            self.update_dashboard()
-            msg = (
-                f"Snapshot imported safely.\n\n"
-                f"Chapters: {int(result.get('chapters', 0) or 0)}\n"
-                f"Study days: {int(result.get('study_days', 0) or 0)}\n"
-                f"Quiz results: {int(result.get('quiz_results', 0) or 0)}\n"
-                f"Progress points: {int(result.get('progress_points', 0) or 0)}"
-            )
-            ok = self._new_message_dialog(
-                transient_for=self,
-                modal=True,
-                message_type=Gtk.MessageType.INFO,
-                buttons=Gtk.ButtonsType.OK,
-                text=msg,
-            )
-            ok.connect("response", lambda d, _r: d.destroy())
-            ok.present()
+            self._apply_snapshot_import_result(result, title_prefix="Snapshot imported safely.")
         except Exception as e:
             self._log_error("import_data_snapshot", e)
             err = self._new_message_dialog(
@@ -9436,6 +9420,87 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
             err.connect("response", lambda d, _r: d.destroy())
             err.present()
+
+    def _apply_snapshot_import_result(self, result: dict[str, Any], title_prefix: str) -> None:
+        self.exam_date = self.engine.exam_date
+        self.update_exam_date_display()
+        self.update_availability_display()
+        self.update_recommendations()
+        self.update_study_room_card()
+        self.update_dashboard()
+        msg = (
+            f"{title_prefix}\n\n"
+            f"Chapters: {int(result.get('chapters', 0) or 0)}\n"
+            f"Study days: {int(result.get('study_days', 0) or 0)}\n"
+            f"Quiz results: {int(result.get('quiz_results', 0) or 0)}\n"
+            f"Progress points: {int(result.get('progress_points', 0) or 0)}"
+        )
+        snapshot_path = result.get("snapshot_path")
+        if isinstance(snapshot_path, str) and snapshot_path:
+            msg += f"\nSource: {os.path.basename(snapshot_path)}"
+        ok = self._new_message_dialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK,
+            text=msg,
+        )
+        ok.connect("response", lambda d, _r: d.destroy())
+        ok.present()
+
+    def on_restore_latest_snapshot(self, _button):
+        try:
+            snapshot_path = self.engine.get_latest_backup_snapshot_path()
+            if not snapshot_path:
+                raise FileNotFoundError("No backup snapshot available.")
+        except Exception as e:
+            err = self._new_message_dialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.ERROR,
+                buttons=Gtk.ButtonsType.OK,
+                text=f"Restore failed: {e}",
+            )
+            err.connect("response", lambda d, _r: d.destroy())
+            err.present()
+            return
+        try:
+            modified = datetime.datetime.fromtimestamp(os.path.getmtime(snapshot_path)).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            modified = "unknown"
+        confirm = self._new_message_dialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text=(
+                "Restore latest snapshot?\n\n"
+                f"File: {os.path.basename(snapshot_path)}\n"
+                f"Modified: {modified}"
+            ),
+        )
+
+        def _on_confirm(dlg, resp):
+            dlg.destroy()
+            if resp != Gtk.ResponseType.YES:
+                return
+            try:
+                result = self.engine.restore_latest_snapshot()
+                self._apply_snapshot_import_result(result, title_prefix="Latest snapshot restored.")
+            except Exception as e:
+                self._log_error("restore_latest_snapshot", e)
+                err = self._new_message_dialog(
+                    transient_for=self,
+                    modal=True,
+                    message_type=Gtk.MessageType.ERROR,
+                    buttons=Gtk.ButtonsType.OK,
+                    text=f"Restore failed: {e}",
+                )
+                err.connect("response", lambda dd, _r: dd.destroy())
+                err.present()
+
+        confirm.connect("response", _on_confirm)
+        confirm.present()
 
 
     def on_export_data(self, button):

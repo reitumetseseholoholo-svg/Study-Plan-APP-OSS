@@ -3641,6 +3641,34 @@ class StudyPlanEngine:
             random.shuffle(remaining)
             selected.extend(remaining[: (count - len(selected))])
 
+        # Enforce a minimum non-recent ratio unless must-review pressure is high.
+        target_size = min(count, len(questions))
+        if target_size > 0 and recent_set:
+            unique_floor_ratio = 0.70
+            min_non_recent = int(math.ceil(target_size * unique_floor_ratio))
+            due_pressure = len(due_items) >= max(1, int(math.ceil(target_size * 0.60)))
+            non_recent_selected = [idx for idx in selected if idx not in recent_set]
+            if not due_pressure and len(non_recent_selected) < min_non_recent:
+                needed = min_non_recent - len(non_recent_selected)
+                candidates = [item for item in scored if item[0] not in selected and item[4] == 0]
+                candidates.sort(key=lambda x: (-x[1], -x[2], -x[7], x[6]))
+                additions = [idx for idx, *_rest in candidates[:needed]]
+                if additions:
+                    due_by_idx = {idx: due for idx, due, *_rest in scored}
+                    replaceable = [
+                        idx for idx in selected
+                        if idx in recent_set and due_by_idx.get(idx, 0) == 0
+                    ]
+                    for add_idx in additions:
+                        if not replaceable:
+                            break
+                        old_idx = replaceable.pop(0)
+                        try:
+                            pos = selected.index(old_idx)
+                        except ValueError:
+                            continue
+                        selected[pos] = add_idx
+
         return selected
 
     def get_question_difficulty(self, chapter: str, idx: int) -> str:
@@ -5483,6 +5511,43 @@ class StudyPlanEngine:
             "quiz_results": len(self.quiz_results) if isinstance(self.quiz_results, dict) else 0,
             "progress_points": len(self.progress_log) if isinstance(self.progress_log, list) else 0,
         }
+
+    def get_latest_backup_snapshot_path(self) -> str | None:
+        """Return the most recent backup snapshot path, or None if unavailable."""
+        data_dir = os.path.dirname(self.DATA_FILE)
+        if not data_dir:
+            return None
+        base = os.path.basename(self.DATA_FILE)
+        backups_dir = os.path.join(data_dir, "backups")
+        latest_path: str | None = None
+        if os.path.isdir(backups_dir):
+            prefix = f"{base}."
+            suffix = ".bak"
+            try:
+                entries = [
+                    name for name in os.listdir(backups_dir)
+                    if name.startswith(prefix) and name.endswith(suffix)
+                ]
+            except OSError:
+                entries = []
+            if entries:
+                entries.sort(reverse=True)
+                latest_path = os.path.join(backups_dir, entries[0])
+        if latest_path and os.path.exists(latest_path):
+            return latest_path
+        legacy_bak = f"{self.DATA_FILE}.bak"
+        if os.path.exists(legacy_bak):
+            return legacy_bak
+        return None
+
+    def restore_latest_snapshot(self) -> dict[str, Any]:
+        """Import the most recent backup snapshot and return import summary."""
+        snapshot_path = self.get_latest_backup_snapshot_path()
+        if not snapshot_path:
+            raise FileNotFoundError("No backup snapshot available.")
+        result = self.import_data_snapshot(snapshot_path)
+        result["snapshot_path"] = snapshot_path
+        return result
 
     def load_data(self):
         """Load user data from JSON file."""
