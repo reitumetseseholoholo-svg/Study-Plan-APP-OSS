@@ -509,6 +509,61 @@ def test_import_syllabus_disk_cache_roundtrip(engine_no_io, monkeypatch, tmp_pat
     assert perf.get("import_cache_hit") is True
 
 
+def test_import_syllabus_disk_cache_rejects_signature_mismatch(engine_no_io, tmp_path):
+    eng = engine_no_io
+    eng.syllabus_import_cache_file = str(tmp_path / "syllabus_import_cache.json")
+    key = "acca_f9:abc:def"
+    payload = {
+        "schema_version": int(eng.SYLLABUS_IMPORT_CACHE_SCHEMA_VERSION),
+        "parser_signature": "different_signature",
+        "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "order": [key],
+        "cache": {
+            key: {
+                "cached_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "result": {"module_id": "acca_f9", "diagnostics": {"confidence": 0.5}},
+            }
+        },
+    }
+    with open(eng.syllabus_import_cache_file, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=True)
+
+    eng._syllabus_import_cache = {}
+    eng._syllabus_import_cache_order = []
+    eng._load_syllabus_import_cache_disk()
+    assert eng._syllabus_import_cache == {}
+    assert eng._syllabus_import_cache_order == []
+
+
+def test_import_syllabus_disk_cache_rejects_stale_entries(engine_no_io, tmp_path):
+    eng = engine_no_io
+    eng.syllabus_import_cache_file = str(tmp_path / "syllabus_import_cache.json")
+    old_date = (datetime.datetime.now() - datetime.timedelta(days=eng.SYLLABUS_IMPORT_CACHE_MAX_AGE_DAYS + 2)).isoformat(
+        timespec="seconds"
+    )
+    key = "acca_f9:abc:def"
+    payload = {
+        "schema_version": int(eng.SYLLABUS_IMPORT_CACHE_SCHEMA_VERSION),
+        "parser_signature": str(eng.SYLLABUS_PARSER_SIGNATURE),
+        "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "order": [key],
+        "cache": {
+            key: {
+                "cached_at": old_date,
+                "result": {"module_id": "acca_f9", "diagnostics": {"confidence": 0.5}},
+            }
+        },
+    }
+    with open(eng.syllabus_import_cache_file, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=True)
+
+    eng._syllabus_import_cache = {}
+    eng._syllabus_import_cache_order = []
+    eng._load_syllabus_import_cache_disk()
+    assert eng._syllabus_import_cache == {}
+    assert eng._syllabus_import_cache_order == []
+
+
 def test_load_recall_model_sklearn_accepts_matching_feature_count(engine_no_io, monkeypatch, tmp_path):
     eng = engine_no_io
     model = types.SimpleNamespace(predict_proba=lambda X: [[0.3, 0.7] for _ in X])

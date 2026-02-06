@@ -24,6 +24,9 @@ class StudyPlanEngine:
     SYLLABUS_PARSE_CACHE_MAX = 12
     SYLLABUS_IMPORT_CACHE_MAX = 12
     SYLLABUS_IMPORT_CACHE_DISK_MAX = 24
+    SYLLABUS_IMPORT_CACHE_SCHEMA_VERSION = 2
+    SYLLABUS_IMPORT_CACHE_MAX_AGE_DAYS = 30
+    SYLLABUS_PARSER_SIGNATURE = "syllabus_parser_ocr_v2"
     CHAPTERS = [
         "FM Function",
         "FM Environment",
@@ -1422,11 +1425,21 @@ class StudyPlanEngine:
             return
         if not isinstance(payload, dict):
             return
+        schema_version = int(payload.get("schema_version", 1) or 1)
+        parser_signature = str(payload.get("parser_signature", "") or "").strip()
+        expected_schema = int(getattr(self, "SYLLABUS_IMPORT_CACHE_SCHEMA_VERSION", 2) or 2)
+        expected_signature = str(getattr(self, "SYLLABUS_PARSER_SIGNATURE", "") or "").strip()
+        if schema_version != expected_schema:
+            return
+        if expected_signature and parser_signature and parser_signature != expected_signature:
+            return
         raw_cache = payload.get("cache", {})
         raw_order = payload.get("order", [])
         if not isinstance(raw_cache, dict) or not isinstance(raw_order, list):
             return
         limit = max(1, int(getattr(self, "SYLLABUS_IMPORT_CACHE_DISK_MAX", 24) or 24))
+        max_age_days = max(1, int(getattr(self, "SYLLABUS_IMPORT_CACHE_MAX_AGE_DAYS", 30) or 30))
+        cutoff = datetime.datetime.now() - datetime.timedelta(days=max_age_days)
         loaded_cache: Dict[str, Dict[str, Any]] = {}
         loaded_order: List[str] = []
         for key in raw_order:
@@ -1437,7 +1450,24 @@ class StudyPlanEngine:
             item = raw_cache.get(key)
             if not isinstance(item, dict):
                 continue
-            loaded_cache[key] = copy.deepcopy(item)
+            result_obj: Dict[str, Any] | None = None
+            cached_at_raw = ""
+            if isinstance(item.get("result"), dict):
+                result_obj = copy.deepcopy(cast(Dict[str, Any], item.get("result")))
+                cached_at_raw = str(item.get("cached_at", "") or "")
+            else:
+                # Backward compatibility for old cache files where value was the result directly.
+                result_obj = copy.deepcopy(item)
+            if cached_at_raw:
+                try:
+                    cached_at = datetime.datetime.fromisoformat(cached_at_raw)
+                except Exception:
+                    cached_at = None
+                if cached_at is None or cached_at < cutoff:
+                    continue
+            if not isinstance(result_obj, dict):
+                continue
+            loaded_cache[key] = result_obj
             loaded_order.append(key)
         if loaded_cache and loaded_order:
             self._syllabus_import_cache = loaded_cache
@@ -1455,9 +1485,13 @@ class StudyPlanEngine:
         for key in order:
             value = self._syllabus_import_cache.get(key)
             if isinstance(value, dict):
-                cache_obj[key] = value
+                cache_obj[key] = {
+                    "cached_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                    "result": value,
+                }
         payload = {
-            "version": 1,
+            "schema_version": int(getattr(self, "SYLLABUS_IMPORT_CACHE_SCHEMA_VERSION", 2) or 2),
+            "parser_signature": str(getattr(self, "SYLLABUS_PARSER_SIGNATURE", "") or "").strip(),
             "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
             "order": order,
             "cache": cache_obj,
