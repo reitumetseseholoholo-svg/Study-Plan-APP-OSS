@@ -12,6 +12,7 @@ import os
 import sys
 import random
 import csv
+import io
 import subprocess
 import shutil
 import math
@@ -209,6 +210,38 @@ try:
 except Exception:
     fitz = None
     HAVE_FITZ = False
+
+try:
+    import numpy as np  # type: ignore[import-untyped]
+except Exception:
+    np = None
+
+try:
+    from PIL import Image  # type: ignore[import-untyped]
+except Exception:
+    Image = None
+
+try:
+    import pytesseract  # type: ignore[import-untyped]
+except Exception:
+    pytesseract = None
+
+try:
+    from skimage import exposure, filters, morphology  # type: ignore[import-untyped]
+except Exception:
+    exposure = None
+    filters = None
+    morphology = None
+
+HAVE_SKIMAGE_OCR = bool(
+    HAVE_FITZ
+    and np is not None
+    and Image is not None
+    and pytesseract is not None
+    and exposure is not None
+    and filters is not None
+    and morphology is not None
+)
 
 plt: Any | None = None
 FigureCanvas: type[Any] | None = None
@@ -9687,6 +9720,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         ]
         if meta.get("ocr_used"):
             lines.append(f"OCR used on {int(meta.get('ocr_pages', 0) or 0)} page(s).")
+            sk_pages = int(meta.get("skimage_ocr_pages", 0) or 0)
+            if sk_pages > 0:
+                lines.append(f"skimage + Tesseract preprocessing used on {sk_pages} page(s).")
         elif meta.get("ocr_failed_pages"):
             lines.append(f"OCR unavailable on {int(meta.get('ocr_failed_pages', 0) or 0)} page(s).")
         if isinstance(perf, dict):
@@ -9858,19 +9894,78 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return True
         return False
 
-    def _extract_page_lines(self, page) -> tuple[list[str], bool, bool]:
+    def _looks_ocr_text_useful(self, lines: list[str]) -> bool:
+        if not lines:
+            return False
+        combined = " ".join(lines).strip()
+        if not combined:
+            return False
+        alnum = sum(1 for ch in combined if ch.isalnum())
+        word_count = len([w for w in combined.split() if w.strip()])
+        ratio = float(alnum) / float(max(1, len(combined)))
+        if word_count < 20:
+            return False
+        if alnum < 100:
+            return False
+        return ratio >= 0.40
+
+    def _extract_page_lines_skimage_ocr(self, page) -> list[str]:
+        if not HAVE_SKIMAGE_OCR:
+            return []
+        try:
+            zoom = 2.0
+            matrix = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+            png_bytes = pix.tobytes("png")
+            img = Image.open(io.BytesIO(png_bytes)).convert("L")
+            arr = np.asarray(img)
+            if arr.size == 0:
+                return []
+
+            # Contrast + adaptive threshold helps noisy screenshots/scan PDFs.
+            try:
+                arr_eq = exposure.equalize_adapthist(arr, clip_limit=0.02)
+                arr_u8 = (arr_eq * 255.0).astype("uint8")
+            except Exception:
+                arr_u8 = arr.astype("uint8", copy=False)
+
+            try:
+                threshold = filters.threshold_sauvola(arr_u8, window_size=25)
+                binary = arr_u8 > threshold
+            except Exception:
+                # Robust fallback when Sauvola fails on unusual page dimensions.
+                try:
+                    threshold = filters.threshold_otsu(arr_u8)
+                    binary = arr_u8 > threshold
+                except Exception:
+                    return []
+
+            binary = morphology.remove_small_objects(binary, min_size=24)
+            binary = morphology.remove_small_holes(binary, area_threshold=48)
+            ocr_img = np.where(binary, 255, 0).astype("uint8")
+            text = pytesseract.image_to_string(Image.fromarray(ocr_img), config="--oem 3 --psm 6")
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            return lines
+        except Exception:
+            return []
+
+    def _extract_page_lines(self, page) -> tuple[list[str], bool, bool, bool]:
         try:
             text_dict = page.get_text("dict")
             lines = self._lines_from_text_dict(text_dict)
         except Exception:
             lines = []
         if not self._looks_sparse(lines):
-            return lines, False, False
+            return lines, False, False, False
+        # First OCR pass: skimage preprocessing + pytesseract (if available).
+        skimage_lines = self._extract_page_lines_skimage_ocr(page)
+        if self._looks_ocr_text_useful(skimage_lines):
+            return skimage_lines, True, False, True
         # OCR fallback for low-text pages
         try:
             textpage = page.get_textpage_ocr()
         except Exception:
-            return lines, False, True
+            return lines, False, True, False
         ocr_dict = None
         try:
             ocr_dict = textpage.extractDICT()
@@ -9882,17 +9977,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if ocr_dict:
             ocr_lines = self._lines_from_text_dict(ocr_dict)
             if ocr_lines:
-                return ocr_lines, True, False
+                return ocr_lines, True, False, False
         try:
             ocr_text = textpage.extractTEXT()
         except Exception:
             ocr_text = ""
         ocr_lines = [ln.strip() for ln in ocr_text.splitlines() if ln.strip()]
-        return (ocr_lines or lines), bool(ocr_lines), False
+        return (ocr_lines or lines), bool(ocr_lines), False, False
 
     def _extract_pdf_text_advanced(self, file_path: str) -> tuple[str, dict]:
         if fitz is None:
-            return "", {"ocr_used": False, "ocr_pages": 0, "ocr_failed_pages": 0}
+            return "", {"ocr_used": False, "ocr_pages": 0, "ocr_failed_pages": 0, "skimage_ocr_pages": 0}
         abs_path = os.path.abspath(str(file_path))
         try:
             stat = os.stat(abs_path)
@@ -9908,13 +10003,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         ocr_used = False
         ocr_pages = 0
         ocr_failed_pages = 0
+        skimage_ocr_pages = 0
         all_lines = []
         with fitz.open(file_path) as doc:
             for page in doc:
-                page_lines, used_ocr, ocr_failed = self._extract_page_lines(page)
+                page_lines, used_ocr, ocr_failed, used_skimage = self._extract_page_lines(page)
                 if used_ocr:
                     ocr_used = True
                     ocr_pages += 1
+                if used_skimage:
+                    skimage_ocr_pages += 1
                 if ocr_failed:
                     ocr_failed_pages += 1
                 all_lines.extend(page_lines)
@@ -9923,6 +10021,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "ocr_used": ocr_used,
             "ocr_pages": ocr_pages,
             "ocr_failed_pages": ocr_failed_pages,
+            "skimage_ocr_pages": skimage_ocr_pages,
         }
         if cache_key:
             self._pdf_text_cache[cache_key] = (text_out, dict(meta_out))
@@ -10069,6 +10168,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     msg += f"\n\nSkipped examples:\n{samples}"
                 if meta.get("ocr_used"):
                     msg += f"\n\nOCR used on {meta.get('ocr_pages', 0)} page(s) for accuracy."
+                    sk_pages = int(meta.get("skimage_ocr_pages", 0) or 0)
+                    if sk_pages > 0:
+                        msg += f"\nPreprocessed with skimage+Tesseract on {sk_pages} page(s)."
                 elif meta.get("ocr_failed_pages"):
                     msg += f"\n\nOCR unavailable for {meta.get('ocr_failed_pages', 0)} page(s); used text extraction."
                 competence_after = dict(getattr(self.engine, "competence", {}) or {})
@@ -10148,6 +10250,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         "warnings": warnings,
                         "ocr_used": bool(meta.get("ocr_used")),
                         "ocr_pages": int(meta.get("ocr_pages", 0) or 0),
+                        "skimage_ocr_pages": int(meta.get("skimage_ocr_pages", 0) or 0),
                         "ocr_failed_pages": int(meta.get("ocr_failed_pages", 0) or 0),
                     }
                     self._log_import_history(entry)
