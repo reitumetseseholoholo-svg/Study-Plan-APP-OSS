@@ -11562,6 +11562,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if confidence_tier == "low":
                 ml_label.add_css_class("status-warn")
             coach_box.append(ml_label)
+            try:
+                chapter_ml = self.engine.get_chapter_ml_status(recommended_topic)
+                ch_ready = bool(chapter_ml.get("ready", False))
+                ch_conf = float(chapter_ml.get("confidence", 0.0) or 0.0)
+                ch_samples = int(chapter_ml.get("sample_count", 0) or 0)
+                ch_total = int(chapter_ml.get("total_questions", 0) or 0)
+                ch_line = Gtk.Label(
+                    label=(
+                        f"Chapter ML ({recommended_topic}): "
+                        f"{'ready' if ch_ready else 'fallback'} • "
+                        f"{ch_conf*100:.0f}% • {ch_samples}/{ch_total} Qs"
+                    )
+                )
+                ch_line.set_halign(Gtk.Align.START)
+                ch_line.add_css_class("muted")
+                if not ch_ready:
+                    ch_line.add_css_class("status-warn")
+                coach_box.append(ch_line)
+            except Exception:
+                pass
         except Exception:
             pass
         try:
@@ -12046,6 +12066,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if confidence_tier == "low":
                         confidence_label.add_css_class("status-warn")
                     insights.append(confidence_label)
+                    try:
+                        if risk_rows:
+                            top_chapter = str(risk_rows[0][0])
+                            chapter_ml = self.engine.get_chapter_ml_status(top_chapter)
+                            ch_ready = bool(chapter_ml.get("ready", False))
+                            ch_conf = float(chapter_ml.get("confidence", 0.0) or 0.0)
+                            ch_samples = int(chapter_ml.get("sample_count", 0) or 0)
+                            ch_total = int(chapter_ml.get("total_questions", 0) or 0)
+                            chapter_ml_label = Gtk.Label(
+                                label=(
+                                    f"Top-risk chapter ML ({top_chapter}): "
+                                    f"{'ready' if ch_ready else 'fallback'} • "
+                                    f"{ch_conf*100:.0f}% • {ch_samples}/{ch_total} Qs"
+                                )
+                            )
+                            chapter_ml_label.set_halign(Gtk.Align.START)
+                            chapter_ml_label.add_css_class("muted")
+                            if not ch_ready:
+                                chapter_ml_label.add_css_class("status-warn")
+                            insights.append(chapter_ml_label)
+                    except Exception:
+                        pass
                     last_trained = getattr(self, "_last_ml_train_at", None) or getattr(self, "_last_ml_train_date", None)
                     if last_trained:
                         train_label = Gtk.Label(label=f"Last trained: {last_trained}")

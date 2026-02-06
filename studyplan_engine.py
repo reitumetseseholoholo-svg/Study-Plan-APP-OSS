@@ -2933,6 +2933,24 @@ class StudyPlanEngine:
             threshold = 0.45
         return self._chapter_ml_confidence(chapter) >= max(0.0, min(1.0, threshold))
 
+    def get_chapter_ml_status(self, chapter: str) -> Dict[str, Any]:
+        questions = self.QUESTIONS.get(chapter, [])
+        total_questions = len(questions) if isinstance(questions, list) else 0
+        sample_count = self._chapter_question_sample_count(chapter)
+        coverage = (float(sample_count) / max(1.0, float(total_questions))) if total_questions > 0 else 0.0
+        confidence = self._chapter_ml_confidence(chapter)
+        global_ready = self._count_question_samples() >= self.ML_MIN_SAMPLES
+        ready = bool(global_ready and self._is_chapter_ml_ready(chapter))
+        return {
+            "chapter": chapter,
+            "ready": ready,
+            "confidence": max(0.0, min(1.0, float(confidence))),
+            "sample_count": max(0, int(sample_count)),
+            "total_questions": max(0, int(total_questions)),
+            "coverage": max(0.0, min(1.0, float(coverage))),
+            "global_ready": bool(global_ready),
+        }
+
     def _chapter_capability(self, chapter: str) -> str:
         """Return chapter capability letter when available."""
         info = self.syllabus_structure.get(chapter, {}) if isinstance(self.syllabus_structure, dict) else {}

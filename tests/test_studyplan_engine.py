@@ -382,6 +382,40 @@ def test_get_question_difficulty_falls_back_when_chapter_ml_not_ready(engine_no_
     assert eng.get_question_difficulty(chapter, 0) == "hard"
 
 
+def test_get_chapter_ml_status_reports_readiness(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    today = datetime.date.today().isoformat()
+
+    eng.ML_MIN_SAMPLES = 1
+    eng.ML_MIN_CHAPTER_SAMPLES = 4
+    eng.ML_MIN_CHAPTER_COVERAGE = 0.10
+    eng.ML_MIN_CHAPTER_CONFIDENCE = 0.50
+
+    eng.question_stats[chapter] = {
+        "0": {"attempts": 3, "correct": 2, "streak": 1, "avg_time_sec": 12, "last_seen": today}
+    }
+    low = eng.get_chapter_ml_status(chapter)
+    assert low["ready"] is False
+    assert low["sample_count"] == 1
+    assert 0.0 <= float(low["confidence"]) <= 1.0
+
+    expanded = {}
+    for idx in range(min(10, len(eng.QUESTIONS.get(chapter, [])))):
+        expanded[str(idx)] = {
+            "attempts": 3,
+            "correct": 2,
+            "streak": 1,
+            "avg_time_sec": 12,
+            "last_seen": today,
+        }
+    eng.question_stats[chapter] = expanded
+    high = eng.get_chapter_ml_status(chapter)
+    assert high["ready"] is True
+    assert int(high["sample_count"]) >= 4
+    assert 0.0 <= float(high["coverage"]) <= 1.0
+
+
 def test_import_syllabus_from_sparse_text_returns_fallback_draft(engine_no_io):
     eng = engine_no_io
     sparse_text = "This is a scanned syllabus extract with weak structure and no explicit section headers."
