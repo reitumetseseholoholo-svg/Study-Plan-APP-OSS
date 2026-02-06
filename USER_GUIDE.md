@@ -114,4 +114,18 @@ Use **Import PDF scores** to parse ACCA Study Hub reports. This updates competen
 - **Charts missing** → install `matplotlib`
 - **PDF import missing** → install `PyMuPDF (fitz)`
 
+## 12) ML training and status
+
+- Open **Application → Train ML Models…** to run trainers manually.
+- The dialog shows:
+  - current sample count
+  - model file presence
+  - model file timestamps
+- Coach Briefing and Quiz Insights show current ML model status and confidence tier.
+- Auto-training runs in the background with guardrails:
+  - no overlapping runs
+  - skipped during active study flows
+  - interval-based cadence with minimum sample deltas
+- If model quality gates fail (Brier/ECE/AUC), the trainer does not promote the new model and keeps the current one.
+
 ---

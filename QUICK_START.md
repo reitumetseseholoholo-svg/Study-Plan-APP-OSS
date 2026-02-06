@@ -31,6 +31,7 @@
 - **Quick Quiz** → short quiz on coach topic
 - **Weak Drill** → targets weakest chapter
 - **Run Data Health Check** → normalizes data + shows health summary
+- **Train ML Models** → runs recall/difficulty/interval trainers
 
 ## Pomodoro Rules
 

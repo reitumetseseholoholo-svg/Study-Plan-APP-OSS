@@ -52,6 +52,23 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **Study Hub import**: parse ACCA Study Hub PDFs (practice/quiz reports)
 - **Modules**: switch or edit ACCA modules via JSON configs
 
+## ML training (optional)
+
+- In-app: **Application → Train ML Models…**
+- Models:
+  - Recall (sklearn): `~/.config/studyplan/recall_model.pkl`
+  - Difficulty (sklearn): `~/.config/studyplan/difficulty_model.pkl`
+  - Interval (sklearn): `~/.config/studyplan/interval_model.pkl`
+- Recall trainer includes:
+  - recency weighting
+  - class balancing
+  - automatic `C` candidate search
+  - optional probability calibration
+  - promotion gates on Brier, ECE, AUC, and improvement over existing model
+- Runtime safety:
+  - model load falls back safely when a model is missing/invalid
+  - sklearn recall model is rejected if metadata feature count mismatches engine features
+
 ## Keyboard shortcuts
 
 - **F1** Show shortcuts
