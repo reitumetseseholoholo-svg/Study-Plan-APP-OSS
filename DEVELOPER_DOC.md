@@ -21,6 +21,7 @@ Global app data:
 - `~/.config/studyplan/streak.json`
 - `~/.config/studyplan/import_history.jsonl`
 - `~/.config/studyplan/app.log`
+- `~/.config/studyplan/coach_debug.log` (coach pick audit)
 
 ### Key engine structures
 
@@ -122,6 +123,8 @@ Global app data:
 - Avoid calling `update_dashboard()` inside per-question quiz confirmation paths.
 - Keep per-answer refreshes lightweight (`_update_coach_pick_card`, `update_study_room_card`) and refresh full dashboard once at quiz completion.
 - In file chooser helpers, prefer `get_file()` first and isolate legacy chooser calls to avoid noisy GTK deprecation warnings.
+- Coach UI refreshes are debounced (study room, plan, recommendations) to reduce flicker/jank.
+- `Data Health Check` runs `_normalize_loaded_data()` + migrations and appends to `migration.log`.
 
 ### Study Hub import
 - PDF parsing updates quiz/practice stats and competence

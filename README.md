@@ -46,6 +46,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **Time Analytics**: time per action + per‑topic leaderboards
 - **Balance checks**: topic saturation + confidence drift (competence vs mastery/quiz)
 - **Confidence Drift chart**: top gap visualization
+- **Data Health Check**: one‑click normalization + health summary in Tools
 - **Weekly summary export**: auto writes `~/.config/studyplan/weekly_report.txt`
 - **Study Hub import**: parse ACCA Study Hub PDFs (practice/quiz reports)
 - **Modules**: switch or edit ACCA modules via JSON configs
@@ -82,6 +83,7 @@ Global app files:
 - `~/.config/studyplan/streak.json`
 - `~/.config/studyplan/import_history.jsonl`
 - `~/.config/studyplan/app.log`
+- `~/.config/studyplan/coach_debug.log` (coach pick audit)
 - `~/.config/studyplan/modules/*.json` (module configs)
 
 ## Module switching

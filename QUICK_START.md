@@ -30,6 +30,7 @@
 - **Focus Now** → starts Pomodoro on coach topic
 - **Quick Quiz** → short quiz on coach topic
 - **Weak Drill** → targets weakest chapter
+- **Run Data Health Check** → normalizes data + shows health summary
 
 ## Pomodoro Rules
 

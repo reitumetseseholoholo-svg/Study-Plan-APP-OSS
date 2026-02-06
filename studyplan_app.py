@@ -1516,6 +1516,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._glib_sources: set[int] = set()
         self._dashboard_debounce_id = None
         self._study_room_debounce_id = None
+        self._rec_debounce_id = None
+        self._plan_debounce_id = None
+        self._pending_plan_topics = 3
 
         # Take Quiz button
         self.quiz_btn = Gtk.Button(label="Take quiz")
@@ -6104,6 +6107,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         source = getattr(self, "_last_coach_pick_source", "plan")
         return topic, str(source)
 
+    def _get_last_coach_log_summary(self) -> str:
+        path = os.path.join(self.DEFAULT_DATA_DIR, "coach_debug.log")
+        if not os.path.exists(path):
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = [line.strip() for line in f if line.strip()]
+            if not lines:
+                return ""
+            last = lines[-1]
+            try:
+                entry = json.loads(last)
+            except Exception:
+                return "Coach log: " + last[:140]
+            topic = entry.get("topic", "—")
+            sticky = "on" if entry.get("sticky") else "off"
+            release = "yes" if entry.get("release") else "no"
+            plan = entry.get("plan") if isinstance(entry.get("plan"), list) else []
+            return f"Coach log: {topic} • sticky {sticky} • release {release} • plan {len(plan)}"
+        except Exception:
+            return ""
+
     def _get_next_action_line(
         self,
         recommended_topic: str,
@@ -6570,6 +6595,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _maybe_show_first_run(self) -> bool:
         if self.first_run_completed:
+            return False
+        if self._has_study_history() or isinstance(getattr(self.engine, "exam_date", None), datetime.date):
+            self.first_run_completed = True
+            self.save_preferences()
             return False
         self.on_first_run_tour(None, None)
         return False
@@ -10239,6 +10268,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
         try:
+            log_summary = self._get_last_coach_log_summary()
+            if log_summary:
+                log_label = Gtk.Label(label=log_summary)
+                log_label.set_halign(Gtk.Align.START)
+                log_label.add_css_class("muted")
+                coach_box.append(log_label)
+        except Exception:
+            pass
+        try:
             drift_note = self._get_confidence_drift_note(recommended_topic)
             if drift_note:
                 coach_warnings.append(drift_note)
@@ -11949,9 +11987,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return False
 
     def update_recommendations(self):
-        if getattr(self, "_rec_update_source", None):
+        if getattr(self, "_rec_debounce_id", None):
             return
+        self._rec_debounce_id = GLib.timeout_add(120, self._debounced_recommendations_refresh)
+
+    def _debounced_recommendations_refresh(self) -> bool:
+        self._rec_debounce_id = None
+        if getattr(self, "_rec_update_source", None):
+            return False
         self._rec_update_source = GLib.idle_add(self._render_recommendations)
+        return False
 
     def _render_recommendations(self):
         self._rec_update_source = None
@@ -12002,6 +12047,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     # --- Daily plan UI helpers ---
     def update_daily_plan(self, num_topics: int = 3) -> None:
+        self._pending_plan_topics = int(num_topics or 3)
+        if getattr(self, "_plan_debounce_id", None):
+            return
+        self._plan_debounce_id = GLib.timeout_add(120, self._debounced_plan_refresh)
+
+    def _debounced_plan_refresh(self) -> bool:
+        self._plan_debounce_id = None
+        num_topics = int(getattr(self, "_pending_plan_topics", 3) or 3)
+        self._render_daily_plan_impl(num_topics)
+        return False
+
+    def _render_daily_plan_impl(self, num_topics: int = 3) -> None:
         # Clear existing items
         child = self.plan_box.get_first_child()
         while child:
@@ -12250,7 +12307,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 markup = f"<span foreground='#7f8792'>{markup}</span>"
 
             try:
-                coach_pick = self._get_recommended_topic()
+                coach_pick = self._get_coach_pick_topic()
             except Exception:
                 coach_pick = ""
             if coach_pick and chapter == coach_pick:

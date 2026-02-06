@@ -4264,7 +4264,7 @@ class StudyPlanEngine:
                 continue
             # due today (non-overdue but scheduled)
             last = srs.get("last_review")
-            if last:
+            if isinstance(last, str) and last:
                 try:
                     last_date = datetime.date.fromisoformat(last)
                     interval = int(srs.get("interval", 1) or 1)
