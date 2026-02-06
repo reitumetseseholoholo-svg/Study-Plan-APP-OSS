@@ -589,6 +589,39 @@ def test_syllabus_cache_stats_and_clear(engine_no_io, tmp_path):
     assert bool(stats_after.get("disk_exists", False)) is False
 
 
+def test_syllabus_cache_metrics_track_hits_and_misses(engine_no_io):
+    eng = engine_no_io
+    eng._syllabus_parse_cache = {}
+    eng._syllabus_parse_cache_order = []
+    eng._syllabus_import_cache = {}
+    eng._syllabus_import_cache_order = []
+    eng._syllabus_cache_metrics = {
+        "parse_hits": 0,
+        "parse_misses": 0,
+        "import_hits": 0,
+        "import_misses": 0,
+    }
+
+    _ = eng.import_syllabus_from_pdf_text(SAMPLE_SYLLABUS_TEXT, module_id="acca_f9")
+    _ = eng.import_syllabus_from_pdf_text(SAMPLE_SYLLABUS_TEXT, module_id="acca_f9")
+
+    stats = eng.get_syllabus_import_cache_stats()
+    assert int(stats.get("parse_misses", 0) or 0) >= 1
+    assert int(stats.get("import_misses", 0) or 0) >= 1
+    assert int(stats.get("import_hits", 0) or 0) >= 1
+    assert 0.0 <= float(stats.get("parse_hit_rate", 0.0) or 0.0) <= 1.0
+    assert 0.0 <= float(stats.get("import_hit_rate", 0.0) or 0.0) <= 1.0
+
+    cleared = eng.clear_syllabus_import_cache(clear_disk=False)
+    assert int(cleared.get("cleared_parse_hits", 0) or 0) >= 0
+    assert int(cleared.get("cleared_import_hits", 0) or 0) >= 0
+    stats_after = eng.get_syllabus_import_cache_stats()
+    assert int(stats_after.get("parse_hits", 0) or 0) == 0
+    assert int(stats_after.get("parse_misses", 0) or 0) == 0
+    assert int(stats_after.get("import_hits", 0) or 0) == 0
+    assert int(stats_after.get("import_misses", 0) or 0) == 0
+
+
 def test_load_recall_model_sklearn_accepts_matching_feature_count(engine_no_io, monkeypatch, tmp_path):
     eng = engine_no_io
     model = types.SimpleNamespace(predict_proba=lambda X: [[0.3, 0.7] for _ in X])

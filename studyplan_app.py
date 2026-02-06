@@ -10704,6 +10704,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "",
             f"Memory parse entries: {int(before.get('memory_parse_entries', 0) or 0)} -> {int(after.get('memory_parse_entries', 0) or 0)}",
             f"Memory import entries: {int(before.get('memory_import_entries', 0) or 0)} -> {int(after.get('memory_import_entries', 0) or 0)}",
+            "Hit rates reset: parse {0:.0%} -> {1:.0%} • import {2:.0%} -> {3:.0%}".format(
+                float(before.get("parse_hit_rate", 0.0) or 0.0),
+                float(after.get("parse_hit_rate", 0.0) or 0.0),
+                float(before.get("import_hit_rate", 0.0) or 0.0),
+                float(after.get("import_hit_rate", 0.0) or 0.0),
+            ),
             f"Disk cache removed: {'yes' if bool(result.get('disk_removed')) else 'no'}",
         ]
         disk_error = result.get("disk_error")

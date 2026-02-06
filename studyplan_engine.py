@@ -1195,8 +1195,13 @@ class StudyPlanEngine:
             raise ValueError("pdf_text must be a non-empty string")
         cache_key = hashlib.sha1(pdf_text.encode("utf-8", errors="ignore")).hexdigest()
         cached = self._syllabus_parse_cache.get(cache_key)
+        metrics = getattr(self, "_syllabus_cache_metrics", {}) or {}
         if isinstance(cached, dict):
+            metrics["parse_hits"] = int(metrics.get("parse_hits", 0) or 0) + 1
+            self._syllabus_cache_metrics = metrics
             return copy.deepcopy(cached)
+        metrics["parse_misses"] = int(metrics.get("parse_misses", 0) or 0) + 1
+        self._syllabus_cache_metrics = metrics
 
         def _clean(line: str) -> str:
             line = line.replace("\u00a0", " ").replace("\u2013", "-").replace("\u2014", "-")
@@ -1506,6 +1511,13 @@ class StudyPlanEngine:
             return
 
     def get_syllabus_import_cache_stats(self) -> Dict[str, Any]:
+        metrics = getattr(self, "_syllabus_cache_metrics", {}) or {}
+        parse_hits = int(metrics.get("parse_hits", 0) or 0)
+        parse_misses = int(metrics.get("parse_misses", 0) or 0)
+        import_hits = int(metrics.get("import_hits", 0) or 0)
+        import_misses = int(metrics.get("import_misses", 0) or 0)
+        parse_total = parse_hits + parse_misses
+        import_total = import_hits + import_misses
         path = str(getattr(self, "syllabus_import_cache_file", "") or "").strip()
         stats: Dict[str, Any] = {
             "memory_parse_entries": int(len(getattr(self, "_syllabus_parse_cache", {}) or {})),
@@ -1517,6 +1529,12 @@ class StudyPlanEngine:
             "disk_updated_at": None,
             "schema_version": int(getattr(self, "SYLLABUS_IMPORT_CACHE_SCHEMA_VERSION", 2) or 2),
             "parser_signature": str(getattr(self, "SYLLABUS_PARSER_SIGNATURE", "") or "").strip(),
+            "parse_hits": parse_hits,
+            "parse_misses": parse_misses,
+            "import_hits": import_hits,
+            "import_misses": import_misses,
+            "parse_hit_rate": round((parse_hits / parse_total) if parse_total else 0.0, 4),
+            "import_hit_rate": round((import_hits / import_total) if import_total else 0.0, 4),
         }
         if not path or not os.path.exists(path):
             return stats
@@ -1543,12 +1561,23 @@ class StudyPlanEngine:
         return stats
 
     def clear_syllabus_import_cache(self, clear_disk: bool = True) -> Dict[str, Any]:
+        metrics = getattr(self, "_syllabus_cache_metrics", {}) or {}
+        parse_hits_before = int(metrics.get("parse_hits", 0) or 0)
+        parse_misses_before = int(metrics.get("parse_misses", 0) or 0)
+        import_hits_before = int(metrics.get("import_hits", 0) or 0)
+        import_misses_before = int(metrics.get("import_misses", 0) or 0)
         parse_before = int(len(getattr(self, "_syllabus_parse_cache", {}) or {}))
         import_before = int(len(getattr(self, "_syllabus_import_cache", {}) or {}))
         self._syllabus_parse_cache = {}
         self._syllabus_parse_cache_order = []
         self._syllabus_import_cache = {}
         self._syllabus_import_cache_order = []
+        self._syllabus_cache_metrics = {
+            "parse_hits": 0,
+            "parse_misses": 0,
+            "import_hits": 0,
+            "import_misses": 0,
+        }
         removed_disk = False
         disk_error = None
         path = str(getattr(self, "syllabus_import_cache_file", "") or "").strip()
@@ -1561,6 +1590,10 @@ class StudyPlanEngine:
         return {
             "cleared_parse_entries": parse_before,
             "cleared_import_entries": import_before,
+            "cleared_parse_hits": parse_hits_before,
+            "cleared_parse_misses": parse_misses_before,
+            "cleared_import_hits": import_hits_before,
+            "cleared_import_misses": import_misses_before,
             "disk_removed": removed_disk,
             "disk_error": disk_error,
         }
@@ -1845,6 +1878,7 @@ class StudyPlanEngine:
     def import_syllabus_from_pdf_text(self, pdf_text: str, module_id: str | None = None) -> Dict[str, Any]:
         """Parse syllabus text and return a validated draft module config (no file writes)."""
         t0 = time.perf_counter()
+        metrics = getattr(self, "_syllabus_cache_metrics", {}) or {}
         target_module_id = self._sanitize_module_id(module_id or self.module_id)
         base_config: Dict[str, Any] | Any = self._load_module_config(target_module_id)
         if not isinstance(base_config, dict):
@@ -1861,6 +1895,8 @@ class StudyPlanEngine:
         cache_key = f"{target_module_id}:{text_hash}:{base_signature}"
         cached = self._syllabus_import_cache.get(cache_key)
         if isinstance(cached, dict):
+            metrics["import_hits"] = int(metrics.get("import_hits", 0) or 0) + 1
+            self._syllabus_cache_metrics = metrics
             if cache_key in self._syllabus_import_cache_order:
                 self._syllabus_import_cache_order.remove(cache_key)
             self._syllabus_import_cache_order.append(cache_key)
@@ -1875,6 +1911,8 @@ class StudyPlanEngine:
                 diagnostics["perf"] = perf
                 out["diagnostics"] = diagnostics
             return out
+        metrics["import_misses"] = int(metrics.get("import_misses", 0) or 0) + 1
+        self._syllabus_cache_metrics = metrics
 
         parse_cache_hit = text_hash in self._syllabus_parse_cache
         t_parse_start = time.perf_counter()
@@ -2201,6 +2239,12 @@ class StudyPlanEngine:
         self._syllabus_parse_cache_order: List[str] = []
         self._syllabus_import_cache: Dict[str, Dict[str, Any]] = {}
         self._syllabus_import_cache_order: List[str] = []
+        self._syllabus_cache_metrics: Dict[str, int] = {
+            "parse_hits": 0,
+            "parse_misses": 0,
+            "import_hits": 0,
+            "import_misses": 0,
+        }
         self.syllabus_import_cache_file = os.path.join(self.DEFAULT_DATA_DIR, "syllabus_import_cache.json")
 
         # Data health stats
