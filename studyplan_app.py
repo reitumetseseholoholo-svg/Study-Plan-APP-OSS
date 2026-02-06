@@ -4744,7 +4744,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         body.set_wrap(True)
         body.add_css_class("muted")
         box.append(body)
+
+        drill_btn = Gtk.Button(label="Drill this chapter")
+        drill_btn.add_css_class("flat")
+        drill_btn.connect("clicked", self.on_drill_snapshot_chapter, topic)
+        try:
+            has_questions = bool(self.engine.get_questions(topic))
+        except Exception:
+            has_questions = False
+        drill_btn.set_sensitive(has_questions)
+        if not has_questions:
+            drill_btn.set_tooltip_text("Import questions to unlock chapter drill.")
+        box.append(drill_btn)
         return box
+
+    def on_drill_snapshot_chapter(self, _button, topic: str) -> None:
+        if not topic:
+            return
+        if not self._ensure_chapters_ready("Chapter Drill"):
+            return
+        self._set_current_topic(topic)
+        self.start_quiz_session(topic=topic, total_override=8, kind="drill")
 
     # --- Retrieval gating ---
     def _get_daily_minutes_window(self, days: int = 7) -> list[float]:
@@ -8435,11 +8455,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.quiz_mix_label.add_css_class("muted")
         content_area.append(self.quiz_mix_label)
 
+        self.quiz_mix_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.quiz_mix_bar = Gtk.ProgressBar()
         self.quiz_mix_bar.set_show_text(False)
-        self.quiz_mix_bar.add_css_class("muted")
         self.quiz_mix_bar.set_tooltip_text("New vs Review mix")
-        content_area.append(self.quiz_mix_bar)
+        self.quiz_mix_bar.set_hexpand(True)
+        self.quiz_mix_bar.set_size_request(-1, 6)
+        self.quiz_mix_row.append(self.quiz_mix_bar)
+        self.quiz_mix_ratio_label = Gtk.Label()
+        self.quiz_mix_ratio_label.set_halign(Gtk.Align.END)
+        self.quiz_mix_ratio_label.add_css_class("muted")
+        self.quiz_mix_row.append(self.quiz_mix_ratio_label)
+        content_area.append(self.quiz_mix_row)
 
         self.quiz_progress = Gtk.ProgressBar()
         self.quiz_progress.set_show_text(True)
@@ -8536,11 +8563,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if total > 0:
                 self.quiz_mix_bar.set_fraction(new_count / total)
                 self.quiz_mix_bar.set_visible(True)
+                new_pct = (new_count / total) * 100.0
+                review_pct = 100.0 - new_pct
+                self.quiz_mix_ratio_label.set_text(f"{new_pct:.0f}% new / {review_pct:.0f}% review")
+                self.quiz_mix_ratio_label.set_visible(True)
+                self.quiz_mix_row.set_visible(True)
             else:
-                self.quiz_mix_bar.set_visible(False)
+                self.quiz_mix_row.set_visible(False)
         except Exception:
             self.quiz_mix_label.set_text("")
-            self.quiz_mix_bar.set_visible(False)
+            self.quiz_mix_row.set_visible(False)
         self.quiz_progress.set_fraction(pos / max(1, total))
         self.quiz_progress.set_text(f"{pos}/{total}")
         if getattr(self, "quiz_next_btn", None):
