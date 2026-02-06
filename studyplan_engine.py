@@ -20,6 +20,7 @@ class StudyPlanEngine:
     RECALL_FEATURE_COUNT = 5
     ML_MIN_ATTEMPTS = 3
     ML_MIN_SAMPLES = 100
+    SYLLABUS_PARSE_CACHE_MAX = 12
     CHAPTERS = [
         "FM Function",
         "FM Environment",
@@ -1186,6 +1187,10 @@ class StudyPlanEngine:
         """Parse syllabus PDF text into capabilities, chapters, and outcomes."""
         if not isinstance(pdf_text, str) or not pdf_text.strip():
             raise ValueError("pdf_text must be a non-empty string")
+        cache_key = hashlib.sha1(pdf_text.encode("utf-8", errors="ignore")).hexdigest()
+        cached = self._syllabus_parse_cache.get(cache_key)
+        if isinstance(cached, dict):
+            return copy.deepcopy(cached)
 
         def _clean(line: str) -> str:
             line = line.replace("\u00a0", " ").replace("\u2013", "-").replace("\u2014", "-")
@@ -1375,7 +1380,7 @@ class StudyPlanEngine:
         elif confidence < 0.75:
             warnings.append("Moderate parse confidence; verify chapter mapping and outcomes.")
 
-        return {
+        result = {
             "exam_code": exam_code,
             "effective_window": effective_window,
             "capabilities": capabilities,
@@ -1390,6 +1395,15 @@ class StudyPlanEngine:
                 "outcomes_found": total_outcomes,
             },
         }
+        self._syllabus_parse_cache[cache_key] = copy.deepcopy(result)
+        if cache_key in self._syllabus_parse_cache_order:
+            self._syllabus_parse_cache_order.remove(cache_key)
+        self._syllabus_parse_cache_order.append(cache_key)
+        cache_limit = max(1, int(getattr(self, "SYLLABUS_PARSE_CACHE_MAX", 12) or 12))
+        while len(self._syllabus_parse_cache_order) > cache_limit:
+            stale = self._syllabus_parse_cache_order.pop(0)
+            self._syllabus_parse_cache.pop(stale, None)
+        return result
 
     def _build_importance_weights_from_syllabus(self, syllabus_structure: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
         raw_weights: Dict[str, float] = {}
@@ -1969,6 +1983,8 @@ class StudyPlanEngine:
         self.chapter_miss_streak: Dict[str, int] = {}
         self.chapter_miss_last_date: Dict[str, str] = {}
         self.hourly_quiz_stats: Dict[str, Dict[str, int]] = {}
+        self._syllabus_parse_cache: Dict[str, Dict[str, Any]] = {}
+        self._syllabus_parse_cache_order: List[str] = []
 
         # Data health stats
         self.data_health = {

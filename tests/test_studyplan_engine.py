@@ -381,6 +381,42 @@ def test_import_syllabus_fixture_regression(
         assert warnings
 
 
+def test_parse_syllabus_cache_returns_independent_copy(engine_no_io):
+    eng = engine_no_io
+    first = eng.parse_syllabus_pdf_text(SAMPLE_SYLLABUS_TEXT)
+    assert isinstance(first, dict)
+    assert len(eng._syllabus_parse_cache) == 1
+
+    first_warnings = first.get("warnings", [])
+    assert isinstance(first_warnings, list)
+    first_warnings.append("mutated in test")
+
+    second = eng.parse_syllabus_pdf_text(SAMPLE_SYLLABUS_TEXT)
+    second_warnings = second.get("warnings", [])
+    assert isinstance(second_warnings, list)
+    assert "mutated in test" not in second_warnings
+
+
+def test_parse_syllabus_cache_is_bounded(engine_no_io):
+    eng = engine_no_io
+    limit = int(eng.SYLLABUS_PARSE_CACHE_MAX)
+    for idx in range(limit + 5):
+        payload = (
+            "2. Main capabilities\n"
+            f"A Capability {idx}\n"
+            "4. The syllabus\n"
+            f"A Capability {idx}\n"
+            "5. Detailed study guide\n"
+            f"A Capability {idx}\n"
+            "a) Explain the capability.[2]\n"
+            "6. Summary of changes\n"
+        )
+        parsed = eng.parse_syllabus_pdf_text(payload)
+        assert isinstance(parsed, dict)
+    assert len(eng._syllabus_parse_cache) <= limit
+    assert len(eng._syllabus_parse_cache_order) <= limit
+
+
 def test_load_recall_model_sklearn_accepts_matching_feature_count(engine_no_io, monkeypatch, tmp_path):
     eng = engine_no_io
     model = types.SimpleNamespace(predict_proba=lambda X: [[0.3, 0.7] for _ in X])
