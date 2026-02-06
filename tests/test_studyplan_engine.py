@@ -345,7 +345,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "syllabus"
     ("fixture_name", "min_chapters", "min_confidence", "expect_warning"),
     [
         ("clean_fm_like.txt", 8, 0.70, False),
-        ("ocr_noisy_fm_like.txt", 6, 0.30, True),
+        ("ocr_noisy_fm_like.txt", 6, 0.30, False),
         ("sparse_extract.txt", 1, 0.00, True),
     ],
 )

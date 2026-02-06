@@ -1214,25 +1214,28 @@ class StudyPlanEngine:
 
         capabilities_section = self._extract_between(
             lines,
-            start_pattern=r"^\s*2\.\s*Main capabilities\b",
-            end_patterns=[r"^\s*3\.\s*intellectual levels\b", r"^\s*4\.\s*the syllabus\b"],
+            start_pattern=r"^\s*2\.\s*main\s+capab\w*\b",
+            end_patterns=[
+                r"^\s*3\.\s*int\w+\s+levels?\b",
+                r"^\s*4\.\s*the\s+syllabus\b",
+            ],
         )
         capabilities: Dict[str, str] = {}
         for line in capabilities_section:
-            m = re.match(r"^([A-H])\s+(.+)$", line)
+            m = re.match(r"^([A-H])[\)\.\s-]+(.+)$", line)
             if m:
                 capabilities[m.group(1)] = m.group(2).strip()
 
         syllabus_section = self._extract_between(
             lines,
-            start_pattern=r"^\s*4\.\s*The syllabus\b",
-            end_patterns=[r"^\s*5\.\s*Detailed study guide\b"],
+            start_pattern=r"^\s*4\.\s*the\s+syllabus\b",
+            end_patterns=[r"^\s*5\.\s*deta[i1l]+ed\s+study\s+guide\b"],
         )
         syllabus_titles: Dict[str, str] = {}
         syllabus_subtopics: Dict[str, List[str]] = {}
         current_letter: str | None = None
         for line in syllabus_section:
-            m_head = re.match(r"^([A-H])\s+(.+)$", line)
+            m_head = re.match(r"^([A-H])[\)\.\s-]+(.+)$", line)
             if m_head:
                 letter = (m_head.group(1) or "").strip()
                 title = (m_head.group(2) or "").strip()
@@ -1248,8 +1251,8 @@ class StudyPlanEngine:
 
         detailed_section = self._extract_between(
             lines,
-            start_pattern=r"^\s*5\.\s*Detailed study guide\b",
-            end_patterns=[r"^\s*6\.\s*summary of changes\b", r"^\s*7\.\s*approach to examining\b"],
+            start_pattern=r"^\s*5\.\s*deta\w+\s+study\s+guide\b",
+            end_patterns=[r"^\s*6\.\s*summary\s+of\s+changes\b", r"^\s*7\.\s*approach\s+to\s+examining\b"],
         )
         outcomes_by_letter: Dict[str, List[Dict[str, Any]]] = {}
         current_letter = None
@@ -1271,7 +1274,7 @@ class StudyPlanEngine:
             current_level = None
 
         for line in detailed_section:
-            m_head = re.match(r"^([A-H])\s+(.+)$", line)
+            m_head = re.match(r"^([A-H])[\)\.\s-]+(.+)$", line)
             if m_head:
                 _flush_outcome()
                 letter = (m_head.group(1) or "").strip()
@@ -1280,7 +1283,7 @@ class StudyPlanEngine:
                 current_letter = letter
                 outcomes_by_letter.setdefault(letter, [])
                 continue
-            m_bullet = re.match(r"^[a-z]\)\s*(.+)$", line)
+            m_bullet = re.match(r"^[a-z][\)\.]?\s*(.+)$", line)
             if m_bullet:
                 _flush_outcome()
                 current_outcome_text = m_bullet.group(1).strip()
@@ -1290,13 +1293,13 @@ class StudyPlanEngine:
                     current_outcome_text = f"{current_outcome_text} {line}".strip()
 
             if current_outcome_text:
-                m_level = re.search(r"\[(\d)\]\s*$", current_outcome_text)
+                m_level = re.search(r"[\[\(](\d)[\]\)]\s*$", current_outcome_text)
                 if m_level:
                     try:
                         current_level = int(m_level.group(1))
                     except Exception:
                         current_level = 2
-                    current_outcome_text = re.sub(r"\[(\d)\]\s*$", "", current_outcome_text).strip()
+                    current_outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", current_outcome_text).strip()
                     _flush_outcome()
         _flush_outcome()
 
