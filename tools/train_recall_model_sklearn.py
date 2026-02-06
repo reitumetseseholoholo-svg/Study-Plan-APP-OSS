@@ -342,6 +342,18 @@ def main() -> int:
         default=0.20,
         help="Maximum expected calibration error required for promotion.",
     )
+    parser.add_argument(
+        "--min_auc",
+        type=float,
+        default=0.55,
+        help="Minimum AUC required for promotion when AUC is available.",
+    )
+    parser.add_argument(
+        "--min_improvement_ece",
+        type=float,
+        default=0.0,
+        help="Minimum ECE improvement over existing model required for promotion.",
+    )
     parser.add_argument("--test_size", type=float, default=0.2)
     parser.add_argument("--random_state", type=int, default=42)
     parser.add_argument(
@@ -429,6 +441,8 @@ def main() -> int:
     class_weight: str | None = None if args.class_weight == "none" else "balanced"
     calibration_used = _resolve_calibration_mode(str(args.calibration), len(X_train))
     max_ece = max(0.0, float(args.max_ece))
+    min_auc = max(0.0, min(1.0, float(args.min_auc)))
+    min_improvement_ece = max(0.0, float(args.min_improvement_ece))
     c_grid = _parse_c_grid(args.c_grid, float(args.C))
 
     best_model: Any | None = None
@@ -499,7 +513,18 @@ def main() -> int:
         or (old_brier - new_brier) >= float(args.min_improvement_brier)
     )
     beats_calibration = new_ece <= max_ece
-    should_promote = beats_baseline and beats_existing and beats_calibration
+    beats_auc = (new_auc is None) or (float(new_auc) >= min_auc)
+    beats_existing_ece = (
+        old_ece is None
+        or (float(old_ece) - float(new_ece)) >= min_improvement_ece
+    )
+    should_promote = (
+        beats_baseline
+        and beats_existing
+        and beats_calibration
+        and beats_auc
+        and beats_existing_ece
+    )
 
     new_meta = {
         "trained_at": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -528,8 +553,12 @@ def main() -> int:
             "old_auc": round(float(old_auc), 6) if old_auc is not None else None,
             "old_ece": round(float(old_ece), 6) if old_ece is not None else None,
             "beats_existing": bool(beats_existing),
+            "min_auc": round(float(min_auc), 6),
+            "beats_auc": bool(beats_auc),
             "max_ece": round(float(max_ece), 6),
             "beats_calibration": bool(beats_calibration),
+            "min_improvement_ece": round(float(min_improvement_ece), 6),
+            "beats_existing_ece": bool(beats_existing_ece),
             "promoted": bool(should_promote),
         },
     }
@@ -547,7 +576,8 @@ def main() -> int:
         print(
             "Model not promoted "
             f"(new_brier={new_brier:.4f}, new_ece={new_ece:.4f}, baseline_brier={baseline_brier:.4f}, "
-            f"old_brier={old_brier if old_brier is not None else 'n/a'}, max_ece={max_ece:.4f})."
+            f"old_brier={old_brier if old_brier is not None else 'n/a'}, old_ece={old_ece if old_ece is not None else 'n/a'}, "
+            f"max_ece={max_ece:.4f}, min_auc={min_auc:.2f})."
         )
     return 0
 

@@ -60,6 +60,7 @@ Global app data:
 - Recency weighting (sklearn trainer): exponential sample weights with `--recency_half_life_days` and `--recency_min_weight`.
 - Trainer robustness: holdout-gated promotion, optional class balancing (`--class_weight`), and auto-`C` selection via `--c_grid`.
 - Calibration: optional probability calibration (`--calibration`), plus ECE gate (`--max_ece`) before promotion.
+- Promotion quality gates: optional AUC floor (`--min_auc`) and required ECE improvement over current model (`--min_improvement_ece`).
 
 ### Optional difficulty clustering (offline)
 
