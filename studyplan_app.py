@@ -4671,6 +4671,81 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             lines.append("Biggest gap: —")
         return lines
 
+    def _build_chapter_info_card(self, topic: str | None) -> Gtk.Widget:
+        """Build a compact per-chapter snapshot card."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.add_css_class("card")
+        title = Gtk.Label(label="Chapter Snapshot")
+        title.set_halign(Gtk.Align.START)
+        title.add_css_class("section-title")
+        box.append(title)
+
+        if not topic:
+            label = Gtk.Label(label="No topic selected.")
+            label.set_halign(Gtk.Align.START)
+            label.add_css_class("muted")
+            box.append(label)
+            return box
+
+        lines: list[str] = []
+        lines.append(f"Chapter: {topic}")
+
+        try:
+            comp = float(getattr(self.engine, "competence", {}).get(topic, 0) or 0)
+            quiz = float(getattr(self.engine, "quiz_results", {}).get(topic, 0) or 0)
+            lines.append(f"Competence {comp:.0f}% • Quiz {quiz:.0f}%")
+        except Exception:
+            pass
+
+        try:
+            stats = self.engine.get_mastery_stats(topic)
+            mastered = int(stats.get("mastered", 0) or 0)
+            learning = int(stats.get("learning", 0) or 0)
+            new_cards = int(stats.get("new", 0) or 0)
+            total_cards = mastered + learning + new_cards
+            if total_cards > 0:
+                lines.append(
+                    f"Mastery {mastered}/{total_cards} mastered • {learning} learning • {new_cards} new"
+                )
+        except Exception:
+            pass
+
+        try:
+            due_today = getattr(self.engine, "get_due_today_by_chapter", lambda *_: {})(datetime.date.today())
+            due_count = int(due_today.get(topic, 0) or 0) if isinstance(due_today, dict) else 0
+            if due_count:
+                lines.append(f"Due today: {due_count}")
+        except Exception:
+            pass
+
+        try:
+            leeches = getattr(self.engine, "get_leech_counts", lambda *_: {})(days=14)
+            leech_count = int(leeches.get(topic, 0) or 0) if isinstance(leeches, dict) else 0
+            if leech_count:
+                lines.append(f"Leech alerts: {leech_count}")
+        except Exception:
+            pass
+
+        try:
+            qs = getattr(self.engine, "question_stats", {}) if isinstance(getattr(self.engine, "question_stats", {}), dict) else {}
+            chapter_stats = qs.get(topic, {}) if isinstance(qs, dict) else {}
+            attempted = 0
+            if isinstance(chapter_stats, dict):
+                for entry in chapter_stats.values():
+                    if isinstance(entry, dict) and int(entry.get("attempts", 0) or 0) > 0:
+                        attempted += 1
+            if attempted:
+                lines.append(f"Questions attempted: {attempted}")
+        except Exception:
+            pass
+
+        body = Gtk.Label(label="\n".join(lines))
+        body.set_halign(Gtk.Align.START)
+        body.set_wrap(True)
+        body.add_css_class("muted")
+        box.append(body)
+        return box
+
     # --- Retrieval gating ---
     def _get_daily_minutes_window(self, days: int = 7) -> list[float]:
         sessions = getattr(self, "action_time_sessions", []) or []
@@ -11087,6 +11162,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             today_label.add_css_class("muted")
             today_card.append(today_label)
             self.dashboard.append(today_card)
+
+            # Chapter snapshot for the current focus topic
+            try:
+                chapter_card = self._build_chapter_info_card(recommended_topic)
+                self.dashboard.append(chapter_card)
+            except Exception:
+                pass
 
         if focus_mode:
             mini = Gtk.Label(
