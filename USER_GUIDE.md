@@ -34,6 +34,7 @@ Coach Briefing also shows:
 - **Focus now (25m)** starts a Pomodoro on the coach topic.
 - **Quick quiz** runs a short quiz on the coach topic.
 - **Weak drill** focuses your weakest area.
+- **Interleave** runs a short quiz on the next chapter in today’s plan.
 - **Coach Next** auto‑selects the coach pick and starts the best next action.
 
 ### D. Daily plan (optional)

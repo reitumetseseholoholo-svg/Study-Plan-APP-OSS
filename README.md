@@ -33,6 +33,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **ML‑assisted coaching**: recall risk, difficulty mix, interval‑aware release (when models available)
 - **Coach Next**: one‑click “do the right thing now” action
 - **Study Room**: next action, mission progress, quick actions
+- **Interleave quiz**: quick rotation to the next chapter in plan
 - **Pomodoro**: focus timer, break timer, alerts, streaks
 - **Focus verification**: Hyprland allowlist + idle detection for verified minutes
 - **Quizzes**: SRS‑weighted questions, streak bonuses, weak‑area drill

@@ -1477,9 +1477,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_quiz_btn.connect("clicked", self.on_quick_quiz)
         self.study_room_drill_btn = Gtk.Button(label="Drill weak")
         self.study_room_drill_btn.connect("clicked", self.on_drill_weak)
+        self.study_room_interleave_btn = Gtk.Button(label="Interleave")
+        self.study_room_interleave_btn.connect("clicked", self.on_interleave_quiz)
         study_room_actions.append(self.study_room_focus_btn)
         study_room_actions.append(self.study_room_quiz_btn)
         study_room_actions.append(self.study_room_drill_btn)
+        study_room_actions.append(self.study_room_interleave_btn)
         study_room_card.append(study_room_actions)
         left_panel.append(study_room_card)
         self.study_room_card = study_room_card
@@ -7725,6 +7728,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         self._set_current_topic(topic)
         self.on_take_quiz(self.quiz_btn)
+
+    def _get_interleave_topic(self) -> str | None:
+        current = self.current_topic or self._get_recommended_topic()
+        daily_plan = getattr(self, "_last_daily_plan", None) or []
+        if not daily_plan:
+            try:
+                daily_plan = self.engine.get_daily_plan(num_topics=3, current_topic=current) or []
+            except Exception:
+                daily_plan = []
+        for chapter in daily_plan:
+            if not isinstance(chapter, str) or not chapter:
+                continue
+            if chapter == current:
+                continue
+            return chapter
+        for chapter in getattr(self.engine, "CHAPTERS", []):
+            if isinstance(chapter, str) and chapter and chapter != current:
+                return chapter
+        return None
+
+    def on_interleave_quiz(self, _button):
+        if not self._ensure_chapters_ready("Interleave Quiz"):
+            return
+        topic = self._get_interleave_topic()
+        if not topic:
+            self.send_notification("Interleave", "No alternate chapter available right now.")
+            return
+        self._set_current_topic(topic)
+        self.start_quiz_session(topic=topic, total_override=6, kind="quiz")
 
     def on_drill_weak(self, _button):
         self._ensure_coach_selection()
