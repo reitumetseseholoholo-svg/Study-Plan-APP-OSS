@@ -9910,7 +9910,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return ratio >= 0.40
 
     def _extract_page_lines_skimage_ocr(self, page) -> list[str]:
-        if not HAVE_SKIMAGE_OCR:
+        if (
+            not HAVE_SKIMAGE_OCR
+            or fitz is None
+            or np is None
+            or Image is None
+            or pytesseract is None
+            or exposure is None
+            or filters is None
+            or morphology is None
+        ):
             return []
         try:
             zoom = 2.0

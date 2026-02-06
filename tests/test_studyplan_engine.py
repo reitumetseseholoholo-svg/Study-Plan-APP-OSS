@@ -172,7 +172,7 @@ def test_save_data_creates_and_prunes_rolling_backups(tmp_path, monkeypatch):
     monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
 
     eng = StudyPlanEngine()
-    eng.BACKUP_RETENTION = 5
+    setattr(eng, "BACKUP_RETENTION", 5)
 
     # First save creates data file; subsequent saves should create snapshots.
     for i in range(12):

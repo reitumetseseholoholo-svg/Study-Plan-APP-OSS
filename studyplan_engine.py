@@ -1169,12 +1169,19 @@ class StudyPlanEngine:
         lines: List[str],
         start_pattern: str,
         end_patterns: List[str] | None = None,
+        use_last_start: bool = False,
     ) -> List[str]:
         start_idx: int | None = None
+        matched_starts: List[int] = []
         for idx, line in enumerate(lines):
             if re.search(start_pattern, line, flags=re.IGNORECASE):
-                start_idx = idx + 1
-                break
+                matched_starts.append(idx + 1)
+                if not use_last_start:
+                    break
+        if use_last_start and matched_starts:
+            start_idx = matched_starts[-1]
+        elif matched_starts:
+            start_idx = matched_starts[0]
         if start_idx is None:
             return []
         end_idx = len(lines)
@@ -1228,6 +1235,7 @@ class StudyPlanEngine:
                 r"^\s*3\.\s*int\w+\s+levels?\b",
                 r"^\s*4\.\s*the\s+syllabus\b",
             ],
+            use_last_start=True,
         )
         capabilities: Dict[str, str] = {}
         for line in capabilities_section:
@@ -1239,6 +1247,7 @@ class StudyPlanEngine:
             lines,
             start_pattern=r"^\s*4\.\s*the\s+syllabus\b",
             end_patterns=[r"^\s*5\.\s*deta[i1l]+ed\s+study\s+guide\b"],
+            use_last_start=True,
         )
         syllabus_titles: Dict[str, str] = {}
         syllabus_subtopics: Dict[str, List[str]] = {}
@@ -1262,6 +1271,7 @@ class StudyPlanEngine:
             lines,
             start_pattern=r"^\s*5\.\s*deta\w+\s+study\s+guide\b",
             end_patterns=[r"^\s*6\.\s*summary\s+of\s+changes\b", r"^\s*7\.\s*approach\s+to\s+examining\b"],
+            use_last_start=True,
         )
         outcomes_by_letter: Dict[str, List[Dict[str, Any]]] = {}
         current_letter = None
