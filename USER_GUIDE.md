@@ -96,6 +96,18 @@ Use **Import PDF scores** to parse ACCA Study Hub reports. This updates competen
 - **Module → Manage Modules…** (shows module locations)
 - **Module → Edit Module…** (GUI editor)
 
+### Import syllabus PDF (draft-first)
+
+- Use **Module → Import Syllabus PDF…**
+- The app parses:
+  - Main capabilities
+  - Syllabus chapter structure
+  - Detailed learning outcomes and intellectual levels
+- The generated module is loaded into Module Editor as a draft.
+- No file is written until you click **Save** in Module Editor.
+- Existing module questions are preserved by default in the draft.
+- Parse report shows confidence and warnings. Review before saving.
+
 ## 10) Keyboard shortcuts
 
 - **F1** Show shortcuts

@@ -336,3 +336,143 @@ def test_load_recall_model_sklearn_accepts_matching_feature_count(engine_no_io, 
     assert eng.recall_model_sklearn is model
     assert isinstance(eng.recall_model_sklearn_meta, dict)
     assert int(eng.recall_model_sklearn_meta.get("feature_count", 0)) == eng.RECALL_FEATURE_COUNT
+
+
+SAMPLE_SYLLABUS_TEXT = """
+2. Main capabilities
+A Discuss the role and purpose of the financial management function
+B Assess and discuss the impact of the economic environment on financial management
+C Discuss and apply working capital management techniques
+D Carry out effective investment appraisal
+E Identify and evaluate alternative sources of business finance
+F Discuss and apply principles of business and asset valuations
+G Explain and apply risk management techniques in business
+H Demonstrate employability and technology skills
+3. Intellectual levels
+4. The syllabus
+A Financial management function
+1. The nature and purpose of financial management
+2. Financial objectives and relationship with corporate strategy
+B Financial management environment
+1. The economic environment for business
+2. The nature and role of financial markets and institutions
+C Working capital management
+1. The nature, elements and importance of working capital
+2. Management of inventories, accounts receivable, accounts payable and cash
+D Investment appraisal
+1. Investment appraisal techniques
+2. Allowing for inflation and taxation in DCF
+E Business finance
+1. Sources of business finance
+2. Estimating the cost of capital
+F Business and asset valuations
+1. Nature and purpose of valuation
+G Risk management
+1. Nature and types of risk
+H Employability and technology skills
+1. Use technology effectively in exam responses
+5. Detailed study guide
+A Financial management function
+a) Explain the nature and purpose of financial management.[1]
+b) Discuss the relationship between financial objectives and strategy.[2]
+B Financial management environment
+a) Explain the role of financial markets and institutions.[2]
+C Working capital management
+a) Apply inventory and receivables management techniques.[2]
+b) Evaluate working capital funding strategies.[2]
+D Investment appraisal
+a) Apply DCF techniques in investment appraisal.[2]
+b) Evaluate risk and uncertainty in investment decisions.[3]
+E Business finance
+a) Identify and evaluate alternative sources of finance.[2]
+F Business and asset valuations
+a) Discuss and apply valuation principles to business assets.[3]
+G Risk management
+a) Explain and apply risk management techniques.[2]
+H Employability and technology skills
+a) Present data and information effectively in digital exam tools.[1]
+6. Summary of changes
+"""
+
+
+def test_syllabus_parser_extracts_capabilities_from_fm_text(engine_no_io):
+    eng = engine_no_io
+    parsed = eng.parse_syllabus_pdf_text(SAMPLE_SYLLABUS_TEXT)
+    capabilities = parsed.get("capabilities", {})
+    assert isinstance(capabilities, dict)
+    assert len(capabilities) == 8
+    assert capabilities.get("A", "").startswith("Discuss the role")
+    assert capabilities.get("H", "").startswith("Demonstrate employability")
+
+
+def test_syllabus_parser_extracts_chapters_and_flow(engine_no_io):
+    eng = engine_no_io
+    parsed = eng.parse_syllabus_pdf_text(SAMPLE_SYLLABUS_TEXT)
+    built = eng.build_module_config_from_syllabus(parsed, base_config={"title": "ACCA FM"})
+    chapter_flow = built.get("chapter_flow", {})
+    chapters = built.get("chapters", [])
+    assert isinstance(chapters, list)
+    assert len(chapters) == 8
+    assert chapters[0].startswith("A.")
+    assert chapters[-1].startswith("H.")
+    assert chapter_flow.get(chapters[0]) == [chapters[1]]
+
+
+def test_syllabus_parser_extracts_outcomes_and_levels(engine_no_io):
+    eng = engine_no_io
+    parsed = eng.parse_syllabus_pdf_text(SAMPLE_SYLLABUS_TEXT)
+    structure = parsed.get("syllabus_structure", {})
+    assert isinstance(structure, dict)
+    chapter_d = next((ch for ch in structure.keys() if ch.startswith("D.")), None)
+    assert isinstance(chapter_d, str)
+    info = structure[chapter_d]
+    outcomes = info.get("learning_outcomes", [])
+    assert isinstance(outcomes, list)
+    assert outcomes
+    levels = [int(item.get("level", 0)) for item in outcomes if isinstance(item, dict)]
+    assert 2 in levels
+    assert 3 in levels
+
+
+def test_weight_derivation_is_deterministic_and_bounded(engine_no_io):
+    eng = engine_no_io
+    parsed = eng.parse_syllabus_pdf_text(SAMPLE_SYLLABUS_TEXT)
+    built_a = eng.build_module_config_from_syllabus(parsed, base_config={"title": "ACCA FM"})
+    built_b = eng.build_module_config_from_syllabus(parsed, base_config={"title": "ACCA FM"})
+    w_a = built_a.get("importance_weights", {})
+    w_b = built_b.get("importance_weights", {})
+    assert w_a == w_b
+    assert isinstance(w_a, dict)
+    assert w_a
+    assert all(5 <= int(v) <= 40 for v in w_a.values())
+
+
+def test_build_module_config_preserves_existing_questions(engine_no_io):
+    eng = engine_no_io
+    parsed = eng.parse_syllabus_pdf_text(SAMPLE_SYLLABUS_TEXT)
+    base = {
+        "title": "ACCA FM",
+        "questions": {
+            "A. Discuss the role and purpose of the financial management function": [
+                {
+                    "question": "Q?",
+                    "options": ["A", "B"],
+                    "correct": "A",
+                    "explanation": "",
+                }
+            ]
+        },
+    }
+    built = eng.build_module_config_from_syllabus(parsed, base_config=base)
+    assert "questions" in built
+    assert isinstance(built["questions"], dict)
+    assert built["questions"]
+
+
+def test_low_confidence_parse_returns_warnings(engine_no_io):
+    eng = engine_no_io
+    parsed = eng.parse_syllabus_pdf_text("Financial Management syllabus overview only.")
+    warnings = parsed.get("warnings", [])
+    assert isinstance(warnings, list)
+    assert warnings
+    assert float(parsed.get("confidence", 1.0)) < 0.5

@@ -52,6 +52,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **Data Health Check**: one‑click normalization + health summary in Tools
 - **Weekly summary export**: auto writes `~/.config/studyplan/weekly_report.txt`
 - **Study Hub import**: parse ACCA Study Hub PDFs (practice/quiz reports)
+- **Syllabus import (draft-first)**: parse ACCA syllabus PDFs into module intelligence
 - **Modules**: switch or edit ACCA modules via JSON configs
 
 ## ML training (optional)
@@ -116,6 +117,13 @@ Global app files:
 
 **Edit modules**: Module → Edit Module… (GUI editor for title/chapters/weights/flow/JSON)
 
+**Import syllabus intelligence**:
+1. Module → Import Syllabus PDF…
+2. Select syllabus PDF
+3. Review parse report (confidence + warnings)
+4. Module Editor opens with draft JSON (no automatic save)
+5. Save explicitly when ready
+
 ### Module JSON format
 
 ```json
@@ -132,6 +140,25 @@ Global app files:
   "target_total_hours": 180,
   "aliases": {
     "topic one": "Topic 1"
+  },
+  "capabilities": {
+    "A": "Financial management function"
+  },
+  "syllabus_structure": {
+    "A. Financial management function": {
+      "capability": "A",
+      "subtopics": ["The nature and purpose of financial management"],
+      "learning_outcomes": [{"text": "Explain ...", "level": 2}],
+      "intellectual_level_mix": {"level_1": 0, "level_2": 1, "level_3": 0},
+      "outcome_count": 1
+    }
+  },
+  "syllabus_meta": {
+    "source_pdf": "FM S25-J26 syllabus and study guide.pdf",
+    "exam_code": "FM",
+    "effective_window": "Sep 2025 - Jun 2026",
+    "parsed_at": "2026-02-06T20:30:00",
+    "parse_confidence": 0.83
   },
   "questions": {
     "Topic 1": [

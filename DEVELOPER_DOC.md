@@ -94,6 +94,48 @@ Global app data:
 2. Optional module JSON override
 3. Module‑scoped data paths resolve (legacy fallback if needed)
 
+### Syllabus intelligence schema (optional)
+
+Modules can include:
+
+- `capabilities`: capability letter to title
+- `syllabus_structure`: per chapter syllabus details
+  - `subtopics`
+  - `learning_outcomes` (`text`, `level`)
+  - `intellectual_level_mix` (`level_1`, `level_2`, `level_3`)
+  - `outcome_count`
+- `syllabus_meta`
+  - `source_pdf`
+  - `exam_code`
+  - `effective_window`
+  - `parsed_at`
+  - `parse_confidence`
+
+### Syllabus PDF import pipeline
+
+Engine APIs:
+
+- `parse_syllabus_pdf_text(pdf_text)`
+- `build_module_config_from_syllabus(parsed, base_config=None)`
+- `validate_syllabus_config(config)`
+- `import_syllabus_from_pdf_text(pdf_text, module_id=None)`
+
+App flow:
+
+- `Module -> Import Syllabus PDF...`
+- PDF text extraction uses existing advanced extractor + OCR fallback.
+- Parser produces a draft config plus diagnostics.
+- Module Editor is prefilled with the draft JSON.
+- User must explicitly save; import does not write module files automatically.
+
+Parser rules:
+
+- Main capabilities parsed from section `2. Main capabilities`
+- Chapter structure parsed from section `4. The syllabus`
+- Learning outcomes parsed from section `5. Detailed study guide`
+- Confidence is computed from capability/chapter/outcome extraction ratios.
+- Low confidence still returns a draft with warnings.
+
 ## Key flows
 
 ### Pomodoro + focus verification
@@ -123,6 +165,9 @@ Global app data:
 - Planning and recommendations incorporate ML recall‑risk when models exist.
 - Sticky‑coach release uses interval model confidence when available.
 - Difficulty mix can tighten caps on long runs for “hard” chapters.
+- Syllabus intelligence augments chapter urgency:
+  - depth boost from `outcome_count`
+  - pressure boost from level mix concentration (L2/L3)
 
 ### Weekly summary export
 - Auto‑writes `~/.config/studyplan/weekly_report.txt` once per ISO week.

@@ -1802,6 +1802,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _create_actions(self) -> None:
         self._add_action("import_pdf", self.on_menu_import_pdf)
+        self._add_action("import_syllabus_pdf", self.on_menu_import_syllabus_pdf)
         self._add_action("import_ai", self.on_menu_import_ai)
         self._add_action("import_snapshot", self.on_menu_import_snapshot)
         self._add_action("restore_latest_snapshot", self.on_menu_restore_latest_snapshot)
@@ -1858,6 +1859,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         module_menu.append("Switch Module…", "win.switch_module")
         module_menu.append("Manage Modules…", "win.manage_modules")
         module_menu.append("Edit Module…", "win.edit_module")
+        module_menu.append("Import Syllabus PDF…", "win.import_syllabus_pdf")
 
         app_menu = Gio.Menu()
         app_menu.append("Preferences…", "win.preferences")
@@ -1900,6 +1902,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_menu_import_pdf(self, _action, _param):
         self.on_import_pdf(None)
+
+    def on_menu_import_syllabus_pdf(self, _action, _param):
+        self.on_import_syllabus_pdf(None)
 
     def on_menu_import_ai(self, _action, _param):
         self.on_import_ai_questions(None)
@@ -2096,6 +2101,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         dialog.add_buttons("_Close", Gtk.ResponseType.CLOSE, "_Save", Gtk.ResponseType.OK)
         content = dialog.get_content_area()
         content.set_spacing(8)
+        prefill_config = getattr(self, "_module_editor_prefill_config", None)
+        prefill_module_id = getattr(self, "_module_editor_prefill_module_id", None)
+        prefill_module_title = getattr(self, "_module_editor_prefill_module_title", None)
+        self._module_editor_prefill_config = None
+        self._module_editor_prefill_module_id = None
+        self._module_editor_prefill_module_title = None
 
         modules = self._get_available_modules()
         labels = [f"{mod['title']} ({mod['id']})" for mod in modules]
@@ -2114,11 +2125,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         id_label = Gtk.Label(label="Module ID (filename)")
         id_label.set_halign(Gtk.Align.START)
         id_entry = Gtk.Entry()
-        id_entry.set_text(self.module_id)
+        id_entry.set_text(str(prefill_module_id or self.module_id))
         title_label = Gtk.Label(label="Module Title")
         title_label.set_halign(Gtk.Align.START)
         title_entry = Gtk.Entry()
-        title_entry.set_text(self.module_title)
+        title_entry.set_text(str(prefill_module_title or self.module_title))
 
         content.append(id_label)
         content.append(id_entry)
@@ -2176,9 +2187,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         to_json_btn = Gtk.Button(label="Update JSON from Form")
         from_json_btn = Gtk.Button(label="Update Form from JSON")
+        import_syllabus_btn = Gtk.Button(label="Import Syllabus PDF…")
         open_folder_btn = Gtk.Button(label="Open Modules Folder")
         btn_row.append(to_json_btn)
         btn_row.append(from_json_btn)
+        btn_row.append(import_syllabus_btn)
         btn_row.append(open_folder_btn)
         content.append(btn_row)
 
@@ -2279,6 +2292,73 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             config = _build_config_from_form()
             _set_text(json_view, json.dumps(config, indent=2, ensure_ascii=True))
 
+        def _import_syllabus_into_editor(_btn):
+            def _consume(file_path: str) -> None:
+                if not file_path:
+                    self._show_text_dialog("Module Editor", "No file selected.", Gtk.MessageType.ERROR)
+                    return
+                if fitz is None:
+                    self._show_text_dialog(
+                        "Module Editor",
+                        "PyMuPDF not installed. Install with 'pip install pymupdf'.",
+                        Gtk.MessageType.ERROR,
+                    )
+                    return
+                try:
+                    pdf_text, meta = self._extract_pdf_text_advanced(file_path)
+                    module_id = id_entry.get_text().strip() or self.module_id
+                    result = self.engine.import_syllabus_from_pdf_text(pdf_text, module_id=module_id)
+                    config = result.get("config", {}) if isinstance(result, dict) else {}
+                    if not isinstance(config, dict):
+                        raise ValueError("Invalid syllabus draft config")
+                    syllabus_meta = config.get("syllabus_meta")
+                    if isinstance(syllabus_meta, dict):
+                        syllabus_meta["source_pdf"] = file_path
+                    title_entry.set_text(str(config.get("title", "") or title_entry.get_text()))
+                    _populate_from_config(config)
+                    _set_text(json_view, json.dumps(config, indent=2, ensure_ascii=True))
+                    self._show_syllabus_import_report(result, meta, file_path)
+                except Exception as exc:
+                    self._show_text_dialog("Module Editor", f"Syllabus import failed: {exc}", Gtk.MessageType.ERROR)
+
+            if getattr(self, "_dialog_smoke_mode", False):
+                chooser = self._harden_window(Gtk.FileChooserDialog(  # gtk4_lint:ignore
+                    title="Import Syllabus PDF",
+                    transient_for=dialog,
+                    action=Gtk.FileChooserAction.OPEN,
+                ))
+                chooser.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Open", Gtk.ResponseType.ACCEPT)
+
+                def _on_resp(dlg, resp):
+                    file_path = self._get_file_path(dlg) if resp == Gtk.ResponseType.ACCEPT else None
+                    dlg.destroy()
+                    if file_path:
+                        _consume(file_path)
+
+                chooser.connect("response", _on_resp)
+                chooser.present()
+                return
+
+            chooser = Gtk.FileChooserNative(
+                title="Import Syllabus PDF",
+                transient_for=dialog,
+                action=Gtk.FileChooserAction.OPEN,
+                accept_label="_Open",
+                cancel_label="_Cancel",
+            )
+
+            def _on_resp(dlg, resp):
+                file_path = self._get_file_path(dlg) if resp == Gtk.ResponseType.ACCEPT else None
+                try:
+                    dlg.destroy()
+                except Exception:
+                    pass
+                if file_path:
+                    _consume(file_path)
+
+            chooser.connect("response", _on_resp)
+            chooser.show()
+
         def _open_folder(_btn):
             folder = getattr(self.engine, "MODULES_DIR", "")
             if not folder:
@@ -2304,9 +2384,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         combo.connect("notify::selected", _on_combo_changed)
         to_json_btn.connect("clicked", _to_json)
         from_json_btn.connect("clicked", _from_json)
+        import_syllabus_btn.connect("clicked", _import_syllabus_into_editor)
         open_folder_btn.connect("clicked", _open_folder)
 
-        if combo.get_selected() is not None and combo.get_selected() >= 0:
+        if isinstance(prefill_config, dict):
+            _populate_from_config(prefill_config)
+        elif combo.get_selected() is not None and combo.get_selected() >= 0:
             _on_combo_changed(combo)
         else:
             _to_json(None)
@@ -4984,6 +5067,33 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 mix_text = ""
 
+            syllabus_text = ""
+            try:
+                syllabus = self.engine.get_syllabus_chapter_intelligence(chapter)
+                if isinstance(syllabus, dict) and syllabus:
+                    capability = str(syllabus.get("capability", "") or "")
+                    outcome_count = int(syllabus.get("outcome_count", 0) or 0)
+                    outcomes_remaining = int(syllabus.get("outcomes_remaining", 0) or 0)
+                    progress = float(syllabus.get("coverage_progress", 0.0) or 0.0)
+                    level_mix = syllabus.get("intellectual_level_mix", {})
+                    if not isinstance(level_mix, dict):
+                        level_mix = {}
+                    level_1 = int(level_mix.get("level_1", 0) or 0)
+                    level_2 = int(level_mix.get("level_2", 0) or 0)
+                    level_3 = int(level_mix.get("level_3", 0) or 0)
+                    top_subtopics = syllabus.get("subtopics", [])
+                    if not isinstance(top_subtopics, list):
+                        top_subtopics = []
+                    top_subtopics = [str(x) for x in top_subtopics[:3]]
+                    subtopic_text = ", ".join(top_subtopics) if top_subtopics else "—"
+                    syllabus_text = (
+                        f"Syllabus {capability}: outcomes {outcome_count} • remaining ~{outcomes_remaining}\n"
+                        f"Level mix L1/L2/L3: {level_1}/{level_2}/{level_3} • coverage {progress:.0f}%\n"
+                        f"Subtopics: {subtopic_text}"
+                    )
+            except Exception:
+                syllabus_text = ""
+
             drift_note = self._get_confidence_drift_note(chapter)
             if must_due > 0:
                 next_action = f"Next action: clear must-review ({must_due} due)"
@@ -5001,6 +5111,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             lines.append(f"Leech alerts: {leech_count} • Miss streak: {miss_streak}")
             if mix_text:
                 lines.append(mix_text)
+            if syllabus_text:
+                lines.append(syllabus_text)
             if drift_note:
                 lines.append(drift_note)
 
@@ -5502,6 +5614,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             risk = self.engine.get_chapter_recall_risk(topic)
             if risk is not None and risk >= 0.6:
                 reasons.append("low recall probability")
+        except Exception:
+            pass
+        try:
+            intel = self.engine.get_syllabus_chapter_intelligence(topic)
+            if isinstance(intel, dict) and intel:
+                outcome_count = int(intel.get("outcome_count", 0) or 0)
+                mix = intel.get("intellectual_level_mix", {})
+                if not isinstance(mix, dict):
+                    mix = {}
+                level_2 = int(mix.get("level_2", 0) or 0)
+                level_3 = int(mix.get("level_3", 0) or 0)
+                total_levels = max(1, int(mix.get("level_1", 0) or 0) + level_2 + level_3)
+                level3_ratio = level_3 / total_levels
+                if outcome_count >= 12:
+                    reasons.append("high syllabus depth")
+                if level3_ratio >= 0.25 or level_3 >= max(3, level_2):
+                    reasons.append("advanced-level outcomes concentrated")
         except Exception:
             pass
         try:
@@ -9300,6 +9429,104 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         self.render_quiz_question()
 
+    def _show_syllabus_import_report(self, result: dict, meta: dict, file_path: str) -> None:
+        diagnostics = result.get("diagnostics", {}) if isinstance(result, dict) else {}
+        stats = diagnostics.get("stats", {}) if isinstance(diagnostics, dict) else {}
+        warnings = diagnostics.get("warnings", []) if isinstance(diagnostics, dict) else []
+        confidence = float(diagnostics.get("confidence", 0.0) or 0.0)
+        module_id = str(result.get("module_id", self.module_id) or self.module_id)
+        config = result.get("config", {}) if isinstance(result, dict) else {}
+        chapters = config.get("chapters", []) if isinstance(config, dict) else []
+        outcomes = int(stats.get("outcomes_found", 0) or 0)
+        capabilities = int(stats.get("capabilities_found", 0) or 0)
+        chapter_count = int(stats.get("chapters_found", len(chapters)) or len(chapters))
+
+        lines = [
+            "Syllabus import draft generated.",
+            f"Source: {os.path.basename(file_path)}",
+            f"Module ID: {module_id}",
+            f"Confidence: {confidence * 100:.0f}%",
+            f"Capabilities parsed: {capabilities}",
+            f"Chapters parsed: {chapter_count}",
+            f"Outcomes parsed: {outcomes}",
+            "",
+            "Draft loaded in Module Editor. Review and click Save when ready.",
+        ]
+        if meta.get("ocr_used"):
+            lines.append(f"OCR used on {int(meta.get('ocr_pages', 0) or 0)} page(s).")
+        elif meta.get("ocr_failed_pages"):
+            lines.append(f"OCR unavailable on {int(meta.get('ocr_failed_pages', 0) or 0)} page(s).")
+        if isinstance(warnings, list) and warnings:
+            lines.append("")
+            lines.append("Warnings:")
+            for warning in warnings[:8]:
+                lines.append(f"- {warning}")
+
+        self._show_text_dialog("Syllabus Import", "\n".join(lines), Gtk.MessageType.INFO)
+
+    def on_import_syllabus_pdf(self, _button) -> None:
+        if getattr(self, "_dialog_smoke_mode", False):
+            dialog = self._harden_window(Gtk.FileChooserDialog(  # gtk4_lint:ignore
+                title="Import Syllabus PDF",
+                transient_for=self,
+                action=Gtk.FileChooserAction.OPEN,
+            ))
+            dialog.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Open", Gtk.ResponseType.ACCEPT)
+            dialog.connect("response", self.on_import_syllabus_pdf_response)
+            dialog.present()
+            return
+        dialog = Gtk.FileChooserNative(
+            title="Import Syllabus PDF",
+            transient_for=self,
+            action=Gtk.FileChooserAction.OPEN,
+            accept_label="_Open",
+            cancel_label="_Cancel",
+        )
+        self._active_native_dialog = dialog
+        dialog.connect("response", self.on_import_syllabus_pdf_response)
+        dialog.connect("response", lambda *_args: setattr(self, "_active_native_dialog", None))
+        dialog.show()
+
+    def on_import_syllabus_pdf_response(self, dialog, response) -> None:
+        if response != Gtk.ResponseType.ACCEPT:
+            try:
+                dialog.destroy()
+            except Exception:
+                pass
+            return
+        file_path = self._get_file_path(dialog)
+        try:
+            dialog.destroy()
+        except Exception:
+            pass
+        if not file_path:
+            self._show_text_dialog("Import Syllabus PDF", "No file selected.", Gtk.MessageType.ERROR)
+            return
+        if fitz is None:
+            self._show_text_dialog(
+                "Import Syllabus PDF",
+                "PyMuPDF not installed. Install with 'pip install pymupdf'.",
+                Gtk.MessageType.ERROR,
+            )
+            return
+        try:
+            pdf_text, meta = self._extract_pdf_text_advanced(file_path)
+            result = self.engine.import_syllabus_from_pdf_text(pdf_text, module_id=self.module_id)
+            config = result.get("config", {}) if isinstance(result, dict) else {}
+            if not isinstance(config, dict):
+                raise ValueError("Invalid syllabus draft config")
+            syllabus_meta = config.get("syllabus_meta")
+            if isinstance(syllabus_meta, dict):
+                syllabus_meta["source_pdf"] = file_path
+            result["config"] = config
+            self._module_editor_prefill_config = config
+            self._module_editor_prefill_module_id = str(result.get("module_id", self.module_id) or self.module_id)
+            self._module_editor_prefill_module_title = str(config.get("title", self.module_title) or self.module_title)
+            self.on_edit_module(None, None)
+            self._show_syllabus_import_report(result, meta, file_path)
+        except Exception as exc:
+            self._show_text_dialog("Import Syllabus PDF", f"Failed to import syllabus: {exc}", Gtk.MessageType.ERROR)
+
     def on_import_pdf(self, button):
         dialog = self._new_dialog(title="Select PDF File", transient_for=self, modal=True)
         dialog.add_buttons(
@@ -10354,6 +10581,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ("Switch Module", lambda: self.on_switch_module(None, None)),
             ("Manage Modules", lambda: self.on_manage_modules(None, None)),
             ("Module Editor", lambda: self.on_edit_module(None, None)),
+            ("Import Syllabus PDF", lambda: self.on_import_syllabus_pdf(None)),
             ("Set Exam Date", lambda: self.on_set_exam_date(None)),
             ("Import PDF", lambda: self.on_import_pdf(None)),
             ("Import AI Questions", lambda: self.on_import_ai_questions(None)),

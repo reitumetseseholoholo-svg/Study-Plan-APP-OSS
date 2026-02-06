@@ -1051,6 +1051,9 @@ class StudyPlanEngine:
         self.CHAPTER_NUMBER_MAP = dict(self.__class__.CHAPTER_NUMBER_MAP)
         self.CHAPTER_ALIASES = dict(self.__class__.CHAPTER_ALIASES)
         self.QUESTIONS_DEFAULT = copy.deepcopy(self.__class__.QUESTIONS_DEFAULT)
+        self.capabilities: Dict[str, str] = {}
+        self.syllabus_meta: Dict[str, Any] = {}
+        self.syllabus_structure: Dict[str, Dict[str, Any]] = {}
 
     def _load_module_config(self, module_id: str) -> dict | None:
         safe_id = self._sanitize_module_id(module_id)
@@ -1094,6 +1097,652 @@ class StudyPlanEngine:
         target_hours = config.get("target_total_hours")
         if isinstance(target_hours, (int, float)) and target_hours > 0:
             self.target_total_hours = int(target_hours)
+        capabilities = config.get("capabilities")
+        if isinstance(capabilities, dict):
+            self.capabilities = {
+                str(k).strip().upper(): str(v).strip()
+                for k, v in capabilities.items()
+                if str(k).strip() and str(v).strip()
+            }
+        syllabus_meta = config.get("syllabus_meta")
+        if isinstance(syllabus_meta, dict):
+            self.syllabus_meta = copy.deepcopy(syllabus_meta)
+        syllabus_structure = config.get("syllabus_structure")
+        if isinstance(syllabus_structure, dict):
+            normalized: Dict[str, Dict[str, Any]] = {}
+            for ch, raw_info in syllabus_structure.items():
+                if not isinstance(ch, str) or not ch.strip():
+                    continue
+                if not isinstance(raw_info, dict):
+                    continue
+                key = self._try_match_chapter(ch) or ch
+                info = dict(raw_info)
+                subtopics = info.get("subtopics")
+                if not isinstance(subtopics, list):
+                    subtopics = []
+                info["subtopics"] = [str(x).strip() for x in subtopics if str(x).strip()]
+                outcomes = info.get("learning_outcomes")
+                cleaned_outcomes = []
+                if isinstance(outcomes, list):
+                    for item in outcomes:
+                        if not isinstance(item, dict):
+                            continue
+                        text = str(item.get("text", "")).strip()
+                        level = item.get("level")
+                        level_int: int | None = None
+                        if level is not None:
+                            try:
+                                level_int = int(level)
+                            except Exception:
+                                level_int = None
+                        if not text:
+                            continue
+                        if level_int is None or level_int < 1 or level_int > 3:
+                            level_int = 2
+                        cleaned_outcomes.append({"text": text, "level": level_int})
+                info["learning_outcomes"] = cleaned_outcomes
+                mix = info.get("intellectual_level_mix")
+                if not isinstance(mix, dict):
+                    mix = {}
+                info["intellectual_level_mix"] = {
+                    "level_1": int(mix.get("level_1", 0) or 0),
+                    "level_2": int(mix.get("level_2", 0) or 0),
+                    "level_3": int(mix.get("level_3", 0) or 0),
+                }
+                info["outcome_count"] = int(info.get("outcome_count", len(cleaned_outcomes)) or 0)
+                normalized[key] = info
+            self.syllabus_structure = normalized
+
+    def _extract_between(
+        self,
+        lines: List[str],
+        start_pattern: str,
+        end_patterns: List[str] | None = None,
+    ) -> List[str]:
+        start_idx: int | None = None
+        for idx, line in enumerate(lines):
+            if re.search(start_pattern, line, flags=re.IGNORECASE):
+                start_idx = idx + 1
+                break
+        if start_idx is None:
+            return []
+        end_idx = len(lines)
+        if isinstance(end_patterns, list):
+            for idx in range(start_idx, len(lines)):
+                low = lines[idx].lower()
+                for pattern in end_patterns:
+                    if re.search(pattern, low, flags=re.IGNORECASE):
+                        end_idx = idx
+                        break
+                if end_idx != len(lines):
+                    break
+        return lines[start_idx:end_idx]
+
+    def parse_syllabus_pdf_text(self, pdf_text: str) -> Dict[str, Any]:
+        """Parse syllabus PDF text into capabilities, chapters, and outcomes."""
+        if not isinstance(pdf_text, str) or not pdf_text.strip():
+            raise ValueError("pdf_text must be a non-empty string")
+
+        def _clean(line: str) -> str:
+            line = line.replace("\u00a0", " ").replace("\u2013", "-").replace("\u2014", "-")
+            return re.sub(r"\s+", " ", line).strip()
+
+        lines = [_clean(ln) for ln in pdf_text.splitlines()]
+        lines = [ln for ln in lines if ln]
+        text = "\n".join(lines)
+        warnings: List[str] = []
+
+        exam_code = None
+        m_exam = re.search(r"\(([A-Z]{1,5})\)", text)
+        if m_exam:
+            exam_code = m_exam.group(1).strip().upper()
+        effective_window = None
+        m_window = re.search(r"([A-Za-z]+\s+20\d{2}\s+TO\s+[A-Za-z]+\s+20\d{2})", text)
+        if m_window:
+            effective_window = m_window.group(1).strip().title().replace(" To ", " - ")
+
+        capabilities_section = self._extract_between(
+            lines,
+            start_pattern=r"^\s*2\.\s*Main capabilities\b",
+            end_patterns=[r"^\s*3\.\s*intellectual levels\b", r"^\s*4\.\s*the syllabus\b"],
+        )
+        capabilities: Dict[str, str] = {}
+        for line in capabilities_section:
+            m = re.match(r"^([A-H])\s+(.+)$", line)
+            if m:
+                capabilities[m.group(1)] = m.group(2).strip()
+
+        syllabus_section = self._extract_between(
+            lines,
+            start_pattern=r"^\s*4\.\s*The syllabus\b",
+            end_patterns=[r"^\s*5\.\s*Detailed study guide\b"],
+        )
+        syllabus_titles: Dict[str, str] = {}
+        syllabus_subtopics: Dict[str, List[str]] = {}
+        current_letter: str | None = None
+        for line in syllabus_section:
+            m_head = re.match(r"^([A-H])\s+(.+)$", line)
+            if m_head:
+                letter = (m_head.group(1) or "").strip()
+                title = (m_head.group(2) or "").strip()
+                if not letter or not title:
+                    continue
+                current_letter = letter
+                syllabus_titles[letter] = title
+                syllabus_subtopics.setdefault(letter, [])
+                continue
+            m_sub = re.match(r"^\d+\.\s+(.+)$", line)
+            if m_sub and current_letter:
+                syllabus_subtopics.setdefault(current_letter, []).append(m_sub.group(1).strip())
+
+        detailed_section = self._extract_between(
+            lines,
+            start_pattern=r"^\s*5\.\s*Detailed study guide\b",
+            end_patterns=[r"^\s*6\.\s*summary of changes\b", r"^\s*7\.\s*approach to examining\b"],
+        )
+        outcomes_by_letter: Dict[str, List[Dict[str, Any]]] = {}
+        current_letter = None
+        current_outcome_text: str | None = None
+        current_level: int | None = None
+
+        def _flush_outcome() -> None:
+            nonlocal current_outcome_text, current_level, current_letter
+            if not current_letter or not current_outcome_text:
+                current_outcome_text = None
+                current_level = None
+                return
+            cleaned = current_outcome_text.strip()
+            if cleaned:
+                outcomes_by_letter.setdefault(current_letter, []).append(
+                    {"text": cleaned, "level": int(current_level or 2)}
+                )
+            current_outcome_text = None
+            current_level = None
+
+        for line in detailed_section:
+            m_head = re.match(r"^([A-H])\s+(.+)$", line)
+            if m_head:
+                _flush_outcome()
+                letter = (m_head.group(1) or "").strip()
+                if not letter:
+                    continue
+                current_letter = letter
+                outcomes_by_letter.setdefault(letter, [])
+                continue
+            m_bullet = re.match(r"^[a-z]\)\s*(.+)$", line)
+            if m_bullet:
+                _flush_outcome()
+                current_outcome_text = m_bullet.group(1).strip()
+            elif current_outcome_text:
+                # Continue wrapped outcome text until a new bullet/section begins.
+                if not re.match(r"^\d+\.\s+.+$", line):
+                    current_outcome_text = f"{current_outcome_text} {line}".strip()
+
+            if current_outcome_text:
+                m_level = re.search(r"\[(\d)\]\s*$", current_outcome_text)
+                if m_level:
+                    try:
+                        current_level = int(m_level.group(1))
+                    except Exception:
+                        current_level = 2
+                    current_outcome_text = re.sub(r"\[(\d)\]\s*$", "", current_outcome_text).strip()
+                    _flush_outcome()
+        _flush_outcome()
+
+        letters = sorted(set(capabilities.keys()) | set(syllabus_titles.keys()))
+        chapters: List[str] = []
+        chapter_map: Dict[str, str] = {}
+        syllabus_structure: Dict[str, Dict[str, Any]] = {}
+        for letter in letters:
+            title = capabilities.get(letter) or syllabus_titles.get(letter) or f"Capability {letter}"
+            chapter_name = f"{letter}. {title}"
+            chapters.append(chapter_name)
+            chapter_map[letter] = chapter_name
+            outcomes = outcomes_by_letter.get(letter, [])
+            level_1 = sum(1 for o in outcomes if int(o.get("level", 2)) == 1)
+            level_2 = sum(1 for o in outcomes if int(o.get("level", 2)) == 2)
+            level_3 = sum(1 for o in outcomes if int(o.get("level", 2)) == 3)
+            syllabus_structure[chapter_name] = {
+                "capability": letter,
+                "subtopics": syllabus_subtopics.get(letter, []),
+                "learning_outcomes": outcomes,
+                "intellectual_level_mix": {
+                    "level_1": level_1,
+                    "level_2": level_2,
+                    "level_3": level_3,
+                },
+                "outcome_count": len(outcomes),
+            }
+
+        expected = 8 if letters else 1
+        cap_ratio = min(1.0, len(capabilities) / float(expected))
+        chapter_ratio = min(1.0, len(chapters) / float(expected))
+        total_outcomes = sum(len(v) for v in outcomes_by_letter.values())
+        outcome_ratio = min(1.0, total_outcomes / float(max(1, len(chapters) * 3)))
+        confidence = max(0.0, min(1.0, (0.40 * cap_ratio) + (0.35 * chapter_ratio) + (0.25 * outcome_ratio)))
+
+        if not capabilities:
+            warnings.append("Main capabilities section not confidently parsed.")
+        if not chapters:
+            warnings.append("Syllabus chapter headings not confidently parsed.")
+        if total_outcomes == 0:
+            warnings.append("No detailed learning outcomes parsed.")
+        if confidence < 0.5:
+            warnings.append("Low parse confidence; review and edit the generated draft.")
+        elif confidence < 0.75:
+            warnings.append("Moderate parse confidence; verify chapter mapping and outcomes.")
+
+        return {
+            "exam_code": exam_code,
+            "effective_window": effective_window,
+            "capabilities": capabilities,
+            "chapter_map": chapter_map,
+            "chapters": chapters,
+            "syllabus_structure": syllabus_structure,
+            "warnings": warnings,
+            "confidence": confidence,
+            "stats": {
+                "capabilities_found": len(capabilities),
+                "chapters_found": len(chapters),
+                "outcomes_found": total_outcomes,
+            },
+        }
+
+    def _build_importance_weights_from_syllabus(self, syllabus_structure: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
+        raw_weights: Dict[str, float] = {}
+        for chapter, info in syllabus_structure.items():
+            if not isinstance(info, dict):
+                continue
+            outcome_count = int(info.get("outcome_count", 0) or 0)
+            mix = info.get("intellectual_level_mix", {})
+            if not isinstance(mix, dict):
+                mix = {}
+            level2 = int(mix.get("level_2", 0) or 0)
+            level3 = int(mix.get("level_3", 0) or 0)
+            raw = 10 + (3 * outcome_count) + (2 * level2) + (3 * level3)
+            low_name = chapter.lower()
+            if "employability" in low_name or "technology" in low_name:
+                raw *= 0.6
+            raw_weights[chapter] = float(raw)
+
+        if not raw_weights:
+            return {}
+        values = list(raw_weights.values())
+        low_v = min(values)
+        high_v = max(values)
+        if high_v <= low_v:
+            return {k: 10 for k in raw_weights}
+        norm: Dict[str, int] = {}
+        for chapter, value in raw_weights.items():
+            ratio = (value - low_v) / (high_v - low_v)
+            scaled = 5 + (ratio * 35)
+            norm[chapter] = int(round(max(5, min(40, scaled))))
+        return norm
+
+    def _build_aliases_from_syllabus(
+        self,
+        chapters: List[str],
+        chapter_map: Dict[str, str],
+        syllabus_structure: Dict[str, Dict[str, Any]],
+        existing_aliases: Dict[str, str] | None = None,
+    ) -> Dict[str, str]:
+        aliases: Dict[str, str] = {}
+        if isinstance(existing_aliases, dict):
+            for key, value in existing_aliases.items():
+                k = str(key).strip().lower()
+                v = str(value).strip()
+                if k and v:
+                    aliases[k] = v
+        for chapter in chapters:
+            low = chapter.strip().lower()
+            if low:
+                aliases.setdefault(low, chapter)
+            stripped = re.sub(r"^[A-H]\.\s*", "", chapter).strip()
+            if stripped:
+                aliases.setdefault(stripped.lower(), chapter)
+            cap_letter = chapter[:1].upper()
+            if cap_letter in chapter_map:
+                aliases.setdefault(cap_letter.lower(), chapter)
+        for chapter, info in syllabus_structure.items():
+            if not isinstance(info, dict):
+                continue
+            for subtopic in info.get("subtopics", []):
+                text = str(subtopic).strip().lower()
+                if not text:
+                    continue
+                # Keep alias map compact and stable.
+                if len(text) <= 80 and len(text.split()) >= 2:
+                    aliases.setdefault(text, chapter)
+        return aliases
+
+    def build_module_config_from_syllabus(
+        self,
+        parsed: Dict[str, Any],
+        base_config: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        if not isinstance(parsed, dict):
+            raise ValueError("parsed syllabus payload must be a dict")
+        config = copy.deepcopy(base_config) if isinstance(base_config, dict) else {}
+        chapters = [str(ch).strip() for ch in parsed.get("chapters", []) if str(ch).strip()]
+        if not chapters:
+            raise ValueError("No chapters could be derived from syllabus data")
+        chapter_map = parsed.get("chapter_map", {})
+        if not isinstance(chapter_map, dict):
+            chapter_map = {}
+        syllabus_structure = parsed.get("syllabus_structure", {})
+        if not isinstance(syllabus_structure, dict):
+            syllabus_structure = {}
+
+        chapter_flow: Dict[str, List[str]] = {}
+        for idx, chapter in enumerate(chapters[:-1]):
+            nxt = chapters[idx + 1]
+            chapter_flow[chapter] = [nxt]
+
+        capabilities = parsed.get("capabilities", {})
+        if not isinstance(capabilities, dict):
+            capabilities = {}
+        capabilities = {str(k).strip().upper(): str(v).strip() for k, v in capabilities.items() if str(k).strip() and str(v).strip()}
+
+        importance = self._build_importance_weights_from_syllabus(syllabus_structure)
+        aliases = self._build_aliases_from_syllabus(
+            chapters=chapters,
+            chapter_map={str(k): str(v) for k, v in chapter_map.items()},
+            syllabus_structure=syllabus_structure,
+            existing_aliases=cast(Dict[str, str] | None, config.get("aliases")),
+        )
+
+        exam_code = parsed.get("exam_code")
+        effective_window = parsed.get("effective_window")
+        confidence = float(parsed.get("confidence", 0.0) or 0.0)
+        source_pdf = parsed.get("source_pdf")
+        if not isinstance(source_pdf, str) or not source_pdf.strip():
+            source_pdf = ""
+
+        config["title"] = str(config.get("title") or f"ACCA {str(exam_code or 'Module').strip()}").strip()
+        config["chapters"] = chapters
+        config["chapter_flow"] = chapter_flow
+        config["importance_weights"] = importance if importance else config.get("importance_weights", {})
+        config["aliases"] = aliases
+        if "target_total_hours" not in config:
+            config["target_total_hours"] = 180
+        config["capabilities"] = capabilities
+        config["syllabus_structure"] = syllabus_structure
+        config["syllabus_meta"] = {
+            "source_pdf": source_pdf,
+            "exam_code": str(exam_code or "").strip().upper() or None,
+            "effective_window": str(effective_window or "").strip() or None,
+            "parsed_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "parse_confidence": round(confidence, 4),
+        }
+        # Preserve existing question bank by default.
+        if "questions" in config and not isinstance(config.get("questions"), dict):
+            config.pop("questions", None)
+        return config
+
+    def validate_syllabus_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(config, dict):
+            raise ValueError("Config must be a dict")
+        notes: List[str] = []
+        cleaned = copy.deepcopy(config)
+
+        chapters = cleaned.get("chapters")
+        if not isinstance(chapters, list) or not chapters:
+            raise ValueError("Config must include non-empty 'chapters'")
+        canonical_chapters: List[str] = []
+        seen_chapters: Set[str] = set()
+        for chapter in chapters:
+            name = str(chapter).strip()
+            if not name:
+                continue
+            if name.lower() in seen_chapters:
+                notes.append(f"Duplicate chapter removed: {name}")
+                continue
+            seen_chapters.add(name.lower())
+            canonical_chapters.append(name)
+        cleaned["chapters"] = canonical_chapters
+
+        flow = cleaned.get("chapter_flow")
+        cleaned_flow: Dict[str, List[str]] = {}
+        if isinstance(flow, dict):
+            for ch, targets in flow.items():
+                chapter = str(ch).strip()
+                if chapter not in canonical_chapters:
+                    continue
+                if not isinstance(targets, list):
+                    continue
+                valid_targets = [str(t).strip() for t in targets if str(t).strip() in canonical_chapters and str(t).strip() != chapter]
+                if valid_targets:
+                    cleaned_flow[chapter] = valid_targets
+        cleaned["chapter_flow"] = cleaned_flow
+
+        weights = cleaned.get("importance_weights")
+        cleaned_weights: Dict[str, int] = {}
+        if isinstance(weights, dict):
+            for chapter in canonical_chapters:
+                raw = weights.get(chapter)
+                if raw is None:
+                    val = 10
+                else:
+                    try:
+                        val = int(float(raw))
+                    except Exception:
+                        val = 10
+                val = max(5, min(40, val))
+                cleaned_weights[chapter] = val
+        else:
+            cleaned_weights = {chapter: 10 for chapter in canonical_chapters}
+        cleaned["importance_weights"] = cleaned_weights
+
+        capabilities = cleaned.get("capabilities")
+        if isinstance(capabilities, dict):
+            cleaned["capabilities"] = {
+                str(k).strip().upper(): str(v).strip()
+                for k, v in capabilities.items()
+                if str(k).strip() and str(v).strip()
+            }
+        else:
+            cleaned["capabilities"] = {}
+
+        structure = cleaned.get("syllabus_structure")
+        cleaned_structure: Dict[str, Dict[str, Any]] = {}
+        if isinstance(structure, dict):
+            for chapter in canonical_chapters:
+                raw_info = structure.get(chapter)
+                if not isinstance(raw_info, dict):
+                    continue
+                info = dict(raw_info)
+                subtopics = info.get("subtopics", [])
+                if not isinstance(subtopics, list):
+                    subtopics = []
+                info["subtopics"] = [str(s).strip() for s in subtopics if str(s).strip()]
+
+                outcomes = info.get("learning_outcomes", [])
+                cleaned_outcomes = []
+                if isinstance(outcomes, list):
+                    for item in outcomes:
+                        if not isinstance(item, dict):
+                            continue
+                        text = str(item.get("text", "")).strip()
+                        if not text:
+                            continue
+                        try:
+                            level = int(item.get("level", 2))
+                        except Exception:
+                            level = 2
+                        level = 1 if level < 1 else 3 if level > 3 else level
+                        cleaned_outcomes.append({"text": text, "level": level})
+                info["learning_outcomes"] = cleaned_outcomes
+                mix = info.get("intellectual_level_mix", {})
+                if not isinstance(mix, dict):
+                    mix = {}
+                level_1 = int(mix.get("level_1", 0) or 0)
+                level_2 = int(mix.get("level_2", 0) or 0)
+                level_3 = int(mix.get("level_3", 0) or 0)
+                if cleaned_outcomes:
+                    level_1 = sum(1 for o in cleaned_outcomes if int(o.get("level", 2)) == 1)
+                    level_2 = sum(1 for o in cleaned_outcomes if int(o.get("level", 2)) == 2)
+                    level_3 = sum(1 for o in cleaned_outcomes if int(o.get("level", 2)) == 3)
+                info["intellectual_level_mix"] = {
+                    "level_1": level_1,
+                    "level_2": level_2,
+                    "level_3": level_3,
+                }
+                info["outcome_count"] = int(info.get("outcome_count", len(cleaned_outcomes)) or len(cleaned_outcomes))
+                cleaned_structure[chapter] = info
+        cleaned["syllabus_structure"] = cleaned_structure
+
+        meta = cleaned.get("syllabus_meta")
+        if not isinstance(meta, dict):
+            meta = {}
+        confidence = meta.get("parse_confidence", 0.0)
+        try:
+            confidence = float(confidence)
+        except Exception:
+            confidence = 0.0
+        meta["parse_confidence"] = max(0.0, min(1.0, confidence))
+        if "parsed_at" not in meta:
+            meta["parsed_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        cleaned["syllabus_meta"] = meta
+
+        aliases = cleaned.get("aliases")
+        cleaned_aliases: Dict[str, str] = {}
+        if isinstance(aliases, dict):
+            for key, chapter in aliases.items():
+                k = str(key).strip().lower()
+                v = str(chapter).strip()
+                if not k or v not in canonical_chapters:
+                    continue
+                cleaned_aliases[k] = v
+        cleaned["aliases"] = cleaned_aliases
+
+        if "questions" in cleaned and not isinstance(cleaned.get("questions"), dict):
+            notes.append("Dropped non-dict 'questions' value.")
+            cleaned.pop("questions", None)
+
+        return {"config": cleaned, "notes": notes}
+
+    def import_syllabus_from_pdf_text(self, pdf_text: str, module_id: str | None = None) -> Dict[str, Any]:
+        """Parse syllabus text and return a validated draft module config (no file writes)."""
+        parsed = self.parse_syllabus_pdf_text(pdf_text)
+        target_module_id = self._sanitize_module_id(module_id or self.module_id)
+        base_config = self._load_module_config(target_module_id)
+        if not isinstance(base_config, dict):
+            base_config = {"title": f"ACCA {str(parsed.get('exam_code') or target_module_id).upper()}"}
+        draft = self.build_module_config_from_syllabus(parsed, base_config=base_config)
+        validation = self.validate_syllabus_config(draft)
+        notes = list(parsed.get("warnings", []))
+        notes.extend(validation.get("notes", []))
+        return {
+            "module_id": target_module_id,
+            "parsed": parsed,
+            "config": validation.get("config", {}),
+            "diagnostics": {
+                "confidence": float(parsed.get("confidence", 0.0) or 0.0),
+                "stats": parsed.get("stats", {}),
+                "warnings": notes,
+            },
+        }
+
+    def _get_syllabus_signals(self, chapter: str) -> Dict[str, float]:
+        """Return syllabus-driven weighting signals for planning/recommendations."""
+        info = getattr(self, "syllabus_structure", {}).get(chapter, {})
+        if not isinstance(info, dict):
+            return {
+                "outcome_count": 0.0,
+                "level2_ratio": 0.0,
+                "level3_ratio": 0.0,
+                "depth_boost": 1.0,
+                "pressure_boost": 1.0,
+            }
+        outcome_count = float(info.get("outcome_count", 0) or 0)
+        mix = info.get("intellectual_level_mix", {})
+        if not isinstance(mix, dict):
+            mix = {}
+        level_1 = float(mix.get("level_1", 0) or 0)
+        level_2 = float(mix.get("level_2", 0) or 0)
+        level_3 = float(mix.get("level_3", 0) or 0)
+        total_levels = max(1.0, level_1 + level_2 + level_3)
+        level2_ratio = level_2 / total_levels
+        level3_ratio = level_3 / total_levels
+        depth_boost = 1.0 + min(0.35, outcome_count / 100.0)
+        pressure_boost = 1.0 + min(0.25, (level3_ratio * 0.5) + (level2_ratio * 0.25))
+        return {
+            "outcome_count": outcome_count,
+            "level2_ratio": level2_ratio,
+            "level3_ratio": level3_ratio,
+            "depth_boost": depth_boost,
+            "pressure_boost": pressure_boost,
+        }
+
+    def get_syllabus_chapter_intelligence(self, chapter: str) -> Dict[str, Any]:
+        """Return syllabus intelligence details for a chapter."""
+        if chapter not in self.CHAPTERS:
+            return {}
+        info = getattr(self, "syllabus_structure", {}).get(chapter, {})
+        if not isinstance(info, dict):
+            return {}
+        capability = str(info.get("capability", "") or "")
+        subtopics = info.get("subtopics", [])
+        if not isinstance(subtopics, list):
+            subtopics = []
+        subtopics = [str(x).strip() for x in subtopics if str(x).strip()]
+        outcomes = info.get("learning_outcomes", [])
+        if not isinstance(outcomes, list):
+            outcomes = []
+        cleaned_outcomes = []
+        for item in outcomes:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text", "")).strip()
+            if not text:
+                continue
+            try:
+                level = int(item.get("level", 2) or 2)
+            except Exception:
+                level = 2
+            level = 1 if level < 1 else 3 if level > 3 else level
+            cleaned_outcomes.append({"text": text, "level": level})
+        mix = info.get("intellectual_level_mix", {})
+        if not isinstance(mix, dict):
+            mix = {}
+        level_1 = int(mix.get("level_1", 0) or 0)
+        level_2 = int(mix.get("level_2", 0) or 0)
+        level_3 = int(mix.get("level_3", 0) or 0)
+        if cleaned_outcomes:
+            level_1 = sum(1 for o in cleaned_outcomes if int(o.get("level", 2)) == 1)
+            level_2 = sum(1 for o in cleaned_outcomes if int(o.get("level", 2)) == 2)
+            level_3 = sum(1 for o in cleaned_outcomes if int(o.get("level", 2)) == 3)
+        outcome_count = int(info.get("outcome_count", len(cleaned_outcomes)) or len(cleaned_outcomes))
+
+        try:
+            comp = float(getattr(self, "competence", {}).get(chapter, 0) or 0)
+        except Exception:
+            comp = 0.0
+        try:
+            quiz = float(getattr(self, "quiz_results", {}).get(chapter, 0) or 0)
+        except Exception:
+            quiz = 0.0
+        mastery_stats = self.get_mastery_stats(chapter)
+        mastered = int(mastery_stats.get("mastered", 0) or 0)
+        total = int(mastery_stats.get("total", 0) or 0)
+        mastery_pct = (mastered / max(1, total) * 100.0) if total > 0 else 0.0
+        coverage_progress = max(0.0, min(100.0, max(comp, quiz, mastery_pct)))
+        outcomes_remaining = max(0, int(round(outcome_count * (1.0 - (coverage_progress / 100.0)))))
+
+        return {
+            "chapter": chapter,
+            "capability": capability,
+            "subtopics": subtopics,
+            "learning_outcomes": cleaned_outcomes,
+            "intellectual_level_mix": {
+                "level_1": level_1,
+                "level_2": level_2,
+                "level_3": level_3,
+            },
+            "outcome_count": outcome_count,
+            "coverage_progress": coverage_progress,
+            "outcomes_remaining": outcomes_remaining,
+        }
 
     def _resolve_module_paths(self, module_id: str) -> tuple[str, str]:
         class_data = getattr(self.__class__, "DATA_FILE", self.DEFAULT_DATA_FILE)
@@ -4911,6 +5560,10 @@ class StudyPlanEngine:
             # Base urgency from competence gap
             urgency = float(100 - competence)
 
+            syllabus_signals = self._get_syllabus_signals(chapter)
+            urgency *= float(syllabus_signals.get("depth_boost", 1.0) or 1.0)
+            urgency *= float(syllabus_signals.get("pressure_boost", 1.0) or 1.0)
+
             # Importance weighting (exam difficulty/weight)
             weight = _safe_float(self.importance_weights.get(chapter, 10))
             urgency *= (1.0 + (weight / 100.0))
@@ -5136,6 +5789,10 @@ class StudyPlanEngine:
 
             # Calculate urgency: higher = more urgent
             urgency_score = 100 - competence  # Low competence = high urgency
+
+            syllabus_signals = self._get_syllabus_signals(chapter)
+            urgency_score *= float(syllabus_signals.get("depth_boost", 1.0) or 1.0)
+            urgency_score *= float(syllabus_signals.get("pressure_boost", 1.0) or 1.0)
 
             # Add bonus for overdue SRS items
             try:
