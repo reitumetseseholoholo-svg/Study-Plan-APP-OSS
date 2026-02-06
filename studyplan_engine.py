@@ -1225,6 +1225,9 @@ class StudyPlanEngine:
         self.interval_model_path = os.path.join(self.DEFAULT_DATA_DIR, "interval_model.pkl")
         self.chapter_notes: Dict[str, Dict[str, Any]] = {}
         self.difficulty_counts: Dict[str, Dict[str, int]] = {}
+        self.chapter_miss_streak: Dict[str, int] = {}
+        self.chapter_miss_last_date: Dict[str, str] = {}
+        self.hourly_quiz_stats: Dict[str, Dict[str, int]] = {}
 
         # Data health stats
         self.data_health = {
@@ -1559,6 +1562,63 @@ class StudyPlanEngine:
                 cleaned[k] = inner
         return cleaned
 
+    def _coerce_chapter_miss_streak(self, raw):
+        """Normalize chapter miss streaks to {chapter: int}."""
+        if not isinstance(raw, dict):
+            return {}
+        cleaned: Dict[str, int] = {}
+        for k, v in raw.items():
+            if not isinstance(k, str):
+                continue
+            try:
+                count = int(v)
+            except Exception:
+                count = 0
+            if count > 0:
+                cleaned[k] = count
+        return cleaned
+
+    def _coerce_chapter_miss_last_date(self, raw):
+        """Normalize chapter miss streak dates to {chapter: iso_date}."""
+        if not isinstance(raw, dict):
+            return {}
+        cleaned: Dict[str, str] = {}
+        for k, v in raw.items():
+            if not isinstance(k, str):
+                continue
+            parsed = self._parse_date(v)
+            if parsed:
+                cleaned[k] = parsed.isoformat()
+        return cleaned
+
+    def _coerce_hourly_quiz_stats(self, raw):
+        """Normalize hourly quiz stats to {hour: {attempts, correct}}."""
+        if not isinstance(raw, dict):
+            return {}
+        cleaned: Dict[str, Dict[str, int]] = {}
+        for k, v in raw.items():
+            try:
+                hour_int = int(k)
+            except Exception:
+                continue
+            if hour_int < 0 or hour_int > 23:
+                continue
+            if not isinstance(v, dict):
+                continue
+            try:
+                attempts = int(v.get("attempts", 0) or 0)
+            except Exception:
+                attempts = 0
+            try:
+                correct = int(v.get("correct", 0) or 0)
+            except Exception:
+                correct = 0
+            attempts = max(0, attempts)
+            correct = max(0, min(correct, attempts))
+            if attempts > 0:
+                cleaned[str(hour_int)] = {"attempts": attempts, "correct": correct}
+        return cleaned
+
     def _coerce_quiz_recent(self, raw, max_keep: int = 50):
         """Normalize recent quiz history to {chapter: [idx, ...]}."""
         if not isinstance(raw, dict):
@@ -1836,6 +1896,9 @@ class StudyPlanEngine:
         self.completed_chapters_date = self._coerce_completed_chapters_date(self.completed_chapters_date)
         self.chapter_notes = self._coerce_chapter_notes(self.chapter_notes)
         self.difficulty_counts = self._coerce_difficulty_counts(self.difficulty_counts)
+        self.chapter_miss_streak = self._coerce_chapter_miss_streak(getattr(self, "chapter_miss_streak", {}))
+        self.chapter_miss_last_date = self._coerce_chapter_miss_last_date(getattr(self, "chapter_miss_last_date", {}))
+        self.hourly_quiz_stats = self._coerce_hourly_quiz_stats(getattr(self, "hourly_quiz_stats", {}))
         if not isinstance(self.study_hub_stats, dict):
             self.study_hub_stats = {}
         if not isinstance(self.quiz_results, dict):
@@ -3644,6 +3707,177 @@ class StudyPlanEngine:
             counts[label] = counts.get(label, 0) + 1
         return counts
 
+    def get_chapter_difficulty_ratio(self, chapter: str, max_samples: int = 40) -> dict[str, float]:
+        """Return approximate hard ratio and sample count for a chapter."""
+        questions = self.QUESTIONS.get(chapter, [])
+        if not questions:
+            return {"hard_ratio": 0.0, "sample": 0.0}
+        indices = list(range(len(questions)))
+        try:
+            max_samples = int(max_samples)
+        except Exception:
+            max_samples = 40
+        if max_samples > 0 and len(indices) > max_samples:
+            random.shuffle(indices)
+            indices = indices[:max_samples]
+        hard = 0
+        total = 0
+        for idx in indices:
+            label = self.get_question_difficulty(chapter, idx)
+            if label == "unknown":
+                continue
+            total += 1
+            if label == "hard":
+                hard += 1
+        if total <= 0:
+            return {"hard_ratio": 0.0, "sample": 0.0}
+        return {"hard_ratio": max(0.0, min(1.0, hard / total)), "sample": float(total)}
+
+    def get_chapter_recall_risk(self, chapter: str, max_samples: int = 40) -> float | None:
+        """Return a 0-1 recall risk score (higher = weaker) for a chapter."""
+        if chapter not in self.CHAPTERS:
+            return None
+        questions = self.QUESTIONS.get(chapter, [])
+        if not questions:
+            return None
+        stats_by_ch = self.question_stats.get(chapter, {})
+        if not isinstance(stats_by_ch, dict):
+            return None
+        indices = []
+        for idx in range(len(questions)):
+            stats = self._get_question_stats(chapter, idx)
+            if not isinstance(stats, dict):
+                continue
+            try:
+                attempts = int(stats.get("attempts", 0) or 0)
+            except Exception:
+                attempts = 0
+            if attempts > 0:
+                indices.append(idx)
+        if not indices:
+            return None
+        try:
+            max_samples = int(max_samples)
+        except Exception:
+            max_samples = 40
+        if max_samples > 0 and len(indices) > max_samples:
+            random.shuffle(indices)
+            indices = indices[:max_samples]
+        risks = []
+        use_ml = self._count_question_samples() >= self.ML_MIN_SAMPLES
+        for idx in indices:
+            stats = self._get_question_stats(chapter, idx)
+            if not isinstance(stats, dict):
+                continue
+            try:
+                attempts = int(stats.get("attempts", 0) or 0)
+            except Exception:
+                attempts = 0
+            try:
+                correct = int(stats.get("correct", 0) or 0)
+            except Exception:
+                correct = 0
+            if attempts <= 0:
+                continue
+            miss_rate = 1.0 - min(1.0, max(0.0, correct / max(1, attempts)))
+            risk = miss_rate
+            if use_ml and attempts >= self.ML_MIN_ATTEMPTS:
+                try:
+                    prob = self.predict_recall_prob(chapter, idx)
+                except Exception:
+                    prob = None
+                if prob is not None:
+                    risk = max(risk, 1.0 - prob)
+            risks.append(max(0.0, min(1.0, risk)))
+        if not risks:
+            return None
+        risks.sort(reverse=True)
+        cutoff = max(5, int(len(risks) * 0.3))
+        return sum(risks[:cutoff]) / float(cutoff)
+
+    def get_interval_release_confidence(self, chapter: str, max_samples: int = 20) -> float | None:
+        """Return ratio of sampled questions whose predicted interval is beyond current spacing."""
+        if self.interval_model is None:
+            return None
+        if chapter not in self.CHAPTERS:
+            return None
+        if self._count_question_samples() < self.ML_MIN_SAMPLES:
+            return None
+        srs_list = self.srs_data.get(chapter, [])
+        if not isinstance(srs_list, list) or not srs_list:
+            return None
+        indices = [idx for idx, srs in enumerate(srs_list) if isinstance(srs, dict) and srs.get("last_review")]
+        if not indices:
+            return None
+        try:
+            max_samples = int(max_samples)
+        except Exception:
+            max_samples = 20
+        if max_samples > 0 and len(indices) > max_samples:
+            random.shuffle(indices)
+            indices = indices[:max_samples]
+        not_due = 0
+        total = 0
+        for idx in indices:
+            srs = srs_list[idx]
+            last_review = srs.get("last_review")
+            if not isinstance(last_review, str) or not last_review:
+                continue
+            try:
+                last_date = datetime.date.fromisoformat(last_review)
+            except Exception:
+                continue
+            try:
+                current_interval = float(srs.get("interval", 1) or 1)
+            except Exception:
+                current_interval = 1.0
+            try:
+                efactor = float(srs.get("efactor", 2.5) or 2.5)
+            except Exception:
+                efactor = 2.5
+            try:
+                pred = self.predict_interval_days(chapter, idx, current_interval, efactor)
+            except Exception:
+                pred = None
+            if pred is None:
+                continue
+            days_since = max(0.0, float((datetime.date.today() - last_date).days))
+            total += 1
+            if pred >= (days_since + 3.0):
+                not_due += 1
+        if total < 3:
+            return None
+        return max(0.0, min(1.0, not_due / float(total)))
+
+    def get_best_quiz_hours(self, min_attempts: int = 10, top_k: int = 2) -> list[int]:
+        """Return top quiz hours by accuracy."""
+        if not isinstance(self.hourly_quiz_stats, dict):
+            return []
+        scores = []
+        for hour_str, stats in self.hourly_quiz_stats.items():
+            try:
+                hour = int(hour_str)
+            except Exception:
+                continue
+            if hour < 0 or hour > 23:
+                continue
+            if not isinstance(stats, dict):
+                continue
+            try:
+                attempts = int(stats.get("attempts", 0) or 0)
+            except Exception:
+                attempts = 0
+            try:
+                correct = int(stats.get("correct", 0) or 0)
+            except Exception:
+                correct = 0
+            if attempts < max(1, int(min_attempts)):
+                continue
+            accuracy = correct / max(1, attempts)
+            scores.append((accuracy, attempts, hour))
+        scores.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return [h for _acc, _att, h in scores[: max(1, int(top_k))]]
+
     def _load_recall_model(self) -> None:
         try:
             path = self.recall_model_path
@@ -3934,6 +4168,38 @@ class StudyPlanEngine:
             return
         if not isinstance(question_index, int) or question_index < 0:
             return
+        # Track per-chapter miss streaks (resets daily)
+        try:
+            today_iso = datetime.date.today().isoformat()
+            last_date = self.chapter_miss_last_date.get(chapter)
+            if last_date != today_iso:
+                self.chapter_miss_streak[chapter] = 0
+                self.chapter_miss_last_date[chapter] = today_iso
+            if is_correct:
+                self.chapter_miss_streak[chapter] = 0
+            else:
+                current = int(self.chapter_miss_streak.get(chapter, 0) or 0)
+                self.chapter_miss_streak[chapter] = max(0, current) + 1
+        except Exception:
+            pass
+        # Track hourly quiz performance
+        try:
+            hour_key = str(int(datetime.datetime.now().hour))
+            if not isinstance(self.hourly_quiz_stats, dict):
+                self.hourly_quiz_stats = {}
+            bucket = self.hourly_quiz_stats.get(hour_key)
+            if not isinstance(bucket, dict):
+                bucket = {"attempts": 0, "correct": 0}
+            attempts = int(bucket.get("attempts", 0) or 0)
+            correct = int(bucket.get("correct", 0) or 0)
+            attempts = max(0, attempts) + 1
+            if is_correct:
+                correct = max(0, correct) + 1
+            bucket["attempts"] = attempts
+            bucket["correct"] = min(correct, attempts)
+            self.hourly_quiz_stats[hour_key] = bucket
+        except Exception:
+            pass
         stats_by_ch = self.question_stats.get(chapter)
         if not isinstance(stats_by_ch, dict):
             stats_by_ch = {}
@@ -4126,9 +4392,24 @@ class StudyPlanEngine:
             is_correct (bool): Whether the question was answered correctly (True/False)
         """
         try:
-            srs_data = self.srs_data[chapter]
+            srs_data = self.srs_data.get(chapter, [])
+            if not isinstance(srs_data, list):
+                srs_data = []
+                self.srs_data[chapter] = srs_data
             if not (0 <= question_index < len(srs_data)):
-                raise ValueError(f"Question {question_index} not found in chapter {chapter}")
+                try:
+                    # Attempt to reconcile SRS length with question pool.
+                    self.sync_srs_with_questions()
+                except Exception:
+                    pass
+                srs_data = self.srs_data.get(chapter, [])
+                if not isinstance(srs_data, list) or not (0 <= question_index < len(srs_data)):
+                    self._log_coach_warning(
+                        "SRS desync: question index not found after sync",
+                        chapter=chapter,
+                        question_index=question_index,
+                    )
+                    return
             srs = srs_data[question_index]
             try:
                 efactor = float(srs.get('efactor', 2.5) or 2.5)
@@ -4352,6 +4633,17 @@ class StudyPlanEngine:
                 sticky_competence = 10.0
                 sticky_pomodoros = 1
         retention_mode = isinstance(days_remaining, int) and days_remaining <= 21
+        exam_weight = 1.0
+        try:
+            if isinstance(days_remaining, int) and days_remaining > 0:
+                if days_remaining <= 7:
+                    exam_weight = 2.0
+                elif days_remaining <= 21:
+                    exam_weight = 1.6
+                elif days_remaining <= 45:
+                    exam_weight = 1.3
+        except Exception:
+            exam_weight = 1.0
 
         def _due_soon_count(srs_list: list, window_days: int = 7) -> int:
             if not isinstance(srs_list, list) or not srs_list:
@@ -4414,6 +4706,36 @@ class StudyPlanEngine:
                     bonus += 12.0
             return bonus
 
+        ml_risk_cache: dict[str, float | None] = {}
+
+        def _ml_risk(ch: str) -> float | None:
+            if ch in ml_risk_cache:
+                return ml_risk_cache[ch]
+            try:
+                ml_risk_cache[ch] = self.get_chapter_recall_risk(ch)
+            except Exception:
+                ml_risk_cache[ch] = None
+            return ml_risk_cache[ch]
+
+        def _prereq_boost(ch: str) -> float:
+            bonus = 0.0
+            # If dependent topics are weak or high-risk, reinforce the prerequisite.
+            for prereq, dependents in self.CHAPTER_FLOW.items():
+                if prereq != ch:
+                    continue
+                for dep in dependents:
+                    try:
+                        dep_comp = _safe_float(self.competence.get(dep, 0) or 0)
+                    except Exception:
+                        dep_comp = 0.0
+                    try:
+                        dep_risk = _ml_risk(dep)
+                    except Exception:
+                        dep_risk = None
+                    if dep_comp < 50 or (dep_risk is not None and dep_risk >= 0.6):
+                        bonus += 12.0
+            return bonus
+
         def _pomodoros_on_topic(ch: str) -> float:
             try:
                 by_ch = getattr(self, "pomodoro_log", {}).get("by_chapter", {})
@@ -4473,6 +4795,11 @@ class StudyPlanEngine:
             urgency += overdue_ratio * 30.0
             urgency += new_ratio * 20.0
 
+            # ML recall-risk boost (aggressive near exam).
+            ml_risk = _ml_risk(chapter)
+            if ml_risk is not None:
+                urgency += (ml_risk * 35.0) * exam_weight
+
             # Error-driven repetition priority
             due_map = self.must_review.get(chapter, {})
             if isinstance(due_map, dict):
@@ -4493,6 +4820,7 @@ class StudyPlanEngine:
 
             urgency += _neighbor_bonus(chapter)
             urgency += _flow_bonus(chapter)
+            urgency += _prereq_boost(chapter)
             if sticky_current and chapter == current_topic and must_review_due <= 0:
                 urgency += 50.0
             priorities.append((chapter, urgency))
@@ -4640,8 +4968,28 @@ class StudyPlanEngine:
         days_to_exam = (self.exam_date - today).days if self.exam_date else 30
         if isinstance(days_to_exam, int) and days_to_exam < 0:
             days_to_exam = 0
+        exam_weight = 1.0
+        try:
+            if isinstance(days_to_exam, int) and days_to_exam > 0:
+                if days_to_exam <= 7:
+                    exam_weight = 2.0
+                elif days_to_exam <= 21:
+                    exam_weight = 1.6
+                elif days_to_exam <= 45:
+                    exam_weight = 1.3
+        except Exception:
+            exam_weight = 1.0
 
         recommendations = []
+        ml_risk_cache: dict[str, float | None] = {}
+        def _ml_risk(ch: str) -> float | None:
+            if ch in ml_risk_cache:
+                return ml_risk_cache[ch]
+            try:
+                ml_risk_cache[ch] = self.get_chapter_recall_risk(ch)
+            except Exception:
+                ml_risk_cache[ch] = None
+            return ml_risk_cache[ch]
 
         for chapter in self.CHAPTERS:
             # Get competence (0-100)
@@ -4662,6 +5010,11 @@ class StudyPlanEngine:
                 urgency_score += (overdue_count * 5)  # 5 points per overdue item
             except Exception:
                 pass
+
+            # ML recall-risk boost (scaled by exam proximity)
+            ml_risk = _ml_risk(chapter)
+            if ml_risk is not None:
+                urgency_score += (ml_risk * 30.0) * exam_weight
 
             # Boost urgency if exam is soon
             if 0 < days_to_exam < 7:
@@ -5101,6 +5454,9 @@ class StudyPlanEngine:
         self.progress_log = data.get('progress_log', self.progress_log)
         self.chapter_notes = data.get('chapter_notes', self.chapter_notes)
         self.difficulty_counts = data.get('difficulty_counts', self.difficulty_counts)
+        self.chapter_miss_streak = data.get("chapter_miss_streak", self.chapter_miss_streak)
+        self.chapter_miss_last_date = data.get("chapter_miss_last_date", self.chapter_miss_last_date)
+        self.hourly_quiz_stats = data.get("hourly_quiz_stats", self.hourly_quiz_stats)
         self.availability = data.get('availability', self.availability)
         self.completed_chapters = data.get('completed_chapters', self.completed_chapters)
         self.completed_chapters_date = data.get('completed_chapters_date', self.completed_chapters_date)
@@ -5168,6 +5524,9 @@ class StudyPlanEngine:
         self.quiz_recent = {}
         self.error_notebook = {}
         self.question_stats = {}
+        self.chapter_miss_streak = {}
+        self.chapter_miss_last_date = {}
+        self.hourly_quiz_stats = {}
 
         self.save_data()
 
@@ -5195,6 +5554,9 @@ class StudyPlanEngine:
             "progress_log": list(self.progress_log),
             "chapter_notes": dict(self.chapter_notes),
             "difficulty_counts": dict(self.difficulty_counts),
+            "chapter_miss_streak": dict(self.chapter_miss_streak),
+            "chapter_miss_last_date": dict(self.chapter_miss_last_date),
+            "hourly_quiz_stats": dict(self.hourly_quiz_stats),
             "availability": dict(self.availability),
             "completed_chapters": sorted(self.completed_chapters),
             "completed_chapters_date": self.completed_chapters_date,
@@ -5237,6 +5599,25 @@ class StudyPlanEngine:
             # No existing file to back up
             self.last_backup_ok = True
             self.last_backup_error = None
+
+    def _log_coach_warning(self, message: str, chapter: str | None = None, question_index: int | None = None) -> None:
+        """Append a lightweight warning to the coach debug log."""
+        try:
+            payload: Dict[str, Any] = {
+                "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+                "type": "warn",
+                "message": str(message),
+            }
+            if isinstance(chapter, str) and chapter:
+                payload["chapter"] = chapter
+            if isinstance(question_index, int):
+                payload["question_index"] = int(question_index)
+            path = os.path.join(self.DEFAULT_DATA_DIR, "coach_debug.log")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload) + "\n")
+        except Exception:
+            pass
 
     def _write_rolling_backup(self, path: str, payload: bytes) -> None:
         """Write timestamped backup snapshots and keep only the most recent N."""

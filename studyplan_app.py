@@ -5134,6 +5134,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
         try:
+            risk = self.engine.get_chapter_recall_risk(topic)
+            if risk is not None and risk >= 0.6:
+                reasons.append("low recall probability")
+        except Exception:
+            pass
+        try:
             pace = self._get_pace_info().get("status")
             if pace == "behind":
                 reasons.append("pace behind")
@@ -5921,6 +5927,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             daily_poms = int(self.daily_pomodoros_by_chapter.get(topic, 0) or 0)
         except Exception:
             daily_poms = 0
+        try:
+            today_iso = datetime.date.today().isoformat()
+        except Exception:
+            today_iso = ""
         recall_credit = 0
         if getattr(self, "recall_counts_for_release", False):
             try:
@@ -5934,17 +5944,61 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             last_quiz = 0.0
         effective_poms = daily_poms + recall_credit
 
+        # Consecutive miss cooldown: rotate after repeated misses.
+        try:
+            miss_streaks = getattr(self.engine, "chapter_miss_streak", {}) or {}
+            last_dates = getattr(self.engine, "chapter_miss_last_date", {}) or {}
+            miss_streak = int(miss_streaks.get(topic, 0) or 0)
+            last_date = last_dates.get(topic)
+            if today_iso and last_date != today_iso:
+                miss_streak = 0
+            if miss_streak >= 3:
+                return True, "miss cooldown (3+ misses)"
+        except Exception:
+            pass
+
+        # Difficulty-aware caps (hard topics rotate earlier, especially off-peak hours).
+        hard_ratio = 0.0
+        try:
+            ratio_info = self.engine.get_chapter_difficulty_ratio(topic)
+            if isinstance(ratio_info, dict):
+                hard_ratio = float(ratio_info.get("hard_ratio", 0) or 0)
+        except Exception:
+            hard_ratio = 0.0
+        hard_cap = 7
+        soft_cap = 5
+        if hard_ratio >= 0.4:
+            hard_cap -= 1
+            soft_cap -= 1
+        try:
+            best_hours = self.engine.get_best_quiz_hours()
+            if best_hours and datetime.datetime.now().hour not in best_hours and hard_ratio >= 0.35:
+                hard_cap -= 1
+                soft_cap -= 1
+        except Exception:
+            pass
+        hard_cap = max(5, hard_cap)
+        soft_cap = max(3, soft_cap)
+
         # Hard-stop and soft-stop guards to prevent all-day lock-in on a single topic.
-        if daily_poms >= 7:
-            return True, "hard cap reached (7+ focus blocks)"
-        if daily_poms >= 5 and effective_poms >= 3:
-            return True, "soft cap reached (5+ focus blocks)"
+        if daily_poms >= hard_cap:
+            return True, f"hard cap reached ({hard_cap}+ focus blocks)"
+        if daily_poms >= soft_cap and effective_poms >= 3:
+            return True, f"soft cap reached ({soft_cap}+ focus blocks)"
 
         # Mastery checkpoint release: 2-3 deep blocks + decent quiz = rotate.
         if effective_poms >= 3 and last_quiz >= 75:
             return True, "mastery checkpoint met"
         if effective_poms >= 4:
             return True, "sustained deep focus complete"
+
+        # Interval-driven release: ML predicts topic is not due.
+        try:
+            confidence = self.engine.get_interval_release_confidence(topic)
+            if confidence is not None and confidence >= 0.6:
+                return True, f"interval model: not due ({int(confidence * 100)}%)"
+        except Exception:
+            pass
 
         try:
             today = datetime.date.today()
@@ -10408,6 +10462,39 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 toggle.connect("clicked", _toggle_details)
                 coach_box.append(toggle)
                 coach_box.append(revealer)
+
+        # Coach ops notes (non-critical)
+        coach_notes: list[str] = []
+        try:
+            topic_for_notes = recommended_topic or ""
+            miss_streaks = getattr(self.engine, "chapter_miss_streak", {}) or {}
+            last_dates = getattr(self.engine, "chapter_miss_last_date", {}) or {}
+            if topic_for_notes and isinstance(miss_streaks, dict):
+                today_iso = datetime.date.today().isoformat()
+                last_date = last_dates.get(topic_for_notes) if isinstance(last_dates, dict) else None
+                if last_date == today_iso:
+                    try:
+                        miss_streak = int(miss_streaks.get(topic_for_notes, 0) or 0)
+                    except Exception:
+                        miss_streak = 0
+                    if miss_streak >= 3:
+                        coach_notes.append("Miss cooldown active — rotating to protect focus.")
+        except Exception:
+            pass
+        try:
+            best_hours = self.engine.get_best_quiz_hours()
+            if best_hours:
+                now_hour = datetime.datetime.now().hour
+                if now_hour not in best_hours:
+                    coach_notes.append("Off‑peak hours — lighter topics recommended.")
+        except Exception:
+            pass
+        if coach_notes:
+            note_label = Gtk.Label(label=" • ".join(coach_notes))
+            note_label.set_halign(Gtk.Align.START)
+            note_label.set_wrap(True)
+            note_label.add_css_class("muted")
+            coach_box.append(note_label)
 
         try:
             progress = getattr(self.engine, "progress_log", [])
