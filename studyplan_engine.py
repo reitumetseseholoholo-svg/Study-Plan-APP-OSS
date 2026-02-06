@@ -1777,8 +1777,6 @@ class StudyPlanEngine:
             raise ValueError("parsed syllabus payload must be a dict")
         config = copy.deepcopy(base_config) if isinstance(base_config, dict) else {}
         chapters = [str(ch).strip() for ch in parsed.get("chapters", []) if str(ch).strip()]
-        if not chapters:
-            raise ValueError("No chapters could be derived from syllabus data")
         chapter_map = parsed.get("chapter_map", {})
         if not isinstance(chapter_map, dict):
             chapter_map = {}
@@ -1793,8 +1791,12 @@ class StudyPlanEngine:
         base_chapters = (config.get("chapters") if isinstance(config, dict) else None)
         if isinstance(base_chapters, list):
             existing_chapters = [str(ch).strip() for ch in base_chapters if str(ch).strip()]
-        if existing_chapters and len(existing_chapters) >= len(chapters):
+        if existing_chapters:
+            # Always preserve existing module chapters when present.
+            chapters = list(existing_chapters)
             preserve_existing = True
+        if not chapters:
+            raise ValueError("No chapters could be derived from syllabus data")
 
         if preserve_existing:
             # Map capability chapters to the closest existing chapters.
@@ -2081,9 +2083,10 @@ class StudyPlanEngine:
         else:
             base_config = cast(Dict[str, Any], base_config)
         # Prefer existing question-bank chapters if they are richer than the module config.
+        q_chapters: list[str] = []
+        base_chapters: list[str] = []
         try:
             _, questions_path = self._resolve_module_paths(target_module_id)
-            q_chapters: list[str] = []
             if questions_path and os.path.exists(questions_path):
                 with open(questions_path, "r", encoding="utf-8") as f:
                     payload = json.load(f)
@@ -2097,6 +2100,7 @@ class StudyPlanEngine:
             if len(q_chapters) > len(base_chapters):
                 base_config = copy.deepcopy(base_config)
                 base_config["chapters"] = q_chapters
+                base_chapters = list(q_chapters)
         except Exception:
             pass
         text_hash = hashlib.sha1(str(pdf_text).encode("utf-8", errors="ignore")).hexdigest()
@@ -2134,6 +2138,27 @@ class StudyPlanEngine:
         t_parse_ms = (time.perf_counter() - t_parse_start) * 1000.0
         if not base_config:
             base_config = {"title": f"ACCA {str(parsed.get('exam_code') or target_module_id).upper()}"}
+        else:
+            def _looks_like_capabilities(chs: list[str]) -> bool:
+                if not chs:
+                    return False
+                hits = 0
+                for ch in chs:
+                    if re.match(r"^[A-H]\.\s+", ch.strip()):
+                        hits += 1
+                return hits >= max(2, int(len(chs) * 0.6))
+
+            exam_code = str(parsed.get("exam_code") or "").strip().upper()
+            if _looks_like_capabilities(base_chapters):
+                # If a syllabus import already overwrote chapters, prefer richer question-bank or defaults.
+                if q_chapters and len(q_chapters) > len(base_chapters):
+                    base_config = copy.deepcopy(base_config)
+                    base_config["chapters"] = q_chapters
+                    base_chapters = list(q_chapters)
+                elif exam_code in {"FM", "F9"} and len(self.__class__.CHAPTERS) > len(base_chapters):
+                    base_config = copy.deepcopy(base_config)
+                    base_config["chapters"] = list(self.__class__.CHAPTERS)
+                    base_chapters = list(self.__class__.CHAPTERS)
         t_build_start = time.perf_counter()
         try:
             draft = self.build_module_config_from_syllabus(parsed, base_config=base_config)

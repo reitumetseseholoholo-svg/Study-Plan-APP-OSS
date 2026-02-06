@@ -1,4 +1,6 @@
 {
+  "FM Function": [],
+  "FM Environment": [],
   "Investment Decisions": [
     {
       "question": "Which objective is most consistent with sound investment decisions in ACCA FM?",
@@ -284,63 +286,8 @@
       "explanation": "Simulation provides probability distributions, not certainty."
     }
   ],
-  "Working Capital Management": [
-    {
-      "question": "The primary objective of working capital management is to:",
-      "options": [
-        "Maximize inventory at all times",
-        "Balance liquidity and profitability",
-        "Eliminate trade credit",
-        "Avoid all short-term financing"
-      ],
-      "correct": "Balance liquidity and profitability",
-      "explanation": "Excessive liquidity hurts returns; too little raises operational and solvency risk."
-    },
-    {
-      "question": "Which expression best represents the cash conversion cycle?",
-      "options": [
-        "Receivable days + Inventory days + Payable days",
-        "Receivable days + Inventory days - Payable days",
-        "Receivable days - Inventory days - Payable days",
-        "Inventory days - Receivable days + Payable days"
-      ],
-      "correct": "Receivable days + Inventory days - Payable days",
-      "explanation": "Payable days offset the cash tied up in inventory and receivables."
-    },
-    {
-      "question": "An aggressive working capital financing policy typically uses more:",
-      "options": [
-        "Long-term funds for current assets",
-        "Short-term funds for current assets",
-        "Equity for all assets",
-        "Retained earnings only"
-      ],
-      "correct": "Short-term funds for current assets",
-      "explanation": "Aggressive policy lowers cost but increases refinancing and liquidity risk."
-    },
-    {
-      "question": "Which is a likely symptom of overtrading?",
-      "options": [
-        "Very low sales growth",
-        "Strong liquidity ratios with low creditor pressure",
-        "Rapid sales growth with rising liquidity strain",
-        "Excessive idle cash balances"
-      ],
-      "correct": "Rapid sales growth with rising liquidity strain",
-      "explanation": "Overtrading is growth outpacing the working capital base."
-    },
-    {
-      "question": "Under the matching principle, permanent working capital should ideally be financed by:",
-      "options": [
-        "Only overdraft",
-        "Long-term sources",
-        "Trade payables only",
-        "Short-term bank bills only"
-      ],
-      "correct": "Long-term sources",
-      "explanation": "Matching aligns asset duration with financing maturity to control risk."
-    }
-  ],
+  "Equity Finance": [],
+  "Debt Finance": [],
   "Cost of Capital": [
     {
       "question": "CAPM cost of equity is given by:",
@@ -396,6 +343,65 @@
       ],
       "correct": "A project-specific risk-adjusted rate",
       "explanation": "Use a rate matched to project risk, often via a pure-play proxy approach."
+    }
+  ],
+  "WACC": [],
+  "CAPM": [],
+  "Working Capital Management": [
+    {
+      "question": "The primary objective of working capital management is to:",
+      "options": [
+        "Maximize inventory at all times",
+        "Balance liquidity and profitability",
+        "Eliminate trade credit",
+        "Avoid all short-term financing"
+      ],
+      "correct": "Balance liquidity and profitability",
+      "explanation": "Excessive liquidity hurts returns; too little raises operational and solvency risk."
+    },
+    {
+      "question": "Which expression best represents the cash conversion cycle?",
+      "options": [
+        "Receivable days + Inventory days + Payable days",
+        "Receivable days + Inventory days - Payable days",
+        "Receivable days - Inventory days - Payable days",
+        "Inventory days - Receivable days + Payable days"
+      ],
+      "correct": "Receivable days + Inventory days - Payable days",
+      "explanation": "Payable days offset the cash tied up in inventory and receivables."
+    },
+    {
+      "question": "An aggressive working capital financing policy typically uses more:",
+      "options": [
+        "Long-term funds for current assets",
+        "Short-term funds for current assets",
+        "Equity for all assets",
+        "Retained earnings only"
+      ],
+      "correct": "Short-term funds for current assets",
+      "explanation": "Aggressive policy lowers cost but increases refinancing and liquidity risk."
+    },
+    {
+      "question": "Which is a likely symptom of overtrading?",
+      "options": [
+        "Very low sales growth",
+        "Strong liquidity ratios with low creditor pressure",
+        "Rapid sales growth with rising liquidity strain",
+        "Excessive idle cash balances"
+      ],
+      "correct": "Rapid sales growth with rising liquidity strain",
+      "explanation": "Overtrading is growth outpacing the working capital base."
+    },
+    {
+      "question": "Under the matching principle, permanent working capital should ideally be financed by:",
+      "options": [
+        "Only overdraft",
+        "Long-term sources",
+        "Trade payables only",
+        "Short-term bank bills only"
+      ],
+      "correct": "Long-term sources",
+      "explanation": "Matching aligns asset duration with financing maturity to control risk."
     }
   ],
   "Inventory Management": [
@@ -568,5 +574,8 @@
       "correct": "Potential supply disruption and loss of discounts",
       "explanation": "Late payment can damage supply continuity and remove beneficial trade terms."
     }
-  ]
+  ],
+  "Risk Management": [],
+  "Business Valuation": [],
+  "Ratio Analysis": []
 }
