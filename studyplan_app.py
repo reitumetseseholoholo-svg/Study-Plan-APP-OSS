@@ -4023,6 +4023,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
+    def _ensure_coach_pick_consistency(self, canonical_topic: str, canonical_source: str, origin: str) -> None:
+        """Align left coach card with a canonical coach pick/source and log mismatches."""
+        if not canonical_topic:
+            return
+        try:
+            left_topic = str(getattr(self, "_coach_pick_topic", "") or "")
+        except Exception:
+            left_topic = ""
+        if left_topic and left_topic != canonical_topic:
+            self._log_coach_mismatch(left_topic, canonical_topic, f"{canonical_source} @ {origin}")
+        try:
+            self._update_coach_pick_card(
+                forced_topic=canonical_topic,
+                forced_source=canonical_source,
+            )
+        except Exception:
+            pass
+
     def _maybe_show_rescue_prompt(self) -> None:
         if self._rescue_prompted:
             return
@@ -6945,9 +6963,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         self._ensure_valid_topic()
         today = datetime.date.today()
-        recommended = self._get_coach_pick_topic()
+        try:
+            recommended, pick_source = self._get_coach_pick_meta()
+        except Exception:
+            recommended = ""
+            pick_source = "unknown"
         if not recommended:
             recommended = self.current_topic or (self.engine.CHAPTERS[0] if self.engine.CHAPTERS else "")
+            if not pick_source:
+                pick_source = "fallback"
+        self._ensure_coach_pick_consistency(recommended, pick_source, "study_room")
         if getattr(self, "study_room_next_due_label", None):
             next_due = self._get_topic_next_due_text(recommended)
             self._set_label_text_if_changed(self.study_room_next_due_label, next_due or "")
@@ -6955,10 +6980,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.study_room_next_due_label.set_visible(bool(next_due))
             except Exception:
                 pass
-        try:
-            self._update_coach_pick_card()
-        except Exception:
-            pass
         weak_chapter = self._get_weak_chapter(60.0)
 
         daily_plan = getattr(self, "_last_daily_plan", None) or []
@@ -10430,16 +10451,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             recommended_topic = weak_chapter or self.current_topic
             pick_source = "unknown"
-        try:
-            left_topic = str(getattr(self, "_coach_pick_topic", "") or "")
-        except Exception:
-            left_topic = ""
-        if left_topic and recommended_topic and left_topic != recommended_topic:
-            self._log_coach_mismatch(left_topic, recommended_topic, pick_source)
-        try:
-            self._update_coach_pick_card(forced_topic=recommended_topic, forced_source=pick_source)
-        except Exception:
-            pass
+        self._ensure_coach_pick_consistency(recommended_topic, pick_source, "dashboard")
         try:
             questions = self.engine.get_questions(recommended_topic)
             base_quiz_target = self._get_quiz_target_for_topic(recommended_topic, len(questions))
