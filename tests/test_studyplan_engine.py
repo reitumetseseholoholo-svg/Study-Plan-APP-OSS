@@ -564,6 +564,31 @@ def test_import_syllabus_disk_cache_rejects_stale_entries(engine_no_io, tmp_path
     assert eng._syllabus_import_cache_order == []
 
 
+def test_syllabus_cache_stats_and_clear(engine_no_io, tmp_path):
+    eng = engine_no_io
+    eng.syllabus_import_cache_file = str(tmp_path / "syllabus_import_cache.json")
+    eng._syllabus_parse_cache = {}
+    eng._syllabus_parse_cache_order = []
+    eng._syllabus_import_cache = {}
+    eng._syllabus_import_cache_order = []
+
+    result = eng.import_syllabus_from_pdf_text(SAMPLE_SYLLABUS_TEXT, module_id="acca_f9")
+    assert isinstance(result, dict)
+
+    stats_before = eng.get_syllabus_import_cache_stats()
+    assert int(stats_before.get("memory_import_entries", 0) or 0) >= 1
+    assert bool(stats_before.get("disk_exists", False)) is True
+    assert int(stats_before.get("disk_entries", 0) or 0) >= 1
+
+    cleared = eng.clear_syllabus_import_cache(clear_disk=True)
+    assert int(cleared.get("cleared_import_entries", 0) or 0) >= 1
+
+    stats_after = eng.get_syllabus_import_cache_stats()
+    assert int(stats_after.get("memory_parse_entries", 0) or 0) == 0
+    assert int(stats_after.get("memory_import_entries", 0) or 0) == 0
+    assert bool(stats_after.get("disk_exists", False)) is False
+
+
 def test_load_recall_model_sklearn_accepts_matching_feature_count(engine_no_io, monkeypatch, tmp_path):
     eng = engine_no_io
     model = types.SimpleNamespace(predict_proba=lambda X: [[0.3, 0.7] for _ in X])

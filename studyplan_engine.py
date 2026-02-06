@@ -1505,6 +1505,66 @@ class StudyPlanEngine:
         except Exception:
             return
 
+    def get_syllabus_import_cache_stats(self) -> Dict[str, Any]:
+        path = str(getattr(self, "syllabus_import_cache_file", "") or "").strip()
+        stats: Dict[str, Any] = {
+            "memory_parse_entries": int(len(getattr(self, "_syllabus_parse_cache", {}) or {})),
+            "memory_import_entries": int(len(getattr(self, "_syllabus_import_cache", {}) or {})),
+            "disk_file": path or None,
+            "disk_exists": False,
+            "disk_entries": 0,
+            "disk_bytes": 0,
+            "disk_updated_at": None,
+            "schema_version": int(getattr(self, "SYLLABUS_IMPORT_CACHE_SCHEMA_VERSION", 2) or 2),
+            "parser_signature": str(getattr(self, "SYLLABUS_PARSER_SIGNATURE", "") or "").strip(),
+        }
+        if not path or not os.path.exists(path):
+            return stats
+        stats["disk_exists"] = True
+        try:
+            stats["disk_bytes"] = int(os.path.getsize(path) or 0)
+        except Exception:
+            stats["disk_bytes"] = 0
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            return stats
+        if isinstance(payload, dict):
+            order = payload.get("order", [])
+            cache = payload.get("cache", {})
+            if isinstance(order, list):
+                stats["disk_entries"] = int(len(order))
+            elif isinstance(cache, dict):
+                stats["disk_entries"] = int(len(cache))
+            updated = payload.get("updated_at")
+            if isinstance(updated, str) and updated.strip():
+                stats["disk_updated_at"] = updated
+        return stats
+
+    def clear_syllabus_import_cache(self, clear_disk: bool = True) -> Dict[str, Any]:
+        parse_before = int(len(getattr(self, "_syllabus_parse_cache", {}) or {}))
+        import_before = int(len(getattr(self, "_syllabus_import_cache", {}) or {}))
+        self._syllabus_parse_cache = {}
+        self._syllabus_parse_cache_order = []
+        self._syllabus_import_cache = {}
+        self._syllabus_import_cache_order = []
+        removed_disk = False
+        disk_error = None
+        path = str(getattr(self, "syllabus_import_cache_file", "") or "").strip()
+        if clear_disk and path and os.path.exists(path):
+            try:
+                os.remove(path)
+                removed_disk = True
+            except Exception as exc:
+                disk_error = str(exc)
+        return {
+            "cleared_parse_entries": parse_before,
+            "cleared_import_entries": import_before,
+            "disk_removed": removed_disk,
+            "disk_error": disk_error,
+        }
+
     def _build_importance_weights_from_syllabus(self, syllabus_structure: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
         raw_weights: Dict[str, float] = {}
         for chapter, info in syllabus_structure.items():

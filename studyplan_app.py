@@ -1579,6 +1579,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.health_check_btn = Gtk.Button(label="Run Data Health Check")
         self.health_check_btn.connect("clicked", self.on_run_health_check)
         tools_box.append(self.health_check_btn)
+        self.clear_syllabus_cache_btn = Gtk.Button(label="Clear Syllabus Cache")
+        self.clear_syllabus_cache_btn.connect("clicked", self.on_clear_syllabus_cache)
+        tools_box.append(self.clear_syllabus_cache_btn)
 
         left_panel.append(tools_box)
         self.tools_box = tools_box
@@ -1692,6 +1695,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.reset_btn: ("Reset Data", "Reset"),
             self.health_log_btn: ("View Health Log", "Health Log"),
             self.health_check_btn: ("Run Data Health Check", "Health Check"),
+            self.clear_syllabus_cache_btn: ("Clear Syllabus Cache", "Clear Cache"),
             self.focus_mode_btn: ("Focus Mode", "Focus"),
         }
         self._compact_mode = False
@@ -10685,6 +10689,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         self._show_text_dialog("Data Health Check", health_text, Gtk.MessageType.INFO)
         self.update_dashboard()
+
+    def on_clear_syllabus_cache(self, _button):
+        try:
+            before = self.engine.get_syllabus_import_cache_stats()
+            result = self.engine.clear_syllabus_import_cache(clear_disk=True)
+            after = self.engine.get_syllabus_import_cache_stats()
+        except Exception as exc:
+            self._show_text_dialog("Clear Syllabus Cache", f"Failed to clear cache: {exc}", Gtk.MessageType.ERROR)
+            return
+
+        lines = [
+            "Syllabus cache cleared.",
+            "",
+            f"Memory parse entries: {int(before.get('memory_parse_entries', 0) or 0)} -> {int(after.get('memory_parse_entries', 0) or 0)}",
+            f"Memory import entries: {int(before.get('memory_import_entries', 0) or 0)} -> {int(after.get('memory_import_entries', 0) or 0)}",
+            f"Disk cache removed: {'yes' if bool(result.get('disk_removed')) else 'no'}",
+        ]
+        disk_error = result.get("disk_error")
+        if isinstance(disk_error, str) and disk_error.strip():
+            lines.append(f"Disk cache error: {disk_error}")
+        self._show_text_dialog("Clear Syllabus Cache", "\n".join(lines), Gtk.MessageType.INFO)
 
     def show_notification(self, title, message):
         self._show_text_dialog(title, message, Gtk.MessageType.INFO)
