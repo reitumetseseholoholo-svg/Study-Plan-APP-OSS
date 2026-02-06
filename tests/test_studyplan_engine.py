@@ -318,6 +318,22 @@ def test_load_recall_model_sklearn_rejects_bad_feature_count(engine_no_io, monke
     eng._load_recall_model_sklearn()
 
     assert eng.recall_model_sklearn is None
+
+
+def test_import_syllabus_from_sparse_text_returns_fallback_draft(engine_no_io):
+    eng = engine_no_io
+    sparse_text = "This is a scanned syllabus extract with weak structure and no explicit section headers."
+    result = eng.import_syllabus_from_pdf_text(sparse_text, module_id="acca_sparse")
+    assert isinstance(result, dict)
+    config = result.get("config", {})
+    assert isinstance(config, dict)
+    chapters = config.get("chapters", [])
+    assert isinstance(chapters, list)
+    assert len(chapters) >= 1
+    diagnostics = result.get("diagnostics", {})
+    warnings = diagnostics.get("warnings", []) if isinstance(diagnostics, dict) else []
+    assert isinstance(warnings, list)
+    assert any("fallback draft generated" in str(w).lower() for w in warnings)
     assert eng.recall_model_sklearn_meta is None
 
 

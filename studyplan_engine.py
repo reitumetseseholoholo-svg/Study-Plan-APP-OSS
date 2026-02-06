@@ -1293,7 +1293,27 @@ class StudyPlanEngine:
                     _flush_outcome()
         _flush_outcome()
 
-        letters = sorted(set(capabilities.keys()) | set(syllabus_titles.keys()))
+        letters = sorted(set(capabilities.keys()) | set(syllabus_titles.keys()) | set(outcomes_by_letter.keys()))
+        if not letters:
+            # Best-effort fallback for OCR/noisy extracts: scan the full text for capability-like headings.
+            fallback_titles: Dict[str, str] = {}
+            for line in lines:
+                m_fallback = re.match(r"^([A-H])[\)\.\s-]+(.+)$", line)
+                if not m_fallback:
+                    continue
+                letter = str(m_fallback.group(1) or "").strip().upper()
+                title = str(m_fallback.group(2) or "").strip()
+                if not letter or not title:
+                    continue
+                # Ignore pure list-like fragments.
+                if len(title) < 4:
+                    continue
+                fallback_titles.setdefault(letter, title)
+            if fallback_titles:
+                for k, v in fallback_titles.items():
+                    capabilities.setdefault(k, v)
+                letters = sorted(fallback_titles.keys())
+                warnings.append("Used fallback heading detection due to weak section parsing.")
         chapters: List[str] = []
         chapter_map: Dict[str, str] = {}
         syllabus_structure: Dict[str, Dict[str, Any]] = {}
@@ -1652,10 +1672,43 @@ class StudyPlanEngine:
         """Parse syllabus text and return a validated draft module config (no file writes)."""
         parsed = self.parse_syllabus_pdf_text(pdf_text)
         target_module_id = self._sanitize_module_id(module_id or self.module_id)
-        base_config = self._load_module_config(target_module_id)
+        base_config: Dict[str, Any] | Any = self._load_module_config(target_module_id)
         if not isinstance(base_config, dict):
             base_config = {"title": f"ACCA {str(parsed.get('exam_code') or target_module_id).upper()}"}
-        draft = self.build_module_config_from_syllabus(parsed, base_config=base_config)
+        else:
+            base_config = cast(Dict[str, Any], base_config)
+        try:
+            draft = self.build_module_config_from_syllabus(parsed, base_config=base_config)
+        except ValueError as exc:
+            # Always return a draft payload for review, even on low-confidence parsing.
+            fallback: Dict[str, Any] = copy.deepcopy(base_config) if isinstance(base_config, dict) else {}
+            fallback_chapters = fallback.get("chapters")
+            if not isinstance(fallback_chapters, list) or not any(str(c).strip() for c in fallback_chapters):
+                exam_code = str(parsed.get("exam_code", "") or "").strip().upper()
+                chapter_name = f"A. {exam_code} syllabus draft" if exam_code else "A. Imported syllabus draft"
+                fallback["chapters"] = [chapter_name]
+                fallback["chapter_flow"] = {}
+                fallback["importance_weights"] = {chapter_name: 10}
+            fallback["title"] = str(
+                fallback.get("title") or f"ACCA {str(parsed.get('exam_code') or target_module_id).upper()}"
+            ).strip()
+            fallback["capabilities"] = parsed.get("capabilities", {}) if isinstance(parsed.get("capabilities"), dict) else {}
+            fallback["syllabus_structure"] = (
+                parsed.get("syllabus_structure", {}) if isinstance(parsed.get("syllabus_structure"), dict) else {}
+            )
+            fallback["syllabus_meta"] = {
+                "source_pdf": "",
+                "exam_code": str(parsed.get("exam_code", "") or "").strip().upper() or None,
+                "effective_window": str(parsed.get("effective_window", "") or "").strip() or None,
+                "parsed_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "parse_confidence": max(0.0, min(1.0, float(parsed.get("confidence", 0.0) or 0.0))),
+            }
+            parsed_warnings = parsed.get("warnings")
+            if not isinstance(parsed_warnings, list):
+                parsed_warnings = []
+            parsed_warnings.append(f"Fallback draft generated: {exc}")
+            parsed["warnings"] = parsed_warnings
+            draft = fallback
         validation = self.validate_syllabus_config(draft)
         notes = list(parsed.get("warnings", []))
         notes.extend(validation.get("notes", []))
