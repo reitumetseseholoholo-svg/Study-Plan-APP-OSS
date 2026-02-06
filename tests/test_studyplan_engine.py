@@ -622,6 +622,39 @@ def test_syllabus_cache_metrics_track_hits_and_misses(engine_no_io):
     assert int(stats_after.get("import_misses", 0) or 0) == 0
 
 
+def test_syllabus_cache_metrics_persist_to_disk(engine_no_io, tmp_path):
+    eng = engine_no_io
+    eng.syllabus_import_cache_file = str(tmp_path / "syllabus_import_cache.json")
+    eng._syllabus_import_cache = {}
+    eng._syllabus_import_cache_order = []
+    eng._syllabus_cache_metrics = {
+        "parse_hits": 7,
+        "parse_misses": 3,
+        "import_hits": 5,
+        "import_misses": 4,
+    }
+
+    # Ensure there is at least one cache entry so disk payload is produced in a normal path.
+    _ = eng.import_syllabus_from_pdf_text(SAMPLE_SYLLABUS_TEXT, module_id="acca_f9")
+    eng._save_syllabus_import_cache_disk()
+
+    eng._syllabus_cache_metrics = {
+        "parse_hits": 0,
+        "parse_misses": 0,
+        "import_hits": 0,
+        "import_misses": 0,
+    }
+    eng._syllabus_import_cache = {}
+    eng._syllabus_import_cache_order = []
+    eng._load_syllabus_import_cache_disk()
+
+    stats = eng.get_syllabus_import_cache_stats()
+    assert int(stats.get("parse_hits", 0) or 0) >= 7
+    assert int(stats.get("parse_misses", 0) or 0) >= 3
+    assert int(stats.get("import_hits", 0) or 0) >= 5
+    assert int(stats.get("import_misses", 0) or 0) >= 4
+
+
 def test_load_recall_model_sklearn_accepts_matching_feature_count(engine_no_io, monkeypatch, tmp_path):
     eng = engine_no_io
     model = types.SimpleNamespace(predict_proba=lambda X: [[0.3, 0.7] for _ in X])

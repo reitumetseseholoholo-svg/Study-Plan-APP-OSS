@@ -1579,6 +1579,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.health_check_btn = Gtk.Button(label="Run Data Health Check")
         self.health_check_btn.connect("clicked", self.on_run_health_check)
         tools_box.append(self.health_check_btn)
+        self.view_syllabus_cache_stats_btn = Gtk.Button(label="View Syllabus Cache Stats")
+        self.view_syllabus_cache_stats_btn.connect("clicked", self.on_view_syllabus_cache_stats)
+        tools_box.append(self.view_syllabus_cache_stats_btn)
         self.clear_syllabus_cache_btn = Gtk.Button(label="Clear Syllabus Cache")
         self.clear_syllabus_cache_btn.connect("clicked", self.on_clear_syllabus_cache)
         tools_box.append(self.clear_syllabus_cache_btn)
@@ -1695,6 +1698,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.reset_btn: ("Reset Data", "Reset"),
             self.health_log_btn: ("View Health Log", "Health Log"),
             self.health_check_btn: ("Run Data Health Check", "Health Check"),
+            self.view_syllabus_cache_stats_btn: ("View Syllabus Cache Stats", "Cache Stats"),
             self.clear_syllabus_cache_btn: ("Clear Syllabus Cache", "Clear Cache"),
             self.focus_mode_btn: ("Focus Mode", "Focus"),
         }
@@ -10716,6 +10720,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if isinstance(disk_error, str) and disk_error.strip():
             lines.append(f"Disk cache error: {disk_error}")
         self._show_text_dialog("Clear Syllabus Cache", "\n".join(lines), Gtk.MessageType.INFO)
+
+    def on_view_syllabus_cache_stats(self, _button):
+        try:
+            stats = self.engine.get_syllabus_import_cache_stats()
+        except Exception as exc:
+            self._show_text_dialog("Syllabus Cache Stats", f"Failed to read cache stats: {exc}", Gtk.MessageType.ERROR)
+            return
+
+        lines = [
+            "Syllabus cache statistics",
+            "",
+            f"Memory parse entries: {int(stats.get('memory_parse_entries', 0) or 0)}",
+            f"Memory import entries: {int(stats.get('memory_import_entries', 0) or 0)}",
+            f"Parse hits/misses: {int(stats.get('parse_hits', 0) or 0)} / {int(stats.get('parse_misses', 0) or 0)} ({float(stats.get('parse_hit_rate', 0.0) or 0.0):.0%} hit)",
+            f"Import hits/misses: {int(stats.get('import_hits', 0) or 0)} / {int(stats.get('import_misses', 0) or 0)} ({float(stats.get('import_hit_rate', 0.0) or 0.0):.0%} hit)",
+            f"Disk cache exists: {'yes' if bool(stats.get('disk_exists')) else 'no'}",
+            f"Disk entries: {int(stats.get('disk_entries', 0) or 0)}",
+            f"Disk size: {int(stats.get('disk_bytes', 0) or 0)} bytes",
+        ]
+        updated = str(stats.get("disk_updated_at", "") or "").strip()
+        if updated:
+            lines.append(f"Disk updated at: {updated}")
+        schema = int(stats.get("schema_version", 0) or 0)
+        if schema > 0:
+            lines.append(f"Cache schema: v{schema}")
+        signature = str(stats.get("parser_signature", "") or "").strip()
+        if signature:
+            lines.append(f"Parser signature: {signature}")
+        self._show_text_dialog("Syllabus Cache Stats", "\n".join(lines), Gtk.MessageType.INFO)
 
     def show_notification(self, title, message):
         self._show_text_dialog(title, message, Gtk.MessageType.INFO)

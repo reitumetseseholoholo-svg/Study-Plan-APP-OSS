@@ -1442,6 +1442,14 @@ class StudyPlanEngine:
         raw_order = payload.get("order", [])
         if not isinstance(raw_cache, dict) or not isinstance(raw_order, list):
             return
+        loaded_metrics_raw = payload.get("metrics", {})
+        if isinstance(loaded_metrics_raw, dict):
+            self._syllabus_cache_metrics = {
+                "parse_hits": max(0, int(loaded_metrics_raw.get("parse_hits", 0) or 0)),
+                "parse_misses": max(0, int(loaded_metrics_raw.get("parse_misses", 0) or 0)),
+                "import_hits": max(0, int(loaded_metrics_raw.get("import_hits", 0) or 0)),
+                "import_misses": max(0, int(loaded_metrics_raw.get("import_misses", 0) or 0)),
+            }
         limit = max(1, int(getattr(self, "SYLLABUS_IMPORT_CACHE_DISK_MAX", 24) or 24))
         max_age_days = max(1, int(getattr(self, "SYLLABUS_IMPORT_CACHE_MAX_AGE_DAYS", 30) or 30))
         cutoff = datetime.datetime.now() - datetime.timedelta(days=max_age_days)
@@ -1494,12 +1502,19 @@ class StudyPlanEngine:
                     "cached_at": datetime.datetime.now().isoformat(timespec="seconds"),
                     "result": value,
                 }
+        metrics = getattr(self, "_syllabus_cache_metrics", {}) or {}
         payload = {
             "schema_version": int(getattr(self, "SYLLABUS_IMPORT_CACHE_SCHEMA_VERSION", 2) or 2),
             "parser_signature": str(getattr(self, "SYLLABUS_PARSER_SIGNATURE", "") or "").strip(),
             "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
             "order": order,
             "cache": cache_obj,
+            "metrics": {
+                "parse_hits": max(0, int(metrics.get("parse_hits", 0) or 0)),
+                "parse_misses": max(0, int(metrics.get("parse_misses", 0) or 0)),
+                "import_hits": max(0, int(metrics.get("import_hits", 0) or 0)),
+                "import_misses": max(0, int(metrics.get("import_misses", 0) or 0)),
+            },
         }
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
