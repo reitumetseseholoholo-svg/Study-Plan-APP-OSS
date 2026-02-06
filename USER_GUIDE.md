@@ -70,6 +70,7 @@ Toggle in **Preferences** or from the **Coach‑only** button in the plan header
 - During a quiz, the app now applies lightweight UI updates per answer and does a full dashboard refresh at quiz end (keeps the dialog responsive on long sessions).
 - Incorrect answers create **must‑review** items.
 - The **Hardest Concepts** card tracks repeated misses by chapter.
+- Use **Drill leeches** (Study Room / Chapter Intelligence) to target repeatedly-missed questions.
 
 ## 6) Reflections + notes
 

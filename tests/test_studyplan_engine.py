@@ -273,6 +273,38 @@ def test_import_data_snapshot_clamps_srs_to_question_count(tmp_path, monkeypatch
     assert len(eng.srs_data[chapter]) == q_count
 
 
+def test_select_leech_questions_targets_low_accuracy_recent_items(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    assert len(eng.QUESTIONS.get(chapter, [])) >= 3
+    today = datetime.date.today().isoformat()
+    eng.question_stats[chapter] = {
+        "0": {"attempts": 8, "correct": 2, "streak": 0, "last_seen": today},  # leech
+        "1": {"attempts": 8, "correct": 7, "streak": 2, "last_seen": today},  # too accurate
+        "2": {"attempts": 6, "correct": 1, "streak": 0, "last_seen": today},  # leech
+    }
+
+    picked = eng.select_leech_questions(chapter, count=3)
+    assert picked
+    assert 1 not in picked
+    assert any(i in picked for i in (0, 2))
+
+
+def test_select_leech_questions_prefers_non_recent(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    assert len(eng.QUESTIONS.get(chapter, [])) >= 2
+    today = datetime.date.today().isoformat()
+    eng.question_stats[chapter] = {
+        "0": {"attempts": 7, "correct": 1, "streak": 0, "last_seen": today},
+        "1": {"attempts": 7, "correct": 1, "streak": 0, "last_seen": today},
+    }
+    eng.quiz_recent[chapter] = [0]
+
+    picked = eng.select_leech_questions(chapter, count=1)
+    assert picked == [1]
+
+
 def test_load_recall_model_sklearn_rejects_bad_feature_count(engine_no_io, monkeypatch, tmp_path):
     eng = engine_no_io
     model = types.SimpleNamespace(predict_proba=lambda X: [[0.4, 0.6] for _ in X])

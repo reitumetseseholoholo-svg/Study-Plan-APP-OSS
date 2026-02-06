@@ -1438,6 +1438,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_error_btn.connect("clicked", self.on_error_drill)
         self.study_room_error_btn.set_sensitive(False)
         self.study_room_leitner_box.append(self.study_room_error_btn)
+        self.study_room_leech_btn = Gtk.Button(label="Drill leeches")
+        self.study_room_leech_btn.add_css_class("flat")
+        self.study_room_leech_btn.connect("clicked", self.on_leech_drill)
+        self.study_room_leech_btn.set_sensitive(False)
+        self.study_room_leitner_box.append(self.study_room_leech_btn)
         study_room_card.append(self.study_room_leitner_box)
         self.study_room_error_stats_label = Gtk.Label()
         self.study_room_error_stats_label.set_halign(Gtk.Align.START)
@@ -4778,9 +4783,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         focus_btn.add_css_class("suggested-action")
         quiz_btn = Gtk.Button(label="Quiz")
         review_btn = Gtk.Button(label="Review Due")
+        leech_btn = Gtk.Button(label="Drill Leeches")
         actions.append(focus_btn)
         actions.append(quiz_btn)
         actions.append(review_btn)
+        actions.append(leech_btn)
         box.append(actions)
 
         def _selected_chapter() -> str:
@@ -4808,9 +4815,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._set_current_topic(chapter)
             self.start_quiz_session(topic=chapter, total_override=6, kind="review")
 
+        def _on_leech(_btn):
+            chapter = _selected_chapter()
+            self._set_current_topic(chapter)
+            self.start_quiz_session(topic=chapter, total_override=8, kind="leech")
+
         focus_btn.connect("clicked", _on_focus)
         quiz_btn.connect("clicked", _on_quiz)
         review_btn.connect("clicked", _on_review)
+        leech_btn.connect("clicked", _on_leech)
 
         def _update_view():
             chapter = _selected_chapter()
@@ -4913,9 +4926,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not has_questions:
                 quiz_btn.set_tooltip_text("Import questions to unlock chapter quiz.")
                 review_btn.set_tooltip_text("Import questions to unlock due review.")
+                leech_btn.set_tooltip_text("Import questions to unlock leech drill.")
             else:
                 quiz_btn.set_tooltip_text(None)
                 review_btn.set_tooltip_text(None)
+                leech_btn.set_tooltip_text(
+                    "Target repeatedly-missed questions." if leech_count > 0 else "No leech items yet."
+                )
+            leech_btn.set_visible(leech_count > 0)
 
         chapter_dropdown.connect("notify::selected", lambda *_args: _update_view())
         _update_view()
@@ -7281,6 +7299,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         "Start a drill of tagged mistakes." if err_total > 0 else ""
                     )
                     self.study_room_error_btn.set_visible(err_total > 0)
+                if getattr(self, "study_room_leech_btn", None):
+                    leech_total = 0
+                    try:
+                        leech_counts = self.engine.get_leech_counts()
+                        if isinstance(leech_counts, dict):
+                            leech_total = int(leech_counts.get(recommended, 0) or 0)
+                    except Exception:
+                        leech_total = 0
+                    self.study_room_leech_btn.set_label(f"Drill leeches ({leech_total})")
+                    self.study_room_leech_btn.set_sensitive(leech_total > 0)
+                    self.study_room_leech_btn.set_tooltip_text(
+                        "Target repeatedly-missed questions." if leech_total > 0 else ""
+                    )
+                    self.study_room_leech_btn.set_visible(leech_total > 0)
                 if getattr(self, "study_room_error_stats_label", None):
                     stats_text = ""
                     try:
@@ -7663,6 +7695,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.send_notification("Error Drill", "No tagged mistakes yet for this topic.")
             return
         self.start_quiz_session(topic=topic, total_override=8, kind="review", indices_override=indices)
+
+    def on_leech_drill(self, _button):
+        self._ensure_coach_selection()
+        if not self._ensure_chapters_ready("Leech Drill"):
+            return
+        topic = self.current_topic or self._get_recommended_topic()
+        if not topic:
+            return
+        self._set_current_topic(topic)
+        indices = []
+        try:
+            if hasattr(self.engine, "select_leech_questions"):
+                indices = self.engine.select_leech_questions(topic, count=8)
+        except Exception:
+            indices = []
+        if not indices:
+            self.send_notification("Leech Drill", "No active leech items for this topic.")
+            return
+        self.start_quiz_session(topic=topic, total_override=8, kind="leech", indices_override=indices)
 
     def _finalize_pomodoro_session(
         self,
@@ -8528,6 +8579,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         elif kind == "review" and hasattr(self.engine, "select_due_review_questions"):
             try:
                 session_indices = self.engine.select_due_review_questions(self.current_topic, total)
+            except Exception:
+                session_indices = []
+        elif kind == "leech" and hasattr(self.engine, "select_leech_questions"):
+            try:
+                session_indices = self.engine.select_leech_questions(self.current_topic, total)
             except Exception:
                 session_indices = []
         elif hasattr(self.engine, "select_srs_questions"):

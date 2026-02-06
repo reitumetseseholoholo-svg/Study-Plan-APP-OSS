@@ -36,6 +36,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **Pomodoro**: focus timer, break timer, alerts, streaks
 - **Focus verification**: Hyprland allowlist + idle detection for verified minutes
 - **Quizzes**: SRS‑weighted questions, streak bonuses, weak‑area drill
+- **Leech remediation**: one-click drill for repeatedly-missed questions
 - **Responsive quiz flow**: lightweight per‑question updates, full dashboard refresh on quiz completion
 - **Gamification**: XP, levels, badges, daily quests
 - **Daily plan**: coach‑aligned topic list with **automatic** daily completion

@@ -4645,6 +4645,79 @@ class StudyPlanEngine:
             ordered.extend(remaining[: max(0, count - len(ordered))])
         return ordered[: min(count, len(questions))]
 
+    def select_leech_questions(
+        self,
+        chapter: str,
+        count: int = 8,
+        days: int = 14,
+        min_attempts: int = 5,
+        max_accuracy: float = 0.5,
+    ) -> list[int]:
+        """Select repeatedly-missed questions for targeted remediation."""
+        questions = self.QUESTIONS.get(chapter, [])
+        if not questions:
+            return []
+        try:
+            count = max(1, int(count))
+        except Exception:
+            count = 8
+        today = datetime.date.today()
+        stats_by_ch = self.question_stats.get(chapter, {})
+        if not isinstance(stats_by_ch, dict):
+            return []
+        srs_list = self.srs_data.get(chapter, [])
+        if not isinstance(srs_list, list):
+            srs_list = []
+        must_review = self.must_review.get(chapter, {}) if isinstance(self.must_review, dict) else {}
+        recent = set()
+        history = self.quiz_recent.get(chapter, [])
+        if isinstance(history, list):
+            for idx in history[-max(12, count * 2):]:
+                try:
+                    i = int(idx)
+                except Exception:
+                    continue
+                if 0 <= i < len(questions):
+                    recent.add(i)
+
+        candidates: list[tuple[int, int, int, float, float]] = []
+        for idx in range(len(questions)):
+            stats = self._get_question_stats(chapter, idx)
+            if not isinstance(stats, dict):
+                continue
+            try:
+                attempts = int(stats.get("attempts", 0) or 0)
+            except Exception:
+                attempts = 0
+            if attempts < min_attempts:
+                continue
+            try:
+                correct = int(stats.get("correct", 0) or 0)
+            except Exception:
+                correct = 0
+            accuracy = 0.0 if attempts <= 0 else (correct / max(1, attempts))
+            if accuracy > max_accuracy:
+                continue
+            last_seen = self._parse_date(stats.get("last_seen"))
+            if not last_seen or (today - last_seen).days > max(1, int(days)):
+                continue
+            due = 0
+            due_date = self._parse_date(must_review.get(str(idx))) if isinstance(must_review, dict) else None
+            if due_date and due_date <= today:
+                due = 1
+            overdue = 1 if (idx < len(srs_list) and self.is_overdue(srs_list[idx], today)) else 0
+            # Sort priority: due, overdue, low accuracy, high attempts.
+            candidates.append((idx, due, overdue, accuracy, float(attempts)))
+
+        if not candidates:
+            return []
+
+        candidates.sort(key=lambda x: (-x[1], -x[2], x[3], -x[4]))
+        ordered = [idx for idx, _due, _over, _acc, _att in candidates if idx not in recent]
+        if len(ordered) < min(count, len(candidates)):
+            ordered.extend([idx for idx, _due, _over, _acc, _att in candidates if idx in recent])
+        return ordered[: min(count, len(questions))]
+
     def flag_incorrect(self, chapter: str, question_index: int, days: int = 2) -> None:
         """Mark a question for forced review within N days."""
         if chapter not in self.CHAPTERS:
