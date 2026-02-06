@@ -34,6 +34,9 @@ Global app data:
 - `study_hub_stats`: parsed metrics from Study Hub PDFs
 - `chapter_notes`: chapter → {note, reflection, updated}
 - `difficulty_counts`: chapter → {question_index: count}
+- `chapter_miss_streak`: chapter → consecutive misses today
+- `chapter_miss_last_date`: chapter → ISO date of last miss update
+- `hourly_quiz_stats`: hour → {attempts, correct}
 - `completed_chapters`: set of chapters completed **today**
 - `completed_chapters_date`: ISO date stamp for daily reset
 
@@ -109,6 +112,12 @@ Global app data:
 - Confidence drift warning (competence vs mastery/quiz lag)
 - Topic saturation warning (over‑focusing)
 - Focus integrity warnings (verified vs raw minutes)
+- Coach ops notes (miss‑cooldown, off‑peak hours)
+
+### ML‑assisted coach tie‑ins
+- Planning and recommendations incorporate ML recall‑risk when models exist.
+- Sticky‑coach release uses interval model confidence when available.
+- Difficulty mix can tighten caps on long runs for “hard” chapters.
 
 ### Weekly summary export
 - Auto‑writes `~/.config/studyplan/weekly_report.txt` once per ISO week.

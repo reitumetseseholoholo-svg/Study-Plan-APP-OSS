@@ -6053,35 +6053,37 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _get_recommended_topic(self) -> str:
         if not self._has_chapters():
             return ""
-        plan = []
+        plan: list[str] = []
         try:
-            plan = list(getattr(self, "_last_daily_plan", None) or [])
+            plan = [ch for ch in (getattr(self, "_last_daily_plan", None) or []) if isinstance(ch, str)]
         except Exception:
             plan = []
         if not plan:
             try:
-                plan = self.engine.get_daily_plan(num_topics=3, current_topic=self.current_topic) or []
+                raw_plan = self.engine.get_daily_plan(num_topics=3, current_topic=self.current_topic) or []
+                plan = [ch for ch in raw_plan if isinstance(ch, str)]
             except Exception:
                 plan = []
         release_flag = None
         release_reason = None
-        sticky_topic = None
+        sticky_topic: str | None = None
         try:
             today_iso = datetime.date.today().isoformat()
             if self.sticky_coach_pick and self.last_coach_pick_date == today_iso:
-                if self.last_coach_pick in self.engine.CHAPTERS:
-                    release, _reason = self._sticky_release_status(self.last_coach_pick)
+                last_pick = self.last_coach_pick if isinstance(self.last_coach_pick, str) else None
+                if last_pick and last_pick in self.engine.CHAPTERS:
+                    release, _reason = self._sticky_release_status(last_pick)
                     release_flag = bool(release)
                     release_reason = _reason
-                    sticky_topic = self.last_coach_pick
+                    sticky_topic = last_pick
                     if not release:
-                        if not plan or self.last_coach_pick in plan:
-                            topic = self.last_coach_pick
+                        if not plan or last_pick in plan:
+                            topic = last_pick
                             self._last_coach_pick_source = "sticky hold"
                             self._log_coach_decision(topic, plan, release_flag, release_reason)
                             return topic
                     else:
-                        rotated = self._pick_topic_after_sticky_release(self.last_coach_pick, plan)
+                        rotated = self._pick_topic_after_sticky_release(last_pick, plan)
                         if rotated:
                             topic = rotated
                             self._last_coach_pick_source = "sticky release rotate"
@@ -6097,7 +6099,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         self._last_coach_pick_source = "plan rotate"
                         self._log_coach_decision(topic, plan, release_flag, release_reason)
                         return topic
-            topic = plan[0]
+            topic = plan[0] if plan else ""
+            if not isinstance(topic, str):
+                topic = ""
             self._last_coach_pick_source = "plan"
             self._log_coach_decision(topic, plan, release_flag, release_reason)
             return topic
@@ -6105,9 +6109,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             recs = self.engine.top_recommendations(1) or []
             if recs:
                 topic = recs[0][0]
+                if not isinstance(topic, str):
+                    topic = ""
                 if release_flag and sticky_topic and topic == sticky_topic:
                     for chapter, _score in (self.engine.top_recommendations(3) or []):
-                        if chapter in self.engine.CHAPTERS and chapter != sticky_topic:
+                        if isinstance(chapter, str) and chapter in self.engine.CHAPTERS and chapter != sticky_topic:
                             topic = chapter
                             break
                 self._last_coach_pick_source = "recommendations"
@@ -6116,7 +6122,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
         if self.current_topic in self.engine.CHAPTERS:
-            topic = self.current_topic
+            topic = self.current_topic if isinstance(self.current_topic, str) else ""
             if release_flag and sticky_topic and topic == sticky_topic:
                 rotated = self._pick_topic_after_sticky_release(sticky_topic, plan)
                 if rotated:

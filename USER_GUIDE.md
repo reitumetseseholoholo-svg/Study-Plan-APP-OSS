@@ -28,6 +28,7 @@ Coach Briefing also shows:
 - **Exam Readiness Index** and **retrieval quota**
 - **Balance checks** (topic saturation or confidence drift)
 - **Focus integrity** (verified vs raw minutes)
+- **Coach notes** (e.g., miss‑cooldown or off‑peak hour hints)
 
 ### C. Study Room (Now)
 - **Focus now (25m)** starts a Pomodoro on the coach topic.

@@ -30,6 +30,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **Coach Briefing**: readiness score, mission checklist, pace status, daily target
 - **Exam Readiness Index** + retrieval quota bar (exam‑aware pacing)
 - **Coach Pick**: single “do this now” topic with reasons + pace tip
+- **ML‑assisted coaching**: recall risk, difficulty mix, interval‑aware release (when models available)
 - **Coach Next**: one‑click “do the right thing now” action
 - **Study Room**: next action, mission progress, quick actions
 - **Pomodoro**: focus timer, break timer, alerts, streaks
