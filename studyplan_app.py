@@ -595,6 +595,20 @@ window {
 .muted {
     color: alpha(@theme_fg_color, 0.75);
 }
+.quiz-meta {
+    font-size: 12px;
+}
+.quiz-question {
+    font-weight: 600;
+    font-size: 14px;
+}
+.quiz-option {
+    margin-top: 2px;
+    margin-bottom: 2px;
+}
+.quiz-feedback {
+    margin-top: 4px;
+}
 .hint {
     color: alpha(@theme_fg_color, 0.6);
     font-size: 11px;
@@ -804,6 +818,20 @@ window {
 }
 .muted {
     color: #b0b6c2;
+}
+.quiz-meta {
+    font-size: 12px;
+}
+.quiz-question {
+    font-weight: 600;
+    font-size: 14px;
+}
+.quiz-option {
+    margin-top: 2px;
+    margin-bottom: 2px;
+}
+.quiz-feedback {
+    margin-top: 4px;
 }
 .hint {
     color: #8f95a1;
@@ -9071,18 +9099,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def show_quiz_dialog(self):
         dialog = self._new_dialog(title="Quiz", transient_for=self, modal=True)
         dialog.set_default_size(460, 260)
+        dialog.add_css_class("quiz-dialog")
         content_area = dialog.get_content_area()
+        content_area.set_spacing(8)
+        content_area.set_margin_top(10)
+        content_area.set_margin_bottom(10)
+        content_area.set_margin_start(12)
+        content_area.set_margin_end(12)
 
         self.quiz_status_label = Gtk.Label()
         self.quiz_status_label.set_halign(Gtk.Align.START)
+        self.quiz_status_label.add_css_class("quiz-meta")
         content_area.append(self.quiz_status_label)
 
         self.quiz_mix_label = Gtk.Label()
         self.quiz_mix_label.set_halign(Gtk.Align.START)
         self.quiz_mix_label.add_css_class("muted")
+        self.quiz_mix_label.add_css_class("quiz-meta")
         content_area.append(self.quiz_mix_label)
 
         self.quiz_mix_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.quiz_mix_row.add_css_class("quiz-mix-row")
         self.quiz_mix_bar = Gtk.ProgressBar()
         self.quiz_mix_bar.set_show_text(False)
         self.quiz_mix_bar.set_tooltip_text("New vs Review mix")
@@ -9092,35 +9129,41 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.quiz_mix_ratio_label = Gtk.Label()
         self.quiz_mix_ratio_label.set_halign(Gtk.Align.END)
         self.quiz_mix_ratio_label.add_css_class("muted")
+        self.quiz_mix_ratio_label.add_css_class("quiz-meta")
         self.quiz_mix_row.append(self.quiz_mix_ratio_label)
         content_area.append(self.quiz_mix_row)
 
         self.quiz_progress = Gtk.ProgressBar()
         self.quiz_progress.set_show_text(True)
+        self.quiz_progress.add_css_class("quiz-progress")
         content_area.append(self.quiz_progress)
 
         self.quiz_hint_label = Gtk.Label(label="Select an option, then Confirm.")
         self.quiz_hint_label.set_halign(Gtk.Align.START)
         self.quiz_hint_label.set_wrap(True)
         self.quiz_hint_label.add_css_class("muted")
+        self.quiz_hint_label.add_css_class("quiz-hint")
         content_area.append(self.quiz_hint_label)
 
         self.quiz_reason_label = Gtk.Label()
         self.quiz_reason_label.set_halign(Gtk.Align.START)
         self.quiz_reason_label.set_wrap(True)
         self.quiz_reason_label.add_css_class("muted")
+        self.quiz_reason_label.add_css_class("quiz-reason")
         content_area.append(self.quiz_reason_label)
 
         # Containers for dynamic content
         self.quiz_content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.quiz_content_box.set_margin_top(4)
         self.quiz_content_box.set_margin_bottom(2)
+        self.quiz_content_box.add_css_class("quiz-content")
         content_area.append(self.quiz_content_box)
 
         self.quiz_feedback = Gtk.Label()
         self.quiz_feedback.set_wrap(True)
         self.quiz_feedback.set_halign(Gtk.Align.START)
         self.quiz_feedback.set_margin_top(6)
+        self.quiz_feedback.add_css_class("quiz-feedback")
         content_area.append(self.quiz_feedback)
 
         # Button row
@@ -9212,11 +9255,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         header = Gtk.Label(label=f"Question {pos} of {total}")
         header.set_halign(Gtk.Align.START)
+        header.add_css_class("quiz-header")
         self.quiz_content_box.append(header)
 
         q_label = Gtk.Label(label=question["question"])
         q_label.set_wrap(True)
         q_label.set_halign(Gtk.Align.START)
+        q_label.set_margin_top(4)
+        q_label.set_margin_bottom(4)
+        q_label.add_css_class("quiz-question")
         self.quiz_content_box.append(q_label)
 
         shuffled_options = question["options"][:]
@@ -9225,6 +9272,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         first_btn = None
         for opt in shuffled_options:
             btn = Gtk.CheckButton(label=opt)
+            btn.add_css_class("quiz-option")
             if first_btn is None:
                 first_btn = btn
             else:
