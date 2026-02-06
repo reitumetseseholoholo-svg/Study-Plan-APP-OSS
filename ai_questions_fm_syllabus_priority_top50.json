@@ -1,574 +1,572 @@
 {
-  "questions_by_chapter": {
-    "Investment Decisions": [
-      {
-        "question": "Which objective is most consistent with sound investment decisions in ACCA FM?",
-        "options": [
-          "Maximize short-term accounting profit",
-          "Maximize shareholder wealth",
-          "Minimize dividend payout",
-          "Minimize reported gearing"
-        ],
-        "correct": "Maximize shareholder wealth",
-        "explanation": "Investment appraisal should be aligned with shareholder wealth maximization, not short-term accounting measures."
-      },
-      {
-        "question": "For mutually exclusive projects, which criterion should be prioritized where the objective is shareholder wealth maximization?",
-        "options": [
-          "Highest IRR",
-          "Shortest payback",
-          "Highest NPV",
-          "Highest ARR"
-        ],
-        "correct": "Highest NPV",
-        "explanation": "NPV gives absolute value creation and is the preferred criterion for mutually exclusive choices."
-      },
-      {
-        "question": "Hard capital rationing means:",
-        "options": [
-          "Management voluntarily caps investment despite available external finance",
-          "The firm cannot raise additional finance due to external constraints",
-          "Only projects with IRR above 20% can be selected",
-          "Only one project can be accepted each year"
-        ],
-        "correct": "The firm cannot raise additional finance due to external constraints",
-        "explanation": "Hard rationing is externally imposed, unlike soft rationing which is management-imposed."
-      },
-      {
-        "question": "What is the strongest reason to run post-completion audits on major investments?",
-        "options": [
-          "To eliminate uncertainty in future projects",
-          "To improve forecasting quality and accountability",
-          "To replace discounted cash flow methods",
-          "To avoid all sunk costs in future"
-        ],
-        "correct": "To improve forecasting quality and accountability",
-        "explanation": "Post-audits improve future assumptions and governance by comparing forecast vs actual outcomes."
-      },
-      {
-        "question": "Which statement best describes a real option in investment appraisal?",
-        "options": [
-          "A listed equity call option used for hedging",
-          "The right to revise a project after uncertainty resolves",
-          "A legal requirement to accept all positive NPV projects",
-          "A replacement for discounting risk"
-        ],
-        "correct": "The right to revise a project after uncertainty resolves",
-        "explanation": "Real options capture managerial flexibility such as delay, expand, contract, or abandon decisions."
-      }
-    ],
-    "DCF Methods": [
-      {
-        "question": "Which formula represents a one-period discount factor at cost of capital r?",
-        "options": [
-          "1 + r",
-          "1 / (1 + r)",
-          "r / (1 + r)",
-          "1 - r"
-        ],
-        "correct": "1 / (1 + r)",
-        "explanation": "A future cash flow is converted to present value by multiplying by 1/(1+r)^n."
-      },
-      {
-        "question": "A project pays $10,000 annually for 4 years. At 10%, what is the PV of inflows (approx.)?",
-        "options": [
-          "$26,300",
-          "$31,700",
-          "$34,900",
-          "$40,000"
-        ],
-        "correct": "$31,700",
-        "explanation": "PV = 10,000 x annuity factor (10%, 4 years) ~ 10,000 x 3.1699 = 31,699."
-      },
-      {
-        "question": "NPV at 8% is +12,000 and at 12% is -4,000. Estimated IRR is closest to:",
-        "options": [
-          "9.0%",
-          "10.0%",
-          "11.0%",
-          "12.5%"
-        ],
-        "correct": "11.0%",
-        "explanation": "IRR ~ 8% + (12,000/(12,000+4,000)) x 4% = 11%."
-      },
-      {
-        "question": "At a discount rate consistent with project risk, a positive NPV indicates:",
-        "options": [
-          "Project destroys shareholder value",
-          "Project should always be rejected",
-          "Project creates shareholder value",
-          "IRR must be below WACC"
-        ],
-        "correct": "Project creates shareholder value",
-        "explanation": "Positive NPV means PV of benefits exceeds PV of costs after risk-adjusted discounting."
-      },
-      {
-        "question": "Compared with IRR, MIRR mainly improves appraisal by:",
-        "options": [
-          "Ignoring financing assumptions",
-          "Using realistic reinvestment assumptions",
-          "Eliminating discounting",
-          "Guaranteeing higher project rankings"
-        ],
-        "correct": "Using realistic reinvestment assumptions",
-        "explanation": "MIRR assumes reinvestment at a realistic rate such as the cost of capital."
-      }
-    ],
-    "Relevant Cash Flows": [
-      {
-        "question": "A machine currently used in operations can be sold for $120,000 if not used in a new project. In appraisal, this is:",
-        "options": [
-          "A sunk cost",
-          "An irrelevant accounting entry",
-          "An opportunity cost relevant to the project",
-          "Only relevant if financing is debt"
-        ],
-        "correct": "An opportunity cost relevant to the project",
-        "explanation": "Using the machine sacrifices the sale proceeds, so that lost benefit is a relevant cash flow."
-      },
-      {
-        "question": "Which item is normally irrelevant to project NPV?",
-        "options": [
-          "Incremental working capital",
-          "Tax effects on incremental cash flows",
-          "Past feasibility study cost already incurred",
-          "Cannibalization impact on existing sales"
-        ],
-        "correct": "Past feasibility study cost already incurred",
-        "explanation": "Past spend is sunk and cannot be changed by the accept/reject decision."
-      },
-      {
-        "question": "Allocated head-office fixed overhead should be included in project cash flows only if:",
-        "options": [
-          "It is a non-cash accounting charge",
-          "It will increase because of the project",
-          "It has already been budgeted centrally",
-          "It improves ARR"
-        ],
-        "correct": "It will increase because of the project",
-        "explanation": "Only incremental cash effects are relevant; arbitrary allocations are not."
-      },
-      {
-        "question": "How should project working capital usually be treated in DCF?",
-        "options": [
-          "Ignore it because it is current asset accounting",
-          "Initial outflow with recovery near project end",
-          "Treat as non-cash depreciation",
-          "Spread evenly as finance cost"
-        ],
-        "correct": "Initial outflow with recovery near project end",
-        "explanation": "Working capital is a real cash investment typically tied up early and released later."
-      },
-      {
-        "question": "If nominal cash flows are forecast, the discount rate should be:",
-        "options": [
-          "Real discount rate only",
-          "Nominal risk-adjusted discount rate",
-          "Risk-free rate only",
-          "Accounting return on capital"
-        ],
-        "correct": "Nominal risk-adjusted discount rate",
-        "explanation": "Nominal cash flows must be discounted at a nominal rate for consistency."
-      }
-    ],
-    "DCF Applications": [
-      {
-        "question": "For replacement projects with different lives, the standard comparison method is:",
-        "options": [
-          "Simple payback only",
-          "Equivalent annual cost/value",
-          "Accounting rate of return",
-          "Highest nominal cash inflow"
-        ],
-        "correct": "Equivalent annual cost/value",
-        "explanation": "EAC/EAV converts NPVs to comparable annual terms across unequal lives."
-      },
-      {
-        "question": "In divisible capital rationing, project ranking is commonly based on:",
-        "options": [
-          "Profitability index",
-          "Accounting profit margin",
-          "Dividend yield",
-          "Current ratio"
-        ],
-        "correct": "Profitability index",
-        "explanation": "PI supports efficient allocation of limited capital when projects are divisible."
-      },
-      {
-        "question": "A lease-vs-buy analysis should include:",
-        "options": [
-          "Only headline interest rates",
-          "After-tax incremental cash flows of each alternative",
-          "Only accounting depreciation charges",
-          "Only supplier discount terms"
-        ],
-        "correct": "After-tax incremental cash flows of each alternative",
-        "explanation": "Decision quality requires consistent after-tax incremental cash flow comparison."
-      },
-      {
-        "question": "When replacement timing is flexible, delaying replacement is preferable when:",
-        "options": [
-          "The old asset's running costs are increasing rapidly",
-          "The NPV of immediate replacement dominates all alternatives",
-          "The expected value of waiting exceeds immediate replacement value",
-          "Interest rates are always rising"
-        ],
-        "correct": "The expected value of waiting exceeds immediate replacement value",
-        "explanation": "Timing flexibility has option value; replace when immediate action has higher expected value."
-      },
-      {
-        "question": "In inflationary environments, a common DCF application error is:",
-        "options": [
-          "Using nominal cash flows with nominal discount rate",
-          "Using real cash flows with real discount rate",
-          "Mixing nominal cash flows with real discount rate",
-          "Applying tax to nominal profits"
-        ],
-        "correct": "Mixing nominal cash flows with real discount rate",
-        "explanation": "Mixing bases creates valuation bias; cash flows and discount rates must be consistent."
-      }
-    ],
-    "Project Appraisal Under Risk": [
-      {
-        "question": "Expected monetary value (EMV) for risky outcomes is calculated as:",
-        "options": [
-          "Maximum payoff minus minimum payoff",
-          "Average of outcomes without probabilities",
-          "Sum of probability-weighted outcomes",
-          "Most likely outcome only"
-        ],
-        "correct": "Sum of probability-weighted outcomes",
-        "explanation": "EMV weights each outcome by its probability."
-      },
-      {
-        "question": "Sensitivity margin (for one variable) is commonly approximated as:",
-        "options": [
-          "NPV / PV of variable-specific cash flows",
-          "IRR - WACC",
-          "Standard deviation / mean",
-          "Payback / project life"
-        ],
-        "correct": "NPV / PV of variable-specific cash flows",
-        "explanation": "It estimates how far a variable can move before NPV falls to zero."
-      },
-      {
-        "question": "In decision trees for project appraisal, rollback analysis requires:",
-        "options": [
-          "Working left to right using accounting profit",
-          "Working right to left using probability-weighted present values",
-          "Ignoring discounting for terminal branches",
-          "Choosing the branch with highest initial outlay"
-        ],
-        "correct": "Working right to left using probability-weighted present values",
-        "explanation": "Decision trees are solved by rollback from terminal outcomes to earlier nodes."
-      },
-      {
-        "question": "The certainty-equivalent approach handles risk mainly by:",
-        "options": [
-          "Raising the discount rate only",
-          "Adjusting risky cash flows before discounting at risk-free rate",
-          "Ignoring project-specific risk",
-          "Replacing NPV with payback"
-        ],
-        "correct": "Adjusting risky cash flows before discounting at risk-free rate",
-        "explanation": "Risk is captured in adjusted cash flows, then discounted at a near risk-free rate."
-      },
-      {
-        "question": "Monte Carlo simulation in appraisal is most useful because it:",
-        "options": [
-          "Guarantees a positive NPV if enough trials are run",
-          "Produces only one definitive forecast",
-          "Generates a distribution of possible NPVs",
-          "Removes model risk completely"
-        ],
-        "correct": "Generates a distribution of possible NPVs",
-        "explanation": "Simulation provides probability distributions, not certainty."
-      }
-    ],
-    "Working Capital Management": [
-      {
-        "question": "The primary objective of working capital management is to:",
-        "options": [
-          "Maximize inventory at all times",
-          "Balance liquidity and profitability",
-          "Eliminate trade credit",
-          "Avoid all short-term financing"
-        ],
-        "correct": "Balance liquidity and profitability",
-        "explanation": "Excessive liquidity hurts returns; too little raises operational and solvency risk."
-      },
-      {
-        "question": "Which expression best represents the cash conversion cycle?",
-        "options": [
-          "Receivable days + Inventory days + Payable days",
-          "Receivable days + Inventory days - Payable days",
-          "Receivable days - Inventory days - Payable days",
-          "Inventory days - Receivable days + Payable days"
-        ],
-        "correct": "Receivable days + Inventory days - Payable days",
-        "explanation": "Payable days offset the cash tied up in inventory and receivables."
-      },
-      {
-        "question": "An aggressive working capital financing policy typically uses more:",
-        "options": [
-          "Long-term funds for current assets",
-          "Short-term funds for current assets",
-          "Equity for all assets",
-          "Retained earnings only"
-        ],
-        "correct": "Short-term funds for current assets",
-        "explanation": "Aggressive policy lowers cost but increases refinancing and liquidity risk."
-      },
-      {
-        "question": "Which is a likely symptom of overtrading?",
-        "options": [
-          "Very low sales growth",
-          "Strong liquidity ratios with low creditor pressure",
-          "Rapid sales growth with rising liquidity strain",
-          "Excessive idle cash balances"
-        ],
-        "correct": "Rapid sales growth with rising liquidity strain",
-        "explanation": "Overtrading is growth outpacing the working capital base."
-      },
-      {
-        "question": "Under the matching principle, permanent working capital should ideally be financed by:",
-        "options": [
-          "Only overdraft",
-          "Long-term sources",
-          "Trade payables only",
-          "Short-term bank bills only"
-        ],
-        "correct": "Long-term sources",
-        "explanation": "Matching aligns asset duration with financing maturity to control risk."
-      }
-    ],
-    "Cost of Capital": [
-      {
-        "question": "CAPM cost of equity is given by:",
-        "options": [
-          "Ke = Rf + beta x (Rm - Rf)",
-          "Ke = Rm + beta x Rf",
-          "Ke = Rf x beta + Rm",
-          "Ke = (D1/P0) - g"
-        ],
-        "correct": "Ke = Rf + beta x (Rm - Rf)",
-        "explanation": "CAPM links required return to systematic risk relative to the market."
-      },
-      {
-        "question": "For corporate debt, the after-tax cost of debt is usually:",
-        "options": [
-          "Kd(1 + T)",
-          "Kd(1 - T)",
-          "Ke(1 - T)",
-          "Rf(1 - T)"
-        ],
-        "correct": "Kd(1 - T)",
-        "explanation": "Interest tax relief reduces the effective debt cost when tax-deductible."
-      },
-      {
-        "question": "When computing WACC for appraisal, weights should generally be based on:",
-        "options": [
-          "Book values only",
-          "Market values",
-          "Nominal values of long-term debt only",
-          "Accounting profit shares"
-        ],
-        "correct": "Market values",
-        "explanation": "Market values better reflect current opportunity costs of financing."
-      },
-      {
-        "question": "Ungearing and regearing betas is used mainly to:",
-        "options": [
-          "Adjust for inflation",
-          "Transfer business risk estimates between capital structures",
-          "Convert IRR to NPV",
-          "Estimate trade credit cost"
-        ],
-        "correct": "Transfer business risk estimates between capital structures",
-        "explanation": "Asset beta captures business risk; equity beta reflects business plus financial risk."
-      },
-      {
-        "question": "For a project with risk materially different from existing operations, the discount rate should be:",
-        "options": [
-          "The current company WACC without adjustment",
-          "A project-specific risk-adjusted rate",
-          "The risk-free rate",
-          "The highest debt coupon in the market"
-        ],
-        "correct": "A project-specific risk-adjusted rate",
-        "explanation": "Use a rate matched to project risk, often via a pure-play proxy approach."
-      }
-    ],
-    "Inventory Management": [
-      {
-        "question": "The EOQ model selects order size to minimize:",
-        "options": [
-          "Purchase price only",
-          "Total ordering and holding costs",
-          "Stockout costs only",
-          "Lead time only"
-        ],
-        "correct": "Total ordering and holding costs",
-        "explanation": "EOQ balances ordering frequency against inventory carrying costs."
-      },
-      {
-        "question": "EOQ formula is commonly written as:",
-        "options": [
-          "sqrt(2DS/H)",
-          "DS/H",
-          "sqrt(H/2DS)",
-          "2DSH"
-        ],
-        "correct": "sqrt(2DS/H)",
-        "explanation": "D is demand, S ordering cost, H annual holding cost per unit."
-      },
-      {
-        "question": "Reorder level is generally determined by:",
-        "options": [
-          "EOQ minus safety stock",
-          "Demand during lead time plus safety stock",
-          "Average monthly demand minus safety stock",
-          "Maximum demand minus EOQ"
-        ],
-        "correct": "Demand during lead time plus safety stock",
-        "explanation": "Reorder level protects service levels while replenishment is in transit."
-      },
-      {
-        "question": "ABC inventory analysis focuses control effort primarily on:",
-        "options": [
-          "Low-value, high-volume items",
-          "High-value, high-impact items",
-          "All items equally",
-          "Only obsolete items"
-        ],
-        "correct": "High-value, high-impact items",
-        "explanation": "ABC prioritizes tight control over A-class items."
-      },
-      {
-        "question": "A likely effect of successful JIT implementation is:",
-        "options": [
-          "Higher buffer stocks",
-          "Lower average inventory levels",
-          "Longer production lead times",
-          "Higher ordering and setup inflexibility"
-        ],
-        "correct": "Lower average inventory levels",
-        "explanation": "JIT aims to reduce non-value-adding inventory across the process."
-      }
-    ],
-    "Cash Management": [
-      {
-        "question": "Baumol's cash model is most similar in structure to:",
-        "options": [
-          "CAPM",
-          "EOQ",
-          "Miller-Orr spread formula",
-          "IRR interpolation"
-        ],
-        "correct": "EOQ",
-        "explanation": "Baumol balances conversion and holding costs similarly to EOQ."
-      },
-      {
-        "question": "The Miller-Orr model is most appropriate when:",
-        "options": [
-          "Cash flows are perfectly predictable",
-          "Cash flows are random and uncertain",
-          "The firm has no transaction costs",
-          "No lower cash limit is needed"
-        ],
-        "correct": "Cash flows are random and uncertain",
-        "explanation": "Miller-Orr handles stochastic cash flows using upper/lower control limits."
-      },
-      {
-        "question": "In cash management, float refers to:",
-        "options": [
-          "Average overdraft interest rate",
-          "Time lag between payment instruction and cash movement",
-          "Cash held only in foreign currency",
-          "Long-term idle cash reserves"
-        ],
-        "correct": "Time lag between payment instruction and cash movement",
-        "explanation": "Float is the timing difference in recording and value transfer of cash."
-      },
-      {
-        "question": "A lockbox arrangement primarily aims to:",
-        "options": [
-          "Increase customer credit periods",
-          "Accelerate collections and reduce processing delay",
-          "Eliminate bad debts entirely",
-          "Replace bank reconciliation"
-        ],
-        "correct": "Accelerate collections and reduce processing delay",
-        "explanation": "Lockboxes speed the conversion of receivables into usable cash."
-      },
-      {
-        "question": "Centralized cash pooling usually helps by:",
-        "options": [
-          "Increasing idle balances in subsidiaries",
-          "Reducing net borrowing and improving visibility",
-          "Eliminating all exchange risk",
-          "Removing all need for forecasts"
-        ],
-        "correct": "Reducing net borrowing and improving visibility",
-        "explanation": "Pooling offsets surpluses and deficits across units, reducing financing cost."
-      }
-    ],
-    "AR/AP Management": [
-      {
-        "question": "For terms 2/10 net 30, the approximate annualized cost of not taking the discount is:",
-        "options": [
-          "12.2%",
-          "24.5%",
-          "37.2%",
-          "48.9%"
-        ],
-        "correct": "37.2%",
-        "explanation": "Cost ~ (0.02/0.98) x (365/20) = 37.24%."
-      },
-      {
-        "question": "Factoring differs from invoice discounting because factoring usually:",
-        "options": [
-          "Provides no financing",
-          "Includes outsourced sales ledger/collections services",
-          "Requires no receivables assignment",
-          "Is always cheaper than overdrafts"
-        ],
-        "correct": "Includes outsourced sales ledger/collections services",
-        "explanation": "Factoring often bundles administration and collection services with funding."
-      },
-      {
-        "question": "An aged receivables schedule is mainly used to:",
-        "options": [
-          "Calculate inventory EOQ",
-          "Identify overdue debt and credit control priorities",
-          "Set dividend policy",
-          "Measure payables turnover only"
-        ],
-        "correct": "Identify overdue debt and credit control priorities",
-        "explanation": "Age analysis highlights slow-paying accounts and collection risk."
-      },
-      {
-        "question": "In credit assessment, the 'capacity' criterion refers to:",
-        "options": [
-          "Collateral available",
-          "Borrower's ability to generate cash to repay",
-          "Macroeconomic cycle",
-          "Supplier concentration risk"
-        ],
-        "correct": "Borrower's ability to generate cash to repay",
-        "explanation": "Capacity tests repayment ability from operating cash flow."
-      },
-      {
-        "question": "Deliberately stretching payables beyond agreed terms most likely causes:",
-        "options": [
-          "Lower supplier risk premium",
-          "Improved supplier relationships",
-          "Potential supply disruption and loss of discounts",
-          "Automatic increase in credit rating"
-        ],
-        "correct": "Potential supply disruption and loss of discounts",
-        "explanation": "Late payment can damage supply continuity and remove beneficial trade terms."
-      }
-    ]
-  }
+  "Investment Decisions": [
+    {
+      "question": "Which objective is most consistent with sound investment decisions in ACCA FM?",
+      "options": [
+        "Maximize short-term accounting profit",
+        "Maximize shareholder wealth",
+        "Minimize dividend payout",
+        "Minimize reported gearing"
+      ],
+      "correct": "Maximize shareholder wealth",
+      "explanation": "Investment appraisal should be aligned with shareholder wealth maximization, not short-term accounting measures."
+    },
+    {
+      "question": "For mutually exclusive projects, which criterion should be prioritized where the objective is shareholder wealth maximization?",
+      "options": [
+        "Highest IRR",
+        "Shortest payback",
+        "Highest NPV",
+        "Highest ARR"
+      ],
+      "correct": "Highest NPV",
+      "explanation": "NPV gives absolute value creation and is the preferred criterion for mutually exclusive choices."
+    },
+    {
+      "question": "Hard capital rationing means:",
+      "options": [
+        "Management voluntarily caps investment despite available external finance",
+        "The firm cannot raise additional finance due to external constraints",
+        "Only projects with IRR above 20% can be selected",
+        "Only one project can be accepted each year"
+      ],
+      "correct": "The firm cannot raise additional finance due to external constraints",
+      "explanation": "Hard rationing is externally imposed, unlike soft rationing which is management-imposed."
+    },
+    {
+      "question": "What is the strongest reason to run post-completion audits on major investments?",
+      "options": [
+        "To eliminate uncertainty in future projects",
+        "To improve forecasting quality and accountability",
+        "To replace discounted cash flow methods",
+        "To avoid all sunk costs in future"
+      ],
+      "correct": "To improve forecasting quality and accountability",
+      "explanation": "Post-audits improve future assumptions and governance by comparing forecast vs actual outcomes."
+    },
+    {
+      "question": "Which statement best describes a real option in investment appraisal?",
+      "options": [
+        "A listed equity call option used for hedging",
+        "The right to revise a project after uncertainty resolves",
+        "A legal requirement to accept all positive NPV projects",
+        "A replacement for discounting risk"
+      ],
+      "correct": "The right to revise a project after uncertainty resolves",
+      "explanation": "Real options capture managerial flexibility such as delay, expand, contract, or abandon decisions."
+    }
+  ],
+  "DCF Methods": [
+    {
+      "question": "Which formula represents a one-period discount factor at cost of capital r?",
+      "options": [
+        "1 + r",
+        "1 / (1 + r)",
+        "r / (1 + r)",
+        "1 - r"
+      ],
+      "correct": "1 / (1 + r)",
+      "explanation": "A future cash flow is converted to present value by multiplying by 1/(1+r)^n."
+    },
+    {
+      "question": "A project pays $10,000 annually for 4 years. At 10%, what is the PV of inflows (approx.)?",
+      "options": [
+        "$26,300",
+        "$31,700",
+        "$34,900",
+        "$40,000"
+      ],
+      "correct": "$31,700",
+      "explanation": "PV = 10,000 x annuity factor (10%, 4 years) ~ 10,000 x 3.1699 = 31,699."
+    },
+    {
+      "question": "NPV at 8% is +12,000 and at 12% is -4,000. Estimated IRR is closest to:",
+      "options": [
+        "9.0%",
+        "10.0%",
+        "11.0%",
+        "12.5%"
+      ],
+      "correct": "11.0%",
+      "explanation": "IRR ~ 8% + (12,000/(12,000+4,000)) x 4% = 11%."
+    },
+    {
+      "question": "At a discount rate consistent with project risk, a positive NPV indicates:",
+      "options": [
+        "Project destroys shareholder value",
+        "Project should always be rejected",
+        "Project creates shareholder value",
+        "IRR must be below WACC"
+      ],
+      "correct": "Project creates shareholder value",
+      "explanation": "Positive NPV means PV of benefits exceeds PV of costs after risk-adjusted discounting."
+    },
+    {
+      "question": "Compared with IRR, MIRR mainly improves appraisal by:",
+      "options": [
+        "Ignoring financing assumptions",
+        "Using realistic reinvestment assumptions",
+        "Eliminating discounting",
+        "Guaranteeing higher project rankings"
+      ],
+      "correct": "Using realistic reinvestment assumptions",
+      "explanation": "MIRR assumes reinvestment at a realistic rate such as the cost of capital."
+    }
+  ],
+  "Relevant Cash Flows": [
+    {
+      "question": "A machine currently used in operations can be sold for $120,000 if not used in a new project. In appraisal, this is:",
+      "options": [
+        "A sunk cost",
+        "An irrelevant accounting entry",
+        "An opportunity cost relevant to the project",
+        "Only relevant if financing is debt"
+      ],
+      "correct": "An opportunity cost relevant to the project",
+      "explanation": "Using the machine sacrifices the sale proceeds, so that lost benefit is a relevant cash flow."
+    },
+    {
+      "question": "Which item is normally irrelevant to project NPV?",
+      "options": [
+        "Incremental working capital",
+        "Tax effects on incremental cash flows",
+        "Past feasibility study cost already incurred",
+        "Cannibalization impact on existing sales"
+      ],
+      "correct": "Past feasibility study cost already incurred",
+      "explanation": "Past spend is sunk and cannot be changed by the accept/reject decision."
+    },
+    {
+      "question": "Allocated head-office fixed overhead should be included in project cash flows only if:",
+      "options": [
+        "It is a non-cash accounting charge",
+        "It will increase because of the project",
+        "It has already been budgeted centrally",
+        "It improves ARR"
+      ],
+      "correct": "It will increase because of the project",
+      "explanation": "Only incremental cash effects are relevant; arbitrary allocations are not."
+    },
+    {
+      "question": "How should project working capital usually be treated in DCF?",
+      "options": [
+        "Ignore it because it is current asset accounting",
+        "Initial outflow with recovery near project end",
+        "Treat as non-cash depreciation",
+        "Spread evenly as finance cost"
+      ],
+      "correct": "Initial outflow with recovery near project end",
+      "explanation": "Working capital is a real cash investment typically tied up early and released later."
+    },
+    {
+      "question": "If nominal cash flows are forecast, the discount rate should be:",
+      "options": [
+        "Real discount rate only",
+        "Nominal risk-adjusted discount rate",
+        "Risk-free rate only",
+        "Accounting return on capital"
+      ],
+      "correct": "Nominal risk-adjusted discount rate",
+      "explanation": "Nominal cash flows must be discounted at a nominal rate for consistency."
+    }
+  ],
+  "DCF Applications": [
+    {
+      "question": "For replacement projects with different lives, the standard comparison method is:",
+      "options": [
+        "Simple payback only",
+        "Equivalent annual cost/value",
+        "Accounting rate of return",
+        "Highest nominal cash inflow"
+      ],
+      "correct": "Equivalent annual cost/value",
+      "explanation": "EAC/EAV converts NPVs to comparable annual terms across unequal lives."
+    },
+    {
+      "question": "In divisible capital rationing, project ranking is commonly based on:",
+      "options": [
+        "Profitability index",
+        "Accounting profit margin",
+        "Dividend yield",
+        "Current ratio"
+      ],
+      "correct": "Profitability index",
+      "explanation": "PI supports efficient allocation of limited capital when projects are divisible."
+    },
+    {
+      "question": "A lease-vs-buy analysis should include:",
+      "options": [
+        "Only headline interest rates",
+        "After-tax incremental cash flows of each alternative",
+        "Only accounting depreciation charges",
+        "Only supplier discount terms"
+      ],
+      "correct": "After-tax incremental cash flows of each alternative",
+      "explanation": "Decision quality requires consistent after-tax incremental cash flow comparison."
+    },
+    {
+      "question": "When replacement timing is flexible, delaying replacement is preferable when:",
+      "options": [
+        "The old asset's running costs are increasing rapidly",
+        "The NPV of immediate replacement dominates all alternatives",
+        "The expected value of waiting exceeds immediate replacement value",
+        "Interest rates are always rising"
+      ],
+      "correct": "The expected value of waiting exceeds immediate replacement value",
+      "explanation": "Timing flexibility has option value; replace when immediate action has higher expected value."
+    },
+    {
+      "question": "In inflationary environments, a common DCF application error is:",
+      "options": [
+        "Using nominal cash flows with nominal discount rate",
+        "Using real cash flows with real discount rate",
+        "Mixing nominal cash flows with real discount rate",
+        "Applying tax to nominal profits"
+      ],
+      "correct": "Mixing nominal cash flows with real discount rate",
+      "explanation": "Mixing bases creates valuation bias; cash flows and discount rates must be consistent."
+    }
+  ],
+  "Project Appraisal Under Risk": [
+    {
+      "question": "Expected monetary value (EMV) for risky outcomes is calculated as:",
+      "options": [
+        "Maximum payoff minus minimum payoff",
+        "Average of outcomes without probabilities",
+        "Sum of probability-weighted outcomes",
+        "Most likely outcome only"
+      ],
+      "correct": "Sum of probability-weighted outcomes",
+      "explanation": "EMV weights each outcome by its probability."
+    },
+    {
+      "question": "Sensitivity margin (for one variable) is commonly approximated as:",
+      "options": [
+        "NPV / PV of variable-specific cash flows",
+        "IRR - WACC",
+        "Standard deviation / mean",
+        "Payback / project life"
+      ],
+      "correct": "NPV / PV of variable-specific cash flows",
+      "explanation": "It estimates how far a variable can move before NPV falls to zero."
+    },
+    {
+      "question": "In decision trees for project appraisal, rollback analysis requires:",
+      "options": [
+        "Working left to right using accounting profit",
+        "Working right to left using probability-weighted present values",
+        "Ignoring discounting for terminal branches",
+        "Choosing the branch with highest initial outlay"
+      ],
+      "correct": "Working right to left using probability-weighted present values",
+      "explanation": "Decision trees are solved by rollback from terminal outcomes to earlier nodes."
+    },
+    {
+      "question": "The certainty-equivalent approach handles risk mainly by:",
+      "options": [
+        "Raising the discount rate only",
+        "Adjusting risky cash flows before discounting at risk-free rate",
+        "Ignoring project-specific risk",
+        "Replacing NPV with payback"
+      ],
+      "correct": "Adjusting risky cash flows before discounting at risk-free rate",
+      "explanation": "Risk is captured in adjusted cash flows, then discounted at a near risk-free rate."
+    },
+    {
+      "question": "Monte Carlo simulation in appraisal is most useful because it:",
+      "options": [
+        "Guarantees a positive NPV if enough trials are run",
+        "Produces only one definitive forecast",
+        "Generates a distribution of possible NPVs",
+        "Removes model risk completely"
+      ],
+      "correct": "Generates a distribution of possible NPVs",
+      "explanation": "Simulation provides probability distributions, not certainty."
+    }
+  ],
+  "Working Capital Management": [
+    {
+      "question": "The primary objective of working capital management is to:",
+      "options": [
+        "Maximize inventory at all times",
+        "Balance liquidity and profitability",
+        "Eliminate trade credit",
+        "Avoid all short-term financing"
+      ],
+      "correct": "Balance liquidity and profitability",
+      "explanation": "Excessive liquidity hurts returns; too little raises operational and solvency risk."
+    },
+    {
+      "question": "Which expression best represents the cash conversion cycle?",
+      "options": [
+        "Receivable days + Inventory days + Payable days",
+        "Receivable days + Inventory days - Payable days",
+        "Receivable days - Inventory days - Payable days",
+        "Inventory days - Receivable days + Payable days"
+      ],
+      "correct": "Receivable days + Inventory days - Payable days",
+      "explanation": "Payable days offset the cash tied up in inventory and receivables."
+    },
+    {
+      "question": "An aggressive working capital financing policy typically uses more:",
+      "options": [
+        "Long-term funds for current assets",
+        "Short-term funds for current assets",
+        "Equity for all assets",
+        "Retained earnings only"
+      ],
+      "correct": "Short-term funds for current assets",
+      "explanation": "Aggressive policy lowers cost but increases refinancing and liquidity risk."
+    },
+    {
+      "question": "Which is a likely symptom of overtrading?",
+      "options": [
+        "Very low sales growth",
+        "Strong liquidity ratios with low creditor pressure",
+        "Rapid sales growth with rising liquidity strain",
+        "Excessive idle cash balances"
+      ],
+      "correct": "Rapid sales growth with rising liquidity strain",
+      "explanation": "Overtrading is growth outpacing the working capital base."
+    },
+    {
+      "question": "Under the matching principle, permanent working capital should ideally be financed by:",
+      "options": [
+        "Only overdraft",
+        "Long-term sources",
+        "Trade payables only",
+        "Short-term bank bills only"
+      ],
+      "correct": "Long-term sources",
+      "explanation": "Matching aligns asset duration with financing maturity to control risk."
+    }
+  ],
+  "Cost of Capital": [
+    {
+      "question": "CAPM cost of equity is given by:",
+      "options": [
+        "Ke = Rf + beta x (Rm - Rf)",
+        "Ke = Rm + beta x Rf",
+        "Ke = Rf x beta + Rm",
+        "Ke = (D1/P0) - g"
+      ],
+      "correct": "Ke = Rf + beta x (Rm - Rf)",
+      "explanation": "CAPM links required return to systematic risk relative to the market."
+    },
+    {
+      "question": "For corporate debt, the after-tax cost of debt is usually:",
+      "options": [
+        "Kd(1 + T)",
+        "Kd(1 - T)",
+        "Ke(1 - T)",
+        "Rf(1 - T)"
+      ],
+      "correct": "Kd(1 - T)",
+      "explanation": "Interest tax relief reduces the effective debt cost when tax-deductible."
+    },
+    {
+      "question": "When computing WACC for appraisal, weights should generally be based on:",
+      "options": [
+        "Book values only",
+        "Market values",
+        "Nominal values of long-term debt only",
+        "Accounting profit shares"
+      ],
+      "correct": "Market values",
+      "explanation": "Market values better reflect current opportunity costs of financing."
+    },
+    {
+      "question": "Ungearing and regearing betas is used mainly to:",
+      "options": [
+        "Adjust for inflation",
+        "Transfer business risk estimates between capital structures",
+        "Convert IRR to NPV",
+        "Estimate trade credit cost"
+      ],
+      "correct": "Transfer business risk estimates between capital structures",
+      "explanation": "Asset beta captures business risk; equity beta reflects business plus financial risk."
+    },
+    {
+      "question": "For a project with risk materially different from existing operations, the discount rate should be:",
+      "options": [
+        "The current company WACC without adjustment",
+        "A project-specific risk-adjusted rate",
+        "The risk-free rate",
+        "The highest debt coupon in the market"
+      ],
+      "correct": "A project-specific risk-adjusted rate",
+      "explanation": "Use a rate matched to project risk, often via a pure-play proxy approach."
+    }
+  ],
+  "Inventory Management": [
+    {
+      "question": "The EOQ model selects order size to minimize:",
+      "options": [
+        "Purchase price only",
+        "Total ordering and holding costs",
+        "Stockout costs only",
+        "Lead time only"
+      ],
+      "correct": "Total ordering and holding costs",
+      "explanation": "EOQ balances ordering frequency against inventory carrying costs."
+    },
+    {
+      "question": "EOQ formula is commonly written as:",
+      "options": [
+        "sqrt(2DS/H)",
+        "DS/H",
+        "sqrt(H/2DS)",
+        "2DSH"
+      ],
+      "correct": "sqrt(2DS/H)",
+      "explanation": "D is demand, S ordering cost, H annual holding cost per unit."
+    },
+    {
+      "question": "Reorder level is generally determined by:",
+      "options": [
+        "EOQ minus safety stock",
+        "Demand during lead time plus safety stock",
+        "Average monthly demand minus safety stock",
+        "Maximum demand minus EOQ"
+      ],
+      "correct": "Demand during lead time plus safety stock",
+      "explanation": "Reorder level protects service levels while replenishment is in transit."
+    },
+    {
+      "question": "ABC inventory analysis focuses control effort primarily on:",
+      "options": [
+        "Low-value, high-volume items",
+        "High-value, high-impact items",
+        "All items equally",
+        "Only obsolete items"
+      ],
+      "correct": "High-value, high-impact items",
+      "explanation": "ABC prioritizes tight control over A-class items."
+    },
+    {
+      "question": "A likely effect of successful JIT implementation is:",
+      "options": [
+        "Higher buffer stocks",
+        "Lower average inventory levels",
+        "Longer production lead times",
+        "Higher ordering and setup inflexibility"
+      ],
+      "correct": "Lower average inventory levels",
+      "explanation": "JIT aims to reduce non-value-adding inventory across the process."
+    }
+  ],
+  "Cash Management": [
+    {
+      "question": "Baumol's cash model is most similar in structure to:",
+      "options": [
+        "CAPM",
+        "EOQ",
+        "Miller-Orr spread formula",
+        "IRR interpolation"
+      ],
+      "correct": "EOQ",
+      "explanation": "Baumol balances conversion and holding costs similarly to EOQ."
+    },
+    {
+      "question": "The Miller-Orr model is most appropriate when:",
+      "options": [
+        "Cash flows are perfectly predictable",
+        "Cash flows are random and uncertain",
+        "The firm has no transaction costs",
+        "No lower cash limit is needed"
+      ],
+      "correct": "Cash flows are random and uncertain",
+      "explanation": "Miller-Orr handles stochastic cash flows using upper/lower control limits."
+    },
+    {
+      "question": "In cash management, float refers to:",
+      "options": [
+        "Average overdraft interest rate",
+        "Time lag between payment instruction and cash movement",
+        "Cash held only in foreign currency",
+        "Long-term idle cash reserves"
+      ],
+      "correct": "Time lag between payment instruction and cash movement",
+      "explanation": "Float is the timing difference in recording and value transfer of cash."
+    },
+    {
+      "question": "A lockbox arrangement primarily aims to:",
+      "options": [
+        "Increase customer credit periods",
+        "Accelerate collections and reduce processing delay",
+        "Eliminate bad debts entirely",
+        "Replace bank reconciliation"
+      ],
+      "correct": "Accelerate collections and reduce processing delay",
+      "explanation": "Lockboxes speed the conversion of receivables into usable cash."
+    },
+    {
+      "question": "Centralized cash pooling usually helps by:",
+      "options": [
+        "Increasing idle balances in subsidiaries",
+        "Reducing net borrowing and improving visibility",
+        "Eliminating all exchange risk",
+        "Removing all need for forecasts"
+      ],
+      "correct": "Reducing net borrowing and improving visibility",
+      "explanation": "Pooling offsets surpluses and deficits across units, reducing financing cost."
+    }
+  ],
+  "AR/AP Management": [
+    {
+      "question": "For terms 2/10 net 30, the approximate annualized cost of not taking the discount is:",
+      "options": [
+        "12.2%",
+        "24.5%",
+        "37.2%",
+        "48.9%"
+      ],
+      "correct": "37.2%",
+      "explanation": "Cost ~ (0.02/0.98) x (365/20) = 37.24%."
+    },
+    {
+      "question": "Factoring differs from invoice discounting because factoring usually:",
+      "options": [
+        "Provides no financing",
+        "Includes outsourced sales ledger/collections services",
+        "Requires no receivables assignment",
+        "Is always cheaper than overdrafts"
+      ],
+      "correct": "Includes outsourced sales ledger/collections services",
+      "explanation": "Factoring often bundles administration and collection services with funding."
+    },
+    {
+      "question": "An aged receivables schedule is mainly used to:",
+      "options": [
+        "Calculate inventory EOQ",
+        "Identify overdue debt and credit control priorities",
+        "Set dividend policy",
+        "Measure payables turnover only"
+      ],
+      "correct": "Identify overdue debt and credit control priorities",
+      "explanation": "Age analysis highlights slow-paying accounts and collection risk."
+    },
+    {
+      "question": "In credit assessment, the 'capacity' criterion refers to:",
+      "options": [
+        "Collateral available",
+        "Borrower's ability to generate cash to repay",
+        "Macroeconomic cycle",
+        "Supplier concentration risk"
+      ],
+      "correct": "Borrower's ability to generate cash to repay",
+      "explanation": "Capacity tests repayment ability from operating cash flow."
+    },
+    {
+      "question": "Deliberately stretching payables beyond agreed terms most likely causes:",
+      "options": [
+        "Lower supplier risk premium",
+        "Improved supplier relationships",
+        "Potential supply disruption and loss of discounts",
+        "Automatic increase in credit rating"
+      ],
+      "correct": "Potential supply disruption and loss of discounts",
+      "explanation": "Late payment can damage supply continuity and remove beneficial trade terms."
+    }
+  ]
 }
