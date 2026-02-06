@@ -1076,6 +1076,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._last_ml_train_at = None
         self._last_ml_train_sample_count = 0
         self._ml_train_in_progress = False
+        self._pdf_text_cache: dict[str, tuple[str, dict]] = {}
+        self._pdf_text_cache_order: list[str] = []
+        self._pdf_text_cache_max = 8
         self.load_preferences()
         apply_theme(bool(self.use_system_theme))
 
@@ -9864,6 +9867,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _extract_pdf_text_advanced(self, file_path: str) -> tuple[str, dict]:
         if fitz is None:
             return "", {"ocr_used": False, "ocr_pages": 0, "ocr_failed_pages": 0}
+        abs_path = os.path.abspath(str(file_path))
+        try:
+            stat = os.stat(abs_path)
+            cache_key = f"{abs_path}|{int(stat.st_size)}|{int(stat.st_mtime_ns)}"
+        except Exception:
+            cache_key = ""
+        if cache_key:
+            cached = self._pdf_text_cache.get(cache_key)
+            if isinstance(cached, tuple) and len(cached) == 2:
+                text_cached, meta_cached = cached
+                if isinstance(text_cached, str) and isinstance(meta_cached, dict):
+                    return text_cached, dict(meta_cached)
         ocr_used = False
         ocr_pages = 0
         ocr_failed_pages = 0
@@ -9877,11 +9892,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if ocr_failed:
                     ocr_failed_pages += 1
                 all_lines.extend(page_lines)
-        return "\n".join(all_lines), {
+        text_out = "\n".join(all_lines)
+        meta_out = {
             "ocr_used": ocr_used,
             "ocr_pages": ocr_pages,
             "ocr_failed_pages": ocr_failed_pages,
         }
+        if cache_key:
+            self._pdf_text_cache[cache_key] = (text_out, dict(meta_out))
+            if cache_key in self._pdf_text_cache_order:
+                self._pdf_text_cache_order.remove(cache_key)
+            self._pdf_text_cache_order.append(cache_key)
+            limit = max(1, int(self._pdf_text_cache_max or 8))
+            while len(self._pdf_text_cache_order) > limit:
+                stale = self._pdf_text_cache_order.pop(0)
+                self._pdf_text_cache.pop(stale, None)
+        return text_out, meta_out
 
     def on_import_pdf_response(self, dialog: Gtk.Window, response: Gtk.ResponseType) -> None:
         """
