@@ -4724,90 +4724,201 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return lines
 
     def _build_chapter_info_card(self, topic: str | None) -> Gtk.Widget:
-        """Build a compact per-chapter snapshot card."""
+        """Build a per-chapter intelligence card with actionable diagnostics."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         box.add_css_class("card")
-        title = Gtk.Label(label="Chapter Snapshot")
+        title = Gtk.Label(label="Chapter Intelligence")
         title.set_halign(Gtk.Align.START)
         title.add_css_class("section-title")
         box.append(title)
 
-        if not topic:
-            label = Gtk.Label(label="No topic selected.")
-            label.set_halign(Gtk.Align.START)
-            label.add_css_class("muted")
-            box.append(label)
+        chapters = [str(ch) for ch in getattr(self.engine, "CHAPTERS", []) if str(ch).strip()]
+        if not chapters:
+            empty = Gtk.Label(label="No chapters loaded.")
+            empty.set_halign(Gtk.Align.START)
+            empty.add_css_class("muted")
+            box.append(empty)
             return box
 
-        lines: list[str] = []
-        lines.append(f"Chapter: {topic}")
+        selected_topic = topic if topic in chapters else self.current_topic
+        if selected_topic not in chapters:
+            selected_topic = chapters[0]
 
-        try:
-            comp = float(getattr(self.engine, "competence", {}).get(topic, 0) or 0)
-            quiz = float(getattr(self.engine, "quiz_results", {}).get(topic, 0) or 0)
-            lines.append(f"Competence {comp:.0f}% • Quiz {quiz:.0f}%")
-        except Exception:
-            pass
+        selector_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        selector_label = Gtk.Label(label="Chapter")
+        selector_label.set_halign(Gtk.Align.START)
+        selector_label.add_css_class("muted")
+        chapter_dropdown = Gtk.DropDown.new_from_strings(chapters)
+        chapter_dropdown.set_hexpand(True)
+        chapter_dropdown.set_selected(chapters.index(selected_topic))
+        selector_row.append(selector_label)
+        selector_row.append(chapter_dropdown)
+        box.append(selector_row)
 
-        try:
-            stats = self.engine.get_mastery_stats(topic)
-            mastered = int(stats.get("mastered", 0) or 0)
-            learning = int(stats.get("learning", 0) or 0)
-            new_cards = int(stats.get("new", 0) or 0)
-            total_cards = mastered + learning + new_cards
-            if total_cards > 0:
-                lines.append(
-                    f"Mastery {mastered}/{total_cards} mastered • {learning} learning • {new_cards} new"
-                )
-        except Exception:
-            pass
+        readiness_bar = Gtk.ProgressBar()
+        readiness_bar.set_show_text(True)
+        readiness_bar.set_fraction(0.0)
+        readiness_bar.set_text("Ready 0%")
+        readiness_bar.set_tooltip_text("Blended readiness from competence, mastery, and quiz performance.")
+        box.append(readiness_bar)
 
-        try:
-            due_today = getattr(self.engine, "get_due_today_by_chapter", lambda *_: {})(datetime.date.today())
-            due_count = int(due_today.get(topic, 0) or 0) if isinstance(due_today, dict) else 0
-            if due_count:
-                lines.append(f"Due today: {due_count}")
-        except Exception:
-            pass
+        next_action_label = Gtk.Label(label="")
+        next_action_label.set_halign(Gtk.Align.START)
+        next_action_label.add_css_class("muted")
+        box.append(next_action_label)
 
-        try:
-            leeches = getattr(self.engine, "get_leech_counts", lambda *_: {})(14)
-            leech_count = int(leeches.get(topic, 0) or 0) if isinstance(leeches, dict) else 0
-            if leech_count:
-                lines.append(f"Leech alerts: {leech_count}")
-        except Exception:
-            pass
-
-        try:
-            qs = getattr(self.engine, "question_stats", {}) if isinstance(getattr(self.engine, "question_stats", {}), dict) else {}
-            chapter_stats = qs.get(topic, {}) if isinstance(qs, dict) else {}
-            attempted = 0
-            if isinstance(chapter_stats, dict):
-                for entry in chapter_stats.values():
-                    if isinstance(entry, dict) and int(entry.get("attempts", 0) or 0) > 0:
-                        attempted += 1
-            if attempted:
-                lines.append(f"Questions attempted: {attempted}")
-        except Exception:
-            pass
-
-        body = Gtk.Label(label="\n".join(lines))
+        body = Gtk.Label(label="")
         body.set_halign(Gtk.Align.START)
         body.set_wrap(True)
         body.add_css_class("muted")
         box.append(body)
 
-        drill_btn = Gtk.Button(label="Drill this chapter")
-        drill_btn.add_css_class("flat")
-        drill_btn.connect("clicked", self.on_drill_snapshot_chapter, topic)
-        try:
-            has_questions = bool(self.engine.get_questions(topic))
-        except Exception:
-            has_questions = False
-        drill_btn.set_sensitive(has_questions)
-        if not has_questions:
-            drill_btn.set_tooltip_text("Import questions to unlock chapter drill.")
-        box.append(drill_btn)
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        focus_btn = Gtk.Button(label="Focus 25m")
+        focus_btn.add_css_class("suggested-action")
+        quiz_btn = Gtk.Button(label="Quiz")
+        review_btn = Gtk.Button(label="Review Due")
+        actions.append(focus_btn)
+        actions.append(quiz_btn)
+        actions.append(review_btn)
+        box.append(actions)
+
+        def _selected_chapter() -> str:
+            idx = int(chapter_dropdown.get_selected())
+            if idx < 0 or idx >= len(chapters):
+                return chapters[0]
+            return chapters[idx]
+
+        def _on_focus(_btn):
+            chapter = _selected_chapter()
+            self._set_current_topic(chapter)
+            if self.pomodoro_remaining > 0 and not self.pomodoro_paused:
+                return
+            if not self._enforce_retrieval_gate():
+                return
+            self.on_pomodoro_start(self.pomodoro_btn_start)
+
+        def _on_quiz(_btn):
+            chapter = _selected_chapter()
+            self._set_current_topic(chapter)
+            self.start_quiz_session(topic=chapter, kind="quiz")
+
+        def _on_review(_btn):
+            chapter = _selected_chapter()
+            self._set_current_topic(chapter)
+            self.start_quiz_session(topic=chapter, total_override=6, kind="review")
+
+        focus_btn.connect("clicked", _on_focus)
+        quiz_btn.connect("clicked", _on_quiz)
+        review_btn.connect("clicked", _on_review)
+
+        def _update_view():
+            chapter = _selected_chapter()
+            lines: list[str] = [f"Chapter: {chapter}"]
+            today = datetime.date.today()
+
+            try:
+                comp = float(getattr(self.engine, "competence", {}).get(chapter, 0) or 0)
+            except Exception:
+                comp = 0.0
+            try:
+                quiz = float(getattr(self.engine, "quiz_results", {}).get(chapter, 0) or 0)
+            except Exception:
+                quiz = 0.0
+            mastery_val = self._get_topic_mastery_pct(chapter, min_total=0)
+            mastery = float(mastery_val) if mastery_val is not None else 0.0
+            lines.append(f"Competence {comp:.0f}% • Mastery {mastery:.0f}% • Quiz {quiz:.0f}%")
+
+            weights = [(comp, 0.45), (mastery, 0.35), (quiz, 0.20)]
+            total_w = sum(w for _v, w in weights)
+            readiness = (sum(v * w for v, w in weights) / total_w) if total_w > 0 else 0.0
+            readiness = max(0.0, min(100.0, readiness))
+            readiness_bar.set_fraction(readiness / 100.0)
+            readiness_bar.set_text(f"Ready {readiness:.0f}%")
+
+            due_today = 0
+            try:
+                due_map = self.engine.get_due_today_by_chapter(today)
+                if isinstance(due_map, dict):
+                    due_today = int(due_map.get(chapter, 0) or 0)
+            except Exception:
+                due_today = 0
+
+            must_due = 0
+            try:
+                must_map = getattr(self.engine, "must_review", {}).get(chapter, {})
+                if isinstance(must_map, dict):
+                    for due in must_map.values():
+                        due_date = self.engine._parse_date(due)
+                        if due_date and due_date <= today:
+                            must_due += 1
+            except Exception:
+                must_due = 0
+
+            leech_count = 0
+            try:
+                leeches = self.engine.get_leech_counts()
+                if isinstance(leeches, dict):
+                    leech_count = int(leeches.get(chapter, 0) or 0)
+            except Exception:
+                leech_count = 0
+
+            miss_streak = 0
+            try:
+                miss_streak = int(getattr(self.engine, "chapter_miss_streak", {}).get(chapter, 0) or 0)
+            except Exception:
+                miss_streak = 0
+
+            mix_text = ""
+            try:
+                mix = self.engine.get_chapter_difficulty_mix(chapter)
+                if isinstance(mix, dict):
+                    easy = int(mix.get("easy", 0) or 0)
+                    medium = int(mix.get("medium", 0) or 0)
+                    hard = int(mix.get("hard", 0) or 0)
+                    total_mix = easy + medium + hard
+                    if total_mix > 0:
+                        mix_text = f"Difficulty E/M/H: {easy}/{medium}/{hard}"
+            except Exception:
+                mix_text = ""
+
+            drift_note = self._get_confidence_drift_note(chapter)
+            if must_due > 0:
+                next_action = f"Next action: clear must-review ({must_due} due)"
+            elif leech_count > 0 or miss_streak >= 3:
+                next_action = "Next action: targeted drill (high miss pressure)"
+            elif due_today > 0:
+                next_action = f"Next action: recall due set ({due_today})"
+            elif readiness < 60:
+                next_action = "Next action: focus block then quiz"
+            else:
+                next_action = "Next action: maintenance quiz"
+
+            next_action_label.set_text(next_action)
+            lines.append(f"Due today: {due_today} • Must-review due: {must_due}")
+            lines.append(f"Leech alerts: {leech_count} • Miss streak: {miss_streak}")
+            if mix_text:
+                lines.append(mix_text)
+            if drift_note:
+                lines.append(drift_note)
+
+            body.set_text("\n".join(lines))
+
+            try:
+                has_questions = bool(self.engine.get_questions(chapter))
+            except Exception:
+                has_questions = False
+            quiz_btn.set_sensitive(has_questions)
+            review_btn.set_sensitive(has_questions)
+            if not has_questions:
+                quiz_btn.set_tooltip_text("Import questions to unlock chapter quiz.")
+                review_btn.set_tooltip_text("Import questions to unlock due review.")
+            else:
+                quiz_btn.set_tooltip_text(None)
+                review_btn.set_tooltip_text(None)
+
+        chapter_dropdown.connect("notify::selected", lambda *_args: _update_view())
+        _update_view()
         return box
 
     def on_drill_snapshot_chapter(self, _button, topic: str) -> None:
