@@ -17,6 +17,7 @@ class StudyPlanEngine:
 
     VERSION = "1.0.0"
     QUESTION_ID_PREFIX = "q:"
+    RECALL_FEATURE_COUNT = 5
     ML_MIN_ATTEMPTS = 3
     ML_MIN_SAMPLES = 100
     CHAPTERS = [
@@ -1217,6 +1218,7 @@ class StudyPlanEngine:
         self.adaptive_quiz_prioritization: bool = True
         self.recall_model_json: Dict[str, Any] | None = None
         self.recall_model_sklearn: Any | None = None
+        self.recall_model_sklearn_meta: Dict[str, Any] | None = None
         self.recall_model_path = os.path.join(self.DEFAULT_DATA_DIR, "recall_model.json")
         self.recall_model_sklearn_path = os.path.join(self.DEFAULT_DATA_DIR, "recall_model.pkl")
         self.difficulty_model: Dict[str, Any] | None = None
@@ -1268,6 +1270,7 @@ class StudyPlanEngine:
             "daily_plan_cache_date",
             "recall_model_json",
             "recall_model_sklearn",
+            "recall_model_sklearn_meta",
             "difficulty_model",
             "interval_model",
         }  # Add any vars that can be None
@@ -3935,22 +3938,42 @@ class StudyPlanEngine:
             path = self.recall_model_sklearn_path
             if not path or not os.path.exists(path):
                 self.recall_model_sklearn = None
+                self.recall_model_sklearn_meta = None
                 return
             try:
                 import joblib  # type: ignore
             except Exception:
                 self.recall_model_sklearn = None
+                self.recall_model_sklearn_meta = None
                 return
             payload = joblib.load(path)
             model = payload
+            meta: Dict[str, Any] | None = None
             if isinstance(payload, dict):
                 model = payload.get("model")
+                raw_meta = payload.get("meta")
+                if isinstance(raw_meta, dict):
+                    meta = raw_meta
+            feature_count = None
+            if isinstance(meta, dict):
+                fc = meta.get("feature_count")
+                if isinstance(fc, (int, float)):
+                    feature_count = int(fc)
+                elif isinstance(meta.get("features"), list):
+                    feature_count = len(meta.get("features", []))
+            if feature_count is not None and feature_count != self.RECALL_FEATURE_COUNT:
+                self.recall_model_sklearn = None
+                self.recall_model_sklearn_meta = None
+                return
             if model is not None and hasattr(model, "predict_proba"):
                 self.recall_model_sklearn = model
+                self.recall_model_sklearn_meta = meta
             else:
                 self.recall_model_sklearn = None
+                self.recall_model_sklearn_meta = None
         except Exception:
             self.recall_model_sklearn = None
+            self.recall_model_sklearn_meta = None
             return
 
     def _load_difficulty_model(self) -> None:
@@ -4051,6 +4074,11 @@ class StudyPlanEngine:
         ]
         if self.recall_model_sklearn is not None:
             try:
+                meta = self.recall_model_sklearn_meta
+                if isinstance(meta, dict):
+                    fc = meta.get("feature_count")
+                    if isinstance(fc, (int, float)) and int(fc) != len(features):
+                        raise ValueError("recall model feature_count mismatch")
                 prob = float(self.recall_model_sklearn.predict_proba([features])[0][1])
                 return max(0.0, min(1.0, prob))
             except Exception:

@@ -2,6 +2,7 @@ import datetime
 import types
 import builtins
 import json
+import sys
 from unittest import mock
 
 import pytest
@@ -270,3 +271,36 @@ def test_import_data_snapshot_clamps_srs_to_question_count(tmp_path, monkeypatch
     result = eng.import_data_snapshot(str(snap_path))
     assert isinstance(result, dict)
     assert len(eng.srs_data[chapter]) == q_count
+
+
+def test_load_recall_model_sklearn_rejects_bad_feature_count(engine_no_io, monkeypatch, tmp_path):
+    eng = engine_no_io
+    model = types.SimpleNamespace(predict_proba=lambda X: [[0.4, 0.6] for _ in X])
+    payload = {"model": model, "meta": {"feature_count": 999}}
+    fake_joblib = types.SimpleNamespace(load=lambda _path: payload)
+    monkeypatch.setitem(sys.modules, "joblib", fake_joblib)
+
+    pkl = tmp_path / "recall_model.pkl"
+    pkl.write_text("x", encoding="utf-8")
+    eng.recall_model_sklearn_path = str(pkl)
+    eng._load_recall_model_sklearn()
+
+    assert eng.recall_model_sklearn is None
+    assert eng.recall_model_sklearn_meta is None
+
+
+def test_load_recall_model_sklearn_accepts_matching_feature_count(engine_no_io, monkeypatch, tmp_path):
+    eng = engine_no_io
+    model = types.SimpleNamespace(predict_proba=lambda X: [[0.3, 0.7] for _ in X])
+    payload = {"model": model, "meta": {"feature_count": eng.RECALL_FEATURE_COUNT}}
+    fake_joblib = types.SimpleNamespace(load=lambda _path: payload)
+    monkeypatch.setitem(sys.modules, "joblib", fake_joblib)
+
+    pkl = tmp_path / "recall_model.pkl"
+    pkl.write_text("x", encoding="utf-8")
+    eng.recall_model_sklearn_path = str(pkl)
+    eng._load_recall_model_sklearn()
+
+    assert eng.recall_model_sklearn is model
+    assert isinstance(eng.recall_model_sklearn_meta, dict)
+    assert int(eng.recall_model_sklearn_meta.get("feature_count", 0)) == eng.RECALL_FEATURE_COUNT
