@@ -2349,7 +2349,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     )
                     return
                 try:
-                    pdf_text, meta = self._extract_pdf_text_advanced(file_path)
+                    pdf_text, meta = self._extract_pdf_text_for_syllabus(file_path)
                     module_id = id_entry.get_text().strip() or self.module_id
                     result = self.engine.import_syllabus_from_pdf_text(pdf_text, module_id=module_id)
                     config = result.get("config", {}) if isinstance(result, dict) else {}
@@ -9820,7 +9820,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         def _worker():
             try:
-                pdf_text, meta = self._extract_pdf_text_advanced(file_path)
+                pdf_text, meta = self._extract_pdf_text_for_syllabus(file_path)
                 result = self.engine.import_syllabus_from_pdf_text(pdf_text, module_id=self.module_id)
                 return ("ok", result, meta, None)
             except Exception as exc:
@@ -9999,15 +9999,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     return []
 
             try:
-                binary = morphology.remove_small_objects(binary, min_size=24)
-            except TypeError:
-                # skimage >= 0.26 deprecates min_size in favor of max_size
+                # skimage >= 0.26 uses max_size instead of min_size
                 binary = morphology.remove_small_objects(binary, max_size=24)
-            try:
-                binary = morphology.remove_small_holes(binary, area_threshold=48)
             except TypeError:
-                # skimage >= 0.26 deprecates area_threshold in favor of max_size
+                binary = morphology.remove_small_objects(binary, min_size=24)
+            try:
+                # skimage >= 0.26 uses max_size instead of area_threshold
                 binary = morphology.remove_small_holes(binary, max_size=48)
+            except TypeError:
+                binary = morphology.remove_small_holes(binary, area_threshold=48)
             ocr_img = np.where(binary, 255, 0).astype("uint8")
             text = pytesseract.image_to_string(Image.fromarray(ocr_img), config="--oem 3 --psm 6")
             lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -10089,6 +10089,56 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "ocr_failed_pages": ocr_failed_pages,
             "skimage_ocr_pages": skimage_ocr_pages,
         }
+        if cache_key:
+            self._pdf_text_cache[cache_key] = (text_out, dict(meta_out))
+            if cache_key in self._pdf_text_cache_order:
+                self._pdf_text_cache_order.remove(cache_key)
+            self._pdf_text_cache_order.append(cache_key)
+            limit = max(1, int(self._pdf_text_cache_max or 8))
+            while len(self._pdf_text_cache_order) > limit:
+                stale = self._pdf_text_cache_order.pop(0)
+                self._pdf_text_cache.pop(stale, None)
+        return text_out, meta_out
+
+    def _extract_pdf_text_for_syllabus(self, file_path: str) -> tuple[str, dict]:
+        """Prefer linear text extraction for syllabus parsing; fallback to OCR if too sparse."""
+        if fitz is None:
+            return "", {"ocr_used": False, "ocr_pages": 0, "ocr_failed_pages": 0, "skimage_ocr_pages": 0}
+        abs_path = os.path.abspath(str(file_path))
+        try:
+            stat = os.stat(abs_path)
+            cache_key = f"{abs_path}|{int(stat.st_size)}|{int(stat.st_mtime_ns)}|syllabus"
+        except Exception:
+            cache_key = ""
+        if cache_key:
+            cached = self._pdf_text_cache.get(cache_key)
+            if isinstance(cached, tuple) and len(cached) == 2:
+                text_cached, meta_cached = cached
+                if isinstance(text_cached, str) and isinstance(meta_cached, dict):
+                    return text_cached, dict(meta_cached)
+
+        text_chunks: list[str] = []
+        with fitz.open(file_path) as doc:
+            for page in doc:
+                try:
+                    text_chunks.append(page.get_text())
+                except Exception:
+                    text_chunks.append("")
+        text_out = "\n".join(text_chunks)
+
+        # If extraction is too sparse, fall back to OCR-aware path.
+        word_count = len([w for w in text_out.split() if w.strip()])
+        if word_count < 200:
+            text_out, meta_out = self._extract_pdf_text_advanced(file_path)
+        else:
+            meta_out = {
+                "ocr_used": False,
+                "ocr_pages": 0,
+                "ocr_failed_pages": 0,
+                "skimage_ocr_pages": 0,
+                "text_mode": True,
+            }
+
         if cache_key:
             self._pdf_text_cache[cache_key] = (text_out, dict(meta_out))
             if cache_key in self._pdf_text_cache_order:
@@ -10382,13 +10432,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 result = self.engine.import_questions_json(file_path)
                 added = result.get("added", 0) if isinstance(result, dict) else 0
                 chapters = result.get("chapters", []) if isinstance(result, dict) else []
+                low_conf = result.get("low_confidence", []) if isinstance(result, dict) else []
+                unmatched = result.get("unmatched", []) if isinstance(result, dict) else []
                 chapter_text = ", ".join(chapters) if chapters else "N/A"
+                msg = f"AI questions imported: {added}\nChapters: {chapter_text}"
+                if low_conf:
+                    preview = "\n".join(low_conf[:6])
+                    msg += f"\n\nLow-confidence matches:\n{preview}"
+                    if len(low_conf) > 6:
+                        msg += f"\n(+{len(low_conf) - 6} more)"
+                if unmatched:
+                    preview = "\n".join(unmatched[:6])
+                    msg += f"\n\nUnmatched chapters:\n{preview}"
+                    if len(unmatched) > 6:
+                        msg += f"\n(+{len(unmatched) - 6} more)"
                 success_dialog = self._new_message_dialog(
                         transient_for=self,
                         modal=True,
                         message_type=Gtk.MessageType.INFO,
                         buttons=Gtk.ButtonsType.OK,
-                        text=f"AI questions imported: {added}\nChapters: {chapter_text}"
+                        text=msg
                 )
                 success_dialog.connect("response", lambda d, r: d.destroy())
                 success_dialog.present()

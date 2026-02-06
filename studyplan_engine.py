@@ -1282,6 +1282,7 @@ class StudyPlanEngine:
         current_letter = None
         current_outcome_text: str | None = None
         current_level: int | None = None
+        pending_bullet = False
 
         def _flush_outcome() -> None:
             nonlocal current_outcome_text, current_level, current_letter
@@ -1306,15 +1307,30 @@ class StudyPlanEngine:
                     continue
                 current_letter = letter
                 outcomes_by_letter.setdefault(letter, [])
+                pending_bullet = False
                 continue
-            m_bullet = re.match(r"^[a-z][\)\.]?\s*(.+)$", line)
+            m_bullet = re.match(r"^([a-z])[\)\.]\s*(.*)$", line)
             if m_bullet:
                 _flush_outcome()
-                current_outcome_text = m_bullet.group(1).strip()
+                bullet_text = m_bullet.group(2).strip()
+                if bullet_text:
+                    current_outcome_text = bullet_text
+                else:
+                    current_outcome_text = None
+                    pending_bullet = True
             elif current_outcome_text:
                 # Continue wrapped outcome text until a new bullet/section begins.
                 if not re.match(r"^\d+\.\s+.+$", line):
-                    current_outcome_text = f"{current_outcome_text} {line}".strip()
+                    # Append roman numeral subpoints as part of the same outcome.
+                    if re.match(r"^(?:[ivx]+)[\)\.]\s+", line, re.IGNORECASE):
+                        current_outcome_text = f"{current_outcome_text} {line}".strip()
+                    else:
+                        current_outcome_text = f"{current_outcome_text} {line}".strip()
+            elif pending_bullet:
+                # If the bullet marker was on its own line, take the next text line as the outcome.
+                if not re.match(r"^\d+\.\s+.+$", line):
+                    current_outcome_text = line.strip()
+                    pending_bullet = False
 
             if current_outcome_text:
                 m_level = re.search(r"[\[\(](\d)[\]\)]\s*$", current_outcome_text)
@@ -1326,6 +1342,63 @@ class StudyPlanEngine:
                     current_outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", current_outcome_text).strip()
                     _flush_outcome()
         _flush_outcome()
+
+        # Fallback: if detailed outcomes were not parsed, scan the full text for outcome bullets.
+        total_outcomes = sum(len(v) for v in outcomes_by_letter.values())
+        if total_outcomes == 0:
+            current_letter = None
+            pending_bullet = False
+            current_outcome_text = None
+            current_level = None
+
+            def _flush_fallback() -> None:
+                nonlocal current_outcome_text, current_level, current_letter
+                if not current_letter or not current_outcome_text:
+                    current_outcome_text = None
+                    current_level = None
+                    return
+                cleaned = current_outcome_text.strip()
+                if cleaned:
+                    outcomes_by_letter.setdefault(current_letter, []).append(
+                        {"text": cleaned, "level": int(current_level or 2)}
+                    )
+                current_outcome_text = None
+                current_level = None
+
+            for line in lines:
+                m_head = re.match(r"^([A-H])[\)\.\s-]+(.+)$", line)
+                if m_head:
+                    _flush_fallback()
+                    current_letter = (m_head.group(1) or "").strip()
+                    pending_bullet = False
+                    continue
+                m_bullet = re.match(r"^([a-z])[\)\.]\s*(.*)$", line)
+                if m_bullet:
+                    _flush_fallback()
+                    bullet_text = m_bullet.group(2).strip()
+                    if bullet_text:
+                        current_outcome_text = bullet_text
+                    else:
+                        pending_bullet = True
+                        current_outcome_text = None
+                elif current_outcome_text:
+                    if not re.match(r"^\d+\.\s+.+$", line):
+                        current_outcome_text = f"{current_outcome_text} {line}".strip()
+                elif pending_bullet:
+                    if not re.match(r"^\d+\.\s+.+$", line):
+                        current_outcome_text = line.strip()
+                        pending_bullet = False
+
+                if current_outcome_text:
+                    m_level = re.search(r"[\[\(](\d)[\]\)]\s*$", current_outcome_text)
+                    if m_level:
+                        try:
+                            current_level = int(m_level.group(1))
+                        except Exception:
+                            current_level = 2
+                        current_outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", current_outcome_text).strip()
+                        _flush_fallback()
+            _flush_fallback()
 
         letters = sorted(set(capabilities.keys()) | set(syllabus_titles.keys()) | set(outcomes_by_letter.keys()))
         if not letters:
@@ -3890,6 +3963,33 @@ class StudyPlanEngine:
 
         return best_match[1]
 
+    def _best_chapter_match(self, title: str) -> tuple[str | None, float]:
+        """Return best chapter match with similarity score (0.0-1.0)."""
+        if title is None or not str(title).strip():
+            return None, 0.0
+        title_lower = str(title).strip().lower()
+        alias = self.CHAPTER_ALIASES.get(title_lower)
+        if alias:
+            return alias, 1.0
+
+        candidates: list[tuple[str, str]] = []
+        for ch in self.CHAPTERS:
+            if isinstance(ch, str) and ch.strip():
+                candidates.append((ch.lower(), ch))
+        for alias_key, ch in (self.CHAPTER_ALIASES or {}).items():
+            if not isinstance(alias_key, str) or not isinstance(ch, str):
+                continue
+            if alias_key.strip():
+                candidates.append((alias_key.strip().lower(), ch))
+        if not candidates:
+            return None, 0.0
+        best_key, best_ch = max(
+            candidates,
+            key=lambda t: difflib.SequenceMatcher(None, t[0], title_lower).quick_ratio(),
+        )
+        score = difflib.SequenceMatcher(None, best_key, title_lower).ratio()
+        return best_ch, score
+
     def _try_match_chapter(self, title: str) -> str | None:
         """Best-effort chapter match; returns None if no safe match."""
         try:
@@ -4048,9 +4148,9 @@ class StudyPlanEngine:
         if not isinstance(questions, list):
             raise ValueError("Invalid JSON format: questions must be a list")
 
-        chapter = self._try_match_chapter(chapter_name)
-        if chapter is None:
-            raise ValueError(f"Could not find chapter '{chapter_name}'")
+        chapter, score = self._best_chapter_match(chapter_name)
+        if chapter is None or score < 0.35:
+            raise ValueError(f"Could not confidently match chapter '{chapter_name}'")
 
         question_dicts: Dict[Tuple[str, Tuple[str, ...], str], Dict[str, Any]] = {
             self._question_dedupe_key(question): dict(question)
@@ -4132,14 +4232,20 @@ class StudyPlanEngine:
 
         total_added = 0
         chapters_touched = set()
+        low_confidence_matches: list[str] = []
+        unmatched_chapters: list[str] = []
 
         if isinstance(data, dict) and "chapter" in data and "questions" in data:
             chapter_name = data.get("chapter")
             if isinstance(chapter_name, str) and chapter_name.strip():
-                chapter = self._try_match_chapter(chapter_name)
-                if chapter:
+                chapter, score = self._best_chapter_match(chapter_name)
+                if chapter and score >= 0.35:
+                    if score < 0.5:
+                        low_confidence_matches.append(f"{chapter_name} -> {chapter} ({score:.0%})")
                     total_added += self._add_questions(chapter, data.get("questions", []))
                     chapters_touched.add(chapter)
+                else:
+                    unmatched_chapters.append(chapter_name)
         elif isinstance(data, dict) and "questions_by_chapter" in data:
             payload = data.get("questions_by_chapter")
             if isinstance(payload, dict):
@@ -4148,9 +4254,12 @@ class StudyPlanEngine:
                         continue
                     if not isinstance(questions, list):
                         continue
-                    chapter = self._try_match_chapter(ch_key)
-                    if not chapter:
+                    chapter, score = self._best_chapter_match(ch_key)
+                    if not chapter or score < 0.35:
+                        unmatched_chapters.append(ch_key)
                         continue
+                    if score < 0.5:
+                        low_confidence_matches.append(f"{ch_key} -> {chapter} ({score:.0%})")
                     added = self._add_questions(chapter, questions)
                     if added:
                         chapters_touched.add(chapter)
@@ -4161,9 +4270,12 @@ class StudyPlanEngine:
                     continue
                 if not isinstance(questions, list):
                     continue
-                chapter = self._try_match_chapter(ch_key)
-                if not chapter:
+                chapter, score = self._best_chapter_match(ch_key)
+                if not chapter or score < 0.35:
+                    unmatched_chapters.append(ch_key)
                     continue
+                if score < 0.5:
+                    low_confidence_matches.append(f"{ch_key} -> {chapter} ({score:.0%})")
                 added = self._add_questions(chapter, questions)
                 if added:
                     chapters_touched.add(chapter)
@@ -4177,9 +4289,12 @@ class StudyPlanEngine:
                 chapter_name = item.get("chapter") or item.get("topic") or item.get("chapter_name")
                 if not isinstance(chapter_name, str) or not chapter_name.strip():
                     continue
-                chapter = self._try_match_chapter(chapter_name)
-                if not chapter:
+                chapter, score = self._best_chapter_match(chapter_name)
+                if not chapter or score < 0.35:
+                    unmatched_chapters.append(chapter_name)
                     continue
+                if score < 0.5:
+                    low_confidence_matches.append(f"{chapter_name} -> {chapter} ({score:.0%})")
                 grouped.setdefault(chapter, []).append(item)
             for chapter, questions in grouped.items():
                 added = self._add_questions(chapter, questions)
@@ -4192,7 +4307,12 @@ class StudyPlanEngine:
         self.save_questions()
         self.save_data()
 
-        return {"added": total_added, "chapters": sorted(chapters_touched)}
+        return {
+            "added": total_added,
+            "chapters": sorted(chapters_touched),
+            "low_confidence": sorted(set(low_confidence_matches)),
+            "unmatched": sorted(set(unmatched_chapters)),
+        }
 
     def _import_questions_csv(self, csv_path: str) -> dict:
         """Import AI questions from CSV template."""
