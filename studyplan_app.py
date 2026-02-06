@@ -11091,6 +11091,34 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return "medium"
         return "high"
 
+    def _get_ml_freshness_status(self, live_samples: int) -> tuple[str, bool]:
+        try:
+            trained_samples = int(getattr(self, "_last_ml_train_sample_count", 0) or 0)
+        except Exception:
+            trained_samples = 0
+        delta = max(0, int(live_samples) - trained_samples)
+        last_ts = getattr(self, "_last_ml_train_at", None)
+        if not isinstance(last_ts, str) or not last_ts:
+            return (f"ML freshness: untrained • +{delta} samples", True)
+        stale_age = False
+        try:
+            last_dt = datetime.datetime.fromisoformat(last_ts)
+            age_hours = max(0.0, (datetime.datetime.now() - last_dt).total_seconds() / 3600.0)
+            stale_age = age_hours >= 48.0
+        except Exception:
+            stale_age = True
+        stale_delta = delta >= 60
+        stale = stale_age or stale_delta
+        if stale_age and stale_delta:
+            detail = f"stale (age+delta, +{delta})"
+        elif stale_age:
+            detail = "stale (age)"
+        elif stale_delta:
+            detail = f"stale (+{delta})"
+        else:
+            detail = f"fresh (+{delta})"
+        return (f"ML freshness: {detail}", stale)
+
     def _auto_train_ml_models(self) -> None:
         try:
             if getattr(self, "focus_mode", False):
@@ -11562,6 +11590,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if confidence_tier == "low":
                 ml_label.add_css_class("status-warn")
             coach_box.append(ml_label)
+            fresh_text, fresh_warn = self._get_ml_freshness_status(sample_count)
+            fresh_label = Gtk.Label(label=fresh_text)
+            fresh_label.set_halign(Gtk.Align.START)
+            fresh_label.add_css_class("muted")
+            if fresh_warn:
+                fresh_label.add_css_class("status-warn")
+            coach_box.append(fresh_label)
             try:
                 chapter_ml = self.engine.get_chapter_ml_status(recommended_topic)
                 ch_ready = bool(chapter_ml.get("ready", False))
@@ -12066,6 +12101,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if confidence_tier == "low":
                         confidence_label.add_css_class("status-warn")
                     insights.append(confidence_label)
+                    fresh_text, fresh_warn = self._get_ml_freshness_status(sample_count)
+                    fresh_label = Gtk.Label(label=fresh_text)
+                    fresh_label.set_halign(Gtk.Align.START)
+                    fresh_label.add_css_class("muted")
+                    if fresh_warn:
+                        fresh_label.add_css_class("status-warn")
+                    insights.append(fresh_label)
                     try:
                         if risk_rows:
                             top_chapter = str(risk_rows[0][0])
