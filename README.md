@@ -30,6 +30,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **Coach Briefing**: readiness score, mission checklist, pace status, daily target
 - **Exam Readiness Index** + retrieval quota bar (exam‑aware pacing)
 - **Coach Pick**: single “do this now” topic with reasons + pace tip
+- **Outcome Mastery**: covered vs uncovered syllabus outcomes (global + per capability)
 - **ML‑assisted coaching**: recall risk, difficulty mix, interval‑aware release (when models available)
 - **Coach Next**: one‑click “do the right thing now” action
 - **Study Room**: next action, mission progress, quick actions
@@ -120,9 +121,10 @@ Global app files:
 **Import syllabus intelligence**:
 1. Module → Import Syllabus PDF…
 2. Select syllabus PDF
-3. Review parse report (confidence + warnings)
-4. Module Editor opens with draft JSON (no automatic save)
-5. Save explicitly when ready
+3. Review the draft in the import review wizard (confidence, warnings, preserve question-bank toggle)
+4. A low-confidence parse requires explicit acknowledgment before opening the draft
+5. Module Editor opens with draft JSON (no automatic save)
+6. Save explicitly when ready
 
 ### Module JSON format
 
@@ -148,7 +150,7 @@ Global app files:
     "A. Financial management function": {
       "capability": "A",
       "subtopics": ["The nature and purpose of financial management"],
-      "learning_outcomes": [{"text": "Explain ...", "level": 2}],
+      "learning_outcomes": [{"id": "A.1", "text": "Explain ...", "level": 2}],
       "intellectual_level_mix": {"level_1": 0, "level_2": 1, "level_3": 0},
       "outcome_count": 1
     }

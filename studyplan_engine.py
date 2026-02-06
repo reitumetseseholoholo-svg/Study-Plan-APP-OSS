@@ -1124,11 +1124,12 @@ class StudyPlanEngine:
                 outcomes = info.get("learning_outcomes")
                 cleaned_outcomes = []
                 if isinstance(outcomes, list):
-                    for item in outcomes:
+                    for idx, item in enumerate(outcomes):
                         if not isinstance(item, dict):
                             continue
                         text = str(item.get("text", "")).strip()
                         level = item.get("level")
+                        outcome_id = str(item.get("id", "") or "").strip()
                         level_int: int | None = None
                         if level is not None:
                             try:
@@ -1139,7 +1140,10 @@ class StudyPlanEngine:
                             continue
                         if level_int is None or level_int < 1 or level_int > 3:
                             level_int = 2
-                        cleaned_outcomes.append({"text": text, "level": level_int})
+                        if not outcome_id:
+                            capability = str(info.get("capability", "") or "").strip().upper() or "X"
+                            outcome_id = f"{capability}.{idx + 1}"
+                        cleaned_outcomes.append({"id": outcome_id, "text": text, "level": level_int})
                 info["learning_outcomes"] = cleaned_outcomes
                 mix = info.get("intellectual_level_mix")
                 if not isinstance(mix, dict):
@@ -1299,19 +1303,38 @@ class StudyPlanEngine:
             chapters.append(chapter_name)
             chapter_map[letter] = chapter_name
             outcomes = outcomes_by_letter.get(letter, [])
-            level_1 = sum(1 for o in outcomes if int(o.get("level", 2)) == 1)
-            level_2 = sum(1 for o in outcomes if int(o.get("level", 2)) == 2)
-            level_3 = sum(1 for o in outcomes if int(o.get("level", 2)) == 3)
+            normalized_outcomes: List[Dict[str, Any]] = []
+            for idx, outcome in enumerate(outcomes):
+                if not isinstance(outcome, dict):
+                    continue
+                text = str(outcome.get("text", "")).strip()
+                if not text:
+                    continue
+                try:
+                    level = int(outcome.get("level", 2) or 2)
+                except Exception:
+                    level = 2
+                level = 1 if level < 1 else 3 if level > 3 else level
+                normalized_outcomes.append(
+                    {
+                        "id": f"{letter}.{idx + 1}",
+                        "text": text,
+                        "level": level,
+                    }
+                )
+            level_1 = sum(1 for o in normalized_outcomes if int(o.get("level", 2)) == 1)
+            level_2 = sum(1 for o in normalized_outcomes if int(o.get("level", 2)) == 2)
+            level_3 = sum(1 for o in normalized_outcomes if int(o.get("level", 2)) == 3)
             syllabus_structure[chapter_name] = {
                 "capability": letter,
                 "subtopics": syllabus_subtopics.get(letter, []),
-                "learning_outcomes": outcomes,
+                "learning_outcomes": normalized_outcomes,
                 "intellectual_level_mix": {
                     "level_1": level_1,
                     "level_2": level_2,
                     "level_3": level_3,
                 },
-                "outcome_count": len(outcomes),
+                "outcome_count": len(normalized_outcomes),
             }
 
         expected = 8 if letters else 1
@@ -1559,18 +1582,22 @@ class StudyPlanEngine:
                 outcomes = info.get("learning_outcomes", [])
                 cleaned_outcomes = []
                 if isinstance(outcomes, list):
-                    for item in outcomes:
+                    for idx, item in enumerate(outcomes):
                         if not isinstance(item, dict):
                             continue
                         text = str(item.get("text", "")).strip()
                         if not text:
                             continue
+                        outcome_id = str(item.get("id", "") or "").strip()
                         try:
                             level = int(item.get("level", 2))
                         except Exception:
                             level = 2
                         level = 1 if level < 1 else 3 if level > 3 else level
-                        cleaned_outcomes.append({"text": text, "level": level})
+                        if not outcome_id:
+                            capability = str(info.get("capability", "") or "").strip().upper() or "X"
+                            outcome_id = f"{capability}.{idx + 1}"
+                        cleaned_outcomes.append({"id": outcome_id, "text": text, "level": level})
                 info["learning_outcomes"] = cleaned_outcomes
                 mix = info.get("intellectual_level_mix", {})
                 if not isinstance(mix, dict):
@@ -1713,21 +1740,28 @@ class StudyPlanEngine:
             level_2 = sum(1 for o in cleaned_outcomes if int(o.get("level", 2)) == 2)
             level_3 = sum(1 for o in cleaned_outcomes if int(o.get("level", 2)) == 3)
         outcome_count = int(info.get("outcome_count", len(cleaned_outcomes)) or len(cleaned_outcomes))
+        chapter_outcome = self.get_chapter_outcome_mastery(chapter)
+        covered_outcomes = int(chapter_outcome.get("covered_outcomes", 0) or 0)
+        uncovered_outcomes = int(chapter_outcome.get("uncovered_outcomes", 0) or 0)
+        coverage_progress = float(chapter_outcome.get("coverage_pct", 0.0) or 0.0)
 
-        try:
-            comp = float(getattr(self, "competence", {}).get(chapter, 0) or 0)
-        except Exception:
-            comp = 0.0
-        try:
-            quiz = float(getattr(self, "quiz_results", {}).get(chapter, 0) or 0)
-        except Exception:
-            quiz = 0.0
-        mastery_stats = self.get_mastery_stats(chapter)
-        mastered = int(mastery_stats.get("mastered", 0) or 0)
-        total = int(mastery_stats.get("total", 0) or 0)
-        mastery_pct = (mastered / max(1, total) * 100.0) if total > 0 else 0.0
-        coverage_progress = max(0.0, min(100.0, max(comp, quiz, mastery_pct)))
-        outcomes_remaining = max(0, int(round(outcome_count * (1.0 - (coverage_progress / 100.0)))))
+        if outcome_count <= 0:
+            try:
+                comp = float(getattr(self, "competence", {}).get(chapter, 0) or 0)
+            except Exception:
+                comp = 0.0
+            try:
+                quiz = float(getattr(self, "quiz_results", {}).get(chapter, 0) or 0)
+            except Exception:
+                quiz = 0.0
+            mastery_stats = self.get_mastery_stats(chapter)
+            mastered = int(mastery_stats.get("mastered", 0) or 0)
+            total = int(mastery_stats.get("total", 0) or 0)
+            mastery_pct = (mastered / max(1, total) * 100.0) if total > 0 else 0.0
+            coverage_progress = max(0.0, min(100.0, max(comp, quiz, mastery_pct)))
+            outcomes_remaining = max(0, int(round(outcome_count * (1.0 - (coverage_progress / 100.0)))))
+        else:
+            outcomes_remaining = max(0, uncovered_outcomes)
 
         return {
             "chapter": chapter,
@@ -1742,6 +1776,8 @@ class StudyPlanEngine:
             "outcome_count": outcome_count,
             "coverage_progress": coverage_progress,
             "outcomes_remaining": outcomes_remaining,
+            "covered_outcomes": covered_outcomes,
+            "uncovered_outcomes": uncovered_outcomes,
         }
 
     def _resolve_module_paths(self, module_id: str) -> tuple[str, str]:
@@ -1864,6 +1900,7 @@ class StudyPlanEngine:
         self.quiz_recent: Dict[str, List[int]] = {}
         self.error_notebook: Dict[str, List[Dict[str, Any]]] = {}
         self.question_stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self.outcome_stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.adaptive_quiz_prioritization: bool = True
         self.recall_model_json: Dict[str, Any] | None = None
         self.recall_model_sklearn: Any | None = None
@@ -2386,6 +2423,45 @@ class StudyPlanEngine:
                 cleaned[ch] = inner
         return cleaned
 
+    def _coerce_outcome_stats(self, raw):
+        """Normalize outcome stats to {chapter: {outcome_id: stats}}."""
+        if not isinstance(raw, dict):
+            return {}
+        cleaned: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for ch, items in raw.items():
+            if not isinstance(ch, str) or not isinstance(items, dict):
+                continue
+            inner: Dict[str, Dict[str, Any]] = {}
+            for outcome_id, stats in items.items():
+                key = str(outcome_id).strip()
+                if not key or not isinstance(stats, dict):
+                    continue
+                try:
+                    attempts = int(stats.get("attempts", 0) or 0)
+                except Exception:
+                    attempts = 0
+                try:
+                    correct = int(stats.get("correct", 0) or 0)
+                except Exception:
+                    correct = 0
+                try:
+                    streak = int(stats.get("streak", 0) or 0)
+                except Exception:
+                    streak = 0
+                attempts = max(0, attempts)
+                correct = max(0, min(correct, attempts))
+                streak = max(0, streak)
+                last_seen = self._parse_date(stats.get("last_seen"))
+                inner[key] = {
+                    "attempts": attempts,
+                    "correct": correct,
+                    "streak": streak,
+                    "last_seen": last_seen.isoformat() if last_seen else None,
+                }
+            if inner:
+                cleaned[ch] = inner
+        return cleaned
+
     def _question_id(self, question: Dict[str, Any]) -> str | None:
         """Return a stable ID for a question based on its content."""
         if not isinstance(question, dict):
@@ -2445,6 +2521,305 @@ class StudyPlanEngine:
                 if attempts > 0:
                     total += 1
         return total
+
+    def _chapter_capability(self, chapter: str) -> str:
+        """Return chapter capability letter when available."""
+        info = self.syllabus_structure.get(chapter, {}) if isinstance(self.syllabus_structure, dict) else {}
+        capability = str(info.get("capability", "") or "").strip().upper()
+        if capability:
+            return capability
+        m = re.match(r"^\s*([A-H])\.", str(chapter))
+        return m.group(1).upper() if m else ""
+
+    def _chapter_outcome_lookup(self, chapter: str) -> Dict[str, Dict[str, Any]]:
+        """Return normalized outcome lookup by outcome id for a chapter."""
+        info = self.syllabus_structure.get(chapter, {}) if isinstance(self.syllabus_structure, dict) else {}
+        if not isinstance(info, dict):
+            return {}
+        outcomes = info.get("learning_outcomes", [])
+        if not isinstance(outcomes, list):
+            return {}
+        capability = self._chapter_capability(chapter) or "X"
+        lookup: Dict[str, Dict[str, Any]] = {}
+        for idx, item in enumerate(outcomes):
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text", "")).strip()
+            if not text:
+                continue
+            outcome_id = str(item.get("id", "") or "").strip() or f"{capability}.{idx + 1}"
+            try:
+                level = int(item.get("level", 2) or 2)
+            except Exception:
+                level = 2
+            level = 1 if level < 1 else 3 if level > 3 else level
+            lookup[outcome_id] = {"id": outcome_id, "text": text, "level": level}
+        return lookup
+
+    def _question_outcome_ids(self, chapter: str, idx: int) -> List[str]:
+        """Resolve outcome IDs for a question (explicit tags first, then stable fallback)."""
+        questions = self.QUESTIONS.get(chapter, [])
+        if not isinstance(questions, list) or not (0 <= idx < len(questions)):
+            return []
+        question = questions[idx]
+        if not isinstance(question, dict):
+            return []
+        outcome_lookup = self._chapter_outcome_lookup(chapter)
+        if not outcome_lookup:
+            return []
+        known_ids = set(outcome_lookup.keys())
+        text_to_id = {str(v.get("text", "")).strip().lower(): k for k, v in outcome_lookup.items()}
+        resolved: List[str] = []
+
+        tagged_ids = question.get("outcome_ids", [])
+        if isinstance(tagged_ids, list):
+            for value in tagged_ids:
+                candidate = str(value or "").strip()
+                if candidate and candidate in known_ids and candidate not in resolved:
+                    resolved.append(candidate)
+
+        tagged_outcomes = question.get("outcomes", [])
+        if isinstance(tagged_outcomes, list):
+            for value in tagged_outcomes:
+                if isinstance(value, dict):
+                    candidate = str(value.get("id", "") or "").strip()
+                    if candidate and candidate in known_ids and candidate not in resolved:
+                        resolved.append(candidate)
+                        continue
+                    value = value.get("text", "")
+                text_key = str(value or "").strip().lower()
+                if text_key and text_key in text_to_id:
+                    candidate = text_to_id[text_key]
+                    if candidate not in resolved:
+                        resolved.append(candidate)
+
+        capability_tag = str(question.get("capability", "") or "").strip().upper()
+        if capability_tag and capability_tag == self._chapter_capability(chapter):
+            if not resolved:
+                # For capability-tagged but unlinked questions, deterministically map to one outcome.
+                ordered_ids = sorted(known_ids)
+                qid = self._question_qid(chapter, idx) or str(idx)
+                digest = hashlib.sha1(qid.encode("utf-8")).hexdigest()
+                bucket = int(digest[:8], 16) % max(1, len(ordered_ids))
+                resolved.append(ordered_ids[bucket])
+
+        if resolved:
+            return resolved
+
+        # Stable fallback for untagged legacy questions: map to one outcome deterministically.
+        ordered_ids = sorted(known_ids)
+        qid = self._question_qid(chapter, idx) or str(idx)
+        digest = hashlib.sha1(qid.encode("utf-8")).hexdigest()
+        bucket = int(digest[:8], 16) % max(1, len(ordered_ids))
+        return [ordered_ids[bucket]]
+
+    def _is_outcome_covered(self, stats: Dict[str, Any] | None) -> bool:
+        """Return whether an outcome is considered covered."""
+        if not isinstance(stats, dict):
+            return False
+        try:
+            attempts = int(stats.get("attempts", 0) or 0)
+        except Exception:
+            attempts = 0
+        try:
+            correct = int(stats.get("correct", 0) or 0)
+        except Exception:
+            correct = 0
+        try:
+            streak = int(stats.get("streak", 0) or 0)
+        except Exception:
+            streak = 0
+        if attempts < 2:
+            return False
+        accuracy = correct / max(1, attempts)
+        return bool(accuracy >= 0.70 or streak >= 2)
+
+    def get_chapter_outcome_mastery(self, chapter: str) -> Dict[str, Any]:
+        """Return outcome-level mastery details for a chapter."""
+        lookup = self._chapter_outcome_lookup(chapter)
+        capability = self._chapter_capability(chapter)
+        if not lookup:
+            return {
+                "chapter": chapter,
+                "capability": capability,
+                "total_outcomes": 0,
+                "covered_outcomes": 0,
+                "uncovered_outcomes": 0,
+                "coverage_pct": 0.0,
+                "covered_ids": [],
+                "uncovered_ids": [],
+            }
+        stats_by_ch = self.outcome_stats.get(chapter, {}) if isinstance(self.outcome_stats, dict) else {}
+        covered_ids: List[str] = []
+        uncovered_ids: List[str] = []
+        for outcome_id in lookup.keys():
+            stats = stats_by_ch.get(outcome_id, {}) if isinstance(stats_by_ch, dict) else {}
+            if self._is_outcome_covered(stats):
+                covered_ids.append(outcome_id)
+            else:
+                uncovered_ids.append(outcome_id)
+        total_outcomes = len(lookup)
+        covered = len(covered_ids)
+        uncovered = len(uncovered_ids)
+        coverage_pct = (covered / max(1, total_outcomes)) * 100.0
+        return {
+            "chapter": chapter,
+            "capability": capability,
+            "total_outcomes": total_outcomes,
+            "covered_outcomes": covered,
+            "uncovered_outcomes": uncovered,
+            "coverage_pct": coverage_pct,
+            "covered_ids": covered_ids,
+            "uncovered_ids": uncovered_ids,
+        }
+
+    def get_outcome_mastery_map(self) -> Dict[str, Any]:
+        """Aggregate covered vs uncovered outcomes across chapters/capabilities."""
+        by_chapter: Dict[str, Dict[str, Any]] = {}
+        by_capability: Dict[str, Dict[str, Any]] = {}
+        total_outcomes = 0
+        total_covered = 0
+        for chapter in self.CHAPTERS:
+            chapter_map = self.get_chapter_outcome_mastery(chapter)
+            if int(chapter_map.get("total_outcomes", 0) or 0) <= 0:
+                continue
+            by_chapter[chapter] = chapter_map
+            chapter_total = int(chapter_map.get("total_outcomes", 0) or 0)
+            chapter_covered = int(chapter_map.get("covered_outcomes", 0) or 0)
+            total_outcomes += chapter_total
+            total_covered += chapter_covered
+            capability = str(chapter_map.get("capability", "") or "").strip().upper() or "?"
+            cap = by_capability.setdefault(
+                capability,
+                {"total_outcomes": 0, "covered_outcomes": 0, "chapters": []},
+            )
+            cap["total_outcomes"] = int(cap.get("total_outcomes", 0) or 0) + chapter_total
+            cap["covered_outcomes"] = int(cap.get("covered_outcomes", 0) or 0) + chapter_covered
+            chapters = cap.get("chapters", [])
+            if isinstance(chapters, list) and chapter not in chapters:
+                chapters.append(chapter)
+                cap["chapters"] = chapters
+        for cap in by_capability.values():
+            total = int(cap.get("total_outcomes", 0) or 0)
+            covered = int(cap.get("covered_outcomes", 0) or 0)
+            uncovered = max(0, total - covered)
+            cap["uncovered_outcomes"] = uncovered
+            cap["coverage_pct"] = (covered / max(1, total)) * 100.0
+        uncovered_total = max(0, total_outcomes - total_covered)
+        coverage_pct = (total_covered / max(1, total_outcomes)) * 100.0
+        return {
+            "total_outcomes": total_outcomes,
+            "covered_outcomes": total_covered,
+            "uncovered_outcomes": uncovered_total,
+            "coverage_pct": coverage_pct,
+            "by_chapter": by_chapter,
+            "by_capability": by_capability,
+        }
+
+    def get_undercovered_capabilities(self, max_coverage: float = 70.0, min_uncovered: int = 1) -> List[str]:
+        """Return capability letters with low outcome coverage."""
+        mastery = self.get_outcome_mastery_map()
+        by_capability = mastery.get("by_capability", {})
+        if not isinstance(by_capability, dict):
+            return []
+        result: List[Tuple[str, int, float]] = []
+        for capability, item in by_capability.items():
+            if not isinstance(item, dict):
+                continue
+            uncovered = int(item.get("uncovered_outcomes", 0) or 0)
+            coverage = float(item.get("coverage_pct", 0.0) or 0.0)
+            if uncovered >= int(min_uncovered) and coverage < float(max_coverage):
+                result.append((str(capability), uncovered, coverage))
+        result.sort(key=lambda x: (-x[1], x[2], x[0]))
+        return [cap for cap, _u, _c in result]
+
+    def get_undercovered_capability_chapters(self, max_coverage: float = 70.0, min_uncovered: int = 1) -> List[str]:
+        """Return chapters that belong to under-covered capabilities."""
+        under_caps = set(self.get_undercovered_capabilities(max_coverage=max_coverage, min_uncovered=min_uncovered))
+        if not under_caps:
+            return []
+        chapter_rows: List[Tuple[float, str]] = []
+        for chapter in self.CHAPTERS:
+            cap = self._chapter_capability(chapter)
+            if cap not in under_caps:
+                continue
+            info = self.get_chapter_outcome_mastery(chapter)
+            total = int(info.get("total_outcomes", 0) or 0)
+            if total <= 0:
+                continue
+            coverage = float(info.get("coverage_pct", 0.0) or 0.0)
+            chapter_rows.append((coverage, chapter))
+        chapter_rows.sort(key=lambda x: (x[0], self.CHAPTERS.index(x[1]) if x[1] in self.CHAPTERS else 999))
+        return [chapter for _coverage, chapter in chapter_rows]
+
+    def has_outcome_activity_today(self, capabilities: List[str] | None = None) -> bool:
+        """Return True if any tracked outcome in capabilities was attempted today."""
+        today_iso = datetime.date.today().isoformat()
+        cap_set = {str(c).strip().upper() for c in (capabilities or []) if str(c).strip()} if capabilities else None
+        if not isinstance(self.outcome_stats, dict):
+            return False
+        for chapter, items in self.outcome_stats.items():
+            if not isinstance(items, dict):
+                continue
+            if cap_set is not None:
+                chapter_cap = self._chapter_capability(chapter)
+                if chapter_cap not in cap_set:
+                    continue
+            for entry in items.values():
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("last_seen", "") or "").strip() != today_iso:
+                    continue
+                try:
+                    attempts = int(entry.get("attempts", 0) or 0)
+                except Exception:
+                    attempts = 0
+                if attempts > 0:
+                    return True
+        return False
+
+    def record_outcome_event(self, chapter: str, question_index: int, is_correct: bool) -> None:
+        """Record an attempt against mapped syllabus outcomes for a question."""
+        if chapter not in self.CHAPTERS:
+            return
+        if not isinstance(question_index, int) or question_index < 0:
+            return
+        outcome_ids = self._question_outcome_ids(chapter, question_index)
+        if not outcome_ids:
+            return
+        stats_by_ch = self.outcome_stats.setdefault(chapter, {})
+        today_iso = datetime.date.today().isoformat()
+        for outcome_id in outcome_ids:
+            key = str(outcome_id).strip()
+            if not key:
+                continue
+            current = stats_by_ch.get(key, {})
+            if not isinstance(current, dict):
+                current = {}
+            try:
+                attempts = int(current.get("attempts", 0) or 0)
+            except Exception:
+                attempts = 0
+            try:
+                correct = int(current.get("correct", 0) or 0)
+            except Exception:
+                correct = 0
+            try:
+                streak = int(current.get("streak", 0) or 0)
+            except Exception:
+                streak = 0
+            attempts = max(0, attempts) + 1
+            if is_correct:
+                correct = max(0, correct) + 1
+                streak = max(0, streak) + 1
+            else:
+                streak = 0
+            stats_by_ch[key] = {
+                "attempts": attempts,
+                "correct": min(correct, attempts),
+                "streak": streak,
+                "last_seen": today_iso,
+            }
 
     def get_due_today_by_chapter(self, day: datetime.date | None = None) -> dict[str, int]:
         """Return counts of cards due today (includes new + overdue + must-review)."""
@@ -2558,6 +2933,7 @@ class StudyPlanEngine:
         self.quiz_recent = self._coerce_quiz_recent(getattr(self, "quiz_recent", {}))
         self.error_notebook = self._coerce_error_notebook(getattr(self, "error_notebook", {}))
         self.question_stats = self._coerce_question_stats(getattr(self, "question_stats", {}))
+        self.outcome_stats = self._coerce_outcome_stats(getattr(self, "outcome_stats", {}))
         self._normalize_chapter_keys()
 
     def _migrate_question_stats_to_qid(self) -> None:
@@ -2745,6 +3121,15 @@ class StudyPlanEngine:
                 fixed[nk] = v
             self.question_stats = fixed
 
+        def _merge_outcome_stats():
+            if not isinstance(getattr(self, "outcome_stats", None), dict):
+                return
+            fixed = {}
+            for k, v in self.outcome_stats.items():
+                nk = _norm_key(k) or k
+                fixed[nk] = v
+            self.outcome_stats = fixed
+
         def _merge_quiz_recent():
             if not isinstance(getattr(self, "quiz_recent", None), dict):
                 return
@@ -2765,6 +3150,7 @@ class StudyPlanEngine:
         _merge_quiz_recent()
         _merge_error_notebook()
         _merge_question_stats()
+        _merge_outcome_stats()
 
     def test_methods(self) -> None:
         """Quick test that all required methods exist."""
@@ -4193,6 +4579,8 @@ class StudyPlanEngine:
         # Cooldown window: avoid immediate repeats across consecutive quizzes.
         cooldown_n = max(12, int(count) * 2)
         cooldown_set = set(recent_history[-cooldown_n:])
+        chapter_outcome = self.get_chapter_outcome_mastery(chapter)
+        uncovered_outcome_ids = set(chapter_outcome.get("uncovered_ids", []) or [])
 
         def _miss_risk(idx: int) -> float:
             if not getattr(self, "adaptive_quiz_prioritization", True):
@@ -4228,6 +4616,17 @@ class StudyPlanEngine:
                 risk = max(risk, 1.0 - model_prob)
             return max(0.0, min(1.0, risk))
 
+        def _outcome_gap_bonus(idx: int) -> float:
+            if not uncovered_outcome_ids:
+                return 0.0
+            outcome_ids = self._question_outcome_ids(chapter, idx)
+            if not outcome_ids:
+                return 0.0
+            hits = sum(1 for oid in outcome_ids if oid in uncovered_outcome_ids)
+            if hits <= 0:
+                return 0.0
+            return min(1.0, hits / max(1, len(outcome_ids)))
+
         scored = []
         has_due = False
         has_overdue = False
@@ -4245,7 +4644,8 @@ class StudyPlanEngine:
             in_cooldown = 1 if idx in cooldown_set else 0
             is_new = 1 if srs.get("last_review") is None else 0
             risk = _miss_risk(idx)
-            scored.append((idx, due, overdue, in_cooldown, recent, is_new, retention, risk))
+            gap_bonus = _outcome_gap_bonus(idx)
+            scored.append((idx, due, overdue, in_cooldown, recent, is_new, retention, risk, gap_bonus))
             has_due = has_due or bool(due)
             has_overdue = has_overdue or bool(overdue)
             if srs.get("last_review") is not None:
@@ -4267,7 +4667,7 @@ class StudyPlanEngine:
         # Phase 1: include must-review first, but cap to preserve variety.
         due_items = [item for item in scored if item[1] == 1]
         # Prefer not-in-cooldown, then overdue, higher risk, lower retention.
-        due_items.sort(key=lambda x: (x[3], -x[2], -x[7], x[6]))
+        due_items.sort(key=lambda x: (x[3], -x[2], -x[8], -x[7], x[6]))
         max_due = min(count, max(3, int(count * 0.5)))
         selected = [idx for idx, *_rest in due_items[:max_due]]
 
@@ -4277,14 +4677,14 @@ class StudyPlanEngine:
             non_due = [item for item in scored if item[1] == 0 and item[0] not in selected]
             non_cooldown = [item for item in non_due if item[3] == 0]
             # Sort: overdue, higher risk, new cards, not-recent, low retention.
-            non_cooldown.sort(key=lambda x: (-x[2], -x[7], -x[5], x[4], x[6]))
+            non_cooldown.sort(key=lambda x: (-x[2], -x[8], -x[7], -x[5], x[4], x[6]))
             selected.extend([idx for idx, *_rest in non_cooldown[:remaining_slots]])
 
         # Phase 3: fallback to cooldown items if chapter is exhausted.
         if len(selected) < min(count, len(questions)):
             remaining_slots = count - len(selected)
             fallback = [item for item in scored if item[0] not in selected]
-            fallback.sort(key=lambda x: (-x[1], -x[2], -x[7], x[4], x[6]))
+            fallback.sort(key=lambda x: (-x[1], -x[2], -x[8], -x[7], x[4], x[6]))
             selected.extend([idx for idx, *_rest in fallback[:remaining_slots]])
 
         # If not enough unique (shouldn't happen), fill with random
@@ -4303,7 +4703,7 @@ class StudyPlanEngine:
             if not due_pressure and len(non_recent_selected) < min_non_recent:
                 needed = min_non_recent - len(non_recent_selected)
                 candidates = [item for item in scored if item[0] not in selected and item[4] == 0]
-                candidates.sort(key=lambda x: (-x[1], -x[2], -x[7], x[6]))
+                candidates.sort(key=lambda x: (-x[1], -x[2], -x[8], -x[7], x[6]))
                 additions = [idx for idx, *_rest in candidates[:needed]]
                 if additions:
                     due_by_idx = {idx: due for idx, due, *_rest in scored}
@@ -5243,7 +5643,23 @@ class StudyPlanEngine:
                 except Exception:
                     pass
 
+        chapter_outcome = self.get_chapter_outcome_mastery(chapter)
+        uncovered_outcome_ids = set(chapter_outcome.get("uncovered_ids", []) or [])
+
+        def _outcome_gap_bonus(idx: int) -> float:
+            if not uncovered_outcome_ids:
+                return 0.0
+            outcome_ids = self._question_outcome_ids(chapter, idx)
+            if not outcome_ids:
+                return 0.0
+            hits = sum(1 for oid in outcome_ids if oid in uncovered_outcome_ids)
+            if hits <= 0:
+                return 0.0
+            return min(1.0, hits / max(1, len(outcome_ids)))
+
         due_indices: list[int] = []
+        due_kind_by_idx: Dict[int, int] = {}
+        overdue_by_idx: Dict[int, int] = {}
         for idx in range(len(questions)):
             srs = srs_list[idx] if idx < len(srs_list) else {}
             # must-review due
@@ -5251,10 +5667,14 @@ class StudyPlanEngine:
                 due_date = self._parse_date(must_review.get(str(idx)))
                 if due_date and due_date <= today:
                     due_indices.append(idx)
+                    due_kind_by_idx[idx] = 2
+                    overdue_by_idx[idx] = 1 if self.is_overdue(srs, today) else 0
                     continue
             # overdue standard SRS
             if self.is_overdue(srs, today):
                 due_indices.append(idx)
+                due_kind_by_idx[idx] = 1
+                overdue_by_idx[idx] = 1
                 continue
             # due today (non-overdue but scheduled)
             last = srs.get("last_review")
@@ -5268,6 +5688,8 @@ class StudyPlanEngine:
                 due_date = last_date + datetime.timedelta(days=interval)
                 if due_date <= today:
                     due_indices.append(idx)
+                    due_kind_by_idx[idx] = 0
+                    overdue_by_idx[idx] = 0
 
         if not due_indices:
             # Fallback: lowest retention (still avoid brand-new if possible)
@@ -5284,10 +5706,25 @@ class StudyPlanEngine:
             scored.sort(key=lambda x: x[0])
             due_indices = [idx for _r, idx in scored[:count]]
 
-        # Prefer not-recent first, then fill.
-        ordered = [idx for idx in due_indices if idx not in recent]
-        if len(ordered) < min(count, len(due_indices)):
-            ordered.extend([idx for idx in due_indices if idx in recent])
+        due_scored: list[tuple[int, int, int, float, float, int]] = []
+        for idx in due_indices:
+            try:
+                retention = float(self.get_retention_probability(chapter, idx))
+            except Exception:
+                retention = 1.0
+            due_scored.append(
+                (
+                    idx,
+                    due_kind_by_idx.get(idx, 0),  # must-review > overdue > due-today
+                    overdue_by_idx.get(idx, 0),
+                    _outcome_gap_bonus(idx),
+                    retention,
+                    1 if idx in recent else 0,  # prefer not-recent
+                )
+            )
+        due_scored.sort(key=lambda x: (x[5], -x[1], -x[2], -x[3], x[4]))
+        ordered = [idx for idx, _kind, _over, _gap, _ret, _recent in due_scored]
+
         if len(ordered) < count:
             remaining = [i for i in range(len(questions)) if i not in ordered]
             random.shuffle(remaining)
@@ -5619,6 +6056,26 @@ class StudyPlanEngine:
         base_order = [p[0] for p in priorities]
         plan = base_order[:num_topics]
 
+        # Syllabus coverage constraint: include at least one chapter from under-covered capabilities.
+        undercovered_target: str | None = None
+        try:
+            undercovered = self.get_undercovered_capability_chapters(max_coverage=70.0, min_uncovered=1)
+            if undercovered:
+                under_set = set(undercovered)
+                for ch in base_order:
+                    if ch in under_set:
+                        undercovered_target = ch
+                        break
+                if not undercovered_target:
+                    undercovered_target = undercovered[0]
+                if undercovered_target and undercovered_target not in plan:
+                    if len(plan) < int(num_topics):
+                        plan.append(undercovered_target)
+                    elif plan:
+                        plan[-1] = undercovered_target
+        except Exception:
+            undercovered_target = None
+
         # Mandatory weak-area focus: ensure weakest chapters appear in the plan.
         try:
             threshold = float(getattr(self, "mandatory_weak_threshold", 50) or 50)
@@ -5649,6 +6106,18 @@ class StudyPlanEngine:
                 final.remove(current_topic)
             final.insert(0, current_topic)
             final = final[:max(1, num_topics)]
+        if undercovered_target and undercovered_target in self.CHAPTERS and undercovered_target not in final:
+            if len(final) < max(1, int(num_topics)):
+                final.append(undercovered_target)
+            elif final:
+                final[-1] = undercovered_target
+            deduped: list[str] = []
+            for ch in final + base_order:
+                if ch not in deduped:
+                    deduped.append(ch)
+                if len(deduped) >= max(1, int(num_topics)):
+                    break
+            final = deduped
         self.daily_plan_cache = list(final)
         self.daily_plan_cache_date = today_iso
         return final
@@ -6245,6 +6714,7 @@ class StudyPlanEngine:
         self.quiz_recent = data.get('quiz_recent', self.quiz_recent)
         self.error_notebook = data.get('error_notebook', self.error_notebook)
         self.question_stats = data.get('question_stats', self.question_stats)
+        self.outcome_stats = data.get('outcome_stats', self.outcome_stats)
         self.progress_log = data.get('progress_log', self.progress_log)
         self.chapter_notes = data.get('chapter_notes', self.chapter_notes)
         self.difficulty_counts = data.get('difficulty_counts', self.difficulty_counts)
@@ -6355,6 +6825,7 @@ class StudyPlanEngine:
         self.quiz_recent = {}
         self.error_notebook = {}
         self.question_stats = {}
+        self.outcome_stats = {}
         self.chapter_miss_streak = {}
         self.chapter_miss_last_date = {}
         self.hourly_quiz_stats = {}
@@ -6382,6 +6853,7 @@ class StudyPlanEngine:
             "quiz_recent": {k: list(v) for k, v in self.quiz_recent.items()},
             "error_notebook": {k: list(v) for k, v in self.error_notebook.items()},
             "question_stats": {k: dict(v) for k, v in self.question_stats.items()},
+            "outcome_stats": {k: dict(v) for k, v in self.outcome_stats.items()},
             "progress_log": list(self.progress_log),
             "chapter_notes": dict(self.chapter_notes),
             "difficulty_counts": dict(self.difficulty_counts),

@@ -2314,10 +2314,29 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     syllabus_meta = config.get("syllabus_meta")
                     if isinstance(syllabus_meta, dict):
                         syllabus_meta["source_pdf"] = file_path
-                    title_entry.set_text(str(config.get("title", "") or title_entry.get_text()))
-                    _populate_from_config(config)
-                    _set_text(json_view, json.dumps(config, indent=2, ensure_ascii=True))
-                    self._show_syllabus_import_report(result, meta, file_path)
+                    existing_questions = {}
+                    try:
+                        existing_json = json.loads(_get_text(json_view))
+                        if isinstance(existing_json, dict):
+                            q = existing_json.get("questions", {})
+                            if isinstance(q, dict):
+                                existing_questions = q
+                    except Exception:
+                        existing_questions = {}
+
+                    def _apply_draft(draft_config):
+                        title_entry.set_text(str(draft_config.get("title", "") or title_entry.get_text()))
+                        _populate_from_config(draft_config)
+                        _set_text(json_view, json.dumps(draft_config, indent=2, ensure_ascii=True))
+                        self._show_syllabus_import_report(result, meta, file_path)
+
+                    result["config"] = config
+                    self._run_syllabus_import_review_wizard(
+                        result=result,
+                        file_path=file_path,
+                        existing_questions=existing_questions,
+                        on_accept=_apply_draft,
+                    )
                 except Exception as exc:
                     self._show_text_dialog("Module Editor", f"Syllabus import failed: {exc}", Gtk.MessageType.ERROR)
 
@@ -4900,6 +4919,66 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         card.append(body)
         return card
 
+    def _build_outcome_mastery_card(self) -> Gtk.Widget:
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        card.add_css_class("card")
+        title = Gtk.Label(label="Outcome Mastery")
+        title.set_halign(Gtk.Align.START)
+        title.add_css_class("section-title")
+        card.append(title)
+        try:
+            mastery = self.engine.get_outcome_mastery_map()
+        except Exception:
+            mastery = {}
+        if not isinstance(mastery, dict):
+            mastery = {}
+
+        total = int(mastery.get("total_outcomes", 0) or 0)
+        covered = int(mastery.get("covered_outcomes", 0) or 0)
+        uncovered = int(mastery.get("uncovered_outcomes", 0) or 0)
+        coverage_pct = float(mastery.get("coverage_pct", 0.0) or 0.0)
+
+        if total <= 0:
+            empty = Gtk.Label(label="No syllabus outcomes loaded for this module yet.")
+            empty.set_halign(Gtk.Align.START)
+            empty.set_wrap(True)
+            empty.add_css_class("muted")
+            card.append(empty)
+            return card
+
+        bar = Gtk.ProgressBar()
+        bar.set_fraction(max(0.0, min(1.0, coverage_pct / 100.0)))
+        bar.set_show_text(True)
+        bar.set_text(f"Coverage {coverage_pct:.0f}%")
+        card.append(bar)
+
+        summary = Gtk.Label(label=f"Covered: {covered}/{total} • Uncovered: {uncovered}")
+        summary.set_halign(Gtk.Align.START)
+        summary.add_css_class("muted")
+        card.append(summary)
+
+        capabilities = mastery.get("capabilities", {})
+        if isinstance(capabilities, dict) and capabilities:
+            rows: list[tuple[str, float, int, int]] = []
+            for cap, info in capabilities.items():
+                if not isinstance(info, dict):
+                    continue
+                cap_total = int(info.get("total_outcomes", 0) or 0)
+                if cap_total <= 0:
+                    continue
+                cap_covered = int(info.get("covered_outcomes", 0) or 0)
+                cap_pct = float(info.get("coverage_pct", 0.0) or 0.0)
+                rows.append((str(cap), cap_pct, cap_covered, cap_total))
+            if rows:
+                rows.sort(key=lambda x: (x[1], x[0]))
+                lines = [f"{cap}: {cov}/{tot} ({pct:.0f}%)" for cap, pct, cov, tot in rows[:6]]
+                detail = Gtk.Label(label="\n".join(lines))
+                detail.set_halign(Gtk.Align.START)
+                detail.set_wrap(True)
+                detail.add_css_class("muted")
+                card.append(detail)
+        return card
+
     def _build_chapter_info_card(self, topic: str | None) -> Gtk.Widget:
         """Build a per-chapter intelligence card with actionable diagnostics."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -5614,6 +5693,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             risk = self.engine.get_chapter_recall_risk(topic)
             if risk is not None and risk >= 0.6:
                 reasons.append("low recall probability")
+        except Exception:
+            pass
+        try:
+            undercovered = self.engine.get_undercovered_capability_chapters(max_coverage=70.0, min_uncovered=1)
+            if isinstance(undercovered, list) and topic in undercovered:
+                reasons.append("under-covered capability outcomes")
         except Exception:
             pass
         try:
@@ -7366,6 +7451,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
 
         must_review_due = self._get_must_review_due_count(today)
+        undercovered_caps: list[str] = []
+        outcome_task_done = True
+        outcome_task_label = ""
+        try:
+            undercovered_caps = self.engine.get_undercovered_capabilities(max_coverage=70.0, min_uncovered=1)
+            if isinstance(undercovered_caps, list):
+                undercovered_caps = [str(c).strip().upper() for c in undercovered_caps if str(c).strip()]
+            else:
+                undercovered_caps = []
+            if undercovered_caps:
+                outcome_task_done = bool(self.engine.has_outcome_activity_today(undercovered_caps))
+                caps_preview = ", ".join(undercovered_caps[:3])
+                if len(undercovered_caps) > 3:
+                    caps_preview += ", ..."
+                outcome_task_label = f"Cover under-covered capability ({caps_preview})"
+        except Exception:
+            undercovered_caps = []
+            outcome_task_done = True
+            outcome_task_label = ""
 
         focus_goal = self._get_focus_goal_today(pace_info, len(daily_plan))
         try:
@@ -7382,6 +7486,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             mission_tasks.append((f"Clear must-review ({must_review_due} due)", review_done))
         else:
             mission_tasks.append(("Clear must-review", review_done))
+        if outcome_task_label:
+            mission_tasks.append((outcome_task_label, outcome_task_done))
 
         if getattr(self, "study_room_mission_label", None):
             mission_lines = []
@@ -9244,6 +9350,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.engine.record_question_event(self.current_topic, idx, is_correct, elapsed_sec=elapsed)
         except Exception:
             pass
+        try:
+            if hasattr(self.engine, "record_outcome_event"):
+                self.engine.record_outcome_event(self.current_topic, idx, bool(is_correct))
+        except Exception:
+            pass
         after_comp = float(getattr(self.engine, "competence", {}).get(self.current_topic, 0) or 0)
         if before_comp is not None and after_comp is not None:
             self._maybe_notify_weak_cleared(self.current_topic, float(before_comp), float(after_comp))
@@ -9429,6 +9540,96 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         self.render_quiz_question()
 
+    def _run_syllabus_import_review_wizard(self, result, file_path: str, existing_questions, on_accept) -> None:
+        diagnostics = result.get("diagnostics", {}) if isinstance(result, dict) else {}
+        stats = diagnostics.get("stats", {}) if isinstance(diagnostics, dict) else {}
+        warnings_list = diagnostics.get("warnings", []) if isinstance(diagnostics, dict) else []
+        confidence = float(diagnostics.get("confidence", 0.0) or 0.0)
+        module_id = str(result.get("module_id", self.module_id) or self.module_id)
+        capabilities = int(stats.get("capabilities_found", 0) or 0)
+        chapter_count = int(stats.get("chapters_found", 0) or 0)
+        outcomes = int(stats.get("outcomes_found", 0) or 0)
+        has_existing_questions = isinstance(existing_questions, dict) and bool(existing_questions)
+
+        dialog = self._new_dialog(title="Review Syllabus Draft", transient_for=self, modal=True)
+        dialog.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Open Draft", Gtk.ResponseType.OK)
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+
+        summary_lines = [
+            f"Source: {os.path.basename(file_path)}",
+            f"Module ID: {module_id}",
+            f"Parse confidence: {confidence * 100:.0f}%",
+            f"Capabilities: {capabilities} • Chapters: {chapter_count} • Outcomes: {outcomes}",
+        ]
+        summary = Gtk.Label(label="\n".join(summary_lines))
+        summary.set_halign(Gtk.Align.START)
+        summary.set_wrap(True)
+        summary.add_css_class("muted")
+        content.append(summary)
+
+        preserve_check = Gtk.CheckButton(label="Preserve existing question bank in draft")
+        preserve_check.set_active(bool(has_existing_questions))
+        preserve_check.set_sensitive(bool(has_existing_questions))
+        content.append(preserve_check)
+        if not has_existing_questions:
+            no_q = Gtk.Label(label="No existing question bank detected for this module.")
+            no_q.set_halign(Gtk.Align.START)
+            no_q.add_css_class("muted")
+            content.append(no_q)
+
+        low_conf_ack = None
+        if confidence < 0.5:
+            warn = Gtk.Label(label="Low parse confidence detected. Review the generated draft carefully.")
+            warn.set_halign(Gtk.Align.START)
+            warn.set_wrap(True)
+            warn.add_css_class("warning")
+            content.append(warn)
+            low_conf_ack = Gtk.CheckButton(label="I understand and want to open the draft anyway")
+            low_conf_ack.set_active(False)
+            content.append(low_conf_ack)
+
+        if isinstance(warnings_list, list) and warnings_list:
+            warn_title = Gtk.Label(label="Warnings")
+            warn_title.set_halign(Gtk.Align.START)
+            warn_title.add_css_class("section-title")
+            content.append(warn_title)
+            for warning in warnings_list[:8]:
+                item = Gtk.Label(label=f"- {warning}")
+                item.set_halign(Gtk.Align.START)
+                item.set_wrap(True)
+                item.add_css_class("muted")
+                content.append(item)
+
+        def _on_response(dlg, response):
+            if response != Gtk.ResponseType.OK:
+                dlg.destroy()
+                return
+            if low_conf_ack is not None and not low_conf_ack.get_active():
+                self.send_notification("Syllabus Import", "Confirm low-confidence acknowledgment to continue.")
+                return
+            draft_config = result.get("config", {}) if isinstance(result, dict) else {}
+            if not isinstance(draft_config, dict):
+                self._show_text_dialog("Syllabus Import", "Invalid draft payload.", Gtk.MessageType.ERROR)
+                dlg.destroy()
+                return
+            try:
+                final_config = json.loads(json.dumps(draft_config))
+            except Exception:
+                final_config = dict(draft_config)
+            if has_existing_questions and preserve_check.get_active():
+                final_config["questions"] = existing_questions
+            elif not preserve_check.get_active():
+                final_config.pop("questions", None)
+            try:
+                on_accept(final_config)
+            except Exception as exc:
+                self._show_text_dialog("Syllabus Import", f"Failed to open draft: {exc}", Gtk.MessageType.ERROR)
+            dlg.destroy()
+
+        dialog.connect("response", _on_response)
+        dialog.present()
+
     def _show_syllabus_import_report(self, result: dict, meta: dict, file_path: str) -> None:
         diagnostics = result.get("diagnostics", {}) if isinstance(result, dict) else {}
         stats = diagnostics.get("stats", {}) if isinstance(diagnostics, dict) else {}
@@ -9519,11 +9720,32 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if isinstance(syllabus_meta, dict):
                 syllabus_meta["source_pdf"] = file_path
             result["config"] = config
-            self._module_editor_prefill_config = config
-            self._module_editor_prefill_module_id = str(result.get("module_id", self.module_id) or self.module_id)
-            self._module_editor_prefill_module_title = str(config.get("title", self.module_title) or self.module_title)
-            self.on_edit_module(None, None)
-            self._show_syllabus_import_report(result, meta, file_path)
+            module_id = str(result.get("module_id", self.module_id) or self.module_id)
+            existing_questions = {}
+            try:
+                existing_cfg = self.engine._load_module_config(module_id)
+                if isinstance(existing_cfg, dict):
+                    q = existing_cfg.get("questions", {})
+                    if isinstance(q, dict):
+                        existing_questions = q
+            except Exception:
+                existing_questions = {}
+
+            def _apply_draft(draft_config):
+                self._module_editor_prefill_config = draft_config
+                self._module_editor_prefill_module_id = module_id
+                self._module_editor_prefill_module_title = str(
+                    draft_config.get("title", self.module_title) or self.module_title
+                )
+                self.on_edit_module(None, None)
+                self._show_syllabus_import_report(result, meta, file_path)
+
+            self._run_syllabus_import_review_wizard(
+                result=result,
+                file_path=file_path,
+                existing_questions=existing_questions,
+                on_accept=_apply_draft,
+            )
         except Exception as exc:
             self._show_text_dialog("Import Syllabus PDF", f"Failed to import syllabus: {exc}", Gtk.MessageType.ERROR)
 
@@ -11343,6 +11565,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             coach_box.append(note_label)
 
         mission_lines = []
+        undercovered_caps: list[str] = []
+        outcome_task_done = True
+        outcome_task_label = ""
+        try:
+            undercovered_caps = self.engine.get_undercovered_capabilities(max_coverage=70.0, min_uncovered=1)
+            if isinstance(undercovered_caps, list):
+                undercovered_caps = [str(c).strip().upper() for c in undercovered_caps if str(c).strip()]
+            else:
+                undercovered_caps = []
+            if undercovered_caps:
+                outcome_task_done = bool(self.engine.has_outcome_activity_today(undercovered_caps))
+                caps_preview = ", ".join(undercovered_caps[:3])
+                if len(undercovered_caps) > 3:
+                    caps_preview += ", ..."
+                outcome_task_label = f"Cover under-covered capability ({caps_preview})"
+        except Exception:
+            undercovered_caps = []
+            outcome_task_done = True
+            outcome_task_label = ""
         mission_tasks = [(f"Focus {focus_goal}x Pomodoro", focus_done)]
         if has_questions:
             mission_tasks.append((f"Quiz {quiz_target} questions", quiz_done))
@@ -11350,6 +11591,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             mission_tasks.append((f"Clear must-review ({must_review_due} due)", review_done))
         else:
             mission_tasks.append(("Clear must-review", review_done))
+        if outcome_task_label:
+            mission_tasks.append((outcome_task_label, outcome_task_done))
         for title, done in mission_tasks:
             icon = "x" if done else " "
             mission_lines.append(f"[{icon}] {title}")
@@ -11882,6 +12125,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.dashboard.append(today_card)
 
             # Chapter snapshot for the current focus topic
+            try:
+                outcome_card = self._build_outcome_mastery_card()
+                self.dashboard.append(outcome_card)
+            except Exception:
+                pass
             try:
                 chapter_card = self._build_chapter_info_card(recommended_topic)
                 self.dashboard.append(chapter_card)

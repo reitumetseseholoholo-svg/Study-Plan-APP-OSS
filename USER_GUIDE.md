@@ -23,6 +23,7 @@ Complete in order:
 1) **Focus 1x Pomodoro**
 2) **Quiz target questions**
 3) **Clear must‑review**
+4) **Cover under-covered capability** (when syllabus outcomes show a gap)
 
 Coach Briefing also shows:
 - **Exam Readiness Index** and **retrieval quota**
@@ -81,6 +82,7 @@ Toggle in **Preferences** or from the **Coach‑only** button in the plan header
 
 ## 7) Analytics cards
 
+- **Outcome Mastery**: covered vs uncovered outcomes and per-capability coverage
 - **Time Analytics**: total minutes per action type
 - **Top Topics**: focus vs retrieval leaderboards + today’s top topics
 - **Daily Summary**: two‑line recap (most time + biggest gap)
@@ -103,6 +105,10 @@ Use **Import PDF scores** to parse ACCA Study Hub reports. This updates competen
   - Main capabilities
   - Syllabus chapter structure
   - Detailed learning outcomes and intellectual levels
+- Import opens a **review wizard** first:
+  - parse confidence and warnings
+  - preserve existing question bank toggle
+  - explicit confirmation required for low-confidence parses
 - The generated module is loaded into Module Editor as a draft.
 - No file is written until you click **Save** in Module Editor.
 - Existing module questions are preserved by default in the draft.

@@ -101,7 +101,7 @@ Modules can include:
 - `capabilities`: capability letter to title
 - `syllabus_structure`: per chapter syllabus details
   - `subtopics`
-  - `learning_outcomes` (`text`, `level`)
+  - `learning_outcomes` (`id`, `text`, `level`)
   - `intellectual_level_mix` (`level_1`, `level_2`, `level_3`)
   - `outcome_count`
 - `syllabus_meta`
@@ -125,7 +125,8 @@ App flow:
 - `Module -> Import Syllabus PDF...`
 - PDF text extraction uses existing advanced extractor + OCR fallback.
 - Parser produces a draft config plus diagnostics.
-- Module Editor is prefilled with the draft JSON.
+- Review wizard opens first (confidence, warnings, preserve question bank toggle).
+- Module Editor is prefilled only after explicit review confirmation.
 - User must explicitly save; import does not write module files automatically.
 
 Parser rules:
@@ -168,6 +169,12 @@ Parser rules:
 - Syllabus intelligence augments chapter urgency:
   - depth boost from `outcome_count`
   - pressure boost from level mix concentration (L2/L3)
+
+### Outcome-centric planning and routing
+- Outcome progress is tracked per chapter in `outcome_stats`.
+- Quiz answer confirmation records outcome events via question-to-outcome mapping.
+- `select_srs_questions` and `select_due_review_questions` prioritize questions linked to uncovered outcomes.
+- `get_daily_plan` enforces at least one chapter from under-covered capabilities when available.
 
 ### Weekly summary export
 - Auto‑writes `~/.config/studyplan/weekly_report.txt` once per ISO week.
