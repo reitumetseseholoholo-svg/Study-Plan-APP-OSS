@@ -9657,6 +9657,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         diagnostics = result.get("diagnostics", {}) if isinstance(result, dict) else {}
         stats = diagnostics.get("stats", {}) if isinstance(diagnostics, dict) else {}
         warnings = diagnostics.get("warnings", []) if isinstance(diagnostics, dict) else []
+        perf = diagnostics.get("perf", {}) if isinstance(diagnostics, dict) else {}
         confidence = float(diagnostics.get("confidence", 0.0) or 0.0)
         module_id = str(result.get("module_id", self.module_id) or self.module_id)
         config = result.get("config", {}) if isinstance(result, dict) else {}
@@ -9680,6 +9681,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             lines.append(f"OCR used on {int(meta.get('ocr_pages', 0) or 0)} page(s).")
         elif meta.get("ocr_failed_pages"):
             lines.append(f"OCR unavailable on {int(meta.get('ocr_failed_pages', 0) or 0)} page(s).")
+        if isinstance(perf, dict):
+            total_ms = float(perf.get("total_ms", 0.0) or 0.0)
+            parse_ms = float(perf.get("parse_ms", 0.0) or 0.0)
+            build_ms = float(perf.get("build_ms", 0.0) or 0.0)
+            validate_ms = float(perf.get("validate_ms", 0.0) or 0.0)
+            import_cache_hit = bool(perf.get("import_cache_hit", False))
+            parse_cache_hit = bool(perf.get("parse_cache_hit", False))
+            lines.append(
+                f"Perf: total {total_ms:.1f}ms • parse {parse_ms:.1f}ms • "
+                f"build {build_ms:.1f}ms • validate {validate_ms:.1f}ms"
+            )
+            lines.append(
+                "Cache: import {0} • parse {1}".format(
+                    "hit" if import_cache_hit else "miss",
+                    "hit" if parse_cache_hit else "miss",
+                )
+            )
         if isinstance(warnings, list) and warnings:
             lines.append("")
             lines.append("Warnings:")

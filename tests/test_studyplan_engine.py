@@ -435,6 +435,9 @@ def test_import_syllabus_cache_skips_reparse_and_returns_copy(engine_no_io, monk
     assert parse_calls == 1
     assert isinstance(first, dict)
     assert isinstance(second, dict)
+    second_perf = second.get("diagnostics", {}).get("perf", {})
+    assert isinstance(second_perf, dict)
+    assert second_perf.get("import_cache_hit") is True
 
     first_warnings = first.get("diagnostics", {}).get("warnings", [])
     assert isinstance(first_warnings, list)
@@ -464,6 +467,18 @@ def test_import_syllabus_cache_is_bounded(engine_no_io):
         assert isinstance(parsed, dict)
     assert len(eng._syllabus_import_cache) <= limit
     assert len(eng._syllabus_import_cache_order) <= limit
+
+
+def test_import_syllabus_exposes_perf_diagnostics(engine_no_io):
+    eng = engine_no_io
+    result = eng.import_syllabus_from_pdf_text(SAMPLE_SYLLABUS_TEXT, module_id="acca_f9")
+    diagnostics = result.get("diagnostics", {})
+    assert isinstance(diagnostics, dict)
+    perf = diagnostics.get("perf", {})
+    assert isinstance(perf, dict)
+    for key in ("import_cache_hit", "parse_cache_hit", "parse_ms", "build_ms", "validate_ms", "total_ms"):
+        assert key in perf
+    assert perf.get("import_cache_hit") is False
 
 
 def test_load_recall_model_sklearn_accepts_matching_feature_count(engine_no_io, monkeypatch, tmp_path):

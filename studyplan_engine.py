@@ -11,6 +11,7 @@ import sys
 import tempfile
 import copy
 import hashlib
+import time
 from typing import Dict, Any, List, Union, Set, Tuple, cast
 
 class StudyPlanEngine:
@@ -1685,6 +1686,7 @@ class StudyPlanEngine:
 
     def import_syllabus_from_pdf_text(self, pdf_text: str, module_id: str | None = None) -> Dict[str, Any]:
         """Parse syllabus text and return a validated draft module config (no file writes)."""
+        t0 = time.perf_counter()
         target_module_id = self._sanitize_module_id(module_id or self.module_id)
         base_config: Dict[str, Any] | Any = self._load_module_config(target_module_id)
         if not isinstance(base_config, dict):
@@ -1701,11 +1703,25 @@ class StudyPlanEngine:
         cache_key = f"{target_module_id}:{text_hash}:{base_signature}"
         cached = self._syllabus_import_cache.get(cache_key)
         if isinstance(cached, dict):
-            return copy.deepcopy(cached)
+            out = copy.deepcopy(cached)
+            diagnostics = out.get("diagnostics", {})
+            if isinstance(diagnostics, dict):
+                perf = diagnostics.get("perf", {})
+                if not isinstance(perf, dict):
+                    perf = {}
+                perf["import_cache_hit"] = True
+                perf["total_ms"] = round((time.perf_counter() - t0) * 1000.0, 2)
+                diagnostics["perf"] = perf
+                out["diagnostics"] = diagnostics
+            return out
 
+        parse_cache_hit = text_hash in self._syllabus_parse_cache
+        t_parse_start = time.perf_counter()
         parsed = self.parse_syllabus_pdf_text(pdf_text)
+        t_parse_ms = (time.perf_counter() - t_parse_start) * 1000.0
         if not base_config:
             base_config = {"title": f"ACCA {str(parsed.get('exam_code') or target_module_id).upper()}"}
+        t_build_start = time.perf_counter()
         try:
             draft = self.build_module_config_from_syllabus(parsed, base_config=base_config)
         except ValueError as exc:
@@ -1738,7 +1754,11 @@ class StudyPlanEngine:
             parsed_warnings.append(f"Fallback draft generated: {exc}")
             parsed["warnings"] = parsed_warnings
             draft = fallback
+        t_build_ms = (time.perf_counter() - t_build_start) * 1000.0
+        t_validate_start = time.perf_counter()
         validation = self.validate_syllabus_config(draft)
+        t_validate_ms = (time.perf_counter() - t_validate_start) * 1000.0
+        t_total_ms = (time.perf_counter() - t0) * 1000.0
         notes = list(parsed.get("warnings", []))
         notes.extend(validation.get("notes", []))
         result = {
@@ -1749,6 +1769,14 @@ class StudyPlanEngine:
                 "confidence": float(parsed.get("confidence", 0.0) or 0.0),
                 "stats": parsed.get("stats", {}),
                 "warnings": notes,
+                "perf": {
+                    "import_cache_hit": False,
+                    "parse_cache_hit": bool(parse_cache_hit),
+                    "parse_ms": round(t_parse_ms, 2),
+                    "build_ms": round(t_build_ms, 2),
+                    "validate_ms": round(t_validate_ms, 2),
+                    "total_ms": round(t_total_ms, 2),
+                },
             },
         }
         self._syllabus_import_cache[cache_key] = copy.deepcopy(result)
