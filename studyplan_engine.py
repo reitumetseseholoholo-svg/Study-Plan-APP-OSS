@@ -3934,15 +3934,23 @@ class StudyPlanEngine:
         try:
             path = self.recall_model_sklearn_path
             if not path or not os.path.exists(path):
+                self.recall_model_sklearn = None
                 return
             try:
                 import joblib  # type: ignore
             except Exception:
+                self.recall_model_sklearn = None
                 return
-            model = joblib.load(path)
-            if hasattr(model, "predict_proba"):
+            payload = joblib.load(path)
+            model = payload
+            if isinstance(payload, dict):
+                model = payload.get("model")
+            if model is not None and hasattr(model, "predict_proba"):
                 self.recall_model_sklearn = model
+            else:
+                self.recall_model_sklearn = None
         except Exception:
+            self.recall_model_sklearn = None
             return
 
     def _load_difficulty_model(self) -> None:

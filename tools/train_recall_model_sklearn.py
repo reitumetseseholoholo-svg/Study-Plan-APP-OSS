@@ -4,6 +4,7 @@ import datetime
 import json
 import math
 import os
+from typing import Any
 
 
 def _log1p_safe(val: float) -> float:
@@ -86,6 +87,82 @@ def _build_dataset(stats: dict, threshold: float) -> tuple[list[list[float]], li
     return X, y
 
 
+def _safe_prob_list(values: Any, size: int) -> list[float]:
+    probs: list[float] = []
+    if not isinstance(values, (list, tuple)):
+        return [0.5] * size
+    for v in values[:size]:
+        try:
+            p = float(v)
+        except Exception:
+            p = 0.5
+        probs.append(max(0.0, min(1.0, p)))
+    if len(probs) < size:
+        probs.extend([0.5] * (size - len(probs)))
+    return probs
+
+
+def _brier_score(y_true: list[int], probs: list[float]) -> float:
+    n = max(1, len(y_true))
+    total = 0.0
+    for yt, p in zip(y_true, probs):
+        total += (float(yt) - float(p)) ** 2
+    return total / n
+
+
+def _roc_auc(y_true: list[int], probs: list[float]) -> float | None:
+    if len(y_true) < 2:
+        return None
+    positives = [p for y, p in zip(y_true, probs) if int(y) == 1]
+    negatives = [p for y, p in zip(y_true, probs) if int(y) == 0]
+    if not positives or not negatives:
+        return None
+    wins = 0.0
+    total = float(len(positives) * len(negatives))
+    for pp in positives:
+        for pn in negatives:
+            if pp > pn:
+                wins += 1.0
+            elif pp == pn:
+                wins += 0.5
+    return wins / total if total > 0 else None
+
+
+def _predict_probs(model: Any, X_holdout: list[list[float]]) -> list[float] | None:
+    try:
+        raw = model.predict_proba(X_holdout)
+    except Exception:
+        return None
+    probs: list[float] = []
+    try:
+        for row in raw:
+            probs.append(float(row[1]))
+    except Exception:
+        return None
+    return _safe_prob_list(probs, len(X_holdout))
+
+
+def _load_existing_model(path: str) -> Any | None:
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        import joblib
+    except Exception:
+        return None
+    try:
+        payload = joblib.load(path)
+    except Exception:
+        return None
+    if isinstance(payload, dict):
+        model = payload.get("model")
+        if model is not None and hasattr(model, "predict_proba"):
+            return model
+        return None
+    if hasattr(payload, "predict_proba"):
+        return payload
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train recall prediction model using scikit-learn.")
     parser.add_argument(
@@ -101,6 +178,20 @@ def main() -> int:
     parser.add_argument("--threshold", type=float, default=0.7)
     parser.add_argument("--max_iter", type=int, default=400)
     parser.add_argument("--C", type=float, default=1.0)
+    parser.add_argument("--test_size", type=float, default=0.2)
+    parser.add_argument("--random_state", type=int, default=42)
+    parser.add_argument(
+        "--min_improvement_brier",
+        type=float,
+        default=0.001,
+        help="Minimum Brier score improvement over current model to promote.",
+    )
+    parser.add_argument(
+        "--min_baseline_gain",
+        type=float,
+        default=0.002,
+        help="Minimum Brier improvement over baseline to allow promotion.",
+    )
     args = parser.parse_args()
 
     data_path = _resolve_data_path(args.data)
@@ -115,16 +206,96 @@ def main() -> int:
 
     try:
         from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import train_test_split
         import joblib
     except Exception as exc:
         print(f"Missing dependency: {exc}")
         return 2
 
+    test_size = min(0.5, max(0.1, float(args.test_size)))
+    random_state = int(args.random_state)
+    y_unique = set(int(v) for v in y)
+    stratify = y if len(y_unique) > 1 else None
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=test_size,
+            random_state=random_state,
+            stratify=stratify,
+        )
+    except Exception:
+        split_idx = max(1, int(len(X) * (1.0 - test_size)))
+        X_train, X_test = X[:split_idx], X[split_idx:]
+        y_train, y_test = y[:split_idx], y[split_idx:]
+    if not X_test:
+        X_test = X_train
+        y_test = y_train
+
     model = LogisticRegression(max_iter=int(args.max_iter), C=float(args.C))
-    model.fit(X, y)
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    joblib.dump(model, args.out)
-    print(f"Model saved to {args.out} ({len(X)} samples).")
+    model.fit(X_train, y_train)
+
+    new_probs = _predict_probs(model, X_test)
+    if new_probs is None:
+        print("Training failed: could not produce probabilities.")
+        return 1
+    new_brier = _brier_score(y_test, new_probs)
+    new_auc = _roc_auc(y_test, new_probs)
+
+    train_pos_rate = (sum(int(v) for v in y_train) / max(1, len(y_train))) if y_train else 0.5
+    baseline_probs = [train_pos_rate] * len(y_test)
+    baseline_brier = _brier_score(y_test, baseline_probs)
+
+    existing_model = _load_existing_model(args.out)
+    old_brier = None
+    old_auc = None
+    if existing_model is not None:
+        old_probs = _predict_probs(existing_model, X_test)
+        if old_probs is not None:
+            old_brier = _brier_score(y_test, old_probs)
+            old_auc = _roc_auc(y_test, old_probs)
+
+    beats_baseline = (baseline_brier - new_brier) >= float(args.min_baseline_gain)
+    beats_existing = (
+        old_brier is None
+        or (old_brier - new_brier) >= float(args.min_improvement_brier)
+    )
+    should_promote = beats_baseline and beats_existing
+
+    new_meta = {
+        "trained_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "sample_count": len(X),
+        "train_count": len(X_train),
+        "test_count": len(X_test),
+        "threshold": float(args.threshold),
+        "test_size": test_size,
+        "random_state": random_state,
+        "metrics": {
+            "brier": round(float(new_brier), 6),
+            "auc": round(float(new_auc), 6) if new_auc is not None else None,
+            "baseline_brier": round(float(baseline_brier), 6),
+            "beats_baseline": bool(beats_baseline),
+            "old_brier": round(float(old_brier), 6) if old_brier is not None else None,
+            "old_auc": round(float(old_auc), 6) if old_auc is not None else None,
+            "beats_existing": bool(beats_existing),
+            "promoted": bool(should_promote),
+        },
+    }
+
+    if should_promote:
+        os.makedirs(os.path.dirname(args.out), exist_ok=True)
+        payload = {"model": model, "meta": new_meta}
+        joblib.dump(payload, args.out)
+        print(
+            f"Model promoted -> {args.out} "
+            f"(samples={len(X)}, brier={new_brier:.4f}, auc={new_auc if new_auc is not None else 'n/a'})"
+        )
+    else:
+        print(
+            "Model not promoted "
+            f"(new_brier={new_brier:.4f}, baseline_brier={baseline_brier:.4f}, "
+            f"old_brier={old_brier if old_brier is not None else 'n/a'})."
+        )
     return 0
 
 
