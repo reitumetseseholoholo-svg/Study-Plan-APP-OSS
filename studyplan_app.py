@@ -10047,6 +10047,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         total += 1
         return total
 
+    def _get_ml_confidence_tier(self, sample_count: int) -> str:
+        try:
+            n = int(sample_count)
+        except Exception:
+            n = 0
+        if n < 100:
+            return "low"
+        if n < 300:
+            return "medium"
+        return "high"
+
     def _auto_train_ml_models(self) -> None:
         try:
             if getattr(self, "focus_mode", False):
@@ -10502,13 +10513,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             live_samples = int(self._count_question_samples() or 0)
             trained_samples = int(getattr(self, "_last_ml_train_sample_count", 0) or 0)
             sample_count = max(live_samples, trained_samples)
+            confidence_tier = self._get_ml_confidence_tier(sample_count)
             trained_at = getattr(self, "_last_ml_train_at", None) or "never"
             training_note = " • training…" if getattr(self, "_ml_train_in_progress", False) else ""
+            ml_display = ml_state if confidence_tier != "low" else "ML: warming up"
             ml_label = Gtk.Label(
-                label=f"{ml_state} • samples {sample_count} • trained {trained_at}{training_note}"
+                label=(
+                    f"{ml_display} • confidence {confidence_tier}"
+                    f" • samples {sample_count} • trained {trained_at}{training_note}"
+                )
             )
             ml_label.set_halign(Gtk.Align.START)
             ml_label.add_css_class("muted")
+            if confidence_tier == "low":
+                ml_label.add_css_class("status-warn")
             coach_box.append(ml_label)
         except Exception:
             pass
@@ -10949,12 +10967,30 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         if getattr(self.engine, "difficulty_model", None) is not None
                         else "heuristic"
                     )
+                    interval_active = (
+                        "sklearn"
+                        if getattr(self.engine, "interval_model", None) is not None
+                        else "off"
+                    )
+                    live_samples = int(self._count_question_samples() or 0)
+                    trained_samples = int(getattr(self, "_last_ml_train_sample_count", 0) or 0)
+                    sample_count = max(live_samples, trained_samples)
+                    confidence_tier = self._get_ml_confidence_tier(sample_count)
                     model_lines.append(f"Recall model: {recall_active}")
                     model_lines.append(f"Difficulty model: {diff_active}")
+                    model_lines.append(f"Interval model: {interval_active}")
                     model_label = Gtk.Label(label=" • ".join(model_lines))
                     model_label.set_halign(Gtk.Align.START)
                     model_label.add_css_class("muted")
                     insights.append(model_label)
+                    confidence_label = Gtk.Label(
+                        label=f"ML confidence: {confidence_tier} • samples {sample_count}"
+                    )
+                    confidence_label.set_halign(Gtk.Align.START)
+                    confidence_label.add_css_class("muted")
+                    if confidence_tier == "low":
+                        confidence_label.add_css_class("status-warn")
+                    insights.append(confidence_label)
                     last_trained = getattr(self, "_last_ml_train_at", None) or getattr(self, "_last_ml_train_date", None)
                     if last_trained:
                         train_label = Gtk.Label(label=f"Last trained: {last_trained}")
