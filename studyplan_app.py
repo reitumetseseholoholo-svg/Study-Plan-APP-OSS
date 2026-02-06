@@ -8435,6 +8435,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.quiz_mix_label.add_css_class("muted")
         content_area.append(self.quiz_mix_label)
 
+        self.quiz_mix_bar = Gtk.ProgressBar()
+        self.quiz_mix_bar.set_show_text(False)
+        self.quiz_mix_bar.add_css_class("muted")
+        self.quiz_mix_bar.set_tooltip_text("New vs Review mix")
+        content_area.append(self.quiz_mix_bar)
+
         self.quiz_progress = Gtk.ProgressBar()
         self.quiz_progress.set_show_text(True)
         content_area.append(self.quiz_progress)
@@ -8526,8 +8532,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             new_count = int(mix.get("new", 0) or 0)
             review_count = int(mix.get("review", 0) or 0)
             self.quiz_mix_label.set_text(f"Mix: {new_count} new • {review_count} review")
+            total = new_count + review_count
+            if total > 0:
+                self.quiz_mix_bar.set_fraction(new_count / total)
+                self.quiz_mix_bar.set_visible(True)
+            else:
+                self.quiz_mix_bar.set_visible(False)
         except Exception:
             self.quiz_mix_label.set_text("")
+            self.quiz_mix_bar.set_visible(False)
         self.quiz_progress.set_fraction(pos / max(1, total))
         self.quiz_progress.set_text(f"{pos}/{total}")
         if getattr(self, "quiz_next_btn", None):
