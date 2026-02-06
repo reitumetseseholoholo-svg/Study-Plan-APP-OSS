@@ -9795,44 +9795,93 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 Gtk.MessageType.ERROR,
             )
             return
-        try:
-            pdf_text, meta = self._extract_pdf_text_advanced(file_path)
-            result = self.engine.import_syllabus_from_pdf_text(pdf_text, module_id=self.module_id)
-            config = result.get("config", {}) if isinstance(result, dict) else {}
-            if not isinstance(config, dict):
-                raise ValueError("Invalid syllabus draft config")
-            syllabus_meta = config.get("syllabus_meta")
-            if isinstance(syllabus_meta, dict):
-                syllabus_meta["source_pdf"] = file_path
-            result["config"] = config
-            module_id = str(result.get("module_id", self.module_id) or self.module_id)
-            existing_questions = {}
-            try:
-                existing_cfg = self.engine._load_module_config(module_id)
-                if isinstance(existing_cfg, dict):
-                    q = existing_cfg.get("questions", {})
-                    if isinstance(q, dict):
-                        existing_questions = q
-            except Exception:
-                existing_questions = {}
-
-            def _apply_draft(draft_config):
-                self._module_editor_prefill_config = draft_config
-                self._module_editor_prefill_module_id = module_id
-                self._module_editor_prefill_module_title = str(
-                    draft_config.get("title", self.module_title) or self.module_title
-                )
-                self.on_edit_module(None, None)
-                self._show_syllabus_import_report(result, meta, file_path)
-
-            self._run_syllabus_import_review_wizard(
-                result=result,
-                file_path=file_path,
-                existing_questions=existing_questions,
-                on_accept=_apply_draft,
+        if getattr(self, "_syllabus_import_in_progress", False):
+            self._show_text_dialog(
+                "Import Syllabus PDF",
+                "Syllabus import already in progress. Please wait.",
+                Gtk.MessageType.INFO,
             )
-        except Exception as exc:
-            self._show_text_dialog("Import Syllabus PDF", f"Failed to import syllabus: {exc}", Gtk.MessageType.ERROR)
+            return
+
+        progress = self._new_dialog(title="Importing Syllabus…", transient_for=self, modal=True)
+        progress.set_default_size(360, 140)
+        content = progress.get_content_area()
+        content.set_spacing(8)
+        label = Gtk.Label(label="Parsing PDF and building draft module…")
+        label.set_halign(Gtk.Align.START)
+        label.set_wrap(True)
+        spinner = Gtk.Spinner()
+        spinner.start()
+        content.append(label)
+        content.append(spinner)
+        progress.present()
+
+        self._syllabus_import_in_progress = True
+
+        def _worker():
+            try:
+                pdf_text, meta = self._extract_pdf_text_advanced(file_path)
+                result = self.engine.import_syllabus_from_pdf_text(pdf_text, module_id=self.module_id)
+                return ("ok", result, meta, None)
+            except Exception as exc:
+                return ("err", None, None, exc)
+
+        def _finish(status, result, meta, err):
+            self._syllabus_import_in_progress = False
+            try:
+                progress.destroy()
+            except Exception:
+                pass
+            if status != "ok":
+                self._show_text_dialog(
+                    "Import Syllabus PDF",
+                    f"Failed to import syllabus: {err}",
+                    Gtk.MessageType.ERROR,
+                )
+                return False
+            try:
+                config = result.get("config", {}) if isinstance(result, dict) else {}
+                if not isinstance(config, dict):
+                    raise ValueError("Invalid syllabus draft config")
+                syllabus_meta = config.get("syllabus_meta")
+                if isinstance(syllabus_meta, dict):
+                    syllabus_meta["source_pdf"] = file_path
+                result["config"] = config
+                module_id = str(result.get("module_id", self.module_id) or self.module_id)
+                existing_questions = {}
+                try:
+                    existing_cfg = self.engine._load_module_config(module_id)
+                    if isinstance(existing_cfg, dict):
+                        q = existing_cfg.get("questions", {})
+                        if isinstance(q, dict):
+                            existing_questions = q
+                except Exception:
+                    existing_questions = {}
+
+                def _apply_draft(draft_config):
+                    self._module_editor_prefill_config = draft_config
+                    self._module_editor_prefill_module_id = module_id
+                    self._module_editor_prefill_module_title = str(
+                        draft_config.get("title", self.module_title) or self.module_title
+                    )
+                    self.on_edit_module(None, None)
+                    self._show_syllabus_import_report(result, meta, file_path)
+
+                self._run_syllabus_import_review_wizard(
+                    result=result,
+                    file_path=file_path,
+                    existing_questions=existing_questions,
+                    on_accept=_apply_draft,
+                )
+            except Exception as exc:
+                self._show_text_dialog("Import Syllabus PDF", f"Failed to import syllabus: {exc}", Gtk.MessageType.ERROR)
+            return False
+
+        def _run():
+            status, result, meta, err = _worker()
+            GLib.idle_add(_finish, status, result, meta, err)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def on_import_pdf(self, button):
         dialog = self._new_dialog(title="Select PDF File", transient_for=self, modal=True)
