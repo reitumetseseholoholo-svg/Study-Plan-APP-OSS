@@ -11321,6 +11321,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _auto_train_ml_models(self) -> None:
         try:
+            if getattr(self, "_ml_auto_train_due", False):
+                return
             if getattr(self, "focus_mode", False):
                 return
             if getattr(self, "pomodoro_remaining", 0) > 0:
@@ -11345,6 +11347,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             delta = samples - int(self._last_ml_train_sample_count or 0)
             if delta < 20:
                 return
+            self._ml_auto_train_due = True
 
             def _run_script(script_name: str) -> bool:
                 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -11373,6 +11376,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     now = datetime.datetime.now().isoformat(timespec="seconds")
                     def _finish():
                         self._ml_train_in_progress = False
+                        self._ml_auto_train_due = False
                         if ok1 or ok2 or ok3:
                             self._last_ml_train_at = now
                             self._last_ml_train_date = now.split("T")[0]
