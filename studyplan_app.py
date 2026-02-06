@@ -4728,6 +4728,92 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             lines.append("Biggest gap: —")
         return lines
 
+    def _get_mastery_trend_points(self, days: int = 21) -> list[tuple[datetime.date, float]]:
+        points_by_day: dict[datetime.date, float] = {}
+        try:
+            progress = getattr(self.engine, "progress_log", []) or []
+        except Exception:
+            progress = []
+        if not isinstance(progress, list):
+            return []
+        cutoff = datetime.date.today() - datetime.timedelta(days=max(1, int(days)) - 1)
+        for item in progress:
+            if not isinstance(item, dict):
+                continue
+            date_str = item.get("date")
+            try:
+                day = datetime.date.fromisoformat(str(date_str)) if date_str else None
+            except Exception:
+                day = None
+            if not day or day < cutoff:
+                continue
+            try:
+                mastery = float(item.get("overall_mastery", 0) or 0.0)
+            except Exception:
+                mastery = 0.0
+            points_by_day[day] = mastery
+        points = sorted(points_by_day.items(), key=lambda x: x[0])
+        return points
+
+    def _build_exam_forecast_card(
+        self, readiness_score: float, pace_status: str, days_remaining: int | None
+    ) -> Gtk.Widget:
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        card.add_css_class("card")
+        title = Gtk.Label(label="Exam Forecast")
+        title.set_halign(Gtk.Align.START)
+        title.add_css_class("section-title")
+        card.append(title)
+
+        points = self._get_mastery_trend_points(21)
+        daily_slope = 0.0
+        trend_7d = 0.0
+        if len(points) >= 2:
+            span_days = max(1, (points[-1][0] - points[0][0]).days)
+            daily_slope = (points[-1][1] - points[0][1]) / float(span_days)
+            cutoff_7d = datetime.date.today() - datetime.timedelta(days=6)
+            recent = [p for p in points if p[0] >= cutoff_7d]
+            if len(recent) >= 2:
+                trend_7d = recent[-1][1] - recent[0][1]
+
+        projected = float(readiness_score)
+        if isinstance(days_remaining, int):
+            projected += daily_slope * float(days_remaining) * 0.6
+        if pace_status == "behind":
+            projected -= 5.0
+        elif pace_status == "ahead":
+            projected += 3.0
+        projected = max(0.0, min(100.0, projected))
+
+        if projected >= 85:
+            status = "On course"
+        elif projected >= 70:
+            status = "Watchlist"
+        else:
+            status = "At risk"
+
+        bar = Gtk.ProgressBar()
+        bar.set_fraction(projected / 100.0)
+        bar.set_show_text(True)
+        bar.set_text(f"Projected readiness {projected:.0f}%")
+        card.append(bar)
+
+        lines = [
+            f"Current readiness: {float(readiness_score):.0f}%",
+            f"Trend (7d mastery): {trend_7d:+.1f}%",
+            f"Status: {status}",
+        ]
+        if isinstance(days_remaining, int):
+            lines.insert(2, f"Days remaining: {days_remaining}")
+        else:
+            lines.insert(2, "Days remaining: set exam date")
+        body = Gtk.Label(label="\n".join(lines))
+        body.set_halign(Gtk.Align.START)
+        body.set_wrap(True)
+        body.add_css_class("muted")
+        card.append(body)
+        return card
+
     def _build_chapter_info_card(self, topic: str | None) -> Gtk.Widget:
         """Build a per-chapter intelligence card with actionable diagnostics."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -11539,6 +11625,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             try:
                 chapter_card = self._build_chapter_info_card(recommended_topic)
                 self.dashboard.append(chapter_card)
+            except Exception:
+                pass
+            try:
+                forecast_card = self._build_exam_forecast_card(
+                    readiness_score=readiness_score,
+                    pace_status=pace_status,
+                    days_remaining=days_remaining,
+                )
+                self.dashboard.append(forecast_card)
             except Exception:
                 pass
 
