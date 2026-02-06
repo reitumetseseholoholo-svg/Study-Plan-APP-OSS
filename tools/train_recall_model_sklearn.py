@@ -51,10 +51,11 @@ def _build_dataset(
     threshold: float,
     recency_half_life_days: float,
     recency_min_weight: float,
-) -> tuple[list[list[float]], list[int], list[float]]:
+) -> tuple[list[list[float]], list[int], list[float], list[int]]:
     X: list[list[float]] = []
     y: list[int] = []
     w: list[float] = []
+    t: list[int] = []
     today = datetime.date.today()
     for chapter_stats in stats.values():
         if not isinstance(chapter_stats, dict):
@@ -85,12 +86,15 @@ def _build_dataset(
                 avg_time = 0.0
             last_seen = entry.get("last_seen")
             days_since = 999.0
+            last_ord = 0
             if isinstance(last_seen, str) and last_seen:
                 try:
                     last_date = datetime.date.fromisoformat(last_seen)
                     days_since = float((today - last_date).days)
+                    last_ord = int(last_date.toordinal())
                 except Exception:
                     days_since = 999.0
+                    last_ord = 0
             correct_rate = 0.0 if attempts <= 0 else (correct / max(1.0, attempts))
             features = [
                 _log1p_safe(attempts),
@@ -108,7 +112,8 @@ def _build_dataset(
                     min_weight=recency_min_weight,
                 )
             )
-    return X, y, w
+            t.append(last_ord)
+    return X, y, w, t
 
 
 def _safe_prob_list(values: Any, size: int) -> list[float]:
@@ -304,6 +309,74 @@ def _fit_logistic_candidate(
         return None
 
 
+def _chronological_split(
+    X: list[list[float]],
+    y: list[int],
+    w: list[float],
+    t: list[int],
+    test_size: float,
+    min_test: int,
+) -> tuple[list[list[float]], list[list[float]], list[int], list[int], list[float], list[float]] | None:
+    n = len(X)
+    if n < 4:
+        return None
+    idxs = list(range(n))
+    idxs.sort(key=lambda i: int(t[i]) if i < len(t) else 0)
+    test_n = max(int(min_test), int(round(n * float(test_size))))
+    test_n = min(max(1, test_n), n - 1)
+    split_idx = n - test_n
+    if split_idx <= 0 or split_idx >= n:
+        return None
+    tr = idxs[:split_idx]
+    te = idxs[split_idx:]
+    return (
+        [X[i] for i in tr],
+        [X[i] for i in te],
+        [int(y[i]) for i in tr],
+        [int(y[i]) for i in te],
+        [float(w[i]) for i in tr],
+        [float(w[i]) for i in te],
+    )
+
+
+def _build_time_backtest_windows(
+    X: list[list[float]],
+    y: list[int],
+    w: list[float],
+    t: list[int],
+    window_count: int,
+    min_test: int,
+) -> list[tuple[list[list[float]], list[list[float]], list[int], list[int], list[float], list[float]]]:
+    out: list[tuple[list[list[float]], list[list[float]], list[int], list[int], list[float], list[float]]] = []
+    n = len(X)
+    if n < max(6, int(min_test) * 2):
+        return out
+    idxs = list(range(n))
+    idxs.sort(key=lambda i: int(t[i]) if i < len(t) else 0)
+    step = max(1, int(min_test))
+    for k in range(max(0, int(window_count))):
+        test_end = n - (k * step)
+        test_start = test_end - step
+        if test_start < 1:
+            break
+        train_end = test_start
+        tr = idxs[:train_end]
+        te = idxs[test_start:test_end]
+        if not tr or not te:
+            continue
+        out.append(
+            (
+                [X[i] for i in tr],
+                [X[i] for i in te],
+                [int(y[i]) for i in tr],
+                [int(y[i]) for i in te],
+                [float(w[i]) for i in tr],
+                [float(w[i]) for i in te],
+            )
+        )
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train recall prediction model using scikit-learn.")
     parser.add_argument(
@@ -380,16 +453,47 @@ def main() -> int:
         default=0.002,
         help="Minimum Brier improvement over baseline to allow promotion.",
     )
+    parser.add_argument(
+        "--time_split",
+        choices=["on", "off"],
+        default="on",
+        help="Use chronological train/test split by default.",
+    )
+    parser.add_argument(
+        "--time_backtest_windows",
+        type=int,
+        default=3,
+        help="Number of rolling chronological holdout windows for promotion backtest.",
+    )
+    parser.add_argument(
+        "--time_backtest_min_test",
+        type=int,
+        default=20,
+        help="Minimum test samples per backtest window.",
+    )
+    parser.add_argument(
+        "--max_backtest_failures",
+        type=int,
+        default=1,
+        help="Maximum number of failed backtest windows allowed for promotion.",
+    )
+    parser.add_argument(
+        "--min_backtest_gain",
+        type=float,
+        default=0.0005,
+        help="Minimum Brier gain over baseline required per backtest window.",
+    )
     args = parser.parse_args()
 
     data_path = _resolve_data_path(args.data)
     if not data_path or not os.path.exists(data_path):
         print(f"Data file not found: {args.data}")
         return 1
+
     stats = _load_stats(data_path)
     recency_half_life_days = float(args.recency_half_life_days)
     recency_min_weight = float(args.recency_min_weight)
-    X, y, w = _build_dataset(
+    X, y, w, t = _build_dataset(
         stats,
         threshold=float(args.threshold),
         recency_half_life_days=recency_half_life_days,
@@ -413,22 +517,38 @@ def main() -> int:
 
     test_size = min(0.5, max(0.1, float(args.test_size)))
     random_state = int(args.random_state)
-    y_unique = set(int(v) for v in y)
-    stratify = y if len(y_unique) > 1 else None
-    try:
-        X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
-            X,
-            y,
-            w,
+    split_strategy = "random"
+    split = None
+    if str(args.time_split).lower() == "on":
+        split = _chronological_split(
+            X=X,
+            y=y,
+            w=w,
+            t=t,
             test_size=test_size,
-            random_state=random_state,
-            stratify=stratify,
+            min_test=max(5, int(args.time_backtest_min_test)),
         )
-    except Exception:
-        split_idx = max(1, int(len(X) * (1.0 - test_size)))
-        X_train, X_test = X[:split_idx], X[split_idx:]
-        y_train, y_test = y[:split_idx], y[split_idx:]
-        w_train, w_test = w[:split_idx], w[split_idx:]
+        if split is not None:
+            split_strategy = "time"
+    if split is not None:
+        X_train, X_test, y_train, y_test, w_train, w_test = split
+    else:
+        y_unique = set(int(v) for v in y)
+        stratify = y if len(y_unique) > 1 else None
+        try:
+            X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
+                X,
+                y,
+                w,
+                test_size=test_size,
+                random_state=random_state,
+                stratify=stratify,
+            )
+        except Exception:
+            split_idx = max(1, int(len(X) * (1.0 - test_size)))
+            X_train, X_test = X[:split_idx], X[split_idx:]
+            y_train, y_test = y[:split_idx], y[split_idx:]
+            w_train, w_test = w[:split_idx], w[split_idx:]
     if not X_test:
         X_test = X_train
         y_test = y_train
@@ -487,7 +607,6 @@ def main() -> int:
         print("Training failed: no valid model candidate produced probabilities.")
         return 1
     model = best_model
-    new_probs = best_probs
     new_brier = best_brier
     new_auc = best_auc
     new_ece = best_ece
@@ -518,12 +637,90 @@ def main() -> int:
         old_ece is None
         or (float(old_ece) - float(new_ece)) >= min_improvement_ece
     )
+
+    backtest_windows = _build_time_backtest_windows(
+        X=X,
+        y=y,
+        w=w,
+        t=t,
+        window_count=max(0, int(args.time_backtest_windows)),
+        min_test=max(5, int(args.time_backtest_min_test)),
+    )
+    min_backtest_gain = max(0.0, float(args.min_backtest_gain))
+    max_backtest_failures = max(0, int(args.max_backtest_failures))
+    backtest_details: list[dict[str, Any]] = []
+    backtest_failures = 0
+    backtest_gains: list[float] = []
+    for idx, window in enumerate(backtest_windows):
+        wx_train, wx_test, wy_train, wy_test, ww_train, _ww_test = window
+        if len(set(int(v) for v in wy_train)) < 2:
+            backtest_failures += 1
+            backtest_details.append(
+                {"window": idx + 1, "skipped": True, "reason": "single_class_train"}
+            )
+            continue
+        candidate = _fit_logistic_candidate(
+            LogisticRegression=LogisticRegression,
+            CalibratedClassifierCV=CalibratedClassifierCV,
+            X_train=wx_train,
+            y_train=wy_train,
+            w_train=ww_train,
+            c_val=float(best_c),
+            max_iter=int(args.max_iter),
+            class_weight=class_weight,
+            calibration_mode=calibration_used,
+        )
+        if candidate is None:
+            backtest_failures += 1
+            backtest_details.append(
+                {"window": idx + 1, "skipped": True, "reason": "fit_failed"}
+            )
+            continue
+        probs = _predict_probs(candidate, wx_test)
+        if probs is None:
+            backtest_failures += 1
+            backtest_details.append(
+                {"window": idx + 1, "skipped": True, "reason": "predict_failed"}
+            )
+            continue
+        w_brier = _brier_score(wy_test, probs)
+        w_auc = _roc_auc(wy_test, probs)
+        w_ece = _expected_calibration_error(wy_test, probs, bins=10)
+        win_pos_rate = (sum(int(v) for v in wy_train) / max(1, len(wy_train))) if wy_train else 0.5
+        win_baseline_brier = _brier_score(wy_test, [win_pos_rate] * len(wy_test))
+        win_gain = float(win_baseline_brier) - float(w_brier)
+        backtest_gains.append(win_gain)
+        window_ok = (
+            win_gain >= min_backtest_gain
+            and w_ece <= max_ece
+            and ((w_auc is None) or (float(w_auc) >= min_auc))
+        )
+        if not window_ok:
+            backtest_failures += 1
+        backtest_details.append(
+            {
+                "window": idx + 1,
+                "samples": int(len(wx_test)),
+                "brier": round(float(w_brier), 6),
+                "ece": round(float(w_ece), 6),
+                "auc": round(float(w_auc), 6) if w_auc is not None else None,
+                "baseline_brier": round(float(win_baseline_brier), 6),
+                "gain": round(float(win_gain), 6),
+                "passed": bool(window_ok),
+            }
+        )
+    beats_backtest = (
+        bool(backtest_windows)
+        and backtest_failures <= max_backtest_failures
+    ) or (not backtest_windows)
+
     should_promote = (
         beats_baseline
         and beats_existing
         and beats_calibration
         and beats_auc
         and beats_existing_ece
+        and beats_backtest
     )
 
     new_meta = {
@@ -533,6 +730,7 @@ def main() -> int:
         "test_count": len(X_test),
         "threshold": float(args.threshold),
         "test_size": test_size,
+        "split_strategy": split_strategy,
         "random_state": random_state,
         "class_weight": args.class_weight,
         "calibration": calibration_used,
@@ -559,6 +757,13 @@ def main() -> int:
             "beats_calibration": bool(beats_calibration),
             "min_improvement_ece": round(float(min_improvement_ece), 6),
             "beats_existing_ece": bool(beats_existing_ece),
+            "backtest_windows": int(len(backtest_windows)),
+            "backtest_failures": int(backtest_failures),
+            "max_backtest_failures": int(max_backtest_failures),
+            "min_backtest_gain": round(float(min_backtest_gain), 6),
+            "avg_backtest_gain": round(float(sum(backtest_gains) / max(1, len(backtest_gains))), 6),
+            "beats_backtest": bool(beats_backtest),
+            "backtest_detail": backtest_details,
             "promoted": bool(should_promote),
         },
     }
@@ -577,7 +782,8 @@ def main() -> int:
             "Model not promoted "
             f"(new_brier={new_brier:.4f}, new_ece={new_ece:.4f}, baseline_brier={baseline_brier:.4f}, "
             f"old_brier={old_brier if old_brier is not None else 'n/a'}, old_ece={old_ece if old_ece is not None else 'n/a'}, "
-            f"max_ece={max_ece:.4f}, min_auc={min_auc:.2f})."
+            f"max_ece={max_ece:.4f}, min_auc={min_auc:.2f}, "
+            f"backtest={len(backtest_windows)} windows/{backtest_failures} failures)."
         )
     return 0
 

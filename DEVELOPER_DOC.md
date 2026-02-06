@@ -61,6 +61,7 @@ Global app data:
 - Model features: `log1p_attempts`, `correct_rate`, `streak`, `log1p_avg_time_sec`, `log1p_days_since_last_seen`
 - Recency weighting (sklearn trainer): exponential sample weights with `--recency_half_life_days` and `--recency_min_weight`.
 - Trainer robustness: holdout-gated promotion, optional class balancing (`--class_weight`), and auto-`C` selection via `--c_grid`.
+- Time-split validation: chronological split (`--time_split on`) and rolling backtest windows (`--time_backtest_windows`) gate promotion.
 - Calibration: optional probability calibration (`--calibration`), plus ECE gate (`--max_ece`) before promotion.
 - Promotion quality gates: optional AUC floor (`--min_auc`) and required ECE improvement over current model (`--min_improvement_ece`).
 
