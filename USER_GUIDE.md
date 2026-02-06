@@ -92,6 +92,13 @@ Toggle in **Preferences** or from the **Coach‑only** button in the plan header
 
 Use **Import PDF scores** to parse ACCA Study Hub reports. This updates competence, quiz stats, and analytics.
 
+Import pipeline:
+- native PDF text extraction first
+- optional skimage + Tesseract preprocessing for sparse/noisy pages
+- PyMuPDF OCR fallback
+
+If OCR ran, the summary dialog reports OCR page counts.
+
 ## 9) Module management
 
 - **Module → Switch Module…**
@@ -113,6 +120,7 @@ Use **Import PDF scores** to parse ACCA Study Hub reports. This updates competen
 - No file is written until you click **Save** in Module Editor.
 - Existing module questions are preserved by default in the draft.
 - Parse report shows confidence and warnings. Review before saving.
+- Tools include **View Syllabus Cache Stats** and **Clear Syllabus Cache** for diagnostics/reset.
 
 ## 10) Keyboard shortcuts
 
@@ -133,6 +141,7 @@ Use **Import PDF scores** to parse ACCA Study Hub reports. This updates competen
 - **Focus tracking unavailable** → install `hyprctl`
 - **Charts missing** → install `matplotlib`
 - **PDF import missing** → install `PyMuPDF (fitz)`
+- **Enhanced OCR not active** → install `pytesseract`, `Pillow`, `numpy`, `scikit-image`, and ensure `tesseract` is on PATH
 
 ## 12) ML training and status
 

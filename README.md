@@ -21,6 +21,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - Python 3 with **PyGObject (GTK4)**
 - Optional:
   - **PyMuPDF (fitz)** for PDF score import
+  - **pytesseract + Pillow + numpy + scikit-image** for enhanced OCR preprocessing
   - **matplotlib** for charts
   - **hyprctl** (Hyprland) for focus tracking
   - **hypridle** (optional hook for idle file)
@@ -51,6 +52,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **Balance checks**: topic saturation + confidence drift (competence vs mastery/quiz)
 - **Confidence Drift chart**: top gap visualization
 - **Data Health Check**: one‑click normalization + health summary in Tools
+- **Syllabus cache tools**: view cache stats and clear parse/import caches
 - **Weekly summary export**: auto writes `~/.config/studyplan/weekly_report.txt`
 - **Study Hub import**: parse ACCA Study Hub PDFs (practice/quiz reports)
 - **Syllabus import (draft-first)**: parse ACCA syllabus PDFs into module intelligence
@@ -125,6 +127,7 @@ Global app files:
 4. A low-confidence parse requires explicit acknowledgment before opening the draft
 5. Module Editor opens with draft JSON (no automatic save)
 6. Save explicitly when ready
+7. Optional: use **View Syllabus Cache Stats** in Tools to inspect cache hit rates and disk status
 
 ### Module JSON format
 
@@ -191,6 +194,11 @@ Global app files:
 
 Use **Import PDF Scores** to ingest ACCA Study Hub reports (practice/quiz). The app parses chapter and category performance to update competence and analytics.
 
+OCR behavior:
+- native text extraction first
+- then optional skimage + Tesseract preprocessing for sparse/noisy pages
+- then PyMuPDF OCR fallback
+
 ## Tests
 
 ```bash
@@ -203,6 +211,7 @@ pytest -q
 - **Notifications not showing**: enable desktop notifications in Preferences
 - **Charts missing**: install `matplotlib`
 - **PDF import missing**: install `PyMuPDF (fitz)`
+- **Enhanced OCR not active**: install `pytesseract`, `Pillow`, `numpy`, `scikit-image`, and the `tesseract` binary
 
 ## Recent stability updates (Feb 2026)
 

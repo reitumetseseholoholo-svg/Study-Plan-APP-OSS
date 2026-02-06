@@ -22,6 +22,7 @@ Global app data:
 - `~/.config/studyplan/import_history.jsonl`
 - `~/.config/studyplan/app.log`
 - `~/.config/studyplan/coach_debug.log` (coach pick audit)
+- `~/.config/studyplan/syllabus_import_cache.json` (syllabus parse/import cache + metrics)
 
 ### Key engine structures
 
@@ -123,17 +124,24 @@ Engine APIs:
 App flow:
 
 - `Module -> Import Syllabus PDF...`
-- PDF text extraction uses existing advanced extractor + OCR fallback.
+- PDF text extraction order:
+  - native text extraction
+  - optional skimage + Tesseract preprocessing OCR
+  - PyMuPDF OCR fallback
 - Parser produces a draft config plus diagnostics.
 - Review wizard opens first (confidence, warnings, preserve question bank toggle).
 - Module Editor is prefilled only after explicit review confirmation.
 - User must explicitly save; import does not write module files automatically.
+- Tools & Data exposes:
+  - `View Syllabus Cache Stats`
+  - `Clear Syllabus Cache`
 
 Parser rules:
 
 - Main capabilities parsed from section `2. Main capabilities`
 - Chapter structure parsed from section `4. The syllabus`
 - Learning outcomes parsed from section `5. Detailed study guide`
+- Section matching uses the **last** heading occurrence to avoid table-of-contents false starts.
 - Confidence is computed from capability/chapter/outcome extraction ratios.
 - Low confidence still returns a draft with warnings.
 
@@ -191,6 +199,13 @@ Parser rules:
 - In file chooser helpers, prefer `get_file()` first and isolate legacy chooser calls to avoid noisy GTK deprecation warnings.
 - Coach UI refreshes are debounced (study room, plan, recommendations) to reduce flicker/jank.
 - `Data Health Check` runs `_normalize_loaded_data()` + migrations and appends to `migration.log`.
+- Optional OCR preprocessing is guarded so missing dependencies never break imports.
+
+### Syllabus cache behavior
+- Parse/import results are cached in memory and on disk.
+- Cache hit/miss metrics are tracked (`parse_hits`, `parse_misses`, `import_hits`, `import_misses`).
+- Metrics are persisted with disk cache payload and restored on load.
+- `clear_syllabus_import_cache()` resets cache entries and metrics.
 
 ### Study Hub import
 - PDF parsing updates quiz/practice stats and competence
