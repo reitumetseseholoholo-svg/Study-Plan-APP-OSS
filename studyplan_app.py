@@ -4719,7 +4719,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
 
         try:
-            leeches = getattr(self.engine, "get_leech_counts", lambda *_: {})(days=14)
+            leeches = getattr(self.engine, "get_leech_counts", lambda *_: {})(14)
             leech_count = int(leeches.get(topic, 0) or 0) if isinstance(leeches, dict) else 0
             if leech_count:
                 lines.append(f"Leech alerts: {leech_count}")
