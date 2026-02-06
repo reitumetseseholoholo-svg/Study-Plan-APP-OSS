@@ -9579,6 +9579,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             content.append(no_q)
 
         low_conf_ack = None
+        mapping_ack = None
         if confidence < 0.5:
             warn = Gtk.Label(label="Low parse confidence detected. Review the generated draft carefully.")
             warn.set_halign(Gtk.Align.START)
@@ -9588,6 +9589,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             low_conf_ack = Gtk.CheckButton(label="I understand and want to open the draft anyway")
             low_conf_ack.set_active(False)
             content.append(low_conf_ack)
+
+        warning_text = " ".join(str(w) for w in warnings_list).lower() if isinstance(warnings_list, list) else ""
+        has_mapping_conflict = (
+            "duplicate chapter" in warning_text
+            or "mapping" in warning_text
+            or "chapter conflict" in warning_text
+        )
+        if has_mapping_conflict:
+            map_warn = Gtk.Label(label="Chapter mapping conflicts were detected. Review chapter mapping before save.")
+            map_warn.set_halign(Gtk.Align.START)
+            map_warn.set_wrap(True)
+            map_warn.add_css_class("warning")
+            content.append(map_warn)
+            mapping_ack = Gtk.CheckButton(label="I reviewed the chapter mapping conflicts")
+            mapping_ack.set_active(False)
+            content.append(mapping_ack)
 
         if isinstance(warnings_list, list) and warnings_list:
             warn_title = Gtk.Label(label="Warnings")
@@ -9607,6 +9624,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return
             if low_conf_ack is not None and not low_conf_ack.get_active():
                 self.send_notification("Syllabus Import", "Confirm low-confidence acknowledgment to continue.")
+                return
+            if mapping_ack is not None and not mapping_ack.get_active():
+                self.send_notification("Syllabus Import", "Review chapter mapping conflicts to continue.")
                 return
             draft_config = result.get("config", {}) if isinstance(result, dict) else {}
             if not isinstance(draft_config, dict):
