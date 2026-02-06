@@ -11121,6 +11121,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _get_recall_model_quality_status(self) -> tuple[str, bool]:
         try:
+            block_reason = getattr(self.engine, "recall_model_sklearn_block_reason", None)
+            if isinstance(block_reason, str) and block_reason:
+                return (f"Recall quality: blocked ({block_reason})", True)
             meta = getattr(self.engine, "recall_model_sklearn_meta", None)
             if not isinstance(meta, dict):
                 return ("Recall quality: n/a", False)
@@ -12103,11 +12106,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 insights.append(label)
                 try:
                     model_lines = []
-                    recall_active = (
-                        "sklearn"
-                        if getattr(self.engine, "recall_model_sklearn", None) is not None
-                        else ("json" if getattr(self.engine, "recall_model_json", None) is not None else "off")
-                    )
+                    recall_block_reason = getattr(self.engine, "recall_model_sklearn_block_reason", None)
+                    if isinstance(recall_block_reason, str) and recall_block_reason:
+                        recall_active = f"blocked ({recall_block_reason})"
+                    else:
+                        recall_active = (
+                            "sklearn"
+                            if getattr(self.engine, "recall_model_sklearn", None) is not None
+                            else ("json" if getattr(self.engine, "recall_model_json", None) is not None else "off")
+                        )
                     diff_active = (
                         "sklearn"
                         if getattr(self.engine, "difficulty_model", None) is not None

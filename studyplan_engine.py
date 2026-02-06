@@ -24,6 +24,8 @@ class StudyPlanEngine:
     ML_MIN_CHAPTER_SAMPLES = 8
     ML_MIN_CHAPTER_COVERAGE = 0.10
     ML_MIN_CHAPTER_CONFIDENCE = 0.45
+    RECALL_MODEL_MIN_AUC = 0.58
+    RECALL_MODEL_MAX_ECE = 0.22
     SYLLABUS_PARSE_CACHE_MAX = 12
     SYLLABUS_IMPORT_CACHE_MAX = 12
     SYLLABUS_IMPORT_CACHE_DISK_MAX = 24
@@ -2252,6 +2254,7 @@ class StudyPlanEngine:
         self.recall_model_json: Dict[str, Any] | None = None
         self.recall_model_sklearn: Any | None = None
         self.recall_model_sklearn_meta: Dict[str, Any] | None = None
+        self.recall_model_sklearn_block_reason: str | None = None
         self.recall_model_path = os.path.join(self.DEFAULT_DATA_DIR, "recall_model.json")
         self.recall_model_sklearn_path = os.path.join(self.DEFAULT_DATA_DIR, "recall_model.pkl")
         self.difficulty_model: Dict[str, Any] | None = None
@@ -2315,6 +2318,7 @@ class StudyPlanEngine:
             "recall_model_json",
             "recall_model_sklearn",
             "recall_model_sklearn_meta",
+            "recall_model_sklearn_block_reason",
             "difficulty_model",
             "interval_model",
         }  # Add any vars that can be None
@@ -5413,6 +5417,7 @@ class StudyPlanEngine:
 
     def _load_recall_model_sklearn(self) -> None:
         try:
+            self.recall_model_sklearn_block_reason = None
             path = self.recall_model_sklearn_path
             if not path or not os.path.exists(path):
                 self.recall_model_sklearn = None
@@ -5442,7 +5447,31 @@ class StudyPlanEngine:
             if feature_count is not None and feature_count != self.RECALL_FEATURE_COUNT:
                 self.recall_model_sklearn = None
                 self.recall_model_sklearn_meta = None
+                self.recall_model_sklearn_block_reason = "feature mismatch"
                 return
+            if isinstance(meta, dict):
+                metrics = meta.get("metrics")
+                if isinstance(metrics, dict):
+                    try:
+                        min_auc = float(self.RECALL_MODEL_MIN_AUC)
+                    except Exception:
+                        min_auc = 0.58
+                    try:
+                        max_ece = float(self.RECALL_MODEL_MAX_ECE)
+                    except Exception:
+                        max_ece = 0.22
+                    auc = metrics.get("auc")
+                    ece = metrics.get("ece")
+                    if isinstance(auc, (int, float)) and float(auc) < min_auc:
+                        self.recall_model_sklearn = None
+                        self.recall_model_sklearn_meta = None
+                        self.recall_model_sklearn_block_reason = f"low auc ({float(auc):.3f})"
+                        return
+                    if isinstance(ece, (int, float)) and float(ece) > max_ece:
+                        self.recall_model_sklearn = None
+                        self.recall_model_sklearn_meta = None
+                        self.recall_model_sklearn_block_reason = f"high ece ({float(ece):.3f})"
+                        return
             if model is not None and hasattr(model, "predict_proba"):
                 self.recall_model_sklearn = model
                 self.recall_model_sklearn_meta = meta
@@ -5452,6 +5481,7 @@ class StudyPlanEngine:
         except Exception:
             self.recall_model_sklearn = None
             self.recall_model_sklearn_meta = None
+            self.recall_model_sklearn_block_reason = "load error"
             return
 
     def _load_difficulty_model(self) -> None:

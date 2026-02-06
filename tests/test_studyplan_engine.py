@@ -322,6 +322,45 @@ def test_load_recall_model_sklearn_rejects_bad_feature_count(engine_no_io, monke
     assert eng.recall_model_sklearn is None
 
 
+def test_load_recall_model_sklearn_blocks_low_auc(engine_no_io, monkeypatch, tmp_path):
+    eng = engine_no_io
+    model = types.SimpleNamespace(predict_proba=lambda X: [[0.3, 0.7] for _ in X])
+    payload = {
+        "model": model,
+        "meta": {"feature_count": 5, "metrics": {"auc": 0.50, "ece": 0.10}},
+    }
+    fake_joblib = types.SimpleNamespace(load=lambda _path: payload)
+    monkeypatch.setitem(sys.modules, "joblib", fake_joblib)
+
+    pkl = tmp_path / "recall_model.pkl"
+    pkl.write_text("x", encoding="utf-8")
+    eng.recall_model_sklearn_path = str(pkl)
+    eng._load_recall_model_sklearn()
+
+    assert eng.recall_model_sklearn is None
+    assert isinstance(eng.recall_model_sklearn_block_reason, str)
+    assert "auc" in eng.recall_model_sklearn_block_reason
+
+
+def test_load_recall_model_sklearn_allows_good_metrics(engine_no_io, monkeypatch, tmp_path):
+    eng = engine_no_io
+    model = types.SimpleNamespace(predict_proba=lambda X: [[0.3, 0.7] for _ in X])
+    payload = {
+        "model": model,
+        "meta": {"feature_count": 5, "metrics": {"auc": 0.72, "ece": 0.08}},
+    }
+    fake_joblib = types.SimpleNamespace(load=lambda _path: payload)
+    monkeypatch.setitem(sys.modules, "joblib", fake_joblib)
+
+    pkl = tmp_path / "recall_model.pkl"
+    pkl.write_text("x", encoding="utf-8")
+    eng.recall_model_sklearn_path = str(pkl)
+    eng._load_recall_model_sklearn()
+
+    assert eng.recall_model_sklearn is not None
+    assert eng.recall_model_sklearn_block_reason is None
+
+
 def test_predict_recall_prob_requires_chapter_ml_confidence(engine_no_io):
     eng = engine_no_io
     chapter = "FM Function"
