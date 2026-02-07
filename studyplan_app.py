@@ -5530,7 +5530,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         try:
             if not self._has_chapters():
                 return False
-            questions = self.engine.get_questions(self.current_topic or self._get_recommended_topic())
+            topic = self.current_topic
+            if not topic:
+                topic, _source = self._get_coach_pick_snapshot(force=True)
+            questions = self.engine.get_questions(topic)
             if not questions:
                 return False
         except Exception:
@@ -5676,7 +5679,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _begin_pomodoro(self, minutes: int, kind: str) -> None:
         self._pomodoro_target_minutes = max(1, int(minutes))
         self._pomodoro_kind = kind
-        self._current_coach_pick_at_start = self._get_recommended_topic()
+        self._current_coach_pick_at_start, _source = self._get_coach_pick_snapshot(force=True)
         self._log_coach_contract(self.current_topic or self._current_coach_pick_at_start or "Unknown", minutes)
         self.send_notification(
             "Coach Contract",
@@ -8126,7 +8129,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ensure_coach_selection()
         if not self._ensure_chapters_ready("Focus Now"):
             return
-        topic = self._get_recommended_topic()
+        topic, _source = self._get_coach_pick_snapshot(force=True)
         if not topic:
             return
         self._set_current_topic(topic)
@@ -8140,7 +8143,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ensure_coach_selection()
         if not self._ensure_chapters_ready("Quick Quiz"):
             return
-        topic = self._get_recommended_topic()
+        topic, _source = self._get_coach_pick_snapshot(force=True)
         if not topic:
             return
         self._set_current_topic(topic)
@@ -11610,7 +11613,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
         focus_report = self._last_focus_report or ""
-        next_topic = self._get_recommended_topic()
+        next_topic, _source = self._get_coach_pick_snapshot(force=True)
         lines = [
             f"Daily Recap • {today.isoformat()}",
             f"Pomodoros: {pomodoros}",
