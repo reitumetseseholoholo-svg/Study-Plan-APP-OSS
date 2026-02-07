@@ -55,6 +55,15 @@
 - Questions: `~/.config/studyplan/<module_id>/questions.json`
 - Preferences: `~/.config/studyplan/preferences.json`
 - Weekly summary: `~/.config/studyplan/weekly_report.txt`
+- Smoke report: `~/.config/studyplan/smoke_last.json`
+
+## Quick Stability Gate
+
+```bash
+timeout 40s python studyplan_app.py --dialog-smoke-strict
+```
+
+This runs dialog smoke with coach-only stress and fails fast if KPI thresholds are not met.
 
 ---
 

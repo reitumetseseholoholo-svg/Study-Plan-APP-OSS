@@ -157,4 +157,28 @@ If OCR ran, the summary dialog reports OCR page counts.
   - interval-based cadence with minimum sample deltas
 - If model quality gates fail (Brier/ECE/AUC), the trainer does not promote the new model and keeps the current one.
 
+## 13) Smoke self-check (advanced)
+
+Use this when you want a quick stability check including coach-only toggles and coach consistency:
+
+```bash
+timeout 40s python studyplan_app.py --dialog-smoke-test
+```
+
+Strict mode (recommended before deploy) exits non-zero on failure:
+
+```bash
+timeout 40s python studyplan_app.py --dialog-smoke-strict
+```
+
+Latest smoke report:
+
+- `~/.config/studyplan/smoke_last.json`
+
+Strict mode checks these KPI thresholds:
+
+- `coach_pick_consistency_rate >= 0.999`
+- `coach_only_toggle_integrity_rate == 1.0`
+- `coach_next_burst_integrity_rate == 1.0`
+
 ---

@@ -23,6 +23,7 @@ Global app data:
 - `~/.config/studyplan/app.log`
 - `~/.config/studyplan/coach_debug.log` (coach pick audit)
 - `~/.config/studyplan/syllabus_import_cache.json` (syllabus parse/import cache + metrics)
+- `~/.config/studyplan/smoke_last.json` (latest smoke report with KPI gates)
 
 ### Key engine structures
 
@@ -223,6 +224,38 @@ Parser rules:
 ```bash
 pytest -q
 ```
+
+Dialog smoke modes:
+
+```bash
+timeout 40s python studyplan_app.py --dialog-smoke-test
+timeout 40s python studyplan_app.py --dialog-smoke-strict
+```
+
+Strict smoke behavior:
+
+- `--dialog-smoke-test` is exploratory and always exits 0 unless process-level failures occur.
+- `--dialog-smoke-strict` exits non-zero when:
+  - smoke report status is not `passed`
+  - KPI thresholds fail
+  - report file is missing/unreadable
+
+Smoke report shape highlights (`~/.config/studyplan/smoke_last.json`):
+
+- `status`, `reason`
+- `steps[]` with per-step `ok/error`
+- `kpi` (rates + counters)
+- `kpi_thresholds`
+- `kpi_failures`
+- `diagnostics.top_mismatch_sample`
+- `diagnostics.coach_sync_retry_count`
+- `diagnostics.last_coach_sync_origin`
+
+Current strict KPI thresholds:
+
+- `coach_pick_consistency_rate >= 0.999`
+- `coach_only_toggle_integrity_rate == 1.0`
+- `coach_next_burst_integrity_rate == 1.0`
 
 ## Extending
 

@@ -108,6 +108,7 @@ Global app files:
 - `~/.config/studyplan/import_history.jsonl`
 - `~/.config/studyplan/app.log`
 - `~/.config/studyplan/coach_debug.log` (coach pick audit)
+- `~/.config/studyplan/smoke_last.json` (latest dialog smoke/KPI report)
 - `~/.config/studyplan/modules/*.json` (module configs)
 
 ## Module switching
@@ -204,6 +205,24 @@ OCR behavior:
 ```bash
 pytest -q
 ```
+
+Dialog smoke (exploratory):
+
+```bash
+timeout 40s python studyplan_app.py --dialog-smoke-test
+```
+
+Dialog smoke (strict gate, non-zero on KPI/report failure):
+
+```bash
+timeout 40s python studyplan_app.py --dialog-smoke-strict
+```
+
+Strict smoke KPI thresholds:
+
+- `coach_pick_consistency_rate >= 0.999`
+- `coach_only_toggle_integrity_rate == 1.0`
+- `coach_next_burst_integrity_rate == 1.0`
 
 ## Troubleshooting
 

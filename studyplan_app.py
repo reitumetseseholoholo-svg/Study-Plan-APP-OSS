@@ -2049,6 +2049,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._add_action("import_syllabus_pdf", self.on_menu_import_syllabus_pdf)
         self._add_action("import_ai", self.on_menu_import_ai)
         self._add_action("import_snapshot", self.on_menu_import_snapshot)
+        self._add_action("recover_snapshot", self.on_menu_recover_snapshot)
         self._add_action("restore_latest_snapshot", self.on_menu_restore_latest_snapshot)
         self._add_action("export_csv", self.on_menu_export_csv)
         self._add_action("export_template", self.on_menu_export_template)
@@ -2084,6 +2085,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         file_menu.append("Import PDF scores…", "win.import_pdf")
         file_menu.append("Import AI questions…", "win.import_ai")
         file_menu.append("Import Data Snapshot…", "win.import_snapshot")
+        file_menu.append("Recover from Snapshot…", "win.recover_snapshot")
         file_menu.append("Restore Latest Snapshot…", "win.restore_latest_snapshot")
         file_menu.append("Export data (CSV)…", "win.export_csv")
         file_menu.append("Export import template…", "win.export_template")
@@ -2155,6 +2157,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_menu_import_snapshot(self, _action, _param):
         self.on_import_data_snapshot(None)
+
+    def on_menu_recover_snapshot(self, _action, _param):
+        self.on_recover_snapshot_picker(None)
 
     def on_menu_restore_latest_snapshot(self, _action, _param):
         self.on_restore_latest_snapshot(None)
@@ -6759,7 +6764,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.update_dashboard()
         except Exception:
             pass
+        try:
+            self._notify_startup_data_recovery()
+        except Exception:
+            pass
         return False
+
+    def _notify_startup_data_recovery(self) -> None:
+        """Show one-time startup notice when data auto-recovery was used."""
+        if not getattr(self.engine, "last_load_recovered", False):
+            return
+        snapshot = str(getattr(self.engine, "last_load_recovery_snapshot", "") or "")
+        base = os.path.basename(snapshot) if snapshot else "latest backup snapshot"
+        msg = f"Recovered from {base} after detecting a corrupt data file."
+        self.send_notification("Data Auto-Recovery", msg)
 
     def _auto_train_ml_tick(self):
         self._auto_train_ml_models()
@@ -11128,6 +11146,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     quality_score = float(semantic_import.get("quality_score", 0.0) or 0.0)
                     low_conf_count = int(semantic_import.get("low_confidence", 0) or 0)
                     unmapped_count = int(semantic_import.get("unmapped", 0) or 0)
+                    dedup_skipped = int(semantic_import.get("dedup_skipped", 0) or 0)
+                    dedup_checked = int(semantic_import.get("dedup_checked", 0) or 0)
+                    dedup_method = str(semantic_import.get("dedup_method", "fallback") or "fallback")
+                    dedup_threshold = float(semantic_import.get("dedup_threshold", 0.0) or 0.0)
                     msg += (
                         f"\n\nSemantic mapping:"
                         f"\n- Coverage: {mapped}/{total_new} ({coverage_pct:.0f}%)"
@@ -11135,6 +11157,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         f"\n- Low confidence: {low_conf_count}"
                         f"\n- Unmapped: {unmapped_count}"
                     )
+                    if dedup_checked > 0 or dedup_skipped > 0:
+                        msg += (
+                            f"\n- Semantic dedup: checked {dedup_checked}, skipped {dedup_skipped}"
+                            f" ({dedup_method}, threshold {dedup_threshold:.2f})"
+                        )
                     warnings = semantic_import.get("warnings", [])
                     if isinstance(warnings, list) and warnings:
                         warn_preview = "\n".join(str(w) for w in warnings[:4])
@@ -11338,6 +11365,120 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         confirm.connect("response", _on_confirm)
         confirm.present()
+
+    def on_recover_snapshot_picker(self, _button):
+        try:
+            snapshots = self.engine.list_backup_snapshots(limit=50)
+        except Exception as e:
+            err = self._new_message_dialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.ERROR,
+                buttons=Gtk.ButtonsType.OK,
+                text=f"Snapshot list failed: {e}",
+            )
+            err.connect("response", lambda d, _r: d.destroy())
+            err.present()
+            return
+
+        if not snapshots:
+            info = self._new_message_dialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text="No snapshot backups available yet.",
+            )
+            info.connect("response", lambda d, _r: d.destroy())
+            info.present()
+            return
+
+        def _fmt_size(num_bytes: int) -> str:
+            size = float(max(0, int(num_bytes or 0)))
+            units = ["B", "KB", "MB", "GB"]
+            for unit in units:
+                if size < 1024.0 or unit == units[-1]:
+                    return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+                size /= 1024.0
+            return "0B"
+
+        entries: list[tuple[str, str]] = []
+        for item in snapshots:
+            path = str(item.get("path", "") or "")
+            if not path:
+                continue
+            name = str(item.get("name", os.path.basename(path)) or os.path.basename(path))
+            modified = str(item.get("modified", "unknown") or "unknown")
+            size_label = _fmt_size(int(item.get("size_bytes", 0) or 0))
+            latest = " [latest]" if bool(item.get("is_latest")) else ""
+            label = f"{name}{latest}  |  {modified}  |  {size_label}"
+            entries.append((path, label))
+
+        if not entries:
+            info = self._new_message_dialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text="No valid snapshot backups available.",
+            )
+            info.connect("response", lambda d, _r: d.destroy())
+            info.present()
+            return
+
+        dialog = self._new_dialog(title="Recover from Snapshot", transient_for=self, modal=True)
+        dialog.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Recover", Gtk.ResponseType.OK)
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+        title = Gtk.Label(label="Select snapshot to recover:")
+        title.set_halign(Gtk.Align.START)
+        title.add_css_class("muted")
+        content.append(title)
+
+        snapshot_list = Gtk.StringList.new([entry[1] for entry in entries])
+        snapshot_combo = Gtk.DropDown.new(snapshot_list, None)
+        snapshot_combo.set_halign(Gtk.Align.FILL)
+        snapshot_combo.set_hexpand(True)
+        snapshot_combo.set_selected(0)
+        content.append(snapshot_combo)
+
+        caution = Gtk.Label(
+            label="This replaces current in-memory progress with the selected snapshot and saves it."
+        )
+        caution.set_halign(Gtk.Align.START)
+        caution.set_wrap(True)
+        caution.add_css_class("warning")
+        content.append(caution)
+
+        def _on_response(dlg, resp):
+            dlg.destroy()
+            if resp != Gtk.ResponseType.OK:
+                return
+            try:
+                selected = int(snapshot_combo.get_selected())
+            except Exception:
+                selected = 0
+            if selected < 0 or selected >= len(entries):
+                selected = 0
+            path = entries[selected][0]
+            try:
+                result = self.engine.import_data_snapshot(path)
+                result["snapshot_path"] = path
+                self._apply_snapshot_import_result(result, title_prefix="Snapshot recovered.")
+            except Exception as e:
+                self._log_error("recover_snapshot_picker", e)
+                err = self._new_message_dialog(
+                    transient_for=self,
+                    modal=True,
+                    message_type=Gtk.MessageType.ERROR,
+                    buttons=Gtk.ButtonsType.OK,
+                    text=f"Recover failed: {e}",
+                )
+                err.connect("response", lambda dd, _r: dd.destroy())
+                err.present()
+
+        dialog.connect("response", _on_response)
+        dialog.present()
 
 
     def on_export_data(self, button):

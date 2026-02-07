@@ -39,6 +39,7 @@ class StudyPlanEngine:
     OUTCOME_GAP_QUIZ_RATIO = 0.5
     OUTCOME_GAP_MIN_QUESTIONS = 1
     IMPORT_SEMANTIC_TAG_MIN_SCORE = 0.55
+    IMPORT_SEMANTIC_DEDUP_MIN_SCORE = 0.90
     INTERLEAVE_TARGET_RATIO = 0.60
     INTERLEAVE_ADJACENT_RATIO = 0.25
     INTERLEAVE_FAR_RATIO = 0.15
@@ -2446,6 +2447,9 @@ class StudyPlanEngine:
         self.last_saved_at: str | None = None
         self.last_backup_ok: bool | None = None
         self.last_backup_error: str | None = None
+        self.last_load_recovered: bool = False
+        self.last_load_recovery_snapshot: str = ""
+        self.last_load_recovery_error: str = ""
 
         # Initialise questions dictionary (use QUESTIONS as default)
         self.QUESTIONS = self.QUESTIONS_DEFAULT.copy()
@@ -5130,6 +5134,102 @@ class StudyPlanEngine:
 
         return unique_questions
 
+    def _semantic_deduplicate_questions(
+        self, chapter: str, new_questions: list[dict]
+    ) -> tuple[list[dict], dict[str, Any]]:
+        """
+        Optionally remove near-duplicate imported questions using semantic similarity.
+        Conservative behavior:
+        - Only active when semantic model is ready.
+        - Uses a high threshold to minimize false positives.
+        - Falls back to no-op on any inference error.
+        """
+        stats: dict[str, Any] = {
+            "enabled": False,
+            "checked": 0,
+            "skipped": 0,
+            "method": "fallback",
+            "threshold": float(getattr(self, "IMPORT_SEMANTIC_DEDUP_MIN_SCORE", 0.90) or 0.90),
+        }
+        if chapter not in self.CHAPTERS or not isinstance(new_questions, list) or not new_questions:
+            return new_questions, stats
+
+        questions_existing = self.QUESTIONS.get(chapter, [])
+        if not isinstance(questions_existing, list):
+            questions_existing = []
+
+        existing_texts: list[str] = []
+        for q in questions_existing:
+            if not isinstance(q, dict):
+                continue
+            text = self._normalize_question_text(q.get("question", ""))
+            if text:
+                existing_texts.append(text)
+        if not existing_texts:
+            return new_questions, stats
+
+        model = self._semantic_get_model()
+        if model is None:
+            return new_questions, stats
+        stats["enabled"] = True
+        stats["method"] = "model"
+        threshold = max(0.70, min(0.99, float(stats["threshold"])))
+        stats["threshold"] = threshold
+
+        try:
+            raw_existing = model.encode(existing_texts, normalize_embeddings=True)
+            existing_vectors: list[list[float]] = [
+                [float(v) for v in vec] for vec in list(raw_existing or [])
+            ]
+        except Exception:
+            return new_questions, stats
+        if not existing_vectors:
+            return new_questions, stats
+
+        unique_questions: list[dict] = []
+        accepted_vectors: list[list[float]] = []
+        for q in new_questions:
+            if not isinstance(q, dict):
+                continue
+            q_text = self._normalize_question_text(q.get("question", ""))
+            if not q_text:
+                unique_questions.append(q)
+                continue
+            try:
+                raw_q = model.encode([q_text], normalize_embeddings=True)
+                q_vecs = list(raw_q or [])
+                q_vec = [float(v) for v in q_vecs[0]] if q_vecs else []
+            except Exception:
+                unique_questions.append(q)
+                continue
+            if not q_vec:
+                unique_questions.append(q)
+                continue
+
+            stats["checked"] = int(stats.get("checked", 0) or 0) + 1
+            max_score = 0.0
+            for vec in existing_vectors:
+                try:
+                    score = float(self._cosine_similarity(q_vec, vec))
+                except Exception:
+                    score = 0.0
+                if score > max_score:
+                    max_score = score
+            for vec in accepted_vectors:
+                try:
+                    score = float(self._cosine_similarity(q_vec, vec))
+                except Exception:
+                    score = 0.0
+                if score > max_score:
+                    max_score = score
+            if max_score >= threshold:
+                stats["skipped"] = int(stats.get("skipped", 0) or 0) + 1
+                continue
+
+            unique_questions.append(q)
+            accepted_vectors.append(q_vec)
+
+        return unique_questions, stats
 
     def estimate_hours_needed(self):
         """
@@ -5272,10 +5372,17 @@ class StudyPlanEngine:
 
         print(f"Imported {len(new_questions)} AI questions into {chapter_name}")
 
-    def _add_questions(self, chapter: str, questions: list[dict]) -> int:
-        """Validate, deduplicate, and add questions to a chapter."""
+    def _add_questions_with_stats(self, chapter: str, questions: list[dict]) -> tuple[int, dict[str, Any]]:
+        """Validate, deduplicate, semantically deduplicate, and add questions to a chapter."""
+        semantic_dedup = {
+            "enabled": False,
+            "checked": 0,
+            "skipped": 0,
+            "method": "fallback",
+            "threshold": float(getattr(self, "IMPORT_SEMANTIC_DEDUP_MIN_SCORE", 0.90) or 0.90),
+        }
         if chapter not in self.CHAPTERS:
-            return 0
+            return 0, semantic_dedup
         valid = []
         for q in questions:
             if not isinstance(q, dict):
@@ -5293,15 +5400,21 @@ class StudyPlanEngine:
             valid.append(q)
 
         valid = self._deduplicate_questions(chapter, valid)
+        valid, semantic_dedup = self._semantic_deduplicate_questions(chapter, valid)
         if not valid:
-            return 0
+            return 0, semantic_dedup
 
         self.QUESTIONS.setdefault(chapter, []).extend(valid)
         self.srs_data.setdefault(chapter, [])
         self.srs_data[chapter].extend(
             [{"last_review": None, "interval": 1, "efactor": 2.5} for _ in valid]
         )
-        return len(valid)
+        return len(valid), semantic_dedup
+
+    def _add_questions(self, chapter: str, questions: list[dict]) -> int:
+        """Backwards-compatible wrapper returning added count only."""
+        added, _stats = self._add_questions_with_stats(chapter, questions)
+        return added
 
     def _build_semantic_import_stats(self) -> dict[str, Any]:
         return {
@@ -5315,6 +5428,10 @@ class StudyPlanEngine:
             "dominant_outcome": "",
             "dominant_ratio": 0.0,
             "method_counts": {"model": 0, "tfidf": 0, "fallback": 0},
+            "dedup_checked": 0,
+            "dedup_skipped": 0,
+            "dedup_method": "fallback",
+            "dedup_threshold": float(getattr(self, "IMPORT_SEMANTIC_DEDUP_MIN_SCORE", 0.90) or 0.90),
             "outcome_counts": {},
             "chapter_breakdown": {},
             "warnings": [],
@@ -5359,6 +5476,12 @@ class StudyPlanEngine:
         if mapped >= 5 and dominant_ratio > 0.70 and dominant_outcome:
             warnings.append(
                 f"Outcome concentration detected: {dominant_outcome} dominates {dominant_ratio * 100:.0f}% of mapped imports."
+            )
+        dedup_skipped = int(stats.get("dedup_skipped", 0) or 0)
+        if dedup_skipped > 0:
+            dedup_method = str(stats.get("dedup_method", "fallback") or "fallback")
+            warnings.append(
+                f"Semantic dedup skipped {dedup_skipped} near-duplicate question(s) using {dedup_method} matching."
             )
 
         stats["coverage_pct"] = float(coverage_pct)
@@ -5492,7 +5615,11 @@ class StudyPlanEngine:
                     if score < 0.5:
                         low_confidence_matches.append(f"{chapter_name} -> {chapter} ({score:.0%})")
                     start_idx = len(self.QUESTIONS.get(chapter, []))
-                    added = self._add_questions(chapter, data.get("questions", []))
+                    added, dedup = self._add_questions_with_stats(chapter, data.get("questions", []))
+                    semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
+                    semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
+                    semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
+                    semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
                     if added:
                         chapters_touched.add(chapter)
                         semantic_import = self._semantic_tag_imported_questions(
@@ -5516,7 +5643,11 @@ class StudyPlanEngine:
                     if score < 0.5:
                         low_confidence_matches.append(f"{ch_key} -> {chapter} ({score:.0%})")
                     start_idx = len(self.QUESTIONS.get(chapter, []))
-                    added = self._add_questions(chapter, questions)
+                    added, dedup = self._add_questions_with_stats(chapter, questions)
+                    semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
+                    semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
+                    semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
+                    semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
                     if added:
                         chapters_touched.add(chapter)
                         semantic_import = self._semantic_tag_imported_questions(
@@ -5536,7 +5667,11 @@ class StudyPlanEngine:
                 if score < 0.5:
                     low_confidence_matches.append(f"{ch_key} -> {chapter} ({score:.0%})")
                 start_idx = len(self.QUESTIONS.get(chapter, []))
-                added = self._add_questions(chapter, questions)
+                added, dedup = self._add_questions_with_stats(chapter, questions)
+                semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
+                semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
+                semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
+                semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
                 if added:
                     chapters_touched.add(chapter)
                     semantic_import = self._semantic_tag_imported_questions(
@@ -5561,7 +5696,11 @@ class StudyPlanEngine:
                 grouped.setdefault(chapter, []).append(item)
             for chapter, questions in grouped.items():
                 start_idx = len(self.QUESTIONS.get(chapter, []))
-                added = self._add_questions(chapter, questions)
+                added, dedup = self._add_questions_with_stats(chapter, questions)
+                semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
+                semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
+                semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
+                semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
                 if added:
                     chapters_touched.add(chapter)
                     semantic_import = self._semantic_tag_imported_questions(
@@ -5618,7 +5757,11 @@ class StudyPlanEngine:
 
             for chapter, questions in grouped.items():
                 start_idx = len(self.QUESTIONS.get(chapter, []))
-                added = self._add_questions(chapter, questions)
+                added, dedup = self._add_questions_with_stats(chapter, questions)
+                semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
+                semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
+                semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
+                semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
                 if added:
                     chapters_touched.add(chapter)
                     semantic_import = self._semantic_tag_imported_questions(
@@ -8828,6 +8971,63 @@ class StudyPlanEngine:
             return legacy_bak
         return None
 
+    def list_backup_snapshots(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return available backup snapshots sorted newest-first."""
+        data_dir = os.path.dirname(self.DATA_FILE)
+        if not data_dir:
+            return []
+        base = os.path.basename(self.DATA_FILE)
+        backups_dir = os.path.join(data_dir, "backups")
+        latest = self.get_latest_backup_snapshot_path()
+        rows: List[Dict[str, Any]] = []
+
+        candidates: List[str] = []
+        if os.path.isdir(backups_dir):
+            prefix = f"{base}."
+            suffix = ".bak"
+            try:
+                candidates.extend(
+                    os.path.join(backups_dir, name)
+                    for name in os.listdir(backups_dir)
+                    if name.startswith(prefix) and name.endswith(suffix)
+                )
+            except OSError:
+                pass
+
+        legacy_bak = f"{self.DATA_FILE}.bak"
+        if os.path.exists(legacy_bak):
+            candidates.append(legacy_bak)
+
+        seen: Set[str] = set()
+        enriched: List[Tuple[float, str]] = []
+        for path in candidates:
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                mtime = float(os.path.getmtime(path))
+            except OSError:
+                continue
+            enriched.append((mtime, path))
+
+        enriched.sort(key=lambda item: item[0], reverse=True)
+        safe_limit = max(1, int(limit or 1))
+        for mtime, path in enriched[:safe_limit]:
+            try:
+                size = int(os.path.getsize(path))
+            except OSError:
+                size = 0
+            rows.append(
+                {
+                    "path": path,
+                    "name": os.path.basename(path),
+                    "modified": datetime.datetime.fromtimestamp(mtime).isoformat(timespec="seconds"),
+                    "size_bytes": size,
+                    "is_latest": bool(latest and os.path.abspath(path) == os.path.abspath(latest)),
+                }
+            )
+        return rows
+
     def restore_latest_snapshot(self) -> dict[str, Any]:
         """Import the most recent backup snapshot and return import summary."""
         snapshot_path = self.get_latest_backup_snapshot_path()
@@ -8837,17 +9037,64 @@ class StudyPlanEngine:
         result["snapshot_path"] = snapshot_path
         return result
 
+    def _recover_data_from_latest_snapshot(self, load_error: Exception) -> bool:
+        """Attempt automatic recovery from latest snapshot after load failure."""
+        self.last_load_recovered = False
+        self.last_load_recovery_snapshot = ""
+        self.last_load_recovery_error = str(load_error)
+        snapshot_path = self.get_latest_backup_snapshot_path()
+        if not snapshot_path:
+            print(f"Error loading data: {load_error} (no backup snapshot found)")
+            return False
+        try:
+            with open(snapshot_path, "r", newline="", encoding="utf-8") as f:
+                payload = json.load(f)
+            self._apply_loaded_payload(payload)
+        except Exception as restore_error:
+            self.last_load_recovery_error = f"{load_error}; restore failed: {restore_error}"
+            print(
+                "Error loading data: "
+                f"{load_error} (auto-recovery from {snapshot_path} failed: {restore_error})"
+            )
+            return False
+
+        note = f"Auto-recovered from snapshot after load failure: {os.path.basename(snapshot_path)}"
+        self.last_load_recovered = True
+        self.last_load_recovery_snapshot = snapshot_path
+        self.last_load_recovery_error = str(load_error)
+        try:
+            if isinstance(self.data_health, dict):
+                notes = self.data_health.get("notes")
+                if isinstance(notes, list):
+                    notes.append(note)
+        except Exception:
+            pass
+
+        # Persist recovered state immediately to replace corrupt/invalid primary file.
+        try:
+            self.save_data()
+        except Exception as persist_error:
+            print(f"{note} (persist failed: {persist_error})")
+            return True
+
+        print(f"{note} (cause: {load_error})")
+        return True
+
     def load_data(self):
         """Load user data from JSON file."""
+        # Reflect status of the current load attempt; recovery path overwrites these.
+        self.last_load_recovered = False
+        self.last_load_recovery_snapshot = ""
+        self.last_load_recovery_error = ""
         if os.path.exists(self.DATA_FILE):
             try:
                 with open(self.DATA_FILE, 'r', newline='', encoding='utf-8') as f:
                     data = json.load(f)
                 self._apply_loaded_payload(data)
             except (OSError, json.JSONDecodeError) as e:
-                print(f"Error loading data: {e}")
+                self._recover_data_from_latest_snapshot(e)
             except Exception as e:
-                print(f"Unexpected error loading data: {e}")
+                self._recover_data_from_latest_snapshot(e)
 
     def reset_data(self):
         """

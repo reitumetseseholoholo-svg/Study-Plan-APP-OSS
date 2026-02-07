@@ -186,6 +186,118 @@ def test_save_data_creates_and_prunes_rolling_backups(tmp_path, monkeypatch):
     assert len(snapshots) <= 5, "Expected rolling backups to be pruned to retention limit"
 
 
+def test_list_backup_snapshots_returns_newest_first(tmp_path, monkeypatch):
+    monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+    data_file = tmp_path / "data.json"
+    monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
+
+    eng = StudyPlanEngine()
+    eng.pomodoro_log["total_minutes"] = 1
+    eng.save_data()
+    eng.pomodoro_log["total_minutes"] = 2
+    eng.save_data()
+    eng.pomodoro_log["total_minutes"] = 3
+    eng.save_data()
+
+    rows = eng.list_backup_snapshots(limit=10)
+    assert isinstance(rows, list)
+    assert len(rows) >= 1
+    assert all(isinstance(r, dict) for r in rows)
+    assert all("path" in r and "name" in r and "modified" in r for r in rows)
+    assert all(Path(str(r["path"])).exists() for r in rows)
+    # list should be newest first by modified timestamp
+    modified = [str(r.get("modified", "")) for r in rows]
+    assert modified == sorted(modified, reverse=True)
+
+
+def test_list_backup_snapshots_includes_legacy_bak(tmp_path, monkeypatch):
+    monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+    data_file = tmp_path / "data.json"
+    monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
+
+    eng = StudyPlanEngine()
+    data_file.write_text('{"competence": {}}', encoding="utf-8")
+    legacy = tmp_path / "data.json.bak"
+    legacy.write_text('{"competence": {"FM Function": 9}}', encoding="utf-8")
+
+    rows = eng.list_backup_snapshots(limit=5)
+    names = [str(r.get("name", "")) for r in rows]
+    assert "data.json.bak" in names
+
+
+def test_load_data_auto_recovers_from_latest_snapshot(tmp_path, monkeypatch):
+    real_load_data = StudyPlanEngine.load_data
+    monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+    data_file = tmp_path / "data.json"
+    monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
+
+    eng = StudyPlanEngine()
+    chapter = "FM Function"
+    eng.competence[chapter] = 37
+    eng.save_data()  # Create primary file
+    eng.save_data()  # Create rolling backup from previous primary file
+
+    # Corrupt primary data file.
+    data_file.write_text("{ this is not valid json", encoding="utf-8")
+    eng.competence[chapter] = 0
+
+    real_load_data(eng)
+    assert eng.competence[chapter] == 37
+    assert eng.last_load_recovered is True
+    assert isinstance(eng.last_load_recovery_snapshot, str)
+    assert eng.last_load_recovery_snapshot.endswith(".bak")
+    # Recovery should have rewritten a valid primary file.
+    payload = json.loads(data_file.read_text(encoding="utf-8"))
+    assert payload.get("competence", {}).get(chapter) == 37
+
+
+def test_load_data_corrupt_without_snapshot_keeps_runtime_state(tmp_path, monkeypatch):
+    real_load_data = StudyPlanEngine.load_data
+    monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+    data_file = tmp_path / "data.json"
+    monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
+
+    eng = StudyPlanEngine()
+    chapter = "FM Function"
+    eng.competence[chapter] = 11
+    data_file.write_text("{ broken json", encoding="utf-8")
+
+    real_load_data(eng)
+    assert eng.competence[chapter] == 11
+    assert eng.last_load_recovered is False
+
+
+def test_load_data_recovery_flag_clears_after_successful_load(tmp_path, monkeypatch):
+    real_load_data = StudyPlanEngine.load_data
+    monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+    data_file = tmp_path / "data.json"
+    monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
+
+    eng = StudyPlanEngine()
+    chapter = "FM Function"
+    eng.competence[chapter] = 21
+    eng.save_data()
+    eng.save_data()
+    data_file.write_text("{ broken", encoding="utf-8")
+    eng.competence[chapter] = 0
+
+    real_load_data(eng)
+    assert eng.last_load_recovered is True
+
+    # A clean subsequent load should clear recovery state.
+    eng.competence[chapter] = 55
+    eng.save_data()
+    real_load_data(eng)
+    assert eng.last_load_recovered is False
+    assert eng.last_load_recovery_snapshot == ""
+    assert eng.last_load_recovery_error == ""
+
+
 def test_select_srs_questions_avoids_recent_when_possible(engine_no_io):
     eng = engine_no_io
     chapter = "FM Function"
@@ -333,6 +445,84 @@ def test_import_questions_json_keeps_pretagged_outcomes(engine_no_io, monkeypatc
     semantic = result.get("semantic_import", {})
     assert int(semantic.get("mapped", 0) or 0) == 1
     assert int(semantic.get("pretagged", 0) or 0) == 1
+
+
+def test_add_questions_semantic_dedup_skips_near_duplicates(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.QUESTIONS[chapter] = [
+        {
+            "question": "Which formula is used for weighted average cost of capital?",
+            "options": ["A", "B", "C", "D"],
+            "correct": "A",
+            "explanation": "",
+        }
+    ]
+    eng.srs_data[chapter] = [{"last_review": None, "interval": 1, "efactor": 2.5}]
+    eng.IMPORT_SEMANTIC_DEDUP_MIN_SCORE = 0.90
+
+    class FakeModel:
+        def encode(self, texts, normalize_embeddings=True):
+            vectors = []
+            for raw in texts:
+                t = str(raw).lower()
+                if "weighted average cost of capital" in t or "wacc formula" in t:
+                    vectors.append([1.0, 0.0])
+                elif "investment appraisal" in t:
+                    vectors.append([0.0, 1.0])
+                else:
+                    vectors.append([0.5, 0.5])
+            return vectors
+
+    monkeypatch.setattr(eng, "_semantic_get_model", lambda: FakeModel())
+
+    incoming = [
+        {
+            "question": "What is the WACC formula?",
+            "options": ["A", "B", "C", "D"],
+            "correct": "B",
+            "explanation": "",
+        },
+        {
+            "question": "What is investment appraisal?",
+            "options": ["A", "B", "C", "D"],
+            "correct": "C",
+            "explanation": "",
+        },
+    ]
+    added, dedup = eng._add_questions_with_stats(chapter, incoming)
+    assert added == 1
+    assert int(dedup.get("checked", 0) or 0) >= 1
+    assert int(dedup.get("skipped", 0) or 0) == 1
+    assert str(dedup.get("method", "")) == "model"
+
+
+def test_add_questions_semantic_dedup_fallback_when_model_unavailable(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.QUESTIONS[chapter] = [
+        {
+            "question": "Which formula is used for weighted average cost of capital?",
+            "options": ["A", "B", "C", "D"],
+            "correct": "A",
+            "explanation": "",
+        }
+    ]
+    eng.srs_data[chapter] = [{"last_review": None, "interval": 1, "efactor": 2.5}]
+    monkeypatch.setattr(eng, "_semantic_get_model", lambda: None)
+
+    incoming = [
+        {
+            "question": "What is the WACC formula?",
+            "options": ["A", "B", "C", "D"],
+            "correct": "B",
+            "explanation": "",
+        }
+    ]
+    added, dedup = eng._add_questions_with_stats(chapter, incoming)
+    assert added == 1
+    assert int(dedup.get("skipped", 0) or 0) == 0
+    assert bool(dedup.get("enabled", False)) is False
 
 
 def test_import_data_snapshot_clamps_srs_to_question_count(tmp_path, monkeypatch):
