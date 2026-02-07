@@ -1311,6 +1311,66 @@ def test_resolve_question_outcomes_exposes_semantic_metadata(engine_no_io, monke
     assert float(route.get("semantic_match_confidence", 0.0) or 0.0) >= 0.80
 
 
+def test_semantic_best_outcome_match_uses_cross_reranker(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    outcome_lookup = {
+        "A.1": {"text": "Explain the role and purpose of financial management"},
+        "A.2": {"text": "Assess strategic financial objectives in business context"},
+    }
+    text = "How do strategic financial objectives guide management decisions?"
+
+    class FakeDense:
+        def encode(self, texts, normalize_embeddings=True):
+            rows = []
+            for i, _ in enumerate(texts):
+                if i == 0:
+                    rows.append([1.0, 0.0])
+                elif i == 1:
+                    rows.append([0.95, 0.05])  # dense rank winner before rerank
+                else:
+                    rows.append([0.10, 0.90])  # dense rank loser before rerank
+            return rows
+
+    class FakeCross:
+        def predict(self, pairs):
+            # Reranker flips priority to second candidate.
+            return [0.15, 0.88][: len(pairs)]
+
+    monkeypatch.setattr(eng, "_semantic_get_model", lambda: FakeDense())
+    monkeypatch.setattr(eng, "_semantic_get_reranker", lambda: FakeCross())
+    eng.semantic_min_score = 0.30
+
+    match = eng._semantic_best_outcome_match(chapter, text, outcome_lookup)
+    assert isinstance(match, dict)
+    assert match.get("outcome_id") == "A.2"
+    assert match.get("method") == "cross"
+    assert float(match.get("score", 0.0) or 0.0) > 0.5
+
+
+def test_resolve_question_outcomes_accepts_cross_method(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    outcome_id = "A.1"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": outcome_id, "text": "Explain the purpose of financial management", "level": 1}
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        eng,
+        "_semantic_best_outcome_match",
+        lambda *_args, **_kwargs: {"outcome_id": outcome_id, "score": 0.79, "method": "cross"},
+    )
+    route = eng.resolve_question_outcomes(chapter, 0)
+    assert route.get("outcome_ids") == [outcome_id]
+    assert route.get("semantic_match_method") == "cross"
+
+
 def test_resolve_question_outcomes_falls_back_deterministically(engine_no_io, monkeypatch):
     eng = engine_no_io
     chapter = "FM Function"
@@ -1671,3 +1731,36 @@ def test_get_semantic_interleave_mix_counts(engine_no_io, monkeypatch):
     assert mix["far"] == 1
     assert mix["unknown"] == 1
     assert mix["total"] == 4
+    assert "planned_target_ratio" in mix
+    assert "planned_adjacent_ratio" in mix
+    assert "planned_far_ratio" in mix
+    assert float(mix.get("planned_target_ratio", 0.0) or 0.0) > 0.0
+
+
+def test_adaptive_interleave_ratios_boost_target_for_high_uncovered(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "one", "level": 2},
+                {"id": "A.2", "text": "two", "level": 2},
+                {"id": "A.3", "text": "three", "level": 2},
+                {"id": "A.4", "text": "four", "level": 2},
+            ],
+        }
+    }
+    # 1/4 covered => uncovered ratio 0.75 should trigger high-gap boost.
+    eng.outcome_stats = {
+        chapter: {
+            "A.1": {"attempts": 3, "correct": 3, "streak": 3, "last_seen": datetime.date.today().isoformat()},
+            "A.2": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": datetime.date.today().isoformat()},
+            "A.3": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": datetime.date.today().isoformat()},
+            "A.4": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": datetime.date.today().isoformat()},
+        }
+    }
+    target, adjacent, far, mode = eng._adaptive_interleave_ratios(chapter)
+    assert mode.startswith("boost-")
+    assert target > float(eng.INTERLEAVE_TARGET_RATIO)
+    assert target + adjacent + far == pytest.approx(1.0, rel=1e-6)

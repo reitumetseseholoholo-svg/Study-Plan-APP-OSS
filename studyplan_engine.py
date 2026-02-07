@@ -34,8 +34,10 @@ class StudyPlanEngine:
     SYLLABUS_IMPORT_CACHE_MAX_AGE_DAYS = 30
     SYLLABUS_PARSER_SIGNATURE = "syllabus_parser_ocr_v2"
     SEMANTIC_MODEL_NAME = "all-MiniLM-L6-v2"
+    SEMANTIC_RERANK_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     SEMANTIC_MIN_SCORE = 0.42
     SEMANTIC_CACHE_MAX = 2048
+    SEMANTIC_RERANK_TOP_K = 4
     OUTCOME_GAP_QUIZ_RATIO = 0.5
     OUTCOME_GAP_MIN_QUESTIONS = 1
     IMPORT_SEMANTIC_TAG_MIN_SCORE = 0.55
@@ -2480,13 +2482,24 @@ class StudyPlanEngine:
         self.semantic_model_name: str = str(
             os.environ.get("STUDYPLAN_SEMANTIC_MODEL", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME
         )
+        self.semantic_rerank_model_name: str = str(
+            os.environ.get("STUDYPLAN_SEMANTIC_RERANK_MODEL", self.SEMANTIC_RERANK_MODEL_NAME)
+            or self.SEMANTIC_RERANK_MODEL_NAME
+        )
+        self.semantic_rerank_enabled: bool = str(
+            os.environ.get("STUDYPLAN_SEMANTIC_RERANK", "1")
+        ).strip().lower() not in {"0", "false", "no", "off"}
         self.semantic_min_score: float = float(self.SEMANTIC_MIN_SCORE)
         self._semantic_model: Any | None = None
         self._semantic_model_state: str = "unloaded"
         self._semantic_block_reason: str | None = None
+        self._semantic_reranker: Any | None = None
+        self._semantic_reranker_state: str = "unloaded"
+        self._semantic_reranker_block_reason: str | None = None
         self._semantic_match_cache: Dict[str, Dict[str, Any]] = {}
         self._semantic_match_cache_order: List[str] = []
         self._semantic_lock = threading.Lock()
+        self._semantic_rerank_lock = threading.Lock()
         self.recall_model_json: Dict[str, Any] | None = None
         self.recall_model_sklearn: Any | None = None
         self.recall_model_sklearn_meta: Dict[str, Any] | None = None
@@ -2554,6 +2567,8 @@ class StudyPlanEngine:
             "recall_model_json",
             "_semantic_model",
             "_semantic_block_reason",
+            "_semantic_reranker",
+            "_semantic_reranker_block_reason",
             "recall_model_sklearn",
             "recall_model_sklearn_meta",
             "recall_model_sklearn_block_reason",
@@ -3362,6 +3377,44 @@ class StudyPlanEngine:
                 self._semantic_model = None
                 return None
 
+    def _semantic_get_reranker(self) -> Any | None:
+        if not bool(getattr(self, "semantic_enabled", True)):
+            self._semantic_reranker_state = "disabled"
+            return None
+        if not bool(getattr(self, "semantic_rerank_enabled", True)):
+            self._semantic_reranker_state = "disabled"
+            self._semantic_reranker_block_reason = "rerank disabled"
+            return None
+        if self._semantic_reranker_state == "blocked":
+            return None
+        if self._semantic_reranker is not None:
+            return self._semantic_reranker
+        with self._semantic_rerank_lock:
+            if self._semantic_reranker is not None:
+                return self._semantic_reranker
+            try:
+                from sentence_transformers import CrossEncoder  # type: ignore
+            except Exception:
+                self._semantic_reranker_state = "blocked"
+                self._semantic_reranker_block_reason = "cross-encoder unavailable"
+                return None
+            model_name = str(
+                getattr(self, "semantic_rerank_model_name", self.SEMANTIC_RERANK_MODEL_NAME)
+                or self.SEMANTIC_RERANK_MODEL_NAME
+            ).strip()
+            if not model_name:
+                model_name = self.SEMANTIC_RERANK_MODEL_NAME
+            try:
+                self._semantic_reranker = CrossEncoder(model_name)
+                self._semantic_reranker_state = "ready"
+                self._semantic_reranker_block_reason = None
+                return self._semantic_reranker
+            except Exception:
+                self._semantic_reranker_state = "blocked"
+                self._semantic_reranker_block_reason = "cross-encoder load failed"
+                self._semantic_reranker = None
+                return None
+
     def warmup_semantic_model(self, force: bool = False) -> Dict[str, Any]:
         current = self.get_semantic_status()
         if not force and current.get("state") in ("ready", "blocked", "disabled"):
@@ -3373,7 +3426,11 @@ class StudyPlanEngine:
         state = str(getattr(self, "_semantic_model_state", "unloaded") or "unloaded")
         if self._semantic_model is not None:
             state = "ready"
+        reranker_state = str(getattr(self, "_semantic_reranker_state", "unloaded") or "unloaded")
+        if self._semantic_reranker is not None:
+            reranker_state = "ready"
         enabled = bool(getattr(self, "semantic_enabled", True))
+        rerank_enabled = bool(getattr(self, "semantic_rerank_enabled", True))
         cache_size = 0
         try:
             cache_size = int(len(self._semantic_match_cache))
@@ -3383,9 +3440,16 @@ class StudyPlanEngine:
             "enabled": enabled,
             "state": state,
             "model_name": str(getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME),
+            "rerank_enabled": rerank_enabled,
+            "reranker_state": reranker_state,
+            "reranker_model_name": str(
+                getattr(self, "semantic_rerank_model_name", self.SEMANTIC_RERANK_MODEL_NAME)
+                or self.SEMANTIC_RERANK_MODEL_NAME
+            ),
             "min_score": float(getattr(self, "semantic_min_score", self.SEMANTIC_MIN_SCORE)),
             "cache_size": max(0, cache_size),
             "block_reason": str(getattr(self, "_semantic_block_reason", "") or ""),
+            "reranker_block_reason": str(getattr(self, "_semantic_reranker_block_reason", "") or ""),
             "active": bool(enabled and state == "ready"),
         }
 
@@ -3437,7 +3501,7 @@ class StudyPlanEngine:
                 return {
                     "outcome_id": cached_id,
                     "score": max(0.0, min(1.0, cached_score)),
-                    "method": cached_method if cached_method in ("model", "tfidf", "fallback") else "fallback",
+                    "method": cached_method if cached_method in ("cross", "model", "tfidf", "fallback") else "fallback",
                 }
 
         threshold = max(0.05, min(0.95, float(getattr(self, "semantic_min_score", self.SEMANTIC_MIN_SCORE))))
@@ -3449,13 +3513,45 @@ class StudyPlanEngine:
                 matrix = list(raw) if raw is not None else []
                 if len(matrix) == len(outcome_texts) + 1:
                     query = [float(v) for v in matrix[0]]
-                    best_id = None
-                    best_score = -1.0
+                    dense_scores: List[Tuple[int, float]] = []
                     for idx, vec in enumerate(matrix[1:]):
                         score = self._cosine_similarity(query, [float(v) for v in vec])
-                        if score > best_score:
-                            best_score = score
-                            best_id = ordered_ids[idx]
+                        dense_scores.append((idx, score))
+                    dense_scores.sort(key=lambda item: item[1], reverse=True)
+                    best_id = ordered_ids[dense_scores[0][0]] if dense_scores else None
+                    best_score = float(dense_scores[0][1]) if dense_scores else -1.0
+                    # Optional Tier 1b: Cross-encoder rerank over top candidates.
+                    reranker = self._semantic_get_reranker()
+                    if reranker is not None and len(dense_scores) >= 2:
+                        top_k = max(2, int(getattr(self, "SEMANTIC_RERANK_TOP_K", 4) or 4))
+                        rerank_candidates = dense_scores[:top_k]
+                        pairs = [[text, outcome_texts[idx]] for idx, _score in rerank_candidates]
+                        try:
+                            raw_cross = reranker.predict(pairs)
+                            cross_scores = list(raw_cross) if raw_cross is not None else []
+                        except Exception:
+                            cross_scores = []
+                        if len(cross_scores) == len(rerank_candidates):
+                            best_cross = -1.0
+                            best_cross_idx = -1
+                            for i, score_raw in enumerate(cross_scores):
+                                try:
+                                    score_val = float(score_raw)
+                                except Exception:
+                                    score_val = 0.0
+                                # Normalize logits to [0,1] when needed.
+                                if score_val < 0.0 or score_val > 1.0:
+                                    score_val = 1.0 / (1.0 + math.exp(-score_val))
+                                score_val = max(0.0, min(1.0, score_val))
+                                if score_val > best_cross:
+                                    best_cross = score_val
+                                    best_cross_idx = i
+                            if best_cross_idx >= 0:
+                                candidate_idx = rerank_candidates[best_cross_idx][0]
+                                candidate_id = ordered_ids[candidate_idx]
+                                if best_cross >= max(0.18, threshold * 0.55):
+                                    self._semantic_cache_set(cache_key, candidate_id, "cross", best_cross)
+                                    return {"outcome_id": candidate_id, "score": best_cross, "method": "cross"}
                     if best_id and best_score >= threshold:
                         self._semantic_cache_set(cache_key, best_id, "model", best_score)
                         return {"outcome_id": best_id, "score": best_score, "method": "model"}
@@ -3534,7 +3630,7 @@ class StudyPlanEngine:
                 score = 0.0
             method = str(match.get("method", "fallback") or "fallback").strip().lower()
             result["semantic_match_confidence"] = max(0.0, min(1.0, score))
-            result["semantic_match_method"] = method if method in ("model", "tfidf", "fallback") else "fallback"
+            result["semantic_match_method"] = method if method in ("cross", "model", "tfidf", "fallback") else "fallback"
             result["reason"] = default_reason
 
         tagged_ids = question.get("outcome_ids", [])
@@ -3973,6 +4069,75 @@ class StudyPlanEngine:
             normalized_targets = [outcome_order[0]]
         return normalized_targets
 
+    def _adaptive_interleave_ratios(self, chapter: str) -> tuple[float, float, float, str]:
+        """Return target/adjacent/far ratios adapted to uncovered-outcome pressure."""
+        try:
+            target_ratio = float(getattr(self, "INTERLEAVE_TARGET_RATIO", 0.60) or 0.60)
+        except Exception:
+            target_ratio = 0.60
+        try:
+            adjacent_ratio = float(getattr(self, "INTERLEAVE_ADJACENT_RATIO", 0.25) or 0.25)
+        except Exception:
+            adjacent_ratio = 0.25
+        try:
+            far_ratio = float(getattr(self, "INTERLEAVE_FAR_RATIO", 0.15) or 0.15)
+        except Exception:
+            far_ratio = 0.15
+
+        target_ratio = max(0.0, min(1.0, target_ratio))
+        adjacent_ratio = max(0.0, min(1.0, adjacent_ratio))
+        far_ratio = max(0.0, min(1.0, far_ratio))
+        mode = "default"
+
+        mastery = self.get_chapter_outcome_mastery(chapter)
+        if isinstance(mastery, dict):
+            try:
+                total_outcomes = int(mastery.get("total_outcomes", 0) or 0)
+            except Exception:
+                total_outcomes = 0
+            try:
+                uncovered = int(mastery.get("uncovered_outcomes", 0) or 0)
+            except Exception:
+                uncovered = 0
+            uncovered_ratio = (float(uncovered) / float(max(1, total_outcomes))) if total_outcomes > 0 else 0.0
+            if uncovered_ratio >= 0.50:
+                target_ratio += 0.15
+                adjacent_ratio -= 0.05
+                far_ratio -= 0.10
+                mode = "boost-high-gap"
+            elif uncovered_ratio >= 0.30:
+                target_ratio += 0.10
+                adjacent_ratio -= 0.05
+                far_ratio -= 0.05
+                mode = "boost-mid-gap"
+
+        # Capability debt can add a small target bias.
+        cap = self._chapter_capability(chapter)
+        if cap:
+            debt = self.get_capability_coverage_debt(max_coverage=95.0, min_uncovered=1)
+            debt_row = debt.get(cap, {}) if isinstance(debt, dict) else {}
+            try:
+                debt_score = float(debt_row.get("debt_score", 0.0) or 0.0)
+            except Exception:
+                debt_score = 0.0
+            if debt_score >= 2.5:
+                target_ratio += 0.05
+                far_ratio -= 0.03
+                adjacent_ratio -= 0.02
+                mode = "boost-cap-debt" if mode == "default" else f"{mode}+cap"
+
+        # Keep all lanes active, then normalize.
+        target_ratio = max(0.05, target_ratio)
+        adjacent_ratio = max(0.05, adjacent_ratio)
+        far_ratio = max(0.05, far_ratio)
+        total = target_ratio + adjacent_ratio + far_ratio
+        if total <= 0.0:
+            return 0.60, 0.25, 0.15, "default"
+        target_ratio /= total
+        adjacent_ratio /= total
+        far_ratio /= total
+        return target_ratio, adjacent_ratio, far_ratio, mode
+
     def get_semantic_interleave_mix(
         self, chapter: str, indices: List[int], target_outcome_ids: List[str] | None = None
     ) -> Dict[str, Any]:
@@ -3984,6 +4149,10 @@ class StudyPlanEngine:
             "unknown": 0,
             "total": 0,
             "target_outcomes": [],
+            "planned_target_ratio": 0.0,
+            "planned_adjacent_ratio": 0.0,
+            "planned_far_ratio": 0.0,
+            "ratio_mode": "default",
         }
         questions = self.QUESTIONS.get(chapter, [])
         if not isinstance(questions, list) or not questions:
@@ -4024,6 +4193,12 @@ class StudyPlanEngine:
             result["unknown"] = len(cleaned_indices)
             result["total"] = len(cleaned_indices)
             return result
+
+        planned_target, planned_adjacent, planned_far, ratio_mode = self._adaptive_interleave_ratios(chapter)
+        result["planned_target_ratio"] = float(planned_target)
+        result["planned_adjacent_ratio"] = float(planned_adjacent)
+        result["planned_far_ratio"] = float(planned_far)
+        result["ratio_mode"] = str(ratio_mode or "default")
 
         for idx in cleaned_indices:
             outcome_ids = self._question_outcome_ids(chapter, idx)
@@ -4277,25 +4452,11 @@ class StudyPlanEngine:
             )
         )
 
-        try:
-            target_ratio = float(getattr(self, "INTERLEAVE_TARGET_RATIO", 0.60) or 0.60)
-        except Exception:
-            target_ratio = 0.60
-        try:
-            adjacent_ratio = float(getattr(self, "INTERLEAVE_ADJACENT_RATIO", 0.25) or 0.25)
-        except Exception:
-            adjacent_ratio = 0.25
-        try:
-            far_ratio = float(getattr(self, "INTERLEAVE_FAR_RATIO", 0.15) or 0.15)
-        except Exception:
-            far_ratio = 0.15
+        target_ratio, adjacent_ratio, far_ratio, _ratio_mode = self._adaptive_interleave_ratios(chapter)
         try:
             min_target = int(getattr(self, "INTERLEAVE_MIN_TARGET", 1) or 1)
         except Exception:
             min_target = 1
-        target_ratio = max(0.0, min(1.0, target_ratio))
-        adjacent_ratio = max(0.0, min(1.0, adjacent_ratio))
-        far_ratio = max(0.0, min(1.0, far_ratio))
         min_target = max(0, min_target)
 
         selected: list[int] = []
@@ -5553,7 +5714,7 @@ class StudyPlanEngine:
             route_outcomes = route.get("outcome_ids", [])
             outcome_ids = [str(v).strip() for v in route_outcomes if str(v).strip()] if isinstance(route_outcomes, list) else []
             method = str(route.get("semantic_match_method", "fallback") or "fallback").strip().lower()
-            if method not in ("model", "tfidf", "fallback"):
+            if method not in ("cross", "model", "tfidf", "fallback"):
                 method = "fallback"
             try:
                 score = float(route.get("semantic_match_confidence", 0.0) or 0.0)
@@ -7497,7 +7658,7 @@ class StudyPlanEngine:
             semantic_score = 0.0
         semantic_score = max(0.0, min(1.0, semantic_score))
         semantic_method = str(route_meta.get("semantic_match_method", "fallback") or "fallback").strip().lower()
-        if semantic_method not in ("model", "tfidf", "fallback"):
+        if semantic_method not in ("cross", "model", "tfidf", "fallback"):
             semantic_method = "fallback"
         route_reason = str(route_meta.get("reason", "") or "").strip()
 

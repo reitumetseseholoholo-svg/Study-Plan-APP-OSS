@@ -9796,12 +9796,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 adjacent_count = int(interleave_mix.get("adjacent", 0) or 0)
                 far_count = int(interleave_mix.get("far", 0) or 0)
                 unknown_count = int(interleave_mix.get("unknown", 0) or 0)
+                planned_target = float(interleave_mix.get("planned_target_ratio", 0.0) or 0.0)
+                planned_adjacent = float(interleave_mix.get("planned_adjacent_ratio", 0.0) or 0.0)
+                planned_far = float(interleave_mix.get("planned_far_ratio", 0.0) or 0.0)
+                ratio_mode = str(interleave_mix.get("ratio_mode", "default") or "default")
             except Exception:
                 target_count = 0
                 adjacent_count = 0
                 far_count = 0
                 unknown_count = 0
+                planned_target = 0.0
+                planned_adjacent = 0.0
+                planned_far = 0.0
+                ratio_mode = "default"
             label = f"Interleave mix: target/adjacent/far {target_count}/{adjacent_count}/{far_count}"
+            if planned_target > 0.0 or planned_adjacent > 0.0 or planned_far > 0.0:
+                label += (
+                    f" • plan {planned_target * 100:.0f}/{planned_adjacent * 100:.0f}/{planned_far * 100:.0f}"
+                    f" ({ratio_mode})"
+                )
             if unknown_count > 0:
                 label += f" • unknown {unknown_count}"
             self.quiz_interleave_label.set_text(label)
@@ -12346,9 +12359,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             cache_size = int(status.get("cache_size", 0) or 0)
             min_score = float(status.get("min_score", 0.0) or 0.0)
             block_reason = str(status.get("block_reason", "") or "")
+            reranker_state = str(status.get("reranker_state", "unloaded") or "unloaded")
+            rerank_enabled = bool(status.get("rerank_enabled", True))
             if state == "ready":
+                rerank_suffix = ""
+                if rerank_enabled and reranker_state == "ready":
+                    rerank_suffix = " • rerank on"
+                elif rerank_enabled and reranker_state == "blocked":
+                    rerank_suffix = " • rerank fallback"
                 return (
-                    f"Semantic map: ready ({model_name}) • threshold {min_score:.2f} • cache {cache_size}",
+                    f"Semantic map: ready ({model_name}) • threshold {min_score:.2f} • cache {cache_size}{rerank_suffix}",
                     False,
                 )
             if state == "blocked":
