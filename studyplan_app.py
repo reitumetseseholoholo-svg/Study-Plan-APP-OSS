@@ -11794,8 +11794,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             os.makedirs(os.path.dirname(summary_path), exist_ok=True)
             week_number = today.isocalendar().week
             if getattr(self, "last_weekly_summary_week", None) != week_number:
+                coach_summary_topic, _coach_summary_source = self._get_coach_pick_snapshot()
                 summary_lines = self._get_daily_summary_lines(
-                    self._get_recommended_topic(), self._get_weak_chapter(60.0)
+                    coach_summary_topic, self._get_weak_chapter(60.0)
                 )
                 summary_text = "\n".join([
                     f"Week {week_number} Summary ({today.isoformat()}):",
@@ -11813,7 +11814,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             readiness_info = self._compute_exam_readiness_details()
         except Exception:
             readiness_info = {"score": 0.0, "tier": "Foundation", "mastery_pct": 0.0, "comp_min": 0.0}
-        self._get_coach_pick_snapshot(force=True)
+        self._get_coach_pick_snapshot()
         pace_info = self._get_pace_info()
         pace_status = pace_info.get("status", "unknown")
         weak_chapter = self._get_weak_chapter(60.0)
