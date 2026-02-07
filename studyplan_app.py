@@ -1138,6 +1138,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._coach_pick_snapshot = None
         self._coach_pick_snapshot_at = 0.0
         self._coach_pick_snapshot_plan_key = ""
+        self._last_dashboard_coach_topic = ""
+        self._last_study_room_coach_topic = ""
         self._last_ml_train_date = None
         self._last_ml_train_at = None
         self._last_ml_train_sample_count = 0
@@ -4233,10 +4235,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _ensure_daily_counters(self) -> None:
         today = datetime.date.today().isoformat()
+        changed = False
         if self.last_quiz_date != today:
             self.quiz_questions_today = 0
             self.quiz_sessions_today = 0
             self.last_quiz_date = today
+            changed = True
         if self.last_pomodoro_date != today and self.last_pomodoro_date is not None:
             self.pomodoro_today_count = 0
             self.short_pomodoro_today_count = 0
@@ -4245,6 +4249,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.daily_pomodoros_by_chapter = {}
             self.daily_recall_by_chapter = {}
             self.last_pomodoro_date = today
+            changed = True
+        if changed:
+            self._invalidate_coach_pick_snapshot()
 
     def _window_allowed(self, info: dict) -> bool:
         return self._match_allowlist_token(info) is not None
@@ -6583,12 +6590,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if topic not in self.engine.CHAPTERS:
             return
         self.current_topic = topic
+        self._invalidate_coach_pick_snapshot()
         try:
             idx = self.engine.CHAPTERS.index(topic)
             self.topic_combo.set_selected(idx)
         except Exception:
             pass
         self.update_study_room_card()
+
+    def _invalidate_coach_pick_snapshot(self) -> None:
+        self._coach_pick_snapshot = None
+        self._coach_pick_snapshot_at = 0.0
+        self._coach_pick_snapshot_plan_key = ""
 
     def _should_override_sticky_coach_pick(self, topic: str) -> bool:
         release, _reason = self._sticky_release_status(topic)
@@ -6848,18 +6861,29 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             plan = [ch for ch in (getattr(self, "_last_daily_plan", None) or []) if isinstance(ch, str)]
         except Exception:
             plan = []
+        today_iso = datetime.date.today().isoformat()
         plan_key = "|".join(plan)
+        context_key = "|".join(
+            [
+                plan_key,
+                str(self.current_topic or ""),
+                str(self.last_coach_pick or ""),
+                str(self.last_coach_pick_date or ""),
+                "sticky=1" if bool(self.sticky_coach_pick) else "sticky=0",
+                f"day={today_iso}",
+            ]
+        )
         if (
             not force
             and isinstance(self._coach_pick_snapshot, tuple)
             and (now - float(self._coach_pick_snapshot_at or 0.0)) < 0.5
-            and plan_key == (self._coach_pick_snapshot_plan_key or "")
+            and context_key == (self._coach_pick_snapshot_plan_key or "")
         ):
             return cast(tuple[str, str], self._coach_pick_snapshot)
         topic, source = self._get_coach_pick_meta()
         self._coach_pick_snapshot = (topic, source)
         self._coach_pick_snapshot_at = now
-        self._coach_pick_snapshot_plan_key = plan_key
+        self._coach_pick_snapshot_plan_key = context_key
         return topic, source
 
     def _get_last_coach_log_summary(self) -> str:
@@ -7513,6 +7537,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             recommended = self.current_topic or (self.engine.CHAPTERS[0] if self.engine.CHAPTERS else "")
             if not pick_source:
                 pick_source = "fallback"
+        self._last_study_room_coach_topic = str(recommended or "")
         self._ensure_coach_pick_consistency(recommended, pick_source, "study_room")
         if getattr(self, "study_room_next_due_label", None):
             next_due = self._get_topic_next_due_text(recommended)
@@ -8242,6 +8267,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     else:
                         self.daily_pomodoros_by_chapter.setdefault(topic, 0)
                         self.daily_pomodoros_by_chapter[topic] += 1
+                    self._invalidate_coach_pick_snapshot()
                     try:
                         self._maybe_mark_topic_completed(topic)
                     except Exception:
@@ -11255,6 +11281,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ("Shortcuts", lambda: self.on_show_shortcuts(None, None)),
             ("Preferences", lambda: self.on_open_preferences(None, None)),
             ("Coach-only Toggle", self._smoke_toggle_coach_only),
+            ("Coach Pick Consistency", self._smoke_check_coach_pick_consistency),
             ("Focus Allowlist", lambda: self.on_edit_focus_allowlist(None, None)),
             ("Switch Module", lambda: self.on_switch_module(None, None)),
             ("Manage Modules", lambda: self.on_manage_modules(None, None)),
@@ -11299,6 +11326,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if toggle_visible == target:
                 raise RuntimeError("Coach-only toggle visibility mismatch")
         self._set_coach_only_view(initial, persist=False, animate_badge=False)
+
+    def _smoke_check_coach_pick_consistency(self) -> None:
+        if not self._has_chapters():
+            return
+        self._get_coach_pick_snapshot(force=True)
+        self._update_coach_pick_card()
+        self._update_study_room_card_impl()
+        self._render_dashboard()
+        left_topic = str(getattr(self, "_coach_pick_topic", "") or "")
+        room_topic = str(getattr(self, "_last_study_room_coach_topic", "") or "")
+        dash_topic = str(getattr(self, "_last_dashboard_coach_topic", "") or "")
+        topics = [left_topic, room_topic, dash_topic]
+        if any(not t for t in topics):
+            raise RuntimeError(f"Coach consistency smoke: missing topic value {topics!r}")
+        if not (left_topic == room_topic == dash_topic):
+            raise RuntimeError(
+                f"Coach consistency smoke mismatch: left={left_topic!r}, room={room_topic!r}, dash={dash_topic!r}"
+            )
 
     def _count_question_samples(self) -> int:
         stats = getattr(self.engine, "question_stats", {}) or {}
@@ -11729,6 +11774,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             recommended_topic = weak_chapter or self.current_topic
             pick_source = "unknown"
+        self._last_dashboard_coach_topic = str(recommended_topic or "")
         self._ensure_coach_pick_consistency(recommended_topic, pick_source, "dashboard")
         try:
             questions = self.engine.get_questions(recommended_topic)
@@ -13871,6 +13917,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._last_daily_plan = list(daily_plan)
             self._last_daily_plan_date = today_iso
             self._plan_refresh_override = False
+            self._invalidate_coach_pick_snapshot()
         if not daily_plan:
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             label = Gtk.Label(label="No focus topics yet.")
