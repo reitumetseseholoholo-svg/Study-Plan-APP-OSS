@@ -1229,6 +1229,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._force_message_dialog_fallback = False
         self._active_native_dialog = None
         self._dialog_smoke_mode = False
+        self._smoke_report = None
+        self._smoke_report_finalized = False
+        self._smoke_step_outcomes = []
+        self._smoke_metrics = {}
         self.risk_baselines = {}
         self._perf_dashboard_renders = 0
         self._perf_last_dashboard_ms = 0.0
@@ -11819,6 +11823,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._force_message_dialog_fallback = True
         self._dialog_smoke_mode = True
         self._closing_from_recap = True
+        self._start_smoke_report()
         self._dialog_smoke_steps = [
             ("About", lambda: self.on_about(None, None)),
             ("Shortcuts", lambda: self.on_show_shortcuts(None, None)),
@@ -11846,8 +11851,82 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         ]
         self._dialog_smoke_index = 0
         GLib.timeout_add(200, self._run_next_dialog_smoke_step)
-        GLib.timeout_add(6000, self._force_end_smoke_test)
+        smoke_timeout_ms = max(12000, len(self._dialog_smoke_steps) * 900)
+        GLib.timeout_add(smoke_timeout_ms, self._force_end_smoke_test)
         return False
+
+    def _start_smoke_report(self) -> None:
+        self._smoke_report_finalized = False
+        self._smoke_step_outcomes = []
+        self._smoke_metrics = {
+            "coach_consistency_checks": 0,
+            "coach_consistency_failures": 0,
+            "coach_only_toggle_checks": 0,
+            "coach_only_toggle_failures": 0,
+            "coach_next_burst_checks": 0,
+            "coach_next_burst_failures": 0,
+        }
+        self._smoke_report = {
+            "started_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "steps_total": 0,
+            "steps_passed": 0,
+            "steps_failed": 0,
+            "steps": [],
+            "status": "running",
+            "reason": "",
+        }
+
+    def _record_smoke_step(self, label: str, ok: bool, error: str = "") -> None:
+        if not isinstance(self._smoke_report, dict):
+            return
+        entry = {
+            "step": str(label),
+            "ok": bool(ok),
+            "error": str(error or ""),
+            "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        self._smoke_step_outcomes.append(entry)
+        self._smoke_report["steps"] = list(self._smoke_step_outcomes)
+        self._smoke_report["steps_total"] = len(self._smoke_step_outcomes)
+        passed = sum(1 for item in self._smoke_step_outcomes if bool(item.get("ok", False)))
+        failed = len(self._smoke_step_outcomes) - passed
+        self._smoke_report["steps_passed"] = passed
+        self._smoke_report["steps_failed"] = failed
+
+    def _write_smoke_report(self, status: str, reason: str = "") -> None:
+        if self._smoke_report_finalized:
+            return
+        self._smoke_report_finalized = True
+        if not isinstance(self._smoke_report, dict):
+            return
+        self._smoke_report["status"] = str(status or "unknown")
+        self._smoke_report["reason"] = str(reason or "")
+        self._smoke_report["finished_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        metrics = dict(self._smoke_metrics) if isinstance(self._smoke_metrics, dict) else {}
+        consistency_checks = int(metrics.get("coach_consistency_checks", 0) or 0)
+        consistency_failures = int(metrics.get("coach_consistency_failures", 0) or 0)
+        toggle_checks = int(metrics.get("coach_only_toggle_checks", 0) or 0)
+        toggle_failures = int(metrics.get("coach_only_toggle_failures", 0) or 0)
+        burst_checks = int(metrics.get("coach_next_burst_checks", 0) or 0)
+        burst_failures = int(metrics.get("coach_next_burst_failures", 0) or 0)
+        self._smoke_report["kpi"] = {
+            "coach_pick_consistency_rate": (max(0, consistency_checks - consistency_failures) / max(1, consistency_checks)),
+            "coach_only_toggle_integrity_rate": (max(0, toggle_checks - toggle_failures) / max(1, toggle_checks)),
+            "coach_next_burst_integrity_rate": (max(0, burst_checks - burst_failures) / max(1, burst_checks)),
+            "coach_consistency_checks": consistency_checks,
+            "coach_consistency_failures": consistency_failures,
+            "coach_only_toggle_checks": toggle_checks,
+            "coach_only_toggle_failures": toggle_failures,
+            "coach_next_burst_checks": burst_checks,
+            "coach_next_burst_failures": burst_failures,
+        }
+        path = os.path.expanduser("~/.config/studyplan/smoke_last.json")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._smoke_report, f, ensure_ascii=True, indent=2)
+        except Exception as exc:
+            self._log_error("write_smoke_report", exc)
 
     def _smoke_toggle_coach_only(self) -> None:
         if not self._has_chapters():
@@ -11856,20 +11935,32 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         # Stress repeated toggles to catch transient UI/state mismatches.
         sequence = ([True, False] * 12)
         for target in sequence:
+            if isinstance(self._smoke_metrics, dict):
+                self._smoke_metrics["coach_only_toggle_checks"] = int(self._smoke_metrics.get("coach_only_toggle_checks", 0) or 0) + 1
             self._set_coach_only_view(target, persist=False, animate_badge=False)
             if bool(getattr(self, "coach_only_view", False)) != target:
+                if isinstance(self._smoke_metrics, dict):
+                    self._smoke_metrics["coach_only_toggle_failures"] = int(self._smoke_metrics.get("coach_only_toggle_failures", 0) or 0) + 1
                 raise RuntimeError("Coach-only state flag mismatch during smoke test")
             plan_visible = bool(getattr(self, "plan_scroll", None) and self.plan_scroll.get_visible())
             hint_visible = bool(getattr(self, "plan_hint", None) and self.plan_hint.get_visible())
             badge_visible = bool(getattr(self, "coach_only_badge", None) and self.coach_only_badge.get_visible())
             toggle_visible = bool(getattr(self, "coach_only_toggle", None) and self.coach_only_toggle.get_visible())
             if plan_visible == target:
+                if isinstance(self._smoke_metrics, dict):
+                    self._smoke_metrics["coach_only_toggle_failures"] = int(self._smoke_metrics.get("coach_only_toggle_failures", 0) or 0) + 1
                 raise RuntimeError("Plan visibility mismatch for Coach-only mode")
             if hint_visible != target:
+                if isinstance(self._smoke_metrics, dict):
+                    self._smoke_metrics["coach_only_toggle_failures"] = int(self._smoke_metrics.get("coach_only_toggle_failures", 0) or 0) + 1
                 raise RuntimeError("Plan hint visibility mismatch for Coach-only mode")
             if badge_visible != target:
+                if isinstance(self._smoke_metrics, dict):
+                    self._smoke_metrics["coach_only_toggle_failures"] = int(self._smoke_metrics.get("coach_only_toggle_failures", 0) or 0) + 1
                 raise RuntimeError("Coach-only badge visibility mismatch")
             if toggle_visible == target:
+                if isinstance(self._smoke_metrics, dict):
+                    self._smoke_metrics["coach_only_toggle_failures"] = int(self._smoke_metrics.get("coach_only_toggle_failures", 0) or 0) + 1
                 raise RuntimeError("Coach-only toggle visibility mismatch")
             self._smoke_check_coach_pick_consistency()
         self._set_coach_only_view(initial, persist=False, animate_badge=False)
@@ -11877,6 +11968,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _smoke_check_coach_pick_consistency(self) -> None:
         if not self._has_chapters():
             return
+        if isinstance(self._smoke_metrics, dict):
+            self._smoke_metrics["coach_consistency_checks"] = int(self._smoke_metrics.get("coach_consistency_checks", 0) or 0) + 1
         self._get_coach_pick_snapshot(force=True)
         self._update_coach_pick_card()
         self._update_study_room_card_impl()
@@ -11886,8 +11979,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         dash_topic = str(getattr(self, "_last_dashboard_coach_topic", "") or "")
         topics = [left_topic, room_topic, dash_topic]
         if any(not t for t in topics):
+            if isinstance(self._smoke_metrics, dict):
+                self._smoke_metrics["coach_consistency_failures"] = int(self._smoke_metrics.get("coach_consistency_failures", 0) or 0) + 1
             raise RuntimeError(f"Coach consistency smoke: missing topic value {topics!r}")
         if not (left_topic == room_topic == dash_topic):
+            if isinstance(self._smoke_metrics, dict):
+                self._smoke_metrics["coach_consistency_failures"] = int(self._smoke_metrics.get("coach_consistency_failures", 0) or 0) + 1
             raise RuntimeError(
                 f"Coach consistency smoke mismatch: left={left_topic!r}, room={room_topic!r}, dash={dash_topic!r}"
             )
@@ -11898,11 +11995,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         initial = bool(getattr(self, "coach_only_view", False))
         self._set_coach_only_view(True, persist=False, animate_badge=False)
         for _ in range(20):
+            if isinstance(self._smoke_metrics, dict):
+                self._smoke_metrics["coach_next_burst_checks"] = int(self._smoke_metrics.get("coach_next_burst_checks", 0) or 0) + 1
             self.on_do_coach_next(None)
             self._smoke_check_coach_pick_consistency()
             coach_topic = str(getattr(self, "_coach_pick_topic", "") or "").strip()
             current_topic = str(getattr(self, "current_topic", "") or "").strip()
             if coach_topic and current_topic and coach_topic != current_topic:
+                if isinstance(self._smoke_metrics, dict):
+                    self._smoke_metrics["coach_next_burst_failures"] = int(self._smoke_metrics.get("coach_next_burst_failures", 0) or 0) + 1
                 raise RuntimeError(
                     f"Coach-only burst mismatch: coach={coach_topic!r}, current={current_topic!r}"
                 )
@@ -12110,6 +12211,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return False
         self._force_message_dialog_fallback = False
         self._dialog_smoke_mode = False
+        self._write_smoke_report("failed", "timeout")
         self._close_aux_windows()
         try:
             self.close()
@@ -12121,6 +12223,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if self._dialog_smoke_index >= len(self._dialog_smoke_steps):
             self._force_message_dialog_fallback = False
             self._dialog_smoke_mode = False
+            self._write_smoke_report("passed", "")
             GLib.timeout_add(200, self._close_aux_windows)
             def _close_main():
                 self._closing_from_recap = True
@@ -12131,8 +12234,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._dialog_smoke_index += 1
         try:
             func()
+            self._record_smoke_step(label, True, "")
         except Exception as exc:
             self._log_error("dialog_smoke_test", exc)
+            self._record_smoke_step(label, False, str(exc))
         GLib.timeout_add(200, self._close_aux_windows)
         GLib.timeout_add(450, self._run_next_dialog_smoke_step)
         return False
