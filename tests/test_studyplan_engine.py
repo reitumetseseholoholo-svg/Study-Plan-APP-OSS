@@ -447,6 +447,75 @@ def test_import_questions_json_keeps_pretagged_outcomes(engine_no_io, monkeypatc
     assert int(semantic.get("pretagged", 0) or 0) == 1
 
 
+def test_finalize_semantic_import_stats_flags_review_required(engine_no_io):
+    eng = engine_no_io
+    stats = eng._build_semantic_import_stats()
+    stats.update(
+        {
+            "total_new": 10,
+            "mapped": 3,
+            "low_confidence": 2,
+            "unmapped": 5,
+            "outcome_counts": {"A.1": 3},
+            "chapter_breakdown": {
+                "FM Function": {
+                    "total": 10,
+                    "mapped": 3,
+                    "low_confidence": 2,
+                    "unmapped": 5,
+                }
+            },
+        }
+    )
+    finalized = eng._finalize_semantic_import_stats(stats)
+    assert bool(finalized.get("needs_review", False)) is True
+    assert str(finalized.get("quality_band", "")) == "weak"
+    reasons = finalized.get("review_reasons", [])
+    assert isinstance(reasons, list)
+    assert "low_coverage" in reasons
+    assert "high_unmapped_ratio" in reasons
+    alerts = finalized.get("chapter_alerts", [])
+    assert isinstance(alerts, list)
+    assert "FM Function" in alerts
+
+
+def test_import_questions_json_counts_cross_method(engine_no_io, monkeypatch, tmp_path):
+    eng = engine_no_io
+    monkeypatch.setattr(eng, "save_questions", lambda: None)
+    monkeypatch.setattr(eng, "save_data", lambda: None)
+
+    payload = {
+        "chapter": "FM Function",
+        "questions": [
+            {
+                "question": "Cross-method semantic import question?",
+                "options": ["A", "B", "C", "D"],
+                "correct": "A",
+                "explanation": "x",
+            }
+        ],
+    }
+    path = tmp_path / "import_cross.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(
+        eng,
+        "resolve_question_outcomes",
+        lambda *_args, **_kwargs: {
+            "outcome_ids": ["A.1"],
+            "semantic_match_confidence": 0.82,
+            "semantic_match_method": "cross",
+            "reason": "cross rerank",
+        },
+    )
+
+    result = eng.import_questions_json(str(path))
+    semantic = result.get("semantic_import", {})
+    methods = semantic.get("method_counts", {})
+    assert isinstance(methods, dict)
+    assert int(methods.get("cross", 0) or 0) >= 1
+
+
 def test_add_questions_semantic_dedup_skips_near_duplicates(engine_no_io, monkeypatch):
     eng = engine_no_io
     chapter = "FM Function"
@@ -1230,6 +1299,22 @@ def test_semantic_status_defaults_to_unloaded(engine_no_io):
     assert status.get("state") == "unloaded"
     assert status.get("active") is False
     assert isinstance(status.get("model_name"), str)
+    assert int(status.get("alias_count_total", 0) or 0) >= int(status.get("built_in_alias_count", 0) or 0)
+
+
+def test_semantic_status_reports_module_alias_counts(engine_no_io):
+    eng = engine_no_io
+    eng.semantic_aliases = {
+        "fs analytics": "financial statement analysis",
+        "FM Function": {
+            "fm fn": "financial management function",
+            "corp obj": "corporate objectives",
+        },
+    }
+    status = eng.get_semantic_status()
+    assert int(status.get("module_global_alias_count", 0) or 0) == 1
+    assert int(status.get("module_chapter_alias_count", 0) or 0) == 2
+    assert int(status.get("alias_count_total", 0) or 0) >= 3
 
 
 def test_semantic_warmup_respects_disabled_flag(engine_no_io):
@@ -1369,6 +1454,44 @@ def test_resolve_question_outcomes_accepts_cross_method(engine_no_io, monkeypatc
     route = eng.resolve_question_outcomes(chapter, 0)
     assert route.get("outcome_ids") == [outcome_id]
     assert route.get("semantic_match_method") == "cross"
+
+
+def test_semantic_alias_normalization_maps_abbreviation(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "Ratio Analysis"
+    outcome_lookup = {
+        "R.1": {"text": "Apply financial statement analysis for performance review"},
+        "R.2": {"text": "Use valuation ratios for investment decisions"},
+    }
+    eng.semantic_aliases = {"fs analysis": "financial statement analysis"}
+    monkeypatch.setattr(eng, "_semantic_get_model", lambda: None)
+    monkeypatch.setattr(eng, "_semantic_get_reranker", lambda: None)
+
+    match = eng._semantic_best_outcome_match(chapter, "How does FS analysis help?", outcome_lookup)
+    assert isinstance(match, dict)
+    assert match.get("outcome_id") == "R.1"
+    assert str(match.get("method", "")) in {"tfidf", "fallback"}
+
+
+def test_semantic_alias_normalization_chapter_specific(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "Working Capital Management"
+    outcome_lookup = {
+        "C.1": {"text": "Apply working capital policies to liquidity management"},
+        "C.2": {"text": "Discuss short-term financing choices"},
+    }
+    eng.semantic_aliases = {
+        chapter: {
+            "wc policy": "working capital policies",
+        }
+    }
+    monkeypatch.setattr(eng, "_semantic_get_model", lambda: None)
+    monkeypatch.setattr(eng, "_semantic_get_reranker", lambda: None)
+
+    match = eng._semantic_best_outcome_match(chapter, "How do WC policy decisions affect liquidity?", outcome_lookup)
+    assert isinstance(match, dict)
+    assert match.get("outcome_id") == "C.1"
+    assert str(match.get("method", "")) in {"tfidf", "fallback"}
 
 
 def test_resolve_question_outcomes_falls_back_deterministically(engine_no_io, monkeypatch):
@@ -1764,3 +1887,110 @@ def test_adaptive_interleave_ratios_boost_target_for_high_uncovered(engine_no_io
     assert mode.startswith("boost-")
     assert target > float(eng.INTERLEAVE_TARGET_RATIO)
     assert target + adjacent + far == pytest.approx(1.0, rel=1e-6)
+
+
+def test_build_canonical_concept_graph_is_deterministic(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "subtopics": ["Role of finance", "Agency"],
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Explain the role of the finance function", "level": 1},
+                {"id": "A.2", "text": "Explain agency problems", "level": 2},
+            ],
+        }
+    }
+    first = eng.build_canonical_concept_graph(force=True)
+    second = eng.build_canonical_concept_graph(force=True)
+    first_ids = [str(n.get("id", "")) for n in first.get("nodes", []) if isinstance(n, dict)]
+    second_ids = [str(n.get("id", "")) for n in second.get("nodes", []) if isinstance(n, dict)]
+    assert first_ids
+    assert first_ids == second_ids
+    assert int(first.get("meta", {}).get("version", 0) or 0) == int(eng.CONCEPT_GRAPH_SCHEMA_VERSION)
+
+
+def test_build_outcome_cluster_graph_lexical_fallback_stable(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Working capital policy", "level": 2},
+                {"id": "A.2", "text": "Working capital cycle", "level": 2},
+                {"id": "A.3", "text": "Agency and governance", "level": 1},
+            ],
+        }
+    }
+    monkeypatch.setattr(eng, "_semantic_get_model", lambda: None)
+    first = eng.build_outcome_cluster_graph(force=True)
+    second = eng.build_outcome_cluster_graph(force=True)
+    first_clusters = [str(c.get("cluster_id", "")) for c in first.get("clusters", []) if isinstance(c, dict)]
+    second_clusters = [str(c.get("cluster_id", "")) for c in second.get("clusters", []) if isinstance(c, dict)]
+    assert first_clusters
+    assert first_clusters == second_clusters
+    assert str(first.get("meta", {}).get("method", "")) == "lexical"
+
+
+def test_semantic_interleave_mix_exposes_cluster_mode(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Target concept", "level": 2},
+                {"id": "A.2", "text": "Adjacent concept", "level": 2},
+                {"id": "A.3", "text": "Far concept", "level": 2},
+            ],
+        }
+    }
+    today_iso = datetime.date.today().isoformat()
+    eng.outcome_stats = {
+        chapter: {
+            "A.1": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": today_iso},
+            "A.2": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": today_iso},
+            "A.3": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": today_iso},
+        }
+    }
+    mapping = {0: ["A.1"], 1: ["A.2"], 2: ["A.3"]}
+    monkeypatch.setattr(eng, "_question_outcome_ids", lambda _chapter, idx: mapping.get(idx, []))
+    eng.build_outcome_cluster_graph(force=True)
+    mix = eng.get_semantic_interleave_mix(chapter, [0, 1, 2], target_outcome_ids=["A.1"])
+    assert str(mix.get("cluster_mode", "")) in {"semantic", "lexical", "fallback"}
+    assert "target_cluster_count" in mix
+
+
+def test_semantic_drift_kpi_flags_gap_and_lag(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "one", "level": 1},
+                {"id": "A.2", "text": "two", "level": 2},
+                {"id": "A.3", "text": "three", "level": 2},
+                {"id": "A.4", "text": "four", "level": 2},
+                {"id": "A.5", "text": "five", "level": 3},
+            ],
+        }
+    }
+    eng.competence[chapter] = 90.0
+    eng.outcome_stats = {
+        chapter: {
+            "A.1": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": "2000-01-01"},
+            "A.2": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": "2000-01-01"},
+            "A.3": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": "2000-01-01"},
+            "A.4": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": "2000-01-01"},
+            "A.5": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": "2000-01-01"},
+        }
+    }
+    kpi = eng.get_semantic_drift_kpi(days=7)
+    assert str(kpi.get("status", "")) in {"warning", "severe"}
+    assert int(kpi.get("chapters_flagged", 0) or 0) >= 1
+    alerts = eng.get_semantic_drift_alerts(days=7)
+    assert alerts
+    assert alerts[0].get("chapter") == chapter

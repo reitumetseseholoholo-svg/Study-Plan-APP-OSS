@@ -38,6 +38,19 @@ class StudyPlanEngine:
     SEMANTIC_MIN_SCORE = 0.42
     SEMANTIC_CACHE_MAX = 2048
     SEMANTIC_RERANK_TOP_K = 4
+    SEMANTIC_CANONICAL_ALIASES: Dict[str, str] = {
+        "fs analysis": "financial statement analysis",
+        "fsa": "financial statement analysis",
+        "working cap": "working capital",
+        "wc": "working capital",
+        "wacc": "weighted average cost of capital",
+        "capm": "capital asset pricing model",
+        "npv": "net present value",
+        "irr": "internal rate of return",
+        "dcf": "discounted cash flow",
+        "ar": "accounts receivable",
+        "ap": "accounts payable",
+    }
     OUTCOME_GAP_QUIZ_RATIO = 0.5
     OUTCOME_GAP_MIN_QUESTIONS = 1
     IMPORT_SEMANTIC_TAG_MIN_SCORE = 0.55
@@ -46,6 +59,12 @@ class StudyPlanEngine:
     INTERLEAVE_ADJACENT_RATIO = 0.25
     INTERLEAVE_FAR_RATIO = 0.15
     INTERLEAVE_MIN_TARGET = 1
+    CONCEPT_GRAPH_SCHEMA_VERSION = 1
+    OUTCOME_CLUSTER_SCHEMA_VERSION = 1
+    SEMANTIC_CLUSTER_SIM_THRESHOLD = 0.72
+    SEMANTIC_DRIFT_COMPETENCE_GAP_PCT = 20.0
+    SEMANTIC_DRIFT_QUIZ_LAG_DAYS = 14
+    SEMANTIC_DRIFT_MIN_OUTCOMES = 5
     CHAPTERS = [
         "FM Function",
         "FM Environment",
@@ -1080,6 +1099,14 @@ class StudyPlanEngine:
         self.capabilities: Dict[str, str] = {}
         self.syllabus_meta: Dict[str, Any] = {}
         self.syllabus_structure: Dict[str, Dict[str, Any]] = {}
+        self.semantic_aliases: Dict[str, Any] = {}
+        self.concept_graph_meta: Dict[str, Any] = {}
+        self.concept_nodes: List[Dict[str, Any]] = []
+        self.concept_edges: List[Dict[str, Any]] = []
+        self.outcome_concept_links: List[Dict[str, Any]] = []
+        self.outcome_cluster_meta: Dict[str, Any] = {}
+        self.outcome_clusters: List[Dict[str, Any]] = []
+        self.outcome_cluster_edges: List[Dict[str, Any]] = []
 
     def _load_module_config(self, module_id: str) -> dict | None:
         safe_id = self._sanitize_module_id(module_id)
@@ -1182,6 +1209,84 @@ class StudyPlanEngine:
                 info["outcome_count"] = int(info.get("outcome_count", len(cleaned_outcomes)) or 0)
                 normalized[key] = info
             self.syllabus_structure = normalized
+        semantic_aliases = config.get("semantic_aliases")
+        if isinstance(semantic_aliases, dict):
+            self.semantic_aliases = copy.deepcopy(semantic_aliases)
+        concept_graph_meta = config.get("concept_graph_meta")
+        if isinstance(concept_graph_meta, dict):
+            self.concept_graph_meta = copy.deepcopy(concept_graph_meta)
+        concept_nodes = config.get("concept_nodes")
+        if isinstance(concept_nodes, list):
+            self.concept_nodes = [dict(x) for x in concept_nodes if isinstance(x, dict)]
+        concept_edges = config.get("concept_edges")
+        if isinstance(concept_edges, list):
+            self.concept_edges = [dict(x) for x in concept_edges if isinstance(x, dict)]
+        outcome_concept_links = config.get("outcome_concept_links")
+        if isinstance(outcome_concept_links, list):
+            self.outcome_concept_links = [dict(x) for x in outcome_concept_links if isinstance(x, dict)]
+        outcome_cluster_meta = config.get("outcome_cluster_meta")
+        if isinstance(outcome_cluster_meta, dict):
+            self.outcome_cluster_meta = copy.deepcopy(outcome_cluster_meta)
+        outcome_clusters = config.get("outcome_clusters")
+        if isinstance(outcome_clusters, list):
+            self.outcome_clusters = [dict(x) for x in outcome_clusters if isinstance(x, dict)]
+        outcome_cluster_edges = config.get("outcome_cluster_edges")
+        if isinstance(outcome_cluster_edges, list):
+            self.outcome_cluster_edges = [dict(x) for x in outcome_cluster_edges if isinstance(x, dict)]
+
+    def _chapter_semantic_alias_map(self, chapter: str) -> dict[str, str]:
+        """Return merged semantic alias map (built-in + module + chapter-specific)."""
+        merged: dict[str, str] = {}
+        for key, value in getattr(self, "SEMANTIC_CANONICAL_ALIASES", {}).items():
+            k = str(key).strip().lower()
+            v = str(value).strip().lower()
+            if k and v:
+                merged[k] = v
+
+        aliases = getattr(self, "semantic_aliases", {})
+        if not isinstance(aliases, dict):
+            return merged
+
+        # Global alias map in module config.
+        for key, value in aliases.items():
+            if isinstance(value, dict):
+                continue
+            k = str(key).strip().lower()
+            v = str(value).strip().lower()
+            if k and v:
+                merged[k] = v
+
+        # Chapter-specific alias maps in module config.
+        chapter_aliases = None
+        if chapter in aliases and isinstance(aliases.get(chapter), dict):
+            chapter_aliases = aliases.get(chapter)
+        else:
+            canonical_chapter = self._try_match_chapter(chapter)
+            if canonical_chapter and isinstance(aliases.get(canonical_chapter), dict):
+                chapter_aliases = aliases.get(canonical_chapter)
+        if isinstance(chapter_aliases, dict):
+            for key, value in chapter_aliases.items():
+                k = str(key).strip().lower()
+                v = str(value).strip().lower()
+                if k and v:
+                    merged[k] = v
+        return merged
+
+    def _semantic_normalize_text(self, chapter: str, text: str) -> str:
+        """Normalize text into a canonical semantic form using deterministic aliases."""
+        normalized = str(text or "").strip().lower()
+        if not normalized:
+            return ""
+        normalized = re.sub(r"\s+", " ", normalized)
+        alias_map = self._chapter_semantic_alias_map(chapter)
+        if not alias_map:
+            return normalized
+        for alias, canonical in alias_map.items():
+            if not alias or not canonical:
+                continue
+            pattern = rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])"
+            normalized = re.sub(pattern, canonical, normalized)
+        return re.sub(r"\s+", " ", normalized).strip()
 
     def _extract_between(
         self,
@@ -2526,6 +2631,13 @@ class StudyPlanEngine:
             "import_misses": 0,
         }
         self.syllabus_import_cache_file = os.path.join(self.DEFAULT_DATA_DIR, "syllabus_import_cache.json")
+        self.concept_graph_meta = {}
+        self.concept_nodes = []
+        self.concept_edges = []
+        self.outcome_concept_links = []
+        self.outcome_cluster_meta = {}
+        self.outcome_clusters = []
+        self.outcome_cluster_edges = []
 
         # Data health stats
         self.data_health = {
@@ -3311,6 +3423,687 @@ class StudyPlanEngine:
             lookup[outcome_id] = {"id": outcome_id, "text": text, "level": level}
         return lookup
 
+    def normalize_concept_text(self, chapter: str, text: str) -> str:
+        """Public canonical normalizer for concept text."""
+        return self._semantic_normalize_text(chapter, text)
+
+    def _stable_hash_id(self, prefix: str, payload: str, size: int = 12) -> str:
+        digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[: max(6, int(size))]
+        return f"{prefix}:{digest}"
+
+    def _concept_signature_payload(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        for chapter in self.CHAPTERS:
+            info = self.get_syllabus_chapter_intelligence(chapter)
+            if not isinstance(info, dict):
+                continue
+            outcomes = info.get("learning_outcomes", [])
+            if not isinstance(outcomes, list):
+                outcomes = []
+            payload[chapter] = {
+                "capability": str(info.get("capability", "") or "").strip().upper(),
+                "subtopics": [str(x).strip() for x in (info.get("subtopics", []) or []) if str(x).strip()],
+                "outcomes": [
+                    {
+                        "id": str(item.get("id", "")).strip(),
+                        "text": str(item.get("text", "")).strip(),
+                        "level": int(item.get("level", 2) or 2),
+                    }
+                    for item in outcomes
+                    if isinstance(item, dict)
+                ],
+            }
+        return payload
+
+    def build_canonical_concept_graph(self, force: bool = False) -> Dict[str, Any]:
+        """Build deterministic capability->concept->subconcept graph linked to outcomes."""
+        signature_payload = self._concept_signature_payload()
+        signature = hashlib.sha1(
+            json.dumps(signature_payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
+        ).hexdigest()
+        existing_meta = self.concept_graph_meta if isinstance(self.concept_graph_meta, dict) else {}
+        if (
+            not force
+            and isinstance(self.concept_nodes, list)
+            and isinstance(self.outcome_concept_links, list)
+            and existing_meta.get("signature") == signature
+            and int(existing_meta.get("version", 0) or 0) == int(self.CONCEPT_GRAPH_SCHEMA_VERSION)
+        ):
+            return self.get_canonical_concept_graph()
+
+        nodes_by_id: Dict[str, Dict[str, Any]] = {}
+        edges: List[Dict[str, Any]] = []
+        links: List[Dict[str, Any]] = []
+
+        def _add_node(node: Dict[str, Any]) -> None:
+            node_id = str(node.get("id", "") or "").strip()
+            if not node_id:
+                return
+            if node_id in nodes_by_id:
+                # Merge aliases/chapter refs deterministically.
+                current = nodes_by_id[node_id]
+                aliases = list(current.get("aliases", []) or [])
+                for alias in node.get("aliases", []) or []:
+                    s = str(alias).strip()
+                    if s and s not in aliases:
+                        aliases.append(s)
+                refs = list(current.get("chapter_refs", []) or [])
+                for ref in node.get("chapter_refs", []) or []:
+                    r = str(ref).strip()
+                    if r and r not in refs:
+                        refs.append(r)
+                current["aliases"] = aliases
+                current["chapter_refs"] = refs
+                nodes_by_id[node_id] = current
+                return
+            nodes_by_id[node_id] = node
+
+        for chapter in self.CHAPTERS:
+            info = self.get_syllabus_chapter_intelligence(chapter)
+            if not isinstance(info, dict):
+                continue
+            capability = str(info.get("capability", "") or "").strip().upper() or self._chapter_capability(chapter) or "X"
+            outcomes = info.get("learning_outcomes", [])
+            if not isinstance(outcomes, list):
+                outcomes = []
+            subtopics = [str(x).strip() for x in (info.get("subtopics", []) or []) if str(x).strip()]
+
+            cap_name = str(self.capabilities.get(capability, "") or "").strip() if isinstance(self.capabilities, dict) else ""
+            cap_label = cap_name or f"Capability {capability}"
+            cap_node_id = f"cap:{capability}"
+            _add_node(
+                {
+                    "id": cap_node_id,
+                    "name": cap_label,
+                    "kind": "capability",
+                    "capability": capability,
+                    "aliases": [capability],
+                    "chapter_refs": [chapter],
+                }
+            )
+
+            chapter_name = re.sub(r"^\s*[A-H]\.\s*", "", str(chapter)).strip() or str(chapter)
+            chapter_concept_id = self._stable_hash_id(
+                "concept",
+                f"{capability}|chapter|{self.normalize_concept_text(chapter, chapter_name)}",
+            )
+            _add_node(
+                {
+                    "id": chapter_concept_id,
+                    "name": chapter_name,
+                    "kind": "concept",
+                    "capability": capability,
+                    "aliases": [self.normalize_concept_text(chapter, chapter_name)],
+                    "chapter_refs": [chapter],
+                }
+            )
+            edges.append(
+                {
+                    "parent_id": cap_node_id,
+                    "child_id": chapter_concept_id,
+                    "relation": "contains",
+                }
+            )
+
+            subtopic_nodes: List[Tuple[str, str]] = []
+            for subtopic in subtopics:
+                normalized = self.normalize_concept_text(chapter, subtopic)
+                if not normalized:
+                    continue
+                sub_id = self._stable_hash_id("sub", f"{capability}|{chapter}|{normalized}")
+                _add_node(
+                    {
+                        "id": sub_id,
+                        "name": subtopic,
+                        "kind": "subconcept",
+                        "capability": capability,
+                        "aliases": [normalized],
+                        "chapter_refs": [chapter],
+                    }
+                )
+                edges.append(
+                    {
+                        "parent_id": chapter_concept_id,
+                        "child_id": sub_id,
+                        "relation": "contains",
+                    }
+                )
+                subtopic_nodes.append((sub_id, normalized))
+
+            for outcome in outcomes:
+                if not isinstance(outcome, dict):
+                    continue
+                outcome_id = str(outcome.get("id", "") or "").strip()
+                outcome_text = str(outcome.get("text", "") or "").strip()
+                if not outcome_id or not outcome_text:
+                    continue
+                outcome_norm = self.normalize_concept_text(chapter, outcome_text)
+                target_concept_id = chapter_concept_id
+                best_score = -1.0
+                for sub_id, sub_norm in subtopic_nodes:
+                    if not sub_norm:
+                        continue
+                    ratio = difflib.SequenceMatcher(None, outcome_norm, sub_norm).ratio()
+                    if ratio > best_score:
+                        best_score = ratio
+                        target_concept_id = sub_id
+                links.append(
+                    {
+                        "outcome_id": outcome_id,
+                        "concept_id": target_concept_id,
+                        "weight": 1.0,
+                    }
+                )
+
+        self.concept_nodes = sorted(nodes_by_id.values(), key=lambda x: str(x.get("id", "")))
+        self.concept_edges = sorted(
+            edges,
+            key=lambda x: (str(x.get("parent_id", "")), str(x.get("child_id", "")), str(x.get("relation", ""))),
+        )
+        self.outcome_concept_links = sorted(
+            links,
+            key=lambda x: (str(x.get("outcome_id", "")), str(x.get("concept_id", ""))),
+        )
+        semantic_status = self.get_semantic_status()
+        self.concept_graph_meta = {
+            "version": int(self.CONCEPT_GRAPH_SCHEMA_VERSION),
+            "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "source": "syllabus_structure",
+            "semantic_model": str(semantic_status.get("model_name", "") or ""),
+            "signature": signature,
+        }
+        return self.get_canonical_concept_graph()
+
+    def get_canonical_concept_graph(self) -> Dict[str, Any]:
+        if not isinstance(self.concept_nodes, list) or not self.concept_nodes:
+            self.build_canonical_concept_graph(force=False)
+        return {
+            "meta": dict(self.concept_graph_meta) if isinstance(self.concept_graph_meta, dict) else {},
+            "nodes": list(self.concept_nodes) if isinstance(self.concept_nodes, list) else [],
+            "edges": list(self.concept_edges) if isinstance(self.concept_edges, list) else [],
+            "outcome_links": list(self.outcome_concept_links) if isinstance(self.outcome_concept_links, list) else [],
+        }
+
+    def resolve_question_concepts(self, chapter: str, idx: int) -> Dict[str, Any]:
+        route = self.resolve_question_outcomes(chapter, idx)
+        outcome_ids = route.get("outcome_ids", [])
+        if not isinstance(outcome_ids, list):
+            outcome_ids = []
+        graph = self.get_canonical_concept_graph()
+        links = graph.get("outcome_links", [])
+        concept_ids: List[str] = []
+        if isinstance(links, list):
+            link_map: Dict[str, List[str]] = {}
+            for row in links:
+                if not isinstance(row, dict):
+                    continue
+                oid = str(row.get("outcome_id", "") or "").strip()
+                cid = str(row.get("concept_id", "") or "").strip()
+                if not oid or not cid:
+                    continue
+                bucket = link_map.setdefault(oid, [])
+                if cid not in bucket:
+                    bucket.append(cid)
+            for oid in outcome_ids:
+                for cid in link_map.get(str(oid).strip(), []):
+                    if cid not in concept_ids:
+                        concept_ids.append(cid)
+        return {
+            "chapter": chapter,
+            "question_index": int(idx),
+            "outcome_ids": [str(x).strip() for x in outcome_ids if str(x).strip()],
+            "concept_ids": concept_ids,
+            "primary_concept_id": concept_ids[0] if concept_ids else "",
+            "semantic_match_confidence": float(route.get("semantic_match_confidence", 0.0) or 0.0),
+            "semantic_match_method": str(route.get("semantic_match_method", "fallback") or "fallback"),
+            "reason": str(route.get("reason", "deterministic fallback") or "deterministic fallback"),
+        }
+
+    def _cluster_signature_payload(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        for chapter in self.CHAPTERS:
+            lookup = self._chapter_outcome_lookup(chapter)
+            if not lookup:
+                continue
+            payload[chapter] = [
+                {"id": oid, "text": str(row.get("text", "")).strip()}
+                for oid, row in sorted(lookup.items(), key=lambda x: x[0])
+            ]
+        return payload
+
+    def _lexical_cluster_key(self, chapter: str, text: str) -> str:
+        normalized = self.normalize_concept_text(chapter, text)
+        tokens = [tok for tok in re.split(r"[^a-z0-9]+", normalized.lower()) if tok]
+        if not tokens:
+            return "misc"
+        return "|".join(tokens[:3])
+
+    def build_outcome_cluster_graph(self, force: bool = False) -> Dict[str, Any]:
+        signature_payload = self._cluster_signature_payload()
+        semantic_status = self.get_semantic_status()
+        semantic_active = bool(semantic_status.get("active", False))
+        signature = hashlib.sha1(
+            json.dumps(
+                {
+                    "payload": signature_payload,
+                    "semantic_active": semantic_active,
+                    "model_name": semantic_status.get("model_name", ""),
+                    "threshold": float(getattr(self, "SEMANTIC_CLUSTER_SIM_THRESHOLD", 0.72) or 0.72),
+                },
+                sort_keys=True,
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        existing_meta = self.outcome_cluster_meta if isinstance(self.outcome_cluster_meta, dict) else {}
+        if (
+            not force
+            and isinstance(self.outcome_clusters, list)
+            and existing_meta.get("signature") == signature
+            and int(existing_meta.get("version", 0) or 0) == int(self.OUTCOME_CLUSTER_SCHEMA_VERSION)
+        ):
+            return self.get_outcome_cluster_graph()
+
+        clusters: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = []
+        cluster_vectors: Dict[str, List[float]] = {}
+        method = "lexical"
+        threshold = float(getattr(self, "SEMANTIC_CLUSTER_SIM_THRESHOLD", 0.72) or 0.72)
+        model = self._semantic_get_model() if semantic_active else None
+        if model is not None:
+            method = "semantic"
+
+        for chapter in self.CHAPTERS:
+            lookup = self._chapter_outcome_lookup(chapter)
+            if not lookup:
+                continue
+            capability = self._chapter_capability(chapter) or "X"
+            ordered = sorted(lookup.items(), key=lambda x: x[0])
+            if not ordered:
+                continue
+
+            local_groups: List[Dict[str, Any]] = []
+            local_vectors: List[List[float]] = []
+            texts = [self.normalize_concept_text(chapter, str(row.get("text", "") or "")) for _oid, row in ordered]
+            vectors: List[List[float]] = []
+            if method == "semantic":
+                try:
+                    model_obj = cast(Any, model)
+                    raw = model_obj.encode(texts, normalize_embeddings=True)
+                    vectors = [list(v) for v in raw] if raw is not None else []
+                except Exception:
+                    method = "lexical"
+                    vectors = []
+
+            if method == "semantic" and len(vectors) == len(ordered):
+                for idx, (outcome_id, row) in enumerate(ordered):
+                    vec = vectors[idx]
+                    best_group_idx = -1
+                    best_score = -1.0
+                    for g_idx, g_vec in enumerate(local_vectors):
+                        score = self._cosine_similarity(vec, g_vec)
+                        if score > best_score:
+                            best_score = score
+                            best_group_idx = g_idx
+                    if best_group_idx >= 0 and best_score >= threshold:
+                        grp = local_groups[best_group_idx]
+                        grp["outcome_ids"].append(outcome_id)
+                        grp["texts"].append(str(row.get("text", "") or "").strip())
+                        grp["chapters"].add(chapter)
+                        count = float(len(grp["outcome_ids"]))
+                        # Incremental centroid update.
+                        old = local_vectors[best_group_idx]
+                        local_vectors[best_group_idx] = [
+                            ((old_i * (count - 1.0)) + vec_i) / max(1.0, count) for old_i, vec_i in zip(old, vec)
+                        ]
+                    else:
+                        local_groups.append(
+                            {
+                                "capability": capability,
+                                "outcome_ids": [outcome_id],
+                                "texts": [str(row.get("text", "") or "").strip()],
+                                "chapters": {chapter},
+                            }
+                        )
+                        local_vectors.append(vec)
+            else:
+                lexical_groups: Dict[str, Dict[str, Any]] = {}
+                for outcome_id, row in ordered:
+                    text = str(row.get("text", "") or "").strip()
+                    key = self._lexical_cluster_key(chapter, text)
+                    grp = lexical_groups.setdefault(
+                        key,
+                        {
+                            "capability": capability,
+                            "outcome_ids": [],
+                            "texts": [],
+                            "chapters": set(),
+                        },
+                    )
+                    grp["outcome_ids"].append(outcome_id)
+                    grp["texts"].append(text)
+                    grp["chapters"].add(chapter)
+                local_groups = list(lexical_groups.values())
+                local_vectors = []
+
+            for g_idx, grp in enumerate(local_groups):
+                outcome_ids = sorted({str(oid).strip() for oid in grp.get("outcome_ids", []) if str(oid).strip()})
+                if not outcome_ids:
+                    continue
+                cluster_id = self._stable_hash_id(
+                    f"cl:{capability}",
+                    "|".join(outcome_ids),
+                    size=10,
+                )
+                label = str(grp.get("texts", ["Cluster"])[0] or "Cluster").strip()
+                cluster = {
+                    "cluster_id": cluster_id,
+                    "capability": capability,
+                    "outcome_ids": outcome_ids,
+                    "centroid_ref": outcome_ids[0],
+                    "label": label,
+                    "chapters": sorted({str(ch).strip() for ch in grp.get("chapters", set()) if str(ch).strip()}),
+                }
+                clusters.append(cluster)
+                if method == "semantic" and g_idx < len(local_vectors):
+                    cluster_vectors[cluster_id] = list(local_vectors[g_idx])
+
+        # Build undirected edges as two directed rows for simple routing lookup.
+        by_cap: Dict[str, List[Dict[str, Any]]] = {}
+        for cluster in clusters:
+            cap = str(cluster.get("capability", "") or "").strip().upper() or "X"
+            by_cap.setdefault(cap, []).append(cluster)
+        for cap, items in by_cap.items():
+            sorted_items = sorted(items, key=lambda x: str(x.get("cluster_id", "")))
+            for i in range(len(sorted_items)):
+                a = sorted_items[i]
+                a_id = str(a.get("cluster_id", "") or "")
+                if not a_id:
+                    continue
+                for j in range(i + 1, len(sorted_items)):
+                    b = sorted_items[j]
+                    b_id = str(b.get("cluster_id", "") or "")
+                    if not b_id:
+                        continue
+                    if method == "semantic" and a_id in cluster_vectors and b_id in cluster_vectors:
+                        sim = self._cosine_similarity(cluster_vectors[a_id], cluster_vectors[b_id])
+                        dist = max(0.0, min(1.0, 1.0 - sim))
+                    else:
+                        a_tokens = {
+                            tok
+                            for tok in re.split(
+                                r"[^a-z0-9]+",
+                                self.normalize_concept_text(cap, str(a.get("label", "") or "")).lower(),
+                            )
+                            if tok
+                        }
+                        b_tokens = {
+                            tok
+                            for tok in re.split(
+                                r"[^a-z0-9]+",
+                                self.normalize_concept_text(cap, str(b.get("label", "") or "")).lower(),
+                            )
+                            if tok
+                        }
+                        overlap = len(a_tokens & b_tokens)
+                        union = max(1, len(a_tokens | b_tokens))
+                        dist = max(0.0, min(1.0, 1.0 - (float(overlap) / float(union))))
+                    relation = "adjacent" if dist <= 0.35 else "far"
+                    edges.append({"from_cluster": a_id, "to_cluster": b_id, "distance": dist, "relation": relation})
+                    edges.append({"from_cluster": b_id, "to_cluster": a_id, "distance": dist, "relation": relation})
+
+        self.outcome_clusters = sorted(clusters, key=lambda x: str(x.get("cluster_id", "")))
+        self.outcome_cluster_edges = sorted(
+            edges,
+            key=lambda x: (str(x.get("from_cluster", "")), str(x.get("to_cluster", ""))),
+        )
+        self.outcome_cluster_meta = {
+            "version": int(self.OUTCOME_CLUSTER_SCHEMA_VERSION),
+            "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "method": method,
+            "signature": signature,
+            "threshold": threshold,
+        }
+        return self.get_outcome_cluster_graph()
+
+    def get_outcome_cluster_graph(self) -> Dict[str, Any]:
+        if not isinstance(self.outcome_clusters, list) or not self.outcome_clusters:
+            self.build_outcome_cluster_graph(force=False)
+        return {
+            "meta": dict(self.outcome_cluster_meta) if isinstance(self.outcome_cluster_meta, dict) else {},
+            "clusters": list(self.outcome_clusters) if isinstance(self.outcome_clusters, list) else [],
+            "edges": list(self.outcome_cluster_edges) if isinstance(self.outcome_cluster_edges, list) else [],
+        }
+
+    def get_outcome_cluster_id(self, outcome_id: str) -> str | None:
+        target = str(outcome_id or "").strip()
+        if not target:
+            return None
+        graph = self.get_outcome_cluster_graph()
+        clusters = graph.get("clusters", [])
+        if not isinstance(clusters, list):
+            return None
+        for cluster in clusters:
+            if not isinstance(cluster, dict):
+                continue
+            outcome_ids = cluster.get("outcome_ids", [])
+            if isinstance(outcome_ids, list) and target in outcome_ids:
+                cid = str(cluster.get("cluster_id", "") or "").strip()
+                return cid or None
+        return None
+
+    def _resolve_interleave_cluster_context(
+        self, chapter: str, target_outcome_ids: List[str]
+    ) -> Dict[str, Any]:
+        graph = self.get_outcome_cluster_graph()
+        meta = graph.get("meta", {})
+        clusters = graph.get("clusters", [])
+        edges = graph.get("edges", [])
+        if not isinstance(clusters, list) or not clusters:
+            return {"mode": "fallback", "outcome_to_cluster": {}, "target_clusters": set(), "adjacent_clusters": set()}
+
+        chapter_lookup = self._chapter_outcome_lookup(chapter)
+        chapter_outcomes = set(chapter_lookup.keys())
+        chapter_cap = self._chapter_capability(chapter)
+
+        outcome_to_cluster: Dict[str, str] = {}
+        active_cluster_ids: Set[str] = set()
+        for cluster in clusters:
+            if not isinstance(cluster, dict):
+                continue
+            cluster_cap = str(cluster.get("capability", "") or "").strip().upper()
+            if chapter_cap and cluster_cap and cluster_cap != chapter_cap:
+                continue
+            cid = str(cluster.get("cluster_id", "") or "").strip()
+            if not cid:
+                continue
+            outcome_ids = cluster.get("outcome_ids", [])
+            if not isinstance(outcome_ids, list):
+                continue
+            any_for_chapter = False
+            for oid in outcome_ids:
+                key = str(oid).strip()
+                if key and key in chapter_outcomes:
+                    outcome_to_cluster[key] = cid
+                    any_for_chapter = True
+            if any_for_chapter:
+                active_cluster_ids.add(cid)
+
+        target_clusters: Set[str] = set()
+        for oid in target_outcome_ids:
+            cid = outcome_to_cluster.get(str(oid).strip())
+            if cid:
+                target_clusters.add(cid)
+        if not target_clusters:
+            return {
+                "mode": "fallback",
+                "outcome_to_cluster": outcome_to_cluster,
+                "target_clusters": set(),
+                "adjacent_clusters": set(),
+            }
+
+        adjacent_clusters: Set[str] = set()
+        if isinstance(edges, list):
+            for edge in edges:
+                if not isinstance(edge, dict):
+                    continue
+                a = str(edge.get("from_cluster", "") or "").strip()
+                b = str(edge.get("to_cluster", "") or "").strip()
+                if not a or not b:
+                    continue
+                if a not in active_cluster_ids or b not in active_cluster_ids:
+                    continue
+                try:
+                    dist = float(edge.get("distance", 1.0) or 1.0)
+                except Exception:
+                    dist = 1.0
+                if a in target_clusters and b not in target_clusters and dist <= 0.40:
+                    adjacent_clusters.add(b)
+
+        mode = str(meta.get("method", "fallback") or "fallback")
+        if mode not in {"semantic", "lexical"}:
+            mode = "fallback"
+        return {
+            "mode": mode,
+            "outcome_to_cluster": outcome_to_cluster,
+            "target_clusters": target_clusters,
+            "adjacent_clusters": adjacent_clusters,
+        }
+
+    def get_semantic_drift_kpi_by_chapter(self, days: int = 7) -> Dict[str, Dict[str, Any]]:
+        results: Dict[str, Dict[str, Any]] = {}
+        try:
+            min_outcomes = int(getattr(self, "SEMANTIC_DRIFT_MIN_OUTCOMES", 5) or 5)
+        except Exception:
+            min_outcomes = 5
+        try:
+            gap_threshold = float(getattr(self, "SEMANTIC_DRIFT_COMPETENCE_GAP_PCT", 20.0) or 20.0)
+        except Exception:
+            gap_threshold = 20.0
+        try:
+            lag_threshold = int(getattr(self, "SEMANTIC_DRIFT_QUIZ_LAG_DAYS", 14) or 14)
+        except Exception:
+            lag_threshold = 14
+        today = datetime.date.today()
+        for chapter in self.CHAPTERS:
+            mastery = self.get_chapter_outcome_mastery(chapter)
+            total_outcomes = int(mastery.get("total_outcomes", 0) or 0)
+            if total_outcomes < max(1, min_outcomes):
+                continue
+            try:
+                competence_pct = float(self.competence.get(chapter, 0) or 0)
+            except Exception:
+                competence_pct = 0.0
+            outcome_coverage_pct = float(mastery.get("coverage_pct", 0.0) or 0.0)
+            gap_pct = max(0.0, competence_pct - outcome_coverage_pct)
+
+            # Derive lag from last outcome activity.
+            last_seen: datetime.date | None = None
+            stats_by_ch = self.outcome_stats.get(chapter, {}) if isinstance(self.outcome_stats, dict) else {}
+            if isinstance(stats_by_ch, dict):
+                for entry in stats_by_ch.values():
+                    if not isinstance(entry, dict):
+                        continue
+                    try:
+                        attempts = int(entry.get("attempts", 0) or 0)
+                    except Exception:
+                        attempts = 0
+                    if attempts <= 0:
+                        continue
+                    date_val = self._parse_date(entry.get("last_seen"))
+                    if date_val and (last_seen is None or date_val > last_seen):
+                        last_seen = date_val
+            if last_seen is None:
+                quiz_lag_days = lag_threshold + max(1, days)
+            else:
+                quiz_lag_days = max(0, int((today - last_seen).days))
+
+            flagged_reasons: List[str] = []
+            if gap_pct >= gap_threshold:
+                flagged_reasons.append("coverage_gap")
+            if quiz_lag_days >= lag_threshold:
+                flagged_reasons.append("quiz_lag")
+
+            severity_score = (gap_pct / max(1.0, gap_threshold)) + (quiz_lag_days / max(1.0, float(lag_threshold)))
+            if len(flagged_reasons) >= 2 or severity_score >= 2.0:
+                severity = "severe"
+            elif flagged_reasons:
+                severity = "moderate"
+            else:
+                severity = "ok"
+            results[chapter] = {
+                "competence_pct": max(0.0, min(100.0, competence_pct)),
+                "outcome_coverage_pct": max(0.0, min(100.0, outcome_coverage_pct)),
+                "gap_pct": max(0.0, gap_pct),
+                "quiz_lag_days": int(quiz_lag_days),
+                "flagged_reasons": flagged_reasons,
+                "severity": severity,
+                "total_outcomes": int(total_outcomes),
+            }
+        return results
+
+    def get_semantic_drift_kpi(self, days: int = 7) -> Dict[str, Any]:
+        by_chapter = self.get_semantic_drift_kpi_by_chapter(days=days)
+        flagged = [row for row in by_chapter.values() if isinstance(row, dict) and row.get("flagged_reasons")]
+        severe = [row for row in flagged if str(row.get("severity", "")) == "severe"]
+        try:
+            avg_gap = sum(float(row.get("gap_pct", 0.0) or 0.0) for row in flagged) / max(1, len(flagged))
+        except Exception:
+            avg_gap = 0.0
+        status = "ok"
+        if severe:
+            status = "severe"
+        elif flagged:
+            status = "warning"
+        return {
+            "status": status,
+            "chapters_flagged": len(flagged),
+            "avg_gap_pct": float(avg_gap),
+            "quiz_lag_chapters": sum(1 for row in flagged if "quiz_lag" in (row.get("flagged_reasons") or [])),
+            "trend": "stable",
+            "by_chapter": by_chapter,
+            "thresholds": {
+                "competence_gap_pct": float(getattr(self, "SEMANTIC_DRIFT_COMPETENCE_GAP_PCT", 20.0) or 20.0),
+                "quiz_lag_days": int(getattr(self, "SEMANTIC_DRIFT_QUIZ_LAG_DAYS", 14) or 14),
+                "min_outcomes": int(getattr(self, "SEMANTIC_DRIFT_MIN_OUTCOMES", 5) or 5),
+            },
+        }
+
+    def get_semantic_drift_alerts(self, days: int = 7) -> List[Dict[str, Any]]:
+        by_chapter = self.get_semantic_drift_kpi_by_chapter(days=days)
+        alerts: List[Dict[str, Any]] = []
+        for chapter, row in by_chapter.items():
+            if not isinstance(row, dict):
+                continue
+            reasons = row.get("flagged_reasons", [])
+            if not isinstance(reasons, list) or not reasons:
+                continue
+            payload = dict(row)
+            payload["chapter"] = chapter
+            alerts.append(payload)
+        alerts.sort(
+            key=lambda item: (
+                0 if str(item.get("severity", "ok")) == "severe" else 1,
+                -float(item.get("gap_pct", 0.0) or 0.0),
+                -int(item.get("quiz_lag_days", 0) or 0),
+                str(item.get("chapter", "")),
+            )
+        )
+        return alerts
+
+    def get_semantic_graph_status(self) -> Dict[str, Any]:
+        concept = self.get_canonical_concept_graph()
+        cluster = self.get_outcome_cluster_graph()
+        concept_nodes = concept.get("nodes", [])
+        cluster_rows = cluster.get("clusters", [])
+        return {
+            "concept_nodes": len(concept_nodes) if isinstance(concept_nodes, list) else 0,
+            "concept_links": len(concept.get("outcome_links", [])) if isinstance(concept.get("outcome_links", []), list) else 0,
+            "concept_version": int((concept.get("meta", {}) or {}).get("version", 0) or 0),
+            "cluster_count": len(cluster_rows) if isinstance(cluster_rows, list) else 0,
+            "cluster_method": str((cluster.get("meta", {}) or {}).get("method", "fallback") or "fallback"),
+            "cluster_version": int((cluster.get("meta", {}) or {}).get("version", 0) or 0),
+        }
+
     def _semantic_cache_get(self, key: str) -> Dict[str, Any] | None:
         try:
             value = self._semantic_match_cache.get(key)
@@ -3436,6 +4229,32 @@ class StudyPlanEngine:
             cache_size = int(len(self._semantic_match_cache))
         except Exception:
             cache_size = 0
+        built_in_alias_count = 0
+        module_global_alias_count = 0
+        module_chapter_alias_count = 0
+        try:
+            built_in_alias_count = int(
+                len(getattr(self, "SEMANTIC_CANONICAL_ALIASES", {}) or {})
+            )
+        except Exception:
+            built_in_alias_count = 0
+        aliases_raw = getattr(self, "semantic_aliases", {})
+        if isinstance(aliases_raw, dict):
+            for key, value in aliases_raw.items():
+                if isinstance(value, dict):
+                    try:
+                        module_chapter_alias_count += int(len(value))
+                    except Exception:
+                        continue
+                else:
+                    if str(key).strip() and str(value).strip():
+                        module_global_alias_count += 1
+        alias_count_total = max(
+            0,
+            int(built_in_alias_count)
+            + int(module_global_alias_count)
+            + int(module_chapter_alias_count),
+        )
         return {
             "enabled": enabled,
             "state": state,
@@ -3451,6 +4270,10 @@ class StudyPlanEngine:
             "block_reason": str(getattr(self, "_semantic_block_reason", "") or ""),
             "reranker_block_reason": str(getattr(self, "_semantic_reranker_block_reason", "") or ""),
             "active": bool(enabled and state == "ready"),
+            "built_in_alias_count": max(0, int(built_in_alias_count)),
+            "module_global_alias_count": max(0, int(module_global_alias_count)),
+            "module_chapter_alias_count": max(0, int(module_chapter_alias_count)),
+            "alias_count_total": alias_count_total,
         }
 
     @staticmethod
@@ -3487,8 +4310,13 @@ class StudyPlanEngine:
         outcome_texts = [str((outcome_lookup.get(oid) or {}).get("text", "")).strip() for oid in ordered_ids]
         if not any(outcome_texts):
             return {"outcome_id": None, "score": 0.0, "method": "fallback"}
+
+        normalized_text = self._semantic_normalize_text(chapter, text) or text
+        normalized_outcome_texts = [
+            (self._semantic_normalize_text(chapter, txt) or txt) for txt in outcome_texts
+        ]
         sig = "|".join(ordered_ids)
-        cache_key = hashlib.sha1(f"{chapter}|{sig}|{text.lower()}".encode("utf-8")).hexdigest()
+        cache_key = hashlib.sha1(f"{chapter}|{sig}|{normalized_text}".encode("utf-8")).hexdigest()
         cached = self._semantic_cache_get(cache_key)
         if isinstance(cached, dict):
             cached_id = str(cached.get("outcome_id", "") or "").strip()
@@ -3509,9 +4337,9 @@ class StudyPlanEngine:
         model = self._semantic_get_model()
         if model is not None:
             try:
-                raw = model.encode([text] + outcome_texts, normalize_embeddings=True)
+                raw = model.encode([normalized_text] + normalized_outcome_texts, normalize_embeddings=True)
                 matrix = list(raw) if raw is not None else []
-                if len(matrix) == len(outcome_texts) + 1:
+                if len(matrix) == len(normalized_outcome_texts) + 1:
                     query = [float(v) for v in matrix[0]]
                     dense_scores: List[Tuple[int, float]] = []
                     for idx, vec in enumerate(matrix[1:]):
@@ -3525,7 +4353,10 @@ class StudyPlanEngine:
                     if reranker is not None and len(dense_scores) >= 2:
                         top_k = max(2, int(getattr(self, "SEMANTIC_RERANK_TOP_K", 4) or 4))
                         rerank_candidates = dense_scores[:top_k]
-                        pairs = [[text, outcome_texts[idx]] for idx, _score in rerank_candidates]
+                        pairs = [
+                            [normalized_text, normalized_outcome_texts[idx]]
+                            for idx, _score in rerank_candidates
+                        ]
                         try:
                             raw_cross = reranker.predict(pairs)
                             cross_scores = list(raw_cross) if raw_cross is not None else []
@@ -3565,7 +4396,7 @@ class StudyPlanEngine:
             from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
 
             vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
-            matrix = vectorizer.fit_transform([text] + outcome_texts)
+            matrix = vectorizer.fit_transform([normalized_text] + normalized_outcome_texts)
             sims = cast(List[float], cosine_similarity(matrix[0:1], matrix[1:]).flatten().tolist())
             if sims:
                 best_idx = max(range(len(sims)), key=lambda i: float(sims[i]))
@@ -3580,9 +4411,11 @@ class StudyPlanEngine:
         # Tier 3: plain text similarity fallback.
         best_id = None
         best_ratio = -1.0
-        lower = text.lower()
+        lower = normalized_text.lower()
         for oid in ordered_ids:
-            candidate_text = str((outcome_lookup.get(oid) or {}).get("text", "")).strip().lower()
+            candidate_text = self._semantic_normalize_text(
+                chapter, str((outcome_lookup.get(oid) or {}).get("text", "")).strip()
+            ).lower()
             if not candidate_text:
                 continue
             ratio = difflib.SequenceMatcher(None, lower, candidate_text).ratio()
@@ -4153,6 +4986,8 @@ class StudyPlanEngine:
             "planned_adjacent_ratio": 0.0,
             "planned_far_ratio": 0.0,
             "ratio_mode": "default",
+            "cluster_mode": "fallback",
+            "target_cluster_count": 0,
         }
         questions = self.QUESTIONS.get(chapter, [])
         if not isinstance(questions, list) or not questions:
@@ -4193,6 +5028,34 @@ class StudyPlanEngine:
             result["unknown"] = len(cleaned_indices)
             result["total"] = len(cleaned_indices)
             return result
+        cluster_ctx = self._resolve_interleave_cluster_context(chapter, targets)
+        cluster_mode = str(cluster_ctx.get("mode", "fallback") or "fallback")
+        outcome_to_cluster = cluster_ctx.get("outcome_to_cluster", {})
+        if not isinstance(outcome_to_cluster, dict):
+            outcome_to_cluster = {}
+        target_clusters = cluster_ctx.get("target_clusters", set())
+        if not isinstance(target_clusters, set):
+            target_clusters = set()
+        adjacent_clusters = cluster_ctx.get("adjacent_clusters", set())
+        if not isinstance(adjacent_clusters, set):
+            adjacent_clusters = set()
+        use_cluster_lane = (
+            cluster_mode in {"semantic", "lexical"}
+            and bool(target_clusters)
+            and bool(adjacent_clusters)
+        )
+        use_cluster_lane = (
+            cluster_mode in {"semantic", "lexical"}
+            and bool(target_clusters)
+            and bool(adjacent_clusters)
+        )
+        use_cluster_lane = (
+            cluster_mode in {"semantic", "lexical"}
+            and bool(target_clusters)
+            and bool(adjacent_clusters)
+        )
+        result["cluster_mode"] = cluster_mode
+        result["target_cluster_count"] = len(target_clusters)
 
         planned_target, planned_adjacent, planned_far, ratio_mode = self._adaptive_interleave_ratios(chapter)
         result["planned_target_ratio"] = float(planned_target)
@@ -4205,30 +5068,114 @@ class StudyPlanEngine:
             if not outcome_ids:
                 result["unknown"] = int(result["unknown"]) + 1
                 continue
-            nearest = 9999
-            in_target = False
-            for oid in outcome_ids:
-                pos = outcome_pos.get(oid)
-                if pos is None:
-                    continue
-                if oid in target_set:
-                    in_target = True
-                for tpos in target_positions:
-                    dist = abs(pos - tpos)
-                    if dist < nearest:
-                        nearest = dist
-            if in_target:
-                result["target"] = int(result["target"]) + 1
-            elif nearest <= 1:
-                result["adjacent"] = int(result["adjacent"]) + 1
-            elif nearest < 9999:
-                result["far"] = int(result["far"]) + 1
+            if use_cluster_lane:
+                q_clusters = {
+                    str(outcome_to_cluster.get(str(oid).strip(), "") or "").strip()
+                    for oid in outcome_ids
+                    if str(outcome_to_cluster.get(str(oid).strip(), "") or "").strip()
+                }
+                if q_clusters & target_clusters:
+                    result["target"] = int(result["target"]) + 1
+                elif q_clusters & adjacent_clusters:
+                    result["adjacent"] = int(result["adjacent"]) + 1
+                elif q_clusters:
+                    result["far"] = int(result["far"]) + 1
+                else:
+                    result["unknown"] = int(result["unknown"]) + 1
             else:
-                result["unknown"] = int(result["unknown"]) + 1
+                nearest = 9999
+                in_target = False
+                for oid in outcome_ids:
+                    pos = outcome_pos.get(oid)
+                    if pos is None:
+                        continue
+                    if oid in target_set:
+                        in_target = True
+                    for tpos in target_positions:
+                        dist = abs(pos - tpos)
+                        if dist < nearest:
+                            nearest = dist
+                if in_target:
+                    result["target"] = int(result["target"]) + 1
+                elif nearest <= 1:
+                    result["adjacent"] = int(result["adjacent"]) + 1
+                elif nearest < 9999:
+                    result["far"] = int(result["far"]) + 1
+                else:
+                    result["unknown"] = int(result["unknown"]) + 1
 
         result["total"] = len(cleaned_indices)
         result["target_outcomes"] = targets
         return result
+
+    def get_semantic_interleave_lanes(
+        self, chapter: str, indices: List[int], target_outcome_ids: List[str] | None = None
+    ) -> Dict[str, Any]:
+        """Return per-question lane labels (target/adjacent/far/unknown) for quiz explainability."""
+        lanes: Dict[str, str] = {}
+        mix = self.get_semantic_interleave_mix(chapter, indices, target_outcome_ids=target_outcome_ids)
+        outcome_lookup = self._chapter_outcome_lookup(chapter)
+        if not outcome_lookup:
+            return {"lanes": lanes, "cluster_mode": "fallback"}
+        targets = self._resolve_interleave_target_outcomes(chapter, target_outcome_ids)
+        target_set = set(targets)
+        outcome_order = [oid for oid in outcome_lookup.keys() if isinstance(oid, str) and oid.strip()]
+        outcome_pos = {oid: idx for idx, oid in enumerate(outcome_order)}
+        target_positions = [outcome_pos[oid] for oid in targets if oid in outcome_pos]
+        cluster_ctx = self._resolve_interleave_cluster_context(chapter, targets)
+        cluster_mode = str(cluster_ctx.get("mode", "fallback") or "fallback")
+        outcome_to_cluster = cluster_ctx.get("outcome_to_cluster", {})
+        if not isinstance(outcome_to_cluster, dict):
+            outcome_to_cluster = {}
+        target_clusters = cluster_ctx.get("target_clusters", set())
+        if not isinstance(target_clusters, set):
+            target_clusters = set()
+        adjacent_clusters = cluster_ctx.get("adjacent_clusters", set())
+        if not isinstance(adjacent_clusters, set):
+            adjacent_clusters = set()
+        use_cluster_lane = bool(target_clusters) and bool(adjacent_clusters)
+
+        for raw_idx in indices if isinstance(indices, list) else []:
+            if not isinstance(raw_idx, int):
+                continue
+            outcome_ids = self._question_outcome_ids(chapter, raw_idx)
+            lane = "unknown"
+            if outcome_ids:
+                if use_cluster_lane:
+                    q_clusters = {
+                        str(outcome_to_cluster.get(str(oid).strip(), "") or "").strip()
+                        for oid in outcome_ids
+                        if str(outcome_to_cluster.get(str(oid).strip(), "") or "").strip()
+                    }
+                    if q_clusters & target_clusters:
+                        lane = "target"
+                    elif q_clusters & adjacent_clusters:
+                        lane = "adjacent"
+                    elif q_clusters:
+                        lane = "far"
+                else:
+                    nearest = 9999
+                    in_target = False
+                    for oid in outcome_ids:
+                        pos = outcome_pos.get(oid)
+                        if pos is None:
+                            continue
+                        if oid in target_set:
+                            in_target = True
+                        for tpos in target_positions:
+                            nearest = min(nearest, abs(pos - tpos))
+                    if in_target:
+                        lane = "target"
+                    elif nearest <= 1:
+                        lane = "adjacent"
+                    elif nearest < 9999:
+                        lane = "far"
+            lanes[str(raw_idx)] = lane
+        return {
+            "lanes": lanes,
+            "cluster_mode": str(mix.get("cluster_mode", cluster_mode) or cluster_mode),
+            "target_cluster_count": int(mix.get("target_cluster_count", 0) or 0),
+        }
 
     def select_outcome_gap_questions(self, chapter: str, count: int = 10) -> list[int]:
         """Select question indices that target uncovered outcomes first."""
@@ -4344,6 +5291,22 @@ class StudyPlanEngine:
             return self.select_srs_questions(chapter, count)
         outcome_pos = {oid: idx for idx, oid in enumerate(outcome_order)}
         normalized_targets = self._resolve_interleave_target_outcomes(chapter, target_outcome_ids)
+        cluster_ctx = self._resolve_interleave_cluster_context(chapter, normalized_targets)
+        cluster_mode = str(cluster_ctx.get("mode", "fallback") or "fallback")
+        outcome_to_cluster = cluster_ctx.get("outcome_to_cluster", {})
+        if not isinstance(outcome_to_cluster, dict):
+            outcome_to_cluster = {}
+        target_clusters = cluster_ctx.get("target_clusters", set())
+        if not isinstance(target_clusters, set):
+            target_clusters = set()
+        adjacent_clusters = cluster_ctx.get("adjacent_clusters", set())
+        if not isinstance(adjacent_clusters, set):
+            adjacent_clusters = set()
+        use_cluster_lane = (
+            cluster_mode in {"semantic", "lexical"}
+            and bool(target_clusters)
+            and bool(adjacent_clusters)
+        )
 
         target_set = set(normalized_targets)
         target_pos = [outcome_pos[oid] for oid in normalized_targets if oid in outcome_pos]
@@ -4373,24 +5336,38 @@ class StudyPlanEngine:
             outcome_ids = self._question_outcome_ids(chapter, idx)
             if not outcome_ids:
                 continue
-            nearest = 9999
-            in_target = False
-            for oid in outcome_ids:
-                pos = outcome_pos.get(oid)
-                if pos is None:
-                    continue
-                if oid in target_set:
-                    in_target = True
-                for tpos in target_pos:
-                    dist = abs(pos - tpos)
-                    if dist < nearest:
-                        nearest = dist
-            if in_target:
-                bucket = 0
-            elif nearest <= 1:
-                bucket = 1
+            bucket = 2
+            if use_cluster_lane:
+                q_clusters = {
+                    str(outcome_to_cluster.get(str(oid).strip(), "") or "").strip()
+                    for oid in outcome_ids
+                    if str(outcome_to_cluster.get(str(oid).strip(), "") or "").strip()
+                }
+                if q_clusters & target_clusters:
+                    bucket = 0
+                elif q_clusters & adjacent_clusters:
+                    bucket = 1
+                else:
+                    bucket = 2
             else:
-                bucket = 2
+                nearest = 9999
+                in_target = False
+                for oid in outcome_ids:
+                    pos = outcome_pos.get(oid)
+                    if pos is None:
+                        continue
+                    if oid in target_set:
+                        in_target = True
+                    for tpos in target_pos:
+                        dist = abs(pos - tpos)
+                        if dist < nearest:
+                            nearest = dist
+                if in_target:
+                    bucket = 0
+                elif nearest <= 1:
+                    bucket = 1
+                else:
+                    bucket = 2
 
             srs = srs_list[idx] if idx < len(srs_list) and isinstance(srs_list[idx], dict) else {}
             due_kind = 0
@@ -5586,15 +6563,19 @@ class StudyPlanEngine:
             "unmapped": 0,
             "coverage_pct": 0.0,
             "quality_score": 0.0,
+            "quality_band": "unknown",
+            "needs_review": False,
+            "review_reasons": [],
             "dominant_outcome": "",
             "dominant_ratio": 0.0,
-            "method_counts": {"model": 0, "tfidf": 0, "fallback": 0},
+            "method_counts": {"cross": 0, "model": 0, "tfidf": 0, "fallback": 0},
             "dedup_checked": 0,
             "dedup_skipped": 0,
             "dedup_method": "fallback",
             "dedup_threshold": float(getattr(self, "IMPORT_SEMANTIC_DEDUP_MIN_SCORE", 0.90) or 0.90),
             "outcome_counts": {},
             "chapter_breakdown": {},
+            "chapter_alerts": [],
             "warnings": [],
         }
 
@@ -5608,7 +6589,7 @@ class StudyPlanEngine:
             outcome_counts = {}
         method_counts = stats.get("method_counts", {})
         if not isinstance(method_counts, dict):
-            method_counts = {"model": 0, "tfidf": 0, "fallback": 0}
+            method_counts = {"cross": 0, "model": 0, "tfidf": 0, "fallback": 0}
 
         coverage_pct = (100.0 * mapped / max(1, total_new)) if total_new > 0 else 0.0
         dominant_outcome = ""
@@ -5628,27 +6609,67 @@ class StudyPlanEngine:
         if mapped >= 5 and dominant_ratio > 0.70:
             penalty += min(0.20, dominant_ratio - 0.70)
         quality = max(0.0, min(1.0, (mapped / max(1, total_new)) - penalty)) if total_new > 0 else 0.0
+        if total_new <= 0:
+            quality_band = "unknown"
+        elif quality >= 0.80:
+            quality_band = "excellent"
+        elif quality >= 0.65:
+            quality_band = "good"
+        elif quality >= 0.50:
+            quality_band = "fair"
+        else:
+            quality_band = "weak"
 
         warnings: list[str] = []
+        review_reasons: list[str] = []
         if total_new > 0 and coverage_pct < 65.0:
             warnings.append("Low semantic mapping coverage for imported questions.")
+        if total_new > 0 and coverage_pct < 50.0:
+            review_reasons.append("low_coverage")
         if total_new > 0 and low_conf > 0:
             warnings.append(f"{low_conf} imported questions had low-confidence semantic matches.")
+        if total_new > 0 and (low_conf / max(1, total_new)) >= 0.30:
+            review_reasons.append("high_low_confidence_ratio")
         if mapped >= 5 and dominant_ratio > 0.70 and dominant_outcome:
             warnings.append(
                 f"Outcome concentration detected: {dominant_outcome} dominates {dominant_ratio * 100:.0f}% of mapped imports."
             )
+        if mapped >= 5 and dominant_ratio > 0.80:
+            review_reasons.append("high_outcome_concentration")
+        if total_new > 0 and (unmapped / max(1, total_new)) >= 0.40:
+            review_reasons.append("high_unmapped_ratio")
+        if total_new > 0 and quality < 0.45:
+            review_reasons.append("low_quality_score")
         dedup_skipped = int(stats.get("dedup_skipped", 0) or 0)
         if dedup_skipped > 0:
             dedup_method = str(stats.get("dedup_method", "fallback") or "fallback")
             warnings.append(
                 f"Semantic dedup skipped {dedup_skipped} near-duplicate question(s) using {dedup_method} matching."
             )
+        chapter_alerts: list[str] = []
+        chapter_breakdown = stats.get("chapter_breakdown", {})
+        if isinstance(chapter_breakdown, dict):
+            for chapter, row in chapter_breakdown.items():
+                if not isinstance(row, dict):
+                    continue
+                row_total = int(row.get("total", 0) or 0)
+                if row_total <= 0:
+                    continue
+                row_mapped = int(row.get("mapped", 0) or 0)
+                row_low = int(row.get("low_confidence", 0) or 0)
+                row_unmapped = int(row.get("unmapped", 0) or 0)
+                row_cov = (100.0 * row_mapped / max(1, row_total))
+                if row_cov < 50.0 or (row_low + row_unmapped) >= int(round(row_total * 0.50)):
+                    chapter_alerts.append(str(chapter))
 
         stats["coverage_pct"] = float(coverage_pct)
         stats["quality_score"] = float(quality)
+        stats["quality_band"] = str(quality_band)
+        stats["needs_review"] = bool(review_reasons)
+        stats["review_reasons"] = sorted(set(review_reasons))
         stats["dominant_outcome"] = dominant_outcome
         stats["dominant_ratio"] = float(max(0.0, min(1.0, dominant_ratio)))
+        stats["chapter_alerts"] = sorted(set(chapter_alerts))
         stats["warnings"] = warnings
         return stats
 
@@ -5676,12 +6697,12 @@ class StudyPlanEngine:
             chapter, {"total": 0, "mapped": 0, "low_confidence": 0, "unmapped": 0}
         )
         outcome_counts = stats.setdefault("outcome_counts", {})
-        method_counts = stats.setdefault("method_counts", {"model": 0, "tfidf": 0, "fallback": 0})
+        method_counts = stats.setdefault("method_counts", {"cross": 0, "model": 0, "tfidf": 0, "fallback": 0})
         if not isinstance(outcome_counts, dict):
             outcome_counts = {}
             stats["outcome_counts"] = outcome_counts
         if not isinstance(method_counts, dict):
-            method_counts = {"model": 0, "tfidf": 0, "fallback": 0}
+            method_counts = {"cross": 0, "model": 0, "tfidf": 0, "fallback": 0}
             stats["method_counts"] = method_counts
 
         try:
@@ -5723,7 +6744,7 @@ class StudyPlanEngine:
             score = max(0.0, min(1.0, score))
 
             can_tag = bool(outcome_ids) and (
-                (method in ("model", "tfidf") and score >= threshold)
+                (method in ("cross", "model", "tfidf") and score >= threshold)
                 or (method == "fallback" and score >= fallback_threshold)
             )
             if can_tag:
@@ -8337,6 +9358,16 @@ class StudyPlanEngine:
                 return 0
 
         must_review_due = _must_review_due_count()
+        drift_alert_map: Dict[str, Dict[str, Any]] = {}
+        try:
+            for row in self.get_semantic_drift_alerts(days=7):
+                if not isinstance(row, dict):
+                    continue
+                chapter = str(row.get("chapter", "") or "").strip()
+                if chapter:
+                    drift_alert_map[chapter] = row
+        except Exception:
+            drift_alert_map = {}
         sticky_current = False
         if current_topic in self.CHAPTERS:
             curr_comp = _safe_float(self.competence.get(current_topic, 0) or 0)
@@ -8405,6 +9436,19 @@ class StudyPlanEngine:
             urgency += _prereq_boost(chapter)
             if sticky_current and chapter == current_topic and must_review_due <= 0:
                 urgency += 50.0
+            drift_row = drift_alert_map.get(chapter)
+            if isinstance(drift_row, dict):
+                try:
+                    gap_pct = float(drift_row.get("gap_pct", 0.0) or 0.0)
+                except Exception:
+                    gap_pct = 0.0
+                try:
+                    lag_days = float(drift_row.get("quiz_lag_days", 0.0) or 0.0)
+                except Exception:
+                    lag_days = 0.0
+                urgency += min(30.0, (gap_pct * 0.6) + min(12.0, lag_days * 0.5))
+                if str(drift_row.get("severity", "ok")) == "severe":
+                    urgency += 18.0
             priorities.append((chapter, urgency))
 
         priorities.sort(key=lambda x: x[1], reverse=True)
@@ -8595,6 +9639,16 @@ class StudyPlanEngine:
             exam_weight = 1.0
 
         recommendations = []
+        drift_alert_map: Dict[str, Dict[str, Any]] = {}
+        try:
+            for row in self.get_semantic_drift_alerts(days=7):
+                if not isinstance(row, dict):
+                    continue
+                chapter = str(row.get("chapter", "") or "").strip()
+                if chapter:
+                    drift_alert_map[chapter] = row
+        except Exception:
+            drift_alert_map = {}
         ml_risk_cache: dict[str, float | None] = {}
         def _ml_risk(ch: str) -> float | None:
             if ch in ml_risk_cache:
@@ -8639,6 +9693,20 @@ class StudyPlanEngine:
                 urgency_score *= 2.0
             elif 0 < days_to_exam < 14:
                 urgency_score *= 1.5
+
+            drift_row = drift_alert_map.get(chapter)
+            if isinstance(drift_row, dict):
+                try:
+                    gap_pct = float(drift_row.get("gap_pct", 0.0) or 0.0)
+                except Exception:
+                    gap_pct = 0.0
+                try:
+                    lag_days = float(drift_row.get("quiz_lag_days", 0.0) or 0.0)
+                except Exception:
+                    lag_days = 0.0
+                urgency_score += min(24.0, (gap_pct * 0.5) + min(10.0, lag_days * 0.4))
+                if str(drift_row.get("severity", "ok")) == "severe":
+                    urgency_score += 14.0
 
             recommendations.append((chapter, int(urgency_score)))
 
@@ -9082,6 +10150,13 @@ class StudyPlanEngine:
         self.completed_chapters_date = data.get('completed_chapters_date', self.completed_chapters_date)
         self.daily_plan_cache = data.get("daily_plan_cache", self.daily_plan_cache) or []
         self.daily_plan_cache_date = data.get("daily_plan_cache_date", self.daily_plan_cache_date)
+        self.concept_graph_meta = data.get("concept_graph_meta", self.concept_graph_meta) or {}
+        self.concept_nodes = data.get("concept_nodes", self.concept_nodes) or []
+        self.concept_edges = data.get("concept_edges", self.concept_edges) or []
+        self.outcome_concept_links = data.get("outcome_concept_links", self.outcome_concept_links) or []
+        self.outcome_cluster_meta = data.get("outcome_cluster_meta", self.outcome_cluster_meta) or {}
+        self.outcome_clusters = data.get("outcome_clusters", self.outcome_clusters) or []
+        self.outcome_cluster_edges = data.get("outcome_cluster_edges", self.outcome_cluster_edges) or []
         self._normalize_loaded_data()
         # Final cardinality guard after coercion.
         self.sync_srs_with_questions()
@@ -9290,6 +10365,13 @@ class StudyPlanEngine:
         self.chapter_miss_streak = {}
         self.chapter_miss_last_date = {}
         self.hourly_quiz_stats = {}
+        self.concept_graph_meta = {}
+        self.concept_nodes = []
+        self.concept_edges = []
+        self.outcome_concept_links = []
+        self.outcome_cluster_meta = {}
+        self.outcome_clusters = []
+        self.outcome_cluster_edges = []
 
         self.save_data()
 
@@ -9327,6 +10409,13 @@ class StudyPlanEngine:
             "completed_chapters_date": self.completed_chapters_date,
             "daily_plan_cache": list(self.daily_plan_cache) if isinstance(self.daily_plan_cache, list) else [],
             "daily_plan_cache_date": self.daily_plan_cache_date,
+            "concept_graph_meta": dict(self.concept_graph_meta) if isinstance(self.concept_graph_meta, dict) else {},
+            "concept_nodes": list(self.concept_nodes) if isinstance(self.concept_nodes, list) else [],
+            "concept_edges": list(self.concept_edges) if isinstance(self.concept_edges, list) else [],
+            "outcome_concept_links": list(self.outcome_concept_links) if isinstance(self.outcome_concept_links, list) else [],
+            "outcome_cluster_meta": dict(self.outcome_cluster_meta) if isinstance(self.outcome_cluster_meta, dict) else {},
+            "outcome_clusters": list(self.outcome_clusters) if isinstance(self.outcome_clusters, list) else [],
+            "outcome_cluster_edges": list(self.outcome_cluster_edges) if isinstance(self.outcome_cluster_edges, list) else [],
         }
 
         # Ensure config folder exists (safe even if DATA_FILE has no directory)

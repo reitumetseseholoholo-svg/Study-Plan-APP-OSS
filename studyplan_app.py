@@ -674,16 +674,27 @@ class AppMessageDialog:
                 pass
 
 SYSTEM_THEME_CSS = b"""
+@define-color app_accent alpha(@theme_selected_bg_color, 0.98);
+@define-color app_border alpha(@theme_fg_color, 0.12);
+@define-color app_border_strong alpha(@theme_fg_color, 0.2);
+@define-color app_surface alpha(@theme_bg_color, 0.84);
+@define-color app_surface_alt alpha(@theme_bg_color, 0.75);
+@define-color app_muted alpha(@theme_fg_color, 0.74);
 window {
-    background: @theme_bg_color;
+    background-color: @theme_bg_color;
+    background-image: linear-gradient(
+        to bottom,
+        alpha(@theme_bg_color, 0.98),
+        alpha(@theme_bg_color, 0.88)
+    );
     color: @theme_fg_color;
 }
 .panel {
-    background-color: alpha(@theme_bg_color, 0.86);
-    border: 1px solid alpha(@theme_fg_color, 0.1);
-    border-radius: 10px;
-    padding: 11px;
-    box-shadow: 0 1px 6px alpha(@theme_fg_color, 0.08);
+    background-color: app_surface;
+    border: 1px solid app_border;
+    border-radius: 14px;
+    padding: 12px;
+    box-shadow: 0 2px 8px alpha(@theme_fg_color, 0.08);
 }
 .panel-left {
     border-top-right-radius: 0;
@@ -698,45 +709,49 @@ window {
     box-shadow: none;
 }
 .card {
-    background-color: alpha(@theme_bg_color, 0.78);
-    border: 1px solid alpha(@theme_fg_color, 0.1);
-    border-radius: 10px;
-    padding: 9px;
-    box-shadow: 0 1px 4px alpha(@theme_fg_color, 0.06);
+    background-color: app_surface_alt;
+    border: 1px solid app_border;
+    border-radius: 12px;
+    padding: 10px;
+    box-shadow: 0 1px 5px alpha(@theme_fg_color, 0.07);
 }
 .card-tight {
     padding: 6px;
 }
 .chart-card {
-    padding-top: 6px;
+    padding-top: 8px;
     padding-bottom: 6px;
 }
 .hero-card {
-    border-color: alpha(@theme_selected_bg_color, 0.34);
-    box-shadow: 0 2px 10px alpha(@theme_selected_bg_color, 0.14);
+    border-color: alpha(@theme_selected_bg_color, 0.46);
+    box-shadow: 0 3px 12px alpha(@theme_selected_bg_color, 0.2);
 }
 .hero-card .coach-title,
 .hero-card .section-title {
-    color: @theme_selected_bg_color;
+    color: app_accent;
 }
 .card:hover {
-    border-color: alpha(@theme_fg_color, 0.18);
+    border-color: app_border_strong;
 }
 .title {
-    font-weight: 700;
-    font-size: 20px;
+    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
+    font-weight: 760;
+    font-size: 22px;
+    letter-spacing: 0.2px;
 }
 .action-timer {
-    font-weight: 700;
-    font-size: 18px;
-    letter-spacing: 0.5px;
+    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
+    font-weight: 780;
+    font-size: 19px;
+    letter-spacing: 0.35px;
 }
 .section-title {
-    font-weight: 700;
+    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
+    font-weight: 760;
     font-size: 13px;
-    letter-spacing: 0.6px;
+    letter-spacing: 0.85px;
     text-transform: uppercase;
-    color: alpha(@theme_fg_color, 0.8);
+    color: alpha(@theme_fg_color, 0.86);
     margin-top: 5px;
     margin-bottom: 3px;
 }
@@ -744,21 +759,53 @@ window {
     margin-top: 1px;
 }
 .muted {
-    color: alpha(@theme_fg_color, 0.75);
+    color: app_muted;
+}
+.quiz-dialog {
+    min-width: 640px;
+}
+.quiz-header {
+    margin-bottom: 4px;
+}
+.quiz-content {
+    margin-top: 4px;
+    margin-bottom: 4px;
+}
+.quiz-mix-row {
+    margin-top: 2px;
+    margin-bottom: 2px;
 }
 .quiz-meta {
     font-size: 12px;
 }
 .quiz-question {
-    font-weight: 600;
-    font-size: 14px;
+    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
+    font-weight: 700;
+    font-size: 15px;
+    line-height: 1.35;
 }
 .quiz-option {
-    margin-top: 2px;
-    margin-bottom: 2px;
+    border-radius: 10px;
+    border: 1px solid app_border;
+    padding: 7px 9px;
+    margin-top: 3px;
+    margin-bottom: 3px;
+}
+.quiz-option:hover {
+    border-color: app_border_strong;
+    background: alpha(@theme_fg_color, 0.06);
 }
 .quiz-feedback {
-    margin-top: 4px;
+    margin-top: 6px;
+    border-radius: 8px;
+    padding: 6px 8px;
+    background: alpha(@theme_fg_color, 0.045);
+}
+.quiz-hint {
+    margin-top: 3px;
+}
+.quiz-reason {
+    margin-top: 3px;
 }
 .hint {
     color: alpha(@theme_fg_color, 0.6);
@@ -773,7 +820,7 @@ window {
 }
 .study-summary {
     font-size: 11px;
-    line-height: 1.3;
+    line-height: 1.4;
 }
 .rule {
     color: alpha(@theme_fg_color, 0.15);
@@ -836,28 +883,30 @@ window.compact button {
 }
 .focus-list row {
     border: none;
-    padding: 3px 2px;
+    padding: 4px 2px;
+    border-bottom: 1px solid alpha(@theme_fg_color, 0.08);
 }
 .focus-list row:selected {
-    background: transparent;
+    background: alpha(@theme_selected_bg_color, 0.12);
 }
 .quest-card {
-    border: 1px solid alpha(@theme_fg_color, 0.12);
+    border: 1px solid app_border;
     border-radius: 12px;
     padding: 10px;
 }
 .xp-progress {
-    min-height: 10px;
+    min-height: 12px;
 }
 progressbar {
-    min-height: 10px;
+    min-height: 11px;
 }
 button {
-    border-radius: 8px;
-    padding: 6px 10px;
+    border-radius: 10px;
+    padding: 7px 11px;
+    min-height: 34px;
 }
 button.suggested-action {
-    background: @theme_selected_bg_color;
+    background: app_accent;
     color: @theme_selected_fg_color;
     border-color: alpha(@theme_selected_fg_color, 0.25);
 }
@@ -880,15 +929,16 @@ button:focus-visible {
 }
 progressbar trough {
     border-radius: 999px;
-    background-color: alpha(@theme_fg_color, 0.12);
+    background-color: alpha(@theme_fg_color, 0.15);
 }
 progressbar progress {
     border-radius: 999px;
-    background-color: @theme_selected_bg_color;
+    background-color: app_accent;
 }
 tooltip {
     padding: 6px 8px;
     border-radius: 8px;
+    border: 1px solid app_border;
 }
 scrollbar {
     min-width: 8px;
@@ -907,60 +957,70 @@ scrollbar slider:active {
 """
 
 COACH_THEME_CSS = b"""
+@define-color coach_bg #171a23;
+@define-color coach_panel #202633;
+@define-color coach_card #1c2230;
+@define-color coach_border #344059;
+@define-color coach_border_strong #4c5d82;
+@define-color coach_text #e8edf7;
+@define-color coach_muted #b1bcd3;
+@define-color coach_accent #4fd1c5;
+@define-color coach_accent_alt #8bafff;
 window {
-    background: #1e1f22;
-    color: #e6e6e6;
-    font-family: "Libertinus Serif", "Times New Roman", "Georgia", serif;
+    background: coach_bg;
+    color: coach_text;
+    font-family: "IBM Plex Sans", "JetBrains Mono NL", "Noto Sans", sans-serif;
 }
 .panel {
-    background: #2b2c31;
-    border: 1px solid #343740;
-    border-radius: 10px;
-    padding: 11px;
-    box-shadow: 0 1px 6px rgba(0,0,0,0.35);
+    background: coach_panel;
+    border: 1px solid coach_border;
+    border-radius: 14px;
+    padding: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.32);
 }
 .card {
-    background: #24262b;
-    border: 1px solid #343740;
-    border-radius: 10px;
-    padding: 9px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+    background: coach_card;
+    border: 1px solid coach_border;
+    border-radius: 12px;
+    padding: 10px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.32);
 }
 .card-tight {
     padding: 6px;
 }
 .chart-card {
-    padding-top: 6px;
+    padding-top: 8px;
     padding-bottom: 6px;
 }
 .hero-card {
-    border-color: #5a4a90;
-    box-shadow: 0 2px 10px rgba(123, 58, 237, 0.28);
+    border-color: #5a6e9d;
+    box-shadow: 0 3px 12px rgba(79, 209, 197, 0.2);
 }
 .hero-card .coach-title,
 .hero-card .section-title {
-    color: #cfc5ff;
+    color: coach_accent;
 }
 .card:hover {
-    border-color: #3d404a;
+    border-color: coach_border_strong;
 }
 .title {
-    font-weight: 700;
-    font-size: 19px;
-    color: #e6e6e6;
+    font-weight: 760;
+    font-size: 22px;
+    letter-spacing: 0.2px;
+    color: coach_text;
 }
 .action-timer {
-    font-weight: 700;
-    font-size: 18px;
-    letter-spacing: 0.5px;
-    color: #e6e6e6;
+    font-weight: 780;
+    font-size: 19px;
+    letter-spacing: 0.35px;
+    color: coach_text;
 }
 .section-title {
-    font-weight: 700;
+    font-weight: 760;
     font-size: 13px;
-    letter-spacing: 0.6px;
+    letter-spacing: 0.85px;
     text-transform: uppercase;
-    color: #c9cdd4;
+    color: #cfd8ea;
     margin-top: 5px;
     margin-bottom: 3px;
 }
@@ -968,21 +1028,52 @@ window {
     margin-top: 1px;
 }
 .muted {
-    color: #b0b6c2;
+    color: coach_muted;
+}
+.quiz-dialog {
+    min-width: 640px;
+}
+.quiz-header {
+    margin-bottom: 4px;
+}
+.quiz-content {
+    margin-top: 4px;
+    margin-bottom: 4px;
+}
+.quiz-mix-row {
+    margin-top: 2px;
+    margin-bottom: 2px;
 }
 .quiz-meta {
     font-size: 12px;
 }
 .quiz-question {
-    font-weight: 600;
-    font-size: 14px;
+    font-weight: 700;
+    font-size: 15px;
+    line-height: 1.35;
 }
 .quiz-option {
-    margin-top: 2px;
-    margin-bottom: 2px;
+    border-radius: 10px;
+    border: 1px solid coach_border;
+    padding: 7px 9px;
+    margin-top: 3px;
+    margin-bottom: 3px;
+}
+.quiz-option:hover {
+    border-color: coach_border_strong;
+    background: #263043;
 }
 .quiz-feedback {
-    margin-top: 4px;
+    margin-top: 6px;
+    border-radius: 8px;
+    padding: 6px 8px;
+    background: #243047;
+}
+.quiz-hint {
+    margin-top: 3px;
+}
+.quiz-reason {
+    margin-top: 3px;
 }
 .hint {
     color: #8f95a1;
@@ -997,24 +1088,26 @@ window {
 }
 .study-summary {
     font-size: 11px;
-    line-height: 1.3;
+    line-height: 1.4;
 }
 .rule {
     color: #3a3c43;
 }
 button {
-    background: #2f3035;
-    border: 1px solid #3f424a;
-    border-radius: 8px;
-    color: #e6e6e6;
+    background: #273044;
+    border: 1px solid #3f5270;
+    border-radius: 10px;
+    color: coach_text;
+    padding: 7px 11px;
+    min-height: 34px;
 }
 button.suggested-action {
-    background: #7b3aed;
-    border-color: #9657f0;
-    color: #f5efff;
+    background: coach_accent;
+    border-color: #7fe0d8;
+    color: #072326;
 }
 button.suggested-action:hover {
-    background: #8a4cf2;
+    background: #66ddd2;
 }
 .error { background-color: #6d2a2a; }
 .warning { background-color: #6a4b1f; }
@@ -1045,15 +1138,15 @@ window.compact button {
     padding: 4px 6px;
 }
 .badge {
-    background: #2f3035;
-    border: 1px solid #3f424a;
+    background: #252f44;
+    border: 1px solid #44536e;
     border-radius: 999px;
     padding: 2px 8px;
-    color: #e6e6e6;
+    color: coach_text;
 }
 .badge-locked {
-    background: #1f2126;
-    border: 1px dashed #3f424a;
+    background: #1d2534;
+    border: 1px dashed #44536e;
     border-radius: 999px;
     padding: 2px 8px;
     color: #7f8792;
@@ -1063,7 +1156,7 @@ window.compact button {
     transition: box-shadow 0.5s ease-out;
 }
 .status-ok {
-    color: #4fd1c5;
+    color: coach_accent;
     font-weight: 600;
 }
 .status-warn {
@@ -1079,66 +1172,64 @@ window.compact button {
 }
 .focus-list row {
     border: none;
-    padding: 3px 2px;
+    padding: 4px 2px;
+    border-bottom: 1px solid rgba(101, 122, 158, 0.22);
 }
 .focus-list row:selected {
-    background: transparent;
+    background: rgba(79, 209, 197, 0.12);
 }
 .quest-card {
-    background: #232428;
-    border: 1px solid #3a3c43;
+    background: #1d2534;
+    border: 1px solid #41516c;
     border-radius: 12px;
     padding: 10px;
 }
 .xp-progress {
-    min-height: 10px;
+    min-height: 12px;
 }
 progressbar {
-    min-height: 10px;
-}
-button {
-    border-radius: 8px;
-    padding: 6px 10px;
+    min-height: 11px;
 }
 button.flat {
     background: transparent;
     border-color: transparent;
 }
 button.flat:hover {
-    background: #2f3138;
-    border-color: #3f424a;
+    background: #263043;
+    border-color: #4b5f7f;
 }
 button.flat:active {
-    background: #373941;
+    background: #2f3a52;
 }
 button:focus-visible {
-    box-shadow: 0 0 0 2px rgba(123, 58, 237, 0.45);
+    box-shadow: 0 0 0 2px rgba(79, 209, 197, 0.42);
 }
 progressbar trough {
     border-radius: 999px;
-    background-color: #2f3035;
+    background-color: #273044;
 }
 progressbar progress {
     border-radius: 999px;
-    background-color: #4fd1c5;
+    background-color: coach_accent_alt;
 }
 tooltip {
     padding: 6px 8px;
     border-radius: 8px;
+    border: 1px solid #3f5270;
 }
 scrollbar {
     min-width: 8px;
     min-height: 8px;
 }
 scrollbar slider {
-    background-color: #4a4d56;
+    background-color: #4b5b79;
     border-radius: 999px;
 }
 scrollbar slider:hover {
-    background-color: #5a5e69;
+    background-color: #5e7195;
 }
 scrollbar slider:active {
-    background-color: #6a6f7b;
+    background-color: #7189b5;
 }
 """
 
@@ -1147,7 +1238,11 @@ provider = Gtk.CssProvider()
 def apply_theme(use_system: bool) -> None:
     css = SYSTEM_THEME_CSS if use_system else COACH_THEME_CSS
     try:
-        provider.load_from_data(css)
+        # Gtk4 prefers load_from_string; keep a fallback for older bindings.
+        if hasattr(provider, "load_from_string"):
+            provider.load_from_string(css)
+        else:
+            provider.load_from_data(css)
     except Exception:
         return
     display = Gdk.Display.get_default()
@@ -3529,6 +3624,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_debug_info(self, _action, _param):
         hub = getattr(self.engine, "study_hub_stats", {}) or {}
+        graph_status = self.engine.get_semantic_graph_status()
+        drift = self.engine.get_semantic_drift_kpi(days=7)
         msg = (
             f"Exam date: {self.exam_date}\n"
             f"Chapters: {len(self.engine.CHAPTERS)}\n"
@@ -3536,7 +3633,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             f"Quiz scores parsed: {len(hub.get('quiz_scores', {}))}\n"
             f"Practice scores parsed: {len(hub.get('practice_scores', {}))}\n"
             f"Detail scores parsed: {len(hub.get('detail_scores', {}))}\n"
-            f"Categories parsed: {len(hub.get('category_totals', {}))}"
+            f"Categories parsed: {len(hub.get('category_totals', {}))}\n"
+            f"Concept nodes: {int(graph_status.get('concept_nodes', 0) or 0)}\n"
+            f"Outcome clusters: {int(graph_status.get('cluster_count', 0) or 0)} ({graph_status.get('cluster_method', 'fallback')})\n"
+            f"Semantic drift status: {drift.get('status', 'ok')} ({int(drift.get('chapters_flagged', 0) or 0)} flagged)"
         )
         self._show_text_dialog("Debug Info", msg, Gtk.MessageType.INFO)
 
@@ -9624,6 +9724,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.quiz_session["interleave_mix"] = interleave_mix
             except Exception:
                 pass
+            try:
+                interleave_lanes = self.engine.get_semantic_interleave_lanes(self.current_topic, session_indices)
+                if isinstance(interleave_lanes, dict):
+                    self.quiz_session["interleave_lanes"] = interleave_lanes
+            except Exception:
+                pass
         self.selected_option = None
         self.show_quiz_dialog()
 
@@ -9800,6 +9906,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 planned_adjacent = float(interleave_mix.get("planned_adjacent_ratio", 0.0) or 0.0)
                 planned_far = float(interleave_mix.get("planned_far_ratio", 0.0) or 0.0)
                 ratio_mode = str(interleave_mix.get("ratio_mode", "default") or "default")
+                cluster_mode = str(interleave_mix.get("cluster_mode", "fallback") or "fallback")
+                target_cluster_count = int(interleave_mix.get("target_cluster_count", 0) or 0)
             except Exception:
                 target_count = 0
                 adjacent_count = 0
@@ -9809,12 +9917,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 planned_adjacent = 0.0
                 planned_far = 0.0
                 ratio_mode = "default"
+                cluster_mode = "fallback"
+                target_cluster_count = 0
             label = f"Interleave mix: target/adjacent/far {target_count}/{adjacent_count}/{far_count}"
             if planned_target > 0.0 or planned_adjacent > 0.0 or planned_far > 0.0:
                 label += (
                     f" • plan {planned_target * 100:.0f}/{planned_adjacent * 100:.0f}/{planned_far * 100:.0f}"
                     f" ({ratio_mode})"
                 )
+            label += f" • clusters {cluster_mode}"
+            if target_cluster_count > 0:
+                label += f" ({target_cluster_count} target)"
             if unknown_count > 0:
                 label += f" • unknown {unknown_count}"
             self.quiz_interleave_label.set_text(label)
@@ -9971,6 +10084,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 uncovered = set(chapter_outcome.get("uncovered_ids", []) or [])
                 if uncovered and any(oid in uncovered for oid in route_outcomes):
                     reasons.append("outcome gap")
+        except Exception:
+            pass
+        try:
+            if str(self.quiz_session.get("kind", "") or "").strip().lower() == "interleave":
+                lanes = self.quiz_session.get("interleave_lanes", {})
+                lane_map = lanes.get("lanes", {}) if isinstance(lanes, dict) else {}
+                lane = str(lane_map.get(str(question_index), "") or "").strip().lower() if isinstance(lane_map, dict) else ""
+                if lane in {"target", "adjacent", "far"}:
+                    reasons.append(f"cluster-{lane}")
         except Exception:
             pass
         try:
@@ -11157,19 +11279,36 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     total_new = int(semantic_import.get("total_new", 0) or 0)
                     coverage_pct = float(semantic_import.get("coverage_pct", 0.0) or 0.0)
                     quality_score = float(semantic_import.get("quality_score", 0.0) or 0.0)
+                    quality_band = str(semantic_import.get("quality_band", "unknown") or "unknown")
+                    needs_review = bool(semantic_import.get("needs_review", False))
                     low_conf_count = int(semantic_import.get("low_confidence", 0) or 0)
                     unmapped_count = int(semantic_import.get("unmapped", 0) or 0)
                     dedup_skipped = int(semantic_import.get("dedup_skipped", 0) or 0)
                     dedup_checked = int(semantic_import.get("dedup_checked", 0) or 0)
                     dedup_method = str(semantic_import.get("dedup_method", "fallback") or "fallback")
                     dedup_threshold = float(semantic_import.get("dedup_threshold", 0.0) or 0.0)
+                    review_reasons = semantic_import.get("review_reasons", [])
+                    if not isinstance(review_reasons, list):
+                        review_reasons = []
+                    chapter_alerts = semantic_import.get("chapter_alerts", [])
+                    if not isinstance(chapter_alerts, list):
+                        chapter_alerts = []
                     msg += (
                         f"\n\nSemantic mapping:"
                         f"\n- Coverage: {mapped}/{total_new} ({coverage_pct:.0f}%)"
-                        f"\n- Quality score: {quality_score * 100:.0f}%"
+                        f"\n- Quality score: {quality_score * 100:.0f}% ({quality_band})"
                         f"\n- Low confidence: {low_conf_count}"
                         f"\n- Unmapped: {unmapped_count}"
                     )
+                    if needs_review:
+                        msg += "\n- Import quality: review required"
+                        if review_reasons:
+                            msg += f"\n- Review reasons: {', '.join(str(v) for v in review_reasons[:6])}"
+                    if chapter_alerts:
+                        preview = ", ".join(str(v) for v in chapter_alerts[:5])
+                        msg += f"\n- Chapter alerts: {preview}"
+                        if len(chapter_alerts) > 5:
+                            msg += f" (+{len(chapter_alerts) - 5})"
                     if dedup_checked > 0 or dedup_skipped > 0:
                         msg += (
                             f"\n- Semantic dedup: checked {dedup_checked}, skipped {dedup_skipped}"
@@ -12351,6 +12490,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _get_semantic_status_line(self) -> tuple[str, bool]:
         try:
             status = self.engine.get_semantic_status()
+            graph_status = self.engine.get_semantic_graph_status()
             enabled = bool(status.get("enabled", True))
             if not enabled:
                 return ("Semantic map: off", False)
@@ -12358,6 +12498,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             model_name = str(status.get("model_name", "model") or "model")
             cache_size = int(status.get("cache_size", 0) or 0)
             min_score = float(status.get("min_score", 0.0) or 0.0)
+            alias_count = int(status.get("alias_count_total", 0) or 0)
             block_reason = str(status.get("block_reason", "") or "")
             reranker_state = str(status.get("reranker_state", "unloaded") or "unloaded")
             rerank_enabled = bool(status.get("rerank_enabled", True))
@@ -12367,8 +12508,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     rerank_suffix = " • rerank on"
                 elif rerank_enabled and reranker_state == "blocked":
                     rerank_suffix = " • rerank fallback"
+                alias_suffix = f" • aliases {alias_count}" if alias_count > 0 else ""
+                concept_nodes = int(graph_status.get("concept_nodes", 0) or 0)
+                cluster_count = int(graph_status.get("cluster_count", 0) or 0)
+                cluster_method = str(graph_status.get("cluster_method", "fallback") or "fallback")
+                graph_suffix = (
+                    f" • concept {concept_nodes} • clusters {cluster_count} ({cluster_method})"
+                    if concept_nodes > 0 or cluster_count > 0
+                    else ""
+                )
                 return (
-                    f"Semantic map: ready ({model_name}) • threshold {min_score:.2f} • cache {cache_size}{rerank_suffix}",
+                    f"Semantic map: ready ({model_name}) • threshold {min_score:.2f} • cache {cache_size}{alias_suffix}{graph_suffix}{rerank_suffix}",
                     False,
                 )
             if state == "blocked":
@@ -12934,6 +13084,33 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 coach_box.append(ch_line)
             except Exception:
                 pass
+            try:
+                drift = self.engine.get_semantic_drift_kpi(days=7)
+                drift_status = str(drift.get("status", "ok") or "ok")
+                flagged = int(drift.get("chapters_flagged", 0) or 0)
+                avg_gap = float(drift.get("avg_gap_pct", 0.0) or 0.0)
+                drift_text = f"Semantic drift: {drift_status} • flagged {flagged} • avg gap {avg_gap:.0f}%"
+                drift_label = Gtk.Label(label=drift_text)
+                drift_label.set_halign(Gtk.Align.START)
+                drift_label.add_css_class("muted")
+                if drift_status in {"warning", "severe"}:
+                    drift_label.add_css_class("status-warn")
+                coach_box.append(drift_label)
+                alerts = self.engine.get_semantic_drift_alerts(days=7)
+                if isinstance(alerts, list) and alerts:
+                    top = alerts[0] if isinstance(alerts[0], dict) else {}
+                    top_ch = str(top.get("chapter", "") or "")
+                    if top_ch:
+                        top_gap = float(top.get("gap_pct", 0.0) or 0.0)
+                        top_lag = int(top.get("quiz_lag_days", 0) or 0)
+                        drift_top = Gtk.Label(
+                            label=f"Top drift chapter: {top_ch} • gap {top_gap:.0f}% • lag {top_lag}d"
+                        )
+                        drift_top.set_halign(Gtk.Align.START)
+                        drift_top.add_css_class("muted")
+                        coach_box.append(drift_top)
+            except Exception:
+                pass
         except Exception:
             pass
         try:
@@ -13208,6 +13385,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             mission_tasks.append(("Clear must-review", review_done))
         if outcome_task_label:
             mission_tasks.append((outcome_task_label, outcome_task_done))
+        try:
+            drift_alerts = self.engine.get_semantic_drift_alerts(days=7)
+            if isinstance(drift_alerts, list) and drift_alerts:
+                top = drift_alerts[0] if isinstance(drift_alerts[0], dict) else {}
+                top_ch = str(top.get("chapter", "") or "").strip()
+                if top_ch:
+                    # Mark drift task done if we touched uncovered outcomes in that chapter's capability today.
+                    cap = str(self.engine._chapter_capability(top_ch) or "").strip().upper()
+                    drift_done = bool(self.engine.has_undercovered_outcome_activity_today([cap])) if cap else False
+                    mission_tasks.append((f"Close semantic drift in {top_ch}", drift_done))
+        except Exception:
+            pass
         for title, done in mission_tasks:
             icon = "x" if done else " "
             mission_lines.append(f"[{icon}] {title}")
@@ -13620,6 +13809,34 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
+        chart_style = {
+            "fig_bg": "#1c2230",
+            "ax_bg": "#1c2230",
+            "text": "#e8edf7",
+            "muted": "#b1bcd3",
+            "grid": "#42526f",
+            "spine": "#4c5d82",
+            "accent_a": "#4fd1c5",
+            "accent_b": "#8bafff",
+            "accent_c": "#f6c453",
+            "accent_d": "#9b7cff",
+            "legend_bg": "#202633",
+        }
+        if bool(getattr(self, "use_system_theme", True)):
+            chart_style = {
+                "fig_bg": "#f6f7fb",
+                "ax_bg": "#f6f7fb",
+                "text": "#1f2430",
+                "muted": "#56627a",
+                "grid": "#c9cfdd",
+                "spine": "#aab4cb",
+                "accent_a": "#2f6fff",
+                "accent_b": "#0f8f7f",
+                "accent_c": "#d48806",
+                "accent_d": "#7a4de8",
+                "legend_bg": "#eef1f8",
+            }
+
         try:
             if charts_available:
                 topics = list(self.engine.CHAPTERS)
@@ -13658,18 +13875,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             if plt_module is None or canvas_cls is None:
                                 raise RuntimeError("Charts unavailable")
                             fig, ax = plt_module.subplots(figsize=(5.6, 3.0), dpi=100)
-                            fig.patch.set_facecolor("#232428")
-                            ax.set_facecolor("#232428")
-                            ax.bar(range(len(labels)), values, color="#f6c453")
+                            fig.patch.set_facecolor(chart_style["fig_bg"])
+                            ax.set_facecolor(chart_style["ax_bg"])
+                            ax.bar(range(len(labels)), values, color=chart_style["accent_c"])
                             ax.set_ylim(0, 100)
-                            ax.set_ylabel("Gap %", color="#e6e6e6")
+                            ax.set_ylabel("Gap %", color=chart_style["text"])
                             ax.set_xticks(range(len(labels)))
-                            ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8, color="#e6e6e6")
-                            ax.tick_params(axis="y", colors="#e6e6e6")
+                            ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8, color=chart_style["text"])
+                            ax.tick_params(axis="y", colors=chart_style["text"])
                             for spine in ax.spines.values():
-                                spine.set_color("#3a3c43")
-                            ax.grid(axis="y", color="#3a3c43", linestyle="--", linewidth=0.6, alpha=0.6)
-                            ax.set_title("Confidence Drift (Top Gaps)", color="#e6e6e6", pad=8)
+                                spine.set_color(chart_style["spine"])
+                            ax.grid(axis="y", color=chart_style["grid"], linestyle="--", linewidth=0.6, alpha=0.6)
+                            ax.set_title("Confidence Drift (Top Gaps)", color=chart_style["text"], pad=8)
                             with warnings.catch_warnings():
                                 warnings.simplefilter("ignore", UserWarning)
                                 fig.tight_layout()
@@ -14001,9 +14218,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         if plt_module is None or canvas_cls is None:
                             raise RuntimeError("Charts unavailable")
                         fig, ax = plt_module.subplots(figsize=(fig_w, fig_h), dpi=110)
-                        fig.patch.set_facecolor("#232428")
-                        ax.set_facecolor("#232428")
-                        colors = ["#4fd1c5", "#f6c453", "#b794f4"]
+                        fig.patch.set_facecolor(chart_style["fig_bg"])
+                        ax.set_facecolor(chart_style["ax_bg"])
+                        colors = [chart_style["accent_a"], chart_style["accent_c"], chart_style["accent_d"]]
                         pie_result = ax.pie(
                             sizes,
                             labels=None,
@@ -14012,14 +14229,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             startangle=90,
                             counterclock=False,
                             colors=colors,
-                            textprops={"fontsize": 9, "color": "#e6e6e6", "fontweight": "bold"},
-                            wedgeprops={"linewidth": 1.1, "edgecolor": "#1e1f22", "width": 0.35},
+                            textprops={"fontsize": 9, "color": chart_style["text"], "fontweight": "bold"},
+                            wedgeprops={"linewidth": 1.1, "edgecolor": chart_style["fig_bg"], "width": 0.35},
                         )
                         wedges = pie_result[0]
                         autotexts = pie_result[2] if len(pie_result) > 2 else []
                         for t in autotexts:
                             t.set_fontsize(9)
-                            t.set_color("#e6e6e6")
+                            t.set_color(chart_style["text"])
 
                         ax.text(
                             0,
@@ -14027,7 +14244,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             f"{total_cards}",
                             ha="center",
                             va="center",
-                            color="#e6e6e6",
+                            color=chart_style["text"],
                             fontsize=13,
                             fontweight="bold",
                         )
@@ -14037,7 +14254,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             "cards",
                             ha="center",
                             va="center",
-                            color="#aab0bb",
+                            color=chart_style["muted"],
                             fontsize=9,
                         )
                         if overdue_cards > 0:
@@ -14047,7 +14264,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 f"{overdue_cards} overdue",
                                 ha="center",
                                 va="center",
-                                color="#f6c453",
+                                color=chart_style["accent_c"],
                                 fontsize=8,
                             )
 
@@ -14063,10 +14280,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             bbox_to_anchor=(0.5, -0.06),
                             ncol=3,
                             frameon=False,
-                            labelcolor="#c9cdd4",
+                            labelcolor=chart_style["muted"],
                             fontsize=9,
                         )
-                        ax.set_title("Mastery Distribution (SRS)", color="#e6e6e6", fontsize=11, pad=8)
+                        ax.set_title("Mastery Distribution (SRS)", color=chart_style["text"], fontsize=11, pad=8)
                         ax.set_aspect("equal")
                         fig.subplots_adjust(bottom=0.18)
                         canvas = canvas_cls(fig)
@@ -14144,24 +14361,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         if plt_module is None or canvas_cls is None:
                             raise RuntimeError("Charts unavailable")
                         fig, ax = plt_module.subplots(figsize=(5, 3.2), dpi=100)
-                        fig.patch.set_facecolor("#232428")
-                        ax.set_facecolor("#232428")
-                        mastery_line, = ax.plot(dates_series, masteries, color="#4fd1c5", linewidth=2, label="Mastery %")
+                        fig.patch.set_facecolor(chart_style["fig_bg"])
+                        ax.set_facecolor(chart_style["ax_bg"])
+                        mastery_line, = ax.plot(
+                            dates_series, masteries, color=chart_style["accent_a"], linewidth=2, label="Mastery %"
+                        )
                         ax.set_ylim(0, 100)
-                        ax.set_ylabel("Mastery %", color="#4fd1c5")
-                        ax.tick_params(axis="y", colors="#4fd1c5")
+                        ax.set_ylabel("Mastery %", color=chart_style["accent_a"])
+                        ax.tick_params(axis="y", colors=chart_style["accent_a"])
                         ax2 = ax.twinx()
-                        minutes_line, = ax2.plot(dates_series, minutes_series, color="#f6c453", linewidth=1.6, label="Total Minutes")
-                        ax2.set_ylabel("Total Minutes", color="#f6c453")
-                        ax2.tick_params(axis="y", colors="#f6c453")
-                        ax.set_title("Progress Over Time", color="#e6e6e6")
-                        ax.tick_params(colors="#e6e6e6")
+                        minutes_line, = ax2.plot(
+                            dates_series, minutes_series, color=chart_style["accent_b"], linewidth=1.6, label="Total Minutes"
+                        )
+                        ax2.set_ylabel("Total Minutes", color=chart_style["accent_b"])
+                        ax2.tick_params(axis="y", colors=chart_style["accent_b"])
+                        ax.set_title("Progress Over Time", color=chart_style["text"])
+                        ax.tick_params(colors=chart_style["text"])
                         for spine in ax.spines.values():
-                            spine.set_color("#3a3c43")
+                            spine.set_color(chart_style["spine"])
                         for spine in ax2.spines.values():
-                            spine.set_color("#3a3c43")
-                        ax.grid(color="#3a3c43", linestyle="--", linewidth=0.6, alpha=0.6)
-                        ax.legend(handles=[mastery_line, minutes_line], loc="upper left", fontsize=8, facecolor="#232428", framealpha=0.6)
+                            spine.set_color(chart_style["spine"])
+                        ax.grid(color=chart_style["grid"], linestyle="--", linewidth=0.6, alpha=0.6)
+                        legend = ax.legend(
+                            handles=[mastery_line, minutes_line],
+                            loc="upper left",
+                            fontsize=8,
+                            facecolor=chart_style["legend_bg"],
+                            framealpha=0.8,
+                        )
+                        legend.get_frame().set_edgecolor(chart_style["spine"])
                         fig.autofmt_xdate()
                         with warnings.catch_warnings():
                             warnings.simplefilter("ignore", UserWarning)
@@ -14248,23 +14476,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if plt_module is None or canvas_cls is None:
                         raise RuntimeError("Charts unavailable")
                     fig, ax = plt_module.subplots(figsize=(fig_w, fig_h), dpi=100)
-                    fig.patch.set_facecolor("#232428")
-                    ax.set_facecolor("#232428")
+                    fig.patch.set_facecolor(chart_style["fig_bg"])
+                    ax.set_facecolor(chart_style["ax_bg"])
                     x = list(range(len(topics)))
                     width = 0.25
-                    ax.bar([i - width for i in x], competence_vals, width, color="#4fd1c5", label="Competence")
-                    ax.bar(x, mastery_vals, width, color="#b794f4", label="Mastery")
-                    ax.bar([i + width for i in x], quiz_vals, width, color="#f6c453", label="Quiz")
+                    ax.bar([i - width for i in x], competence_vals, width, color=chart_style["accent_a"], label="Competence")
+                    ax.bar(x, mastery_vals, width, color=chart_style["accent_d"], label="Mastery")
+                    ax.bar([i + width for i in x], quiz_vals, width, color=chart_style["accent_c"], label="Quiz")
                     ax.set_ylim(0, 100)
-                    ax.set_ylabel("%", color="#e6e6e6")
+                    ax.set_ylabel("%", color=chart_style["text"])
                     ax.set_xticks(x)
-                    ax.set_xticklabels(topics, rotation=35, ha="right", fontsize=8, color="#e6e6e6")
-                    ax.tick_params(axis="y", colors="#e6e6e6")
+                    ax.set_xticklabels(topics, rotation=35, ha="right", fontsize=8, color=chart_style["text"])
+                    ax.tick_params(axis="y", colors=chart_style["text"])
                     for spine in ax.spines.values():
-                        spine.set_color("#3a3c43")
-                    ax.grid(axis="y", color="#3a3c43", linestyle="--", linewidth=0.6, alpha=0.6)
-                    ax.set_title(f"Per-Topic Snapshot ({subtitle})", color="#e6e6e6")
-                    ax.legend(loc="upper right", fontsize=8, facecolor="#232428", framealpha=0.6)
+                        spine.set_color(chart_style["spine"])
+                    ax.grid(axis="y", color=chart_style["grid"], linestyle="--", linewidth=0.6, alpha=0.6)
+                    ax.set_title(f"Per-Topic Snapshot ({subtitle})", color=chart_style["text"])
+                    legend = ax.legend(loc="upper right", fontsize=8, facecolor=chart_style["legend_bg"], framealpha=0.8)
+                    legend.get_frame().set_edgecolor(chart_style["spine"])
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", UserWarning)
                         fig.tight_layout()
