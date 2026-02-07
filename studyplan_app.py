@@ -151,6 +151,12 @@ DEFAULT_LONG_BREAK_EVERY = 4
 DEFAULT_MAX_BREAK_SKIPS = 1
 DEFAULT_OUTCOME_GAP_QUIZ_RATIO = 0.5
 DEFAULT_OUTCOME_GAP_MIN_QUESTIONS = 1
+SMOKE_REPORT_PATH = os.path.expanduser("~/.config/studyplan/smoke_last.json")
+SMOKE_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
+    "coach_pick_consistency_rate": {"op": ">=", "value": 0.999},
+    "coach_only_toggle_integrity_rate": {"op": "==", "value": 1.0},
+    "coach_next_burst_integrity_rate": {"op": "==", "value": 1.0},
+}
 
 
 def _merge_gap_and_srs_indices(gap_indices: list[int], srs_indices: list[int], total: int) -> list[int]:
@@ -248,6 +254,52 @@ def _build_gap_routing_meta(
         "capability": str(capability or "").strip().upper(),
         "capability_hit_rate": capability_hit_rate if isinstance(capability_hit_rate, (int, float)) else None,
     }
+
+
+def _evaluate_smoke_kpi_thresholds(kpi: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return threshold failures for smoke KPI metrics."""
+    failures: list[dict[str, Any]] = []
+    metrics = kpi if isinstance(kpi, dict) else {}
+    for metric, rule in SMOKE_KPI_THRESHOLDS.items():
+        try:
+            actual = float(metrics.get(metric, 0.0) or 0.0)
+        except Exception:
+            actual = 0.0
+        op = str(rule.get("op", ">=") or ">=").strip()
+        try:
+            expected = float(rule.get("value", 0.0) or 0.0)
+        except Exception:
+            expected = 0.0
+        if op == "==":
+            passed = abs(actual - expected) <= 1e-9
+        else:
+            passed = actual >= expected
+        if not passed:
+            failures.append(
+                {
+                    "metric": metric,
+                    "actual": actual,
+                    "op": op,
+                    "threshold": expected,
+                }
+            )
+    return failures
+
+
+def _compute_strict_smoke_exit_code(report_path: str = SMOKE_REPORT_PATH) -> int:
+    """Return process exit code for strict smoke mode."""
+    try:
+        with open(report_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+    except Exception:
+        return 1
+    if not isinstance(report, dict):
+        return 1
+    status = str(report.get("status", "") or "").strip().lower()
+    if status != "passed":
+        return 1
+    failures = _evaluate_smoke_kpi_thresholds(report.get("kpi", {}))
+    return 0 if not failures else 1
 
 DEFAULT_FOCUS_ALLOWLIST = [
     "com.studyplan.assistant",
@@ -1233,6 +1285,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._smoke_report_finalized = False
         self._smoke_step_outcomes = []
         self._smoke_metrics = {}
+        self._smoke_last_mismatch_sample = None
+        self._smoke_sync_retry_base = 0
         self.risk_baselines = {}
         self._perf_dashboard_renders = 0
         self._perf_last_dashboard_ms = 0.0
@@ -1245,6 +1299,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._last_study_room_coach_topic = ""
         self._coach_sync_in_progress = False
         self._last_coach_sync_key = ""
+        self._coach_sync_retry_count = 0
+        self._last_coach_sync_origin = ""
         self._last_ml_train_date = None
         self._last_ml_train_at = None
         self._last_ml_train_sample_count = 0
@@ -4345,6 +4401,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
+    def _capture_smoke_mismatch_sample(self, left: str, room: str, dash: str, origin: str) -> None:
+        """Capture first mismatch sample for smoke diagnostics."""
+        if not getattr(self, "_dialog_smoke_mode", False):
+            return
+        if getattr(self, "_smoke_last_mismatch_sample", None):
+            return
+        self._smoke_last_mismatch_sample = {
+            "left": str(left or ""),
+            "room": str(room or ""),
+            "dash": str(dash or ""),
+            "origin": str(origin or ""),
+            "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+
     def _ensure_coach_pick_consistency(self, canonical_topic: str, canonical_source: str, origin: str) -> None:
         """Align left coach card with a canonical coach pick/source and log mismatches."""
         if not canonical_topic:
@@ -4384,6 +4454,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self._last_coach_sync_key = ""
                 return
             self._last_coach_sync_key = "|".join(sorted(set(topics)))
+            self._coach_sync_retry_count = int(getattr(self, "_coach_sync_retry_count", 0) or 0) + 1
+            self._last_coach_sync_origin = str(origin or "")
             self._coach_sync_in_progress = True
             GLib.idle_add(lambda: self._run_coach_sync_after_mismatch(origin))
         except Exception:
@@ -4405,6 +4477,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             mismatch_topic = room_topic if room_topic and room_topic != canonical else dash_topic
             if mismatch_topic and mismatch_topic != canonical:
                 self._log_coach_mismatch(mismatch_topic, canonical, f"post-refresh:{origin}")
+                self._capture_smoke_mismatch_sample(left_topic, room_topic, dash_topic, f"post-refresh:{origin}")
         self._queue_coach_sync_if_mismatch(f"post-refresh:{origin}")
 
     def _run_coach_sync_after_mismatch(self, origin: str = "") -> bool:
@@ -11858,6 +11931,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _start_smoke_report(self) -> None:
         self._smoke_report_finalized = False
         self._smoke_step_outcomes = []
+        self._smoke_last_mismatch_sample = None
+        self._smoke_sync_retry_base = int(getattr(self, "_coach_sync_retry_count", 0) or 0)
         self._smoke_metrics = {
             "coach_consistency_checks": 0,
             "coach_consistency_failures": 0,
@@ -11909,7 +11984,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         toggle_failures = int(metrics.get("coach_only_toggle_failures", 0) or 0)
         burst_checks = int(metrics.get("coach_next_burst_checks", 0) or 0)
         burst_failures = int(metrics.get("coach_next_burst_failures", 0) or 0)
-        self._smoke_report["kpi"] = {
+        kpi = {
             "coach_pick_consistency_rate": (max(0, consistency_checks - consistency_failures) / max(1, consistency_checks)),
             "coach_only_toggle_integrity_rate": (max(0, toggle_checks - toggle_failures) / max(1, toggle_checks)),
             "coach_next_burst_integrity_rate": (max(0, burst_checks - burst_failures) / max(1, burst_checks)),
@@ -11920,7 +11995,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "coach_next_burst_checks": burst_checks,
             "coach_next_burst_failures": burst_failures,
         }
-        path = os.path.expanduser("~/.config/studyplan/smoke_last.json")
+        self._smoke_report["kpi"] = kpi
+        self._smoke_report["kpi_thresholds"] = dict(SMOKE_KPI_THRESHOLDS)
+        kpi_failures = _evaluate_smoke_kpi_thresholds(kpi)
+        self._smoke_report["kpi_failures"] = list(kpi_failures)
+        if kpi_failures:
+            current_status = str(self._smoke_report.get("status", "") or "").strip().lower()
+            if current_status == "passed":
+                self._smoke_report["status"] = "failed"
+                self._smoke_report["reason"] = "kpi_threshold_failure"
+            elif not str(self._smoke_report.get("reason", "") or "").strip():
+                self._smoke_report["reason"] = "kpi_threshold_failure"
+        self._smoke_report["diagnostics"] = {
+            "top_mismatch_sample": self._smoke_last_mismatch_sample if isinstance(self._smoke_last_mismatch_sample, dict) else None,
+            "coach_sync_retry_count": max(
+                0,
+                int(getattr(self, "_coach_sync_retry_count", 0) or 0) - int(getattr(self, "_smoke_sync_retry_base", 0) or 0),
+            ),
+            "last_coach_sync_origin": str(getattr(self, "_last_coach_sync_origin", "") or ""),
+        }
+        path = SMOKE_REPORT_PATH
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
@@ -11979,10 +12073,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         dash_topic = str(getattr(self, "_last_dashboard_coach_topic", "") or "")
         topics = [left_topic, room_topic, dash_topic]
         if any(not t for t in topics):
+            self._capture_smoke_mismatch_sample(left_topic, room_topic, dash_topic, "smoke_consistency_missing")
             if isinstance(self._smoke_metrics, dict):
                 self._smoke_metrics["coach_consistency_failures"] = int(self._smoke_metrics.get("coach_consistency_failures", 0) or 0) + 1
             raise RuntimeError(f"Coach consistency smoke: missing topic value {topics!r}")
         if not (left_topic == room_topic == dash_topic):
+            self._capture_smoke_mismatch_sample(left_topic, room_topic, dash_topic, "smoke_consistency_mismatch")
             if isinstance(self._smoke_metrics, dict):
                 self._smoke_metrics["coach_consistency_failures"] = int(self._smoke_metrics.get("coach_consistency_failures", 0) or 0) + 1
             raise RuntimeError(
@@ -15103,9 +15199,14 @@ if __name__ == "__main__":
         sys.exit(0)
     exam_date = None
     dialog_smoke_test = False
+    dialog_smoke_strict = False
     for arg in sys.argv[1:]:
         if arg in ("--smoke-dialogs", "--dialog-smoke-test"):
             dialog_smoke_test = True
+            continue
+        if arg == "--dialog-smoke-strict":
+            dialog_smoke_test = True
+            dialog_smoke_strict = True
             continue
         if arg.startswith("-"):
             continue
@@ -15116,3 +15217,8 @@ if __name__ == "__main__":
             sys.exit(1)
     app = StudyApp(exam_date, dialog_smoke_test=dialog_smoke_test)
     app.run()
+    if dialog_smoke_strict:
+        strict_code = _compute_strict_smoke_exit_code()
+        if strict_code != 0:
+            print("Dialog smoke strict failed. See ~/.config/studyplan/smoke_last.json")
+        sys.exit(strict_code)
