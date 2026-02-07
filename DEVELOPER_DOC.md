@@ -41,6 +41,8 @@ Global app data:
 - `hourly_quiz_stats`: hour → {attempts, correct}
 - `completed_chapters`: set of chapters completed **today**
 - `completed_chapters_date`: ISO date stamp for daily reset
+- `concept_graph_meta` / `concept_nodes` / `concept_edges` / `outcome_concept_links`: persisted canonical concept graph
+- `outcome_cluster_meta` / `outcome_clusters` / `outcome_cluster_edges`: persisted outcome cluster graph
 
 ### Key app (preferences) structures
 
@@ -186,6 +188,20 @@ Parser rules:
 - `select_srs_questions` and `select_due_review_questions` prioritize questions linked to uncovered outcomes.
 - `get_daily_plan` enforces at least one chapter from under-covered capabilities when available.
 
+### Semantic graph layer
+- `build_canonical_concept_graph` builds a stable concept hierarchy from syllabus outcomes/subtopics.
+- `build_outcome_cluster_graph` builds stable cluster IDs (semantic mode with lexical fallback).
+- Semantic status is surfaced in UI diagnostics (ready/pending/fallback, model name, threshold, cache size).
+- Review-mode isolation remains intact: due review selection is not replaced by semantic interleave.
+
+### Semantic drift KPI
+- Engine API:
+  - `get_semantic_drift_kpi`
+  - `get_semantic_drift_kpi_by_chapter`
+  - `get_semantic_drift_alerts`
+- Coach consumes drift alerts for intervention text when competence diverges from outcome-level mastery.
+- Drift logic is additive and keeps SRS as the timing control system.
+
 ### Weekly summary export
 - Auto‑writes `~/.config/studyplan/weekly_report.txt` once per ISO week.
 
@@ -202,6 +218,14 @@ Parser rules:
 - Coach UI refreshes are debounced (study room, plan, recommendations) to reduce flicker/jank.
 - `Data Health Check` runs `_normalize_loaded_data()` + migrations and appends to `migration.log`.
 - Optional OCR preprocessing is guarded so missing dependencies never break imports.
+- On primary data load failure, engine attempts automatic recovery from latest backup snapshot.
+
+### Snapshot recovery UX
+- File menu includes:
+  - `Import Data Snapshot…`
+  - `Recover from Snapshot…`
+  - `Restore Latest Snapshot…`
+- Startup banner is shown when auto-recovery has been applied.
 
 ### Syllabus cache behavior
 - Parse/import results are cached in memory and on disk.
@@ -223,6 +247,8 @@ Parser rules:
 
 ```bash
 pytest -q
+python -m py_compile studyplan_app.py studyplan_engine.py
+pyright studyplan_app.py studyplan_engine.py tests/test_studyplan_engine.py
 ```
 
 Dialog smoke modes:

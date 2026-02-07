@@ -142,6 +142,8 @@ If OCR ran, the summary dialog reports OCR page counts.
 - **Charts missing** → install `matplotlib`
 - **PDF import missing** → install `PyMuPDF (fitz)`
 - **Enhanced OCR not active** → install `pytesseract`, `Pillow`, `numpy`, `scikit-image`, and ensure `tesseract` is on PATH
+- **Semantic map shows fallback** → ensure your app launcher uses an environment with `sentence-transformers`
+- **Startup recovered from backup** → use **File → Recover from Snapshot…** if you want to pick a different snapshot manually
 
 ## 12) ML training and status
 

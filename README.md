@@ -22,6 +22,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - Optional:
   - **PyMuPDF (fitz)** for PDF score import
   - **pytesseract + Pillow + numpy + scikit-image** for enhanced OCR preprocessing
+  - **sentence-transformers** for semantic mapping (falls back safely when unavailable)
   - **matplotlib** for charts
   - **hyprctl** (Hyprland) for focus tracking
   - **hypridle** (optional hook for idle file)
@@ -50,6 +51,8 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **Hardest Concepts**: tracks repeated misses per chapter
 - **Time Analytics**: time per action + per‑topic leaderboards
 - **Balance checks**: topic saturation + confidence drift (competence vs mastery/quiz)
+- **Semantic graph + clusters**: canonical concept graph and outcome cluster graph for stable semantic routing
+- **Semantic Drift KPI**: thresholded drift alerts when chapter competence diverges from outcome mastery
 - **Confidence Drift chart**: top gap visualization
 - **Data Health Check**: one‑click normalization + health summary in Tools
 - **Syllabus cache tools**: view cache stats and clear parse/import caches
@@ -57,6 +60,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **Study Hub import**: parse ACCA Study Hub PDFs (practice/quiz reports)
 - **Syllabus import (draft-first)**: parse ACCA syllabus PDFs into module intelligence
 - **Modules**: switch or edit ACCA modules via JSON configs
+- **Snapshot recovery**: auto-recovery on load failure + manual snapshot import/restore
 
 ## ML training (optional)
 
@@ -110,6 +114,7 @@ Global app files:
 - `~/.config/studyplan/coach_debug.log` (coach pick audit)
 - `~/.config/studyplan/smoke_last.json` (latest dialog smoke/KPI report)
 - `~/.config/studyplan/modules/*.json` (module configs)
+- `~/.config/studyplan/<module_id>/backups/*.bak` (automatic snapshots)
 
 ## Module switching
 
@@ -204,6 +209,8 @@ OCR behavior:
 
 ```bash
 pytest -q
+python -m py_compile studyplan_app.py studyplan_engine.py
+pyright studyplan_app.py studyplan_engine.py tests/test_studyplan_engine.py
 ```
 
 Dialog smoke (exploratory):
@@ -231,6 +238,8 @@ Strict smoke KPI thresholds:
 - **Charts missing**: install `matplotlib`
 - **PDF import missing**: install `PyMuPDF (fitz)`
 - **Enhanced OCR not active**: install `pytesseract`, `Pillow`, `numpy`, `scikit-image`, and the `tesseract` binary
+- **Semantic map shows fallback**: confirm launcher environment has `sentence-transformers`
+- **Data file failed to load**: app auto-recovers from latest snapshot; manual options are in **File → Recover from Snapshot…**
 
 ## Recent stability updates (Feb 2026)
 

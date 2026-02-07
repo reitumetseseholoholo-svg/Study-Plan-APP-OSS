@@ -13,6 +13,8 @@ import copy
 import hashlib
 import time
 import threading
+import io
+import contextlib
 from typing import Dict, Any, List, Union, Set, Tuple, cast
 
 class StudyPlanEngine:
@@ -65,6 +67,11 @@ class StudyPlanEngine:
     SEMANTIC_DRIFT_COMPETENCE_GAP_PCT = 20.0
     SEMANTIC_DRIFT_QUIZ_LAG_DAYS = 14
     SEMANTIC_DRIFT_MIN_OUTCOMES = 5
+    _SEMANTIC_RUNTIME_ENV_CONFIGURED = False
+    _SEMANTIC_SHARED_MODELS: Dict[str, Any] = {}
+    _SEMANTIC_SHARED_RERANKERS: Dict[str, Any] = {}
+    _SEMANTIC_SHARED_MODEL_LOCK = threading.Lock()
+    _SEMANTIC_SHARED_RERANK_LOCK = threading.Lock()
     CHAPTERS = [
         "FM Function",
         "FM Environment",
@@ -4147,28 +4154,48 @@ class StudyPlanEngine:
             return None
         if self._semantic_model is not None:
             return self._semantic_model
+        model_name = str(getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME).strip()
+        if not model_name:
+            model_name = self.SEMANTIC_MODEL_NAME
+        shared = self._SEMANTIC_SHARED_MODELS.get(model_name)
+        if shared is not None:
+            self._semantic_model = shared
+            self._semantic_model_state = "ready"
+            self._semantic_block_reason = None
+            return self._semantic_model
         with self._semantic_lock:
             if self._semantic_model is not None:
                 return self._semantic_model
+            shared = self._SEMANTIC_SHARED_MODELS.get(model_name)
+            if shared is not None:
+                self._semantic_model = shared
+                self._semantic_model_state = "ready"
+                self._semantic_block_reason = None
+                return self._semantic_model
+            self._configure_semantic_runtime_env()
             try:
                 from sentence_transformers import SentenceTransformer  # type: ignore
             except Exception:
                 self._semantic_model_state = "blocked"
                 self._semantic_block_reason = "sentence-transformers unavailable"
                 return None
-            model_name = str(getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME).strip()
-            if not model_name:
-                model_name = self.SEMANTIC_MODEL_NAME
-            try:
-                self._semantic_model = SentenceTransformer(model_name)
+            with self._SEMANTIC_SHARED_MODEL_LOCK:
+                shared = self._SEMANTIC_SHARED_MODELS.get(model_name)
+                if shared is None:
+                    try:
+                        shared = self._semantic_quiet_load(
+                            lambda: SentenceTransformer(model_name)
+                        )
+                        self._SEMANTIC_SHARED_MODELS[model_name] = shared
+                    except Exception:
+                        self._semantic_model_state = "blocked"
+                        self._semantic_block_reason = "model load failed"
+                        self._semantic_model = None
+                        return None
+                self._semantic_model = shared
                 self._semantic_model_state = "ready"
                 self._semantic_block_reason = None
                 return self._semantic_model
-            except Exception:
-                self._semantic_model_state = "blocked"
-                self._semantic_block_reason = "model load failed"
-                self._semantic_model = None
-                return None
 
     def _semantic_get_reranker(self) -> Any | None:
         if not bool(getattr(self, "semantic_enabled", True)):
@@ -4182,31 +4209,72 @@ class StudyPlanEngine:
             return None
         if self._semantic_reranker is not None:
             return self._semantic_reranker
+        model_name = str(
+            getattr(self, "semantic_rerank_model_name", self.SEMANTIC_RERANK_MODEL_NAME)
+            or self.SEMANTIC_RERANK_MODEL_NAME
+        ).strip()
+        if not model_name:
+            model_name = self.SEMANTIC_RERANK_MODEL_NAME
+        shared = self._SEMANTIC_SHARED_RERANKERS.get(model_name)
+        if shared is not None:
+            self._semantic_reranker = shared
+            self._semantic_reranker_state = "ready"
+            self._semantic_reranker_block_reason = None
+            return self._semantic_reranker
         with self._semantic_rerank_lock:
             if self._semantic_reranker is not None:
                 return self._semantic_reranker
+            shared = self._SEMANTIC_SHARED_RERANKERS.get(model_name)
+            if shared is not None:
+                self._semantic_reranker = shared
+                self._semantic_reranker_state = "ready"
+                self._semantic_reranker_block_reason = None
+                return self._semantic_reranker
+            self._configure_semantic_runtime_env()
             try:
                 from sentence_transformers import CrossEncoder  # type: ignore
             except Exception:
                 self._semantic_reranker_state = "blocked"
                 self._semantic_reranker_block_reason = "cross-encoder unavailable"
                 return None
-            model_name = str(
-                getattr(self, "semantic_rerank_model_name", self.SEMANTIC_RERANK_MODEL_NAME)
-                or self.SEMANTIC_RERANK_MODEL_NAME
-            ).strip()
-            if not model_name:
-                model_name = self.SEMANTIC_RERANK_MODEL_NAME
-            try:
-                self._semantic_reranker = CrossEncoder(model_name)
+            with self._SEMANTIC_SHARED_RERANK_LOCK:
+                shared = self._SEMANTIC_SHARED_RERANKERS.get(model_name)
+                if shared is None:
+                    try:
+                        shared = self._semantic_quiet_load(
+                            lambda: CrossEncoder(model_name)
+                        )
+                        self._SEMANTIC_SHARED_RERANKERS[model_name] = shared
+                    except Exception:
+                        self._semantic_reranker_state = "blocked"
+                        self._semantic_reranker_block_reason = "cross-encoder load failed"
+                        self._semantic_reranker = None
+                        return None
+                self._semantic_reranker = shared
                 self._semantic_reranker_state = "ready"
                 self._semantic_reranker_block_reason = None
                 return self._semantic_reranker
-            except Exception:
-                self._semantic_reranker_state = "blocked"
-                self._semantic_reranker_block_reason = "cross-encoder load failed"
-                self._semantic_reranker = None
-                return None
+
+    @classmethod
+    def _configure_semantic_runtime_env(cls) -> None:
+        """Apply low-noise defaults for HF/transformers once per process."""
+        if bool(cls._SEMANTIC_RUNTIME_ENV_CONFIGURED):
+            return
+        try:
+            os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+            os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+            os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+        except Exception:
+            pass
+        cls._SEMANTIC_RUNTIME_ENV_CONFIGURED = True
+
+    @staticmethod
+    def _semantic_quiet_load(loader: Any) -> Any:
+        """Run semantic model loaders with stdout/stderr suppression."""
+        sink_out = io.StringIO()
+        sink_err = io.StringIO()
+        with contextlib.redirect_stdout(sink_out), contextlib.redirect_stderr(sink_err):
+            return loader()
 
     def warmup_semantic_model(self, force: bool = False) -> Dict[str, Any]:
         current = self.get_semantic_status()

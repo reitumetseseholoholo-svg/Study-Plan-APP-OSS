@@ -675,17 +675,17 @@ class AppMessageDialog:
 
 SYSTEM_THEME_CSS = b"""
 @define-color app_accent alpha(@theme_selected_bg_color, 0.98);
-@define-color app_border alpha(@theme_fg_color, 0.12);
-@define-color app_border_strong alpha(@theme_fg_color, 0.2);
-@define-color app_surface alpha(@theme_bg_color, 0.84);
-@define-color app_surface_alt alpha(@theme_bg_color, 0.75);
-@define-color app_muted alpha(@theme_fg_color, 0.74);
+@define-color app_border alpha(@theme_fg_color, 0.18);
+@define-color app_border_strong alpha(@theme_fg_color, 0.28);
+@define-color app_surface alpha(@theme_bg_color, 0.96);
+@define-color app_surface_alt alpha(@theme_bg_color, 0.93);
+@define-color app_muted alpha(@theme_fg_color, 0.88);
 window {
     background-color: @theme_bg_color;
     background-image: linear-gradient(
         to bottom,
-        alpha(@theme_bg_color, 0.98),
-        alpha(@theme_bg_color, 0.88)
+        alpha(@theme_bg_color, 1.0),
+        alpha(@theme_bg_color, 0.96)
     );
     color: @theme_fg_color;
 }
@@ -694,7 +694,7 @@ window {
     border: 1px solid app_border;
     border-radius: 14px;
     padding: 12px;
-    box-shadow: 0 2px 8px alpha(@theme_fg_color, 0.08);
+    box-shadow: 0 3px 10px alpha(@theme_fg_color, 0.12);
 }
 .panel-left {
     border-top-right-radius: 0;
@@ -713,7 +713,7 @@ window {
     border: 1px solid app_border;
     border-radius: 12px;
     padding: 10px;
-    box-shadow: 0 1px 5px alpha(@theme_fg_color, 0.07);
+    box-shadow: 0 2px 7px alpha(@theme_fg_color, 0.1);
 }
 .card-tight {
     padding: 6px;
@@ -751,7 +751,7 @@ window {
     font-size: 13px;
     letter-spacing: 0.85px;
     text-transform: uppercase;
-    color: alpha(@theme_fg_color, 0.86);
+    color: alpha(@theme_fg_color, 0.94);
     margin-top: 5px;
     margin-bottom: 3px;
 }
@@ -760,6 +760,7 @@ window {
 }
 .muted {
     color: app_muted;
+    line-height: 1.42;
 }
 .quiz-dialog {
     min-width: 640px;
@@ -808,9 +809,9 @@ window {
     margin-top: 3px;
 }
 .hint {
-    color: alpha(@theme_fg_color, 0.6);
+    color: alpha(@theme_fg_color, 0.72);
     font-size: 11px;
-    font-style: italic;
+    font-style: normal;
 }
 .plan-title {
     font-weight: 600;
@@ -823,7 +824,7 @@ window {
     line-height: 1.4;
 }
 .rule {
-    color: alpha(@theme_fg_color, 0.15);
+    color: alpha(@theme_fg_color, 0.24);
 }
 .error { background-color: @error_color; }
 .warning { background-color: @warning_color; }
@@ -854,14 +855,14 @@ window.compact button {
     padding: 4px 6px;
 }
 .badge {
-    background: alpha(@theme_fg_color, 0.06);
-    border: 1px solid alpha(@theme_fg_color, 0.18);
+    background: alpha(@theme_fg_color, 0.1);
+    border: 1px solid alpha(@theme_fg_color, 0.24);
     border-radius: 999px;
     padding: 2px 8px;
 }
 .badge-locked {
-    background: alpha(@theme_fg_color, 0.03);
-    border: 1px dashed alpha(@theme_fg_color, 0.18);
+    background: alpha(@theme_fg_color, 0.05);
+    border: 1px dashed alpha(@theme_fg_color, 0.22);
     border-radius: 999px;
     padding: 2px 8px;
     color: alpha(@theme_fg_color, 0.6);
@@ -904,14 +905,17 @@ button {
     border-radius: 10px;
     padding: 7px 11px;
     min-height: 34px;
+    background: alpha(@theme_fg_color, 0.08);
+    border: 1px solid alpha(@theme_fg_color, 0.2);
+    color: @theme_fg_color;
 }
 button.suggested-action {
-    background: app_accent;
+    background: @theme_selected_bg_color;
     color: @theme_selected_fg_color;
-    border-color: alpha(@theme_selected_fg_color, 0.25);
+    border-color: alpha(@theme_selected_fg_color, 0.4);
 }
 button.suggested-action:hover {
-    background: mix(@theme_selected_bg_color, @theme_fg_color, 0.08);
+    background: mix(@theme_selected_bg_color, @theme_fg_color, 0.16);
 }
 button.flat {
     background: transparent;
@@ -929,7 +933,7 @@ button:focus-visible {
 }
 progressbar trough {
     border-radius: 999px;
-    background-color: alpha(@theme_fg_color, 0.15);
+    background-color: alpha(@theme_fg_color, 0.2);
 }
 progressbar progress {
     border-radius: 999px;
@@ -957,13 +961,13 @@ scrollbar slider:active {
 """
 
 COACH_THEME_CSS = b"""
-@define-color coach_bg #171a23;
-@define-color coach_panel #202633;
-@define-color coach_card #1c2230;
-@define-color coach_border #344059;
-@define-color coach_border_strong #4c5d82;
+@define-color coach_bg #121724;
+@define-color coach_panel #1a2233;
+@define-color coach_card #1f2a3d;
+@define-color coach_border #415272;
+@define-color coach_border_strong #5e759f;
 @define-color coach_text #e8edf7;
-@define-color coach_muted #b1bcd3;
+@define-color coach_muted #c6d0e2;
 @define-color coach_accent #4fd1c5;
 @define-color coach_accent_alt #8bafff;
 window {
@@ -1020,7 +1024,7 @@ window {
     font-size: 13px;
     letter-spacing: 0.85px;
     text-transform: uppercase;
-    color: #cfd8ea;
+    color: #dce6fa;
     margin-top: 5px;
     margin-bottom: 3px;
 }
@@ -1029,6 +1033,7 @@ window {
 }
 .muted {
     color: coach_muted;
+    line-height: 1.42;
 }
 .quiz-dialog {
     min-width: 640px;
@@ -1076,9 +1081,9 @@ window {
     margin-top: 3px;
 }
 .hint {
-    color: #8f95a1;
+    color: #a8b3ca;
     font-size: 11px;
-    font-style: italic;
+    font-style: normal;
 }
 .plan-title {
     font-weight: 600;
@@ -1091,11 +1096,11 @@ window {
     line-height: 1.4;
 }
 .rule {
-    color: #3a3c43;
+    color: #4d5d79;
 }
 button {
-    background: #273044;
-    border: 1px solid #3f5270;
+    background: #2d3b56;
+    border: 1px solid #5b6f95;
     border-radius: 10px;
     color: coach_text;
     padding: 7px 11px;
@@ -1195,18 +1200,18 @@ button.flat {
     border-color: transparent;
 }
 button.flat:hover {
-    background: #263043;
-    border-color: #4b5f7f;
+    background: #324160;
+    border-color: #6881ad;
 }
 button.flat:active {
-    background: #2f3a52;
+    background: #3b4b6b;
 }
 button:focus-visible {
     box-shadow: 0 0 0 2px rgba(79, 209, 197, 0.42);
 }
 progressbar trough {
     border-radius: 999px;
-    background-color: #273044;
+    background-color: #2d3b56;
 }
 progressbar progress {
     border-radius: 999px;
@@ -12036,68 +12041,106 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         dialog.connect("response", self.on_set_exam_date_response, calendar)
         dialog.present()
 
-    def on_set_exam_date_response(self, dialog, response, calendar):
-        if response == Gtk.ResponseType.OK:
-            year: int | None = None
-            month: int | None = None
-            day: int | None = None
-            try:
-                date_val = calendar.get_date()
-                if isinstance(date_val, datetime.date):
-                    year, month, day = date_val.year, date_val.month, date_val.day
-                elif isinstance(date_val, tuple) and len(date_val) >= 3:
-                    y_val, m_val, d_val = date_val[0], date_val[1], date_val[2]
-                    if isinstance(y_val, int) and isinstance(m_val, int) and isinstance(d_val, int):
-                        year, month, day = y_val, m_val, d_val
-            except Exception:
-                year = month = day = None
+    def _extract_calendar_date(self, calendar: Any) -> datetime.date | None:
+        """Normalize GTK calendar date retrieval across bindings/versions."""
+        candidates: list[tuple[int, int, int]] = []
 
-            new_date = None
-            try:
-                if isinstance(year, int) and isinstance(month, int) and isinstance(day, int):
-                    new_date = datetime.date(int(year), int(month), int(day))
-            except Exception:
-                if month is not None and month in range(0, 12):
-                    try:
-                        if isinstance(year, int) and isinstance(day, int):
-                            new_date = datetime.date(int(year), int(month + 1), int(day))
-                    except Exception:
-                        new_date = None
-            if new_date is None:
-                error_dialog = self._new_message_dialog(
-                    transient_for=self,
-                    modal=True,
-                    message_type=Gtk.MessageType.ERROR,
-                    buttons=Gtk.ButtonsType.OK,
-                    text="Invalid exam date. Please select a valid date."
+        # GTK4 may return a GLib.DateTime-like object.
+        try:
+            date_val = calendar.get_date()
+            if isinstance(date_val, datetime.date):
+                return date_val
+            if isinstance(date_val, tuple) and len(date_val) >= 3:
+                y_val, m_val, d_val = date_val[0], date_val[1], date_val[2]
+                if isinstance(y_val, int) and isinstance(m_val, int) and isinstance(d_val, int):
+                    candidates.append((int(y_val), int(m_val), int(d_val)))
+            elif date_val is not None:
+                get_year = getattr(date_val, "get_year", None)
+                get_month = getattr(date_val, "get_month", None)
+                get_day = getattr(date_val, "get_day_of_month", None)
+                if callable(get_year) and callable(get_month) and callable(get_day):
+                    candidates.append(
+                        (
+                            int(cast(Any, get_year())),
+                            int(cast(Any, get_month())),
+                            int(cast(Any, get_day())),
+                        )
+                    )
+        except Exception:
+            pass
+
+        # Some bindings expose direct year/month/day getters on the calendar.
+        try:
+            get_year = getattr(calendar, "get_year", None)
+            get_month = getattr(calendar, "get_month", None)
+            get_day = getattr(calendar, "get_day", None)
+            if callable(get_year) and callable(get_month) and callable(get_day):
+                candidates.append(
+                    (
+                        int(cast(Any, get_year())),
+                        int(cast(Any, get_month())),
+                        int(cast(Any, get_day())),
+                    )
                 )
-                error_dialog.connect("response", lambda d, r: d.destroy())
-                error_dialog.present()
-                dialog.destroy()
-                return
+        except Exception:
+            pass
+
+        for year, month, day in candidates:
+            # Try 1-based month first.
             try:
-                self.engine.exam_date = new_date
-                self.exam_date = new_date
+                return datetime.date(int(year), int(month), int(day))
+            except Exception:
+                pass
+            # Then try 0-based month conversion.
+            if month in range(0, 12):
                 try:
-                    self.engine.save_data()
+                    return datetime.date(int(year), int(month + 1), int(day))
                 except Exception:
                     pass
-                self.update_exam_date_display()
-                self.update_daily_plan()
-                self.update_dashboard()
-                self.update_recommendations()
-            except Exception as e:
-                error_dialog = self._new_message_dialog(
-                    transient_for=self,
-                    modal=True,
-                    message_type=Gtk.MessageType.ERROR,
-                    buttons=Gtk.ButtonsType.OK,
-                    text=f"Invalid exam date: {e}"
-                )
-                error_dialog.connect("response", lambda d, r: d.destroy())
-                error_dialog.present()
 
-        dialog.destroy()
+        return None
+
+    def on_set_exam_date_response(self, dialog, response, calendar):
+        if response != Gtk.ResponseType.OK:
+            dialog.destroy()
+            return
+
+        new_date = self._extract_calendar_date(calendar)
+        if new_date is None:
+            error_dialog = self._new_message_dialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.ERROR,
+                buttons=Gtk.ButtonsType.OK,
+                text="Invalid exam date. Please select a valid date."
+            )
+            error_dialog.connect("response", lambda d, r: d.destroy())
+            error_dialog.present()
+            # Keep the date dialog open so the user can correct selection.
+            return
+
+        try:
+            self.engine.exam_date = new_date
+            self.exam_date = new_date
+            try:
+                self.engine.save_data()
+            except Exception:
+                pass
+            self.update_exam_date_display()
+            self.update_daily_plan()
+            self.update_dashboard()
+            self.update_recommendations()
+            dialog.destroy()
+        except Exception as e:
+            error_dialog = self._new_message_dialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.ERROR,
+                buttons=Gtk.ButtonsType.OK,
+                text=f"Invalid exam date: {e}"
+            )
+            error_dialog.connect("response", lambda d, r: d.destroy())
+            error_dialog.present()
 
     def update_exam_date_display(self):
         exam_date = getattr(self.engine, "exam_date", None)
@@ -13824,18 +13867,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "legend_bg": "#202633",
         }
         if bool(getattr(self, "use_system_theme", True)):
+            # Keep charts dark even in system-theme mode to avoid bright white blocks
+            # against the coach-style dashboard.
             chart_style = {
-                "fig_bg": "#f6f7fb",
-                "ax_bg": "#f6f7fb",
-                "text": "#1f2430",
-                "muted": "#56627a",
-                "grid": "#c9cfdd",
-                "spine": "#aab4cb",
-                "accent_a": "#2f6fff",
-                "accent_b": "#0f8f7f",
-                "accent_c": "#d48806",
-                "accent_d": "#7a4de8",
-                "legend_bg": "#eef1f8",
+                "fig_bg": "#1a2233",
+                "ax_bg": "#1a2233",
+                "text": "#dbe4f4",
+                "muted": "#b1bfd8",
+                "grid": "#465a7d",
+                "spine": "#5d739b",
+                "accent_a": "#6aa4ff",
+                "accent_b": "#4fd1c5",
+                "accent_c": "#f6c453",
+                "accent_d": "#a18bff",
+                "legend_bg": "#202b41",
             }
 
         try:

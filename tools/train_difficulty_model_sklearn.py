@@ -106,7 +106,7 @@ def main() -> int:
         return 2
 
     k = max(2, int(args.clusters))
-    model = KMeans(n_clusters=k, n_init=10, random_state=42)
+    model = KMeans(n_clusters=k, n_init="auto", random_state=42)
     model.fit(X)
 
     # Map clusters to easy/medium/hard by centroid "difficulty" score.
