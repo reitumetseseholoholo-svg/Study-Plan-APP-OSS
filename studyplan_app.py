@@ -1133,6 +1133,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.risk_baselines = {}
         self._perf_dashboard_renders = 0
         self._perf_last_dashboard_ms = 0.0
+        self._coach_only_toggle_handler_id = 0
+        self._coach_only_apply_in_progress = False
         self._last_ml_train_date = None
         self._last_ml_train_at = None
         self._last_ml_train_sample_count = 0
@@ -1385,7 +1387,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.plan_header_box.append(self.plan_header_spacer)
         self.coach_only_toggle = Gtk.ToggleButton(label="Coach-only")
         self.coach_only_toggle.set_active(bool(self.coach_only_view))
-        self.coach_only_toggle.connect("toggled", self.on_toggle_coach_only)
+        self._coach_only_toggle_handler_id = self.coach_only_toggle.connect("toggled", self.on_toggle_coach_only)
         self.coach_only_toggle.set_visible(not self.coach_only_view)
         self.coach_only_toggle.set_tooltip_text("Hide the daily plan list (coach-only view).")
         self.plan_header_box.append(self.coach_only_toggle)
@@ -3340,15 +3342,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 self.focus_idle_threshold = FOCUS_IDLE_THRESHOLD_SECONDS
             self.menu_bar.set_visible(self.menu_bar_visible)
-            if getattr(self, "plan_scroll", None):
-                self.plan_scroll.set_visible(not self.coach_only_view)
-            if getattr(self, "plan_hint", None):
-                self.plan_hint.set_visible(bool(self.coach_only_view))
-            if getattr(self, "coach_only_badge", None):
-                self.coach_only_badge.set_visible(bool(self.coach_only_view))
-            if getattr(self, "coach_only_toggle", None):
-                self.coach_only_toggle.set_active(bool(self.coach_only_view))
-                self.coach_only_toggle.set_visible(not self.coach_only_view)
+            self._set_coach_only_view(bool(self.coach_only_view), persist=False, animate_badge=False)
             apply_theme(bool(self.use_system_theme))
             if getattr(self, "engine", None) is not None:
                 self.engine.adaptive_quiz_prioritization = bool(self.adaptive_quiz_prioritization)
@@ -5953,11 +5947,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         self.on_pomodoro_start(None)
 
-    def on_toggle_coach_only(self, btn):
-        try:
-            self.coach_only_view = bool(btn.get_active())
-        except Exception:
-            self.coach_only_view = not self.coach_only_view
+    def _set_coach_only_view(self, enabled: bool, *, persist: bool = True, animate_badge: bool = False) -> None:
+        self.coach_only_view = bool(enabled)
         if getattr(self, "plan_scroll", None):
             self.plan_scroll.set_visible(not self.coach_only_view)
         if getattr(self, "plan_hint", None):
@@ -5966,29 +5957,39 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.coach_only_badge.set_visible(bool(self.coach_only_view))
         if getattr(self, "coach_only_toggle", None):
             self.coach_only_toggle.set_visible(not self.coach_only_view)
-            if self.coach_only_view:
-                self.coach_only_toggle.set_active(True)
-            else:
-                self.coach_only_toggle.set_active(False)
+            try:
+                hid = int(getattr(self, "_coach_only_toggle_handler_id", 0) or 0)
+                if hid > 0:
+                    self.coach_only_toggle.handler_block(hid)
+                self.coach_only_toggle.set_active(bool(self.coach_only_view))
+            except Exception:
+                pass
+            finally:
+                try:
+                    hid = int(getattr(self, "_coach_only_toggle_handler_id", 0) or 0)
+                    if hid > 0:
+                        self.coach_only_toggle.handler_unblock(hid)
+                except Exception:
+                    pass
         self._apply_coach_only_mode()
-        self.save_preferences()
+        if persist:
+            self.save_preferences()
+        if animate_badge:
+            self._animate_coach_badge()
+
+    def on_toggle_coach_only(self, btn):
+        try:
+            enabled = bool(btn.get_active())
+        except Exception:
+            enabled = not bool(self.coach_only_view)
+        self._set_coach_only_view(enabled, persist=True, animate_badge=False)
 
     def _exit_coach_only_from_badge(self):
-        self.coach_only_view = False
-        if getattr(self, "plan_scroll", None):
-            self.plan_scroll.set_visible(True)
-        if getattr(self, "plan_hint", None):
-            self.plan_hint.set_visible(False)
-        if getattr(self, "coach_only_badge", None):
-            self.coach_only_badge.set_visible(False)
-        if getattr(self, "coach_only_toggle", None):
-            self.coach_only_toggle.set_visible(True)
-            self.coach_only_toggle.set_active(False)
-        self.save_preferences()
-        self._animate_coach_badge()
-        self._apply_coach_only_mode()
+        self._set_coach_only_view(False, persist=True, animate_badge=True)
 
     def _apply_coach_only_mode(self):
+        if self._coach_only_apply_in_progress:
+            return
         combo = getattr(self, "topic_combo", None)
         if combo:
             combo.set_sensitive(not self.coach_only_view)
@@ -5996,7 +5997,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         topic = getattr(self, "_coach_pick_topic", "") or self._get_coach_pick_topic()
         if topic and topic != self.current_topic:
-            self._set_current_topic(topic)
+            try:
+                self._coach_only_apply_in_progress = True
+                self._set_current_topic(topic)
+            except Exception:
+                pass
+            finally:
+                self._coach_only_apply_in_progress = False
 
     def _ensure_coach_selection(self):
         if not self.coach_only_view:
