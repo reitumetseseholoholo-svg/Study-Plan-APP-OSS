@@ -11254,6 +11254,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ("About", lambda: self.on_about(None, None)),
             ("Shortcuts", lambda: self.on_show_shortcuts(None, None)),
             ("Preferences", lambda: self.on_open_preferences(None, None)),
+            ("Coach-only Toggle", self._smoke_toggle_coach_only),
             ("Focus Allowlist", lambda: self.on_edit_focus_allowlist(None, None)),
             ("Switch Module", lambda: self.on_switch_module(None, None)),
             ("Manage Modules", lambda: self.on_manage_modules(None, None)),
@@ -11276,6 +11277,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         GLib.timeout_add(200, self._run_next_dialog_smoke_step)
         GLib.timeout_add(6000, self._force_end_smoke_test)
         return False
+
+    def _smoke_toggle_coach_only(self) -> None:
+        if not self._has_chapters():
+            return
+        initial = bool(getattr(self, "coach_only_view", False))
+        for target in (True, False, True, False):
+            self._set_coach_only_view(target, persist=False, animate_badge=False)
+            if bool(getattr(self, "coach_only_view", False)) != target:
+                raise RuntimeError("Coach-only state flag mismatch during smoke test")
+            plan_visible = bool(getattr(self, "plan_scroll", None) and self.plan_scroll.get_visible())
+            hint_visible = bool(getattr(self, "plan_hint", None) and self.plan_hint.get_visible())
+            badge_visible = bool(getattr(self, "coach_only_badge", None) and self.coach_only_badge.get_visible())
+            toggle_visible = bool(getattr(self, "coach_only_toggle", None) and self.coach_only_toggle.get_visible())
+            if plan_visible == target:
+                raise RuntimeError("Plan visibility mismatch for Coach-only mode")
+            if hint_visible != target:
+                raise RuntimeError("Plan hint visibility mismatch for Coach-only mode")
+            if badge_visible != target:
+                raise RuntimeError("Coach-only badge visibility mismatch")
+            if toggle_visible == target:
+                raise RuntimeError("Coach-only toggle visibility mismatch")
+        self._set_coach_only_view(initial, persist=False, animate_badge=False)
 
     def _count_question_samples(self) -> int:
         stats = getattr(self.engine, "question_stats", {}) or {}
