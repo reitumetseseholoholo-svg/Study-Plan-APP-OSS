@@ -10181,7 +10181,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         with fitz.open(file_path) as doc:
             for page in doc:
                 try:
-                    text_chunks.append(page.get_text())
+                    page_text = page.get_text("text")
+                    text_chunks.append(page_text if isinstance(page_text, str) else str(page_text))
                 except Exception:
                     text_chunks.append("")
         text_out = "\n".join(text_chunks)
