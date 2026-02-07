@@ -1146,6 +1146,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._last_ml_train_at = None
         self._last_ml_train_sample_count = 0
         self._ml_train_in_progress = False
+        self._ml_train_queue_pending = False
+        self._ml_pending_manual_job = None
+        self._semantic_warmup_in_progress = False
         self._pdf_text_cache: dict[str, tuple[str, dict]] = {}
         self._pdf_text_cache_order: list[str] = []
         self._pdf_text_cache_max = 8
@@ -1800,6 +1803,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         GLib.idle_add(self._run_initial_refresh)
         GLib.idle_add(self._maybe_show_first_run)
         GLib.timeout_add(30_000, self._auto_train_ml_tick)
+        GLib.timeout_add(4_000, self._semantic_warmup_tick)
 
         # Autosave on close
         self.connect("close-request", self.on_close_request)
@@ -3511,12 +3515,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             base_dir = os.path.dirname(os.path.abspath(__file__))
             script_path = os.path.join(base_dir, "tools", script_name)
             if not os.path.exists(script_path):
-                status_label.set_text(f"{label}: script not found ({script_path})")
+                try:
+                    status_label.set_text(f"{label}: script not found ({script_path})")
+                except Exception:
+                    pass
                 return
             if getattr(self, "_ml_train_in_progress", False):
-                status_label.set_text("Training already in progress…")
+                self._ml_pending_manual_job = (script_name, label)
+                self._ml_train_queue_pending = True
+                try:
+                    status_label.set_text(f"Training in progress; queued: {label}")
+                except Exception:
+                    pass
                 return
-            status_label.set_text(f"{label}: running…")
+            try:
+                status_label.set_text(f"{label}: running…")
+            except Exception:
+                pass
 
             def _worker():
                 self._ml_train_in_progress = True
@@ -3534,19 +3549,40 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     ok = False
                     out = ""
                     err = str(exc)
+
                 def _finish():
                     self._ml_train_in_progress = False
                     if ok:
-                        status_label.set_text(f"{label}: done. {out or ''}".strip())
+                        try:
+                            status_label.set_text(f"{label}: done. {out or ''}".strip())
+                        except Exception:
+                            pass
                         now = datetime.datetime.now().isoformat(timespec="seconds")
                         self._last_ml_train_at = now
                         self._last_ml_train_date = now.split("T")[0]
                         self._last_ml_train_sample_count = self._count_question_samples()
                         self.save_preferences()
                     else:
-                        status_label.set_text(f"{label}: failed. {err or out or 'unknown error'}")
+                        try:
+                            status_label.set_text(f"{label}: failed. {err or out or 'unknown error'}")
+                        except Exception:
+                            pass
                     _refresh_info()
+                    pending_job = self._ml_pending_manual_job
+                    self._ml_pending_manual_job = None
+                    self._ml_train_queue_pending = False
+                    if isinstance(pending_job, tuple) and len(pending_job) == 2:
+                        queued_script = str(pending_job[0] or "").strip()
+                        queued_label = str(pending_job[1] or "").strip()
+
+                        def _run_pending():
+                            if queued_script and queued_label:
+                                _run_trainer(queued_script, queued_label)
+                            return False
+
+                        GLib.idle_add(_run_pending)
                     return False
+
                 GLib.idle_add(_finish)
 
             threading.Thread(target=_worker, daemon=True).start()
@@ -6542,6 +6578,48 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._auto_train_ml_models()
         return True
 
+    def _semantic_warmup_tick(self):
+        self._warmup_semantic_engine_async()
+        return False
+
+    def _warmup_semantic_engine_async(self) -> None:
+        try:
+            if getattr(self, "_semantic_warmup_in_progress", False):
+                return
+            status = {}
+            try:
+                status = self.engine.get_semantic_status()
+            except Exception:
+                status = {}
+            state = str(status.get("state", "unloaded") or "unloaded")
+            if state in ("ready", "blocked", "disabled"):
+                return
+            self._semantic_warmup_in_progress = True
+
+            def _worker():
+                try:
+                    self.engine.warmup_semantic_model(force=False)
+                except Exception:
+                    pass
+
+                def _finish():
+                    self._semantic_warmup_in_progress = False
+                    try:
+                        self.update_study_room_card()
+                    except Exception:
+                        pass
+                    try:
+                        self.update_dashboard()
+                    except Exception:
+                        pass
+                    return False
+
+                GLib.idle_add(_finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
+        except Exception:
+            self._semantic_warmup_in_progress = False
+
     def _release_dashboard_update_lock(self):
         self._dashboard_update_in_progress = False
         return False
@@ -7950,6 +8028,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if last_trained:
                 model_line += f" • trained {last_trained}"
             detail_lines.append(model_line)
+            semantic_line, semantic_warn = self._get_semantic_status_line()
+            if semantic_line:
+                detail_lines.append(semantic_line + (" • warning" if semantic_warn else ""))
         except Exception:
             pass
         note = self._get_confidence_note(recommended)
@@ -11505,9 +11586,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             return ("Recall quality: n/a", False)
 
+    def _get_semantic_status_line(self) -> tuple[str, bool]:
+        try:
+            status = self.engine.get_semantic_status()
+            enabled = bool(status.get("enabled", True))
+            if not enabled:
+                return ("Semantic map: off", False)
+            state = str(status.get("state", "unloaded") or "unloaded")
+            model_name = str(status.get("model_name", "model") or "model")
+            cache_size = int(status.get("cache_size", 0) or 0)
+            min_score = float(status.get("min_score", 0.0) or 0.0)
+            block_reason = str(status.get("block_reason", "") or "")
+            if state == "ready":
+                return (
+                    f"Semantic map: ready ({model_name}) • threshold {min_score:.2f} • cache {cache_size}",
+                    False,
+                )
+            if state == "blocked":
+                detail = block_reason if block_reason else "fallback"
+                return (f"Semantic map: fallback ({detail})", True)
+            if state == "disabled":
+                return ("Semantic map: disabled", False)
+            if getattr(self, "_semantic_warmup_in_progress", False):
+                return (f"Semantic map: warming up ({model_name})", False)
+            return (f"Semantic map: pending ({model_name})", False)
+        except Exception:
+            return ("Semantic map: n/a", False)
+
     def _auto_train_ml_models(self) -> None:
         try:
             if getattr(self, "_ml_auto_train_due", False):
+                if getattr(self, "_ml_train_in_progress", False):
+                    self._ml_train_queue_pending = True
                 return
             if getattr(self, "focus_mode", False):
                 return
@@ -11560,15 +11670,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     ok3 = _run_script("train_interval_model_sklearn.py")
                 finally:
                     now = datetime.datetime.now().isoformat(timespec="seconds")
+
                     def _finish():
                         self._ml_train_in_progress = False
+                        queued = bool(getattr(self, "_ml_train_queue_pending", False))
+                        self._ml_train_queue_pending = False
                         self._ml_auto_train_due = False
                         if ok1 or ok2 or ok3:
                             self._last_ml_train_at = now
                             self._last_ml_train_date = now.split("T")[0]
                             self._last_ml_train_sample_count = samples
                             self.save_preferences()
+                        if queued:
+                            def _rerun_auto_train():
+                                self._auto_train_ml_models()
+                                return False
+                            GLib.idle_add(_rerun_auto_train)
                         return False
+
                     GLib.idle_add(_finish)
 
             threading.Thread(target=_worker, daemon=True).start()
@@ -12000,6 +12119,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if quality_warn:
                 quality_label.add_css_class("status-warn")
             coach_box.append(quality_label)
+            semantic_text, semantic_warn = self._get_semantic_status_line()
+            semantic_label = Gtk.Label(label=semantic_text)
+            semantic_label.set_halign(Gtk.Align.START)
+            semantic_label.add_css_class("muted")
+            if semantic_warn:
+                semantic_label.add_css_class("status-warn")
+            coach_box.append(semantic_label)
             try:
                 chapter_ml = self.engine.get_chapter_ml_status(recommended_topic)
                 ch_ready = bool(chapter_ml.get("ready", False))
@@ -12522,6 +12648,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if quality_warn:
                         quality_label.add_css_class("status-warn")
                     insights.append(quality_label)
+                    semantic_text, semantic_warn = self._get_semantic_status_line()
+                    semantic_label = Gtk.Label(label=semantic_text)
+                    semantic_label.set_halign(Gtk.Align.START)
+                    semantic_label.add_css_class("muted")
+                    if semantic_warn:
+                        semantic_label.add_css_class("status-warn")
+                    insights.append(semantic_label)
                     try:
                         if risk_rows:
                             top_chapter = str(risk_rows[0][0])

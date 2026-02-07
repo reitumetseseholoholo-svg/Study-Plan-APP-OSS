@@ -943,3 +943,68 @@ def test_low_confidence_parse_returns_warnings(engine_no_io):
     assert isinstance(warnings, list)
     assert warnings
     assert float(parsed.get("confidence", 1.0)) < 0.5
+
+
+def test_semantic_status_defaults_to_unloaded(engine_no_io):
+    eng = engine_no_io
+    status = eng.get_semantic_status()
+    assert isinstance(status, dict)
+    assert status.get("enabled") is True
+    assert status.get("state") == "unloaded"
+    assert status.get("active") is False
+    assert isinstance(status.get("model_name"), str)
+
+
+def test_semantic_warmup_respects_disabled_flag(engine_no_io):
+    eng = engine_no_io
+    eng.semantic_enabled = False
+    status = eng.warmup_semantic_model(force=True)
+    assert status.get("enabled") is False
+    assert status.get("state") == "disabled"
+    assert status.get("active") is False
+
+
+def test_semantic_warmup_blocks_when_sentence_transformers_missing(engine_no_io, monkeypatch):
+    eng = engine_no_io
+
+    original_import = builtins.__import__
+
+    def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "sentence_transformers":
+            raise ImportError("simulated missing dependency")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+    status = eng.warmup_semantic_model(force=True)
+    assert status.get("state") == "blocked"
+    assert status.get("active") is False
+    reason = str(status.get("block_reason", "") or "")
+    assert "unavailable" in reason or "failed" in reason
+
+
+def test_question_outcome_ids_prefers_semantic_mapping(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    outcome_id = "a.1"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": outcome_id, "text": "Explain the role and purpose of financial management", "level": 1}
+            ],
+        }
+    }
+
+    monkeypatch.setattr(eng, "_semantic_best_outcome_id", lambda *_args, **_kwargs: outcome_id)
+    resolved = eng._question_outcome_ids(chapter, 0)
+    assert resolved == [outcome_id]
+
+
+def test_semantic_cache_is_bounded(engine_no_io):
+    eng = engine_no_io
+    eng.SEMANTIC_CACHE_MAX = 3
+    for idx in range(6):
+        eng._semantic_cache_set(f"k{idx}", f"v{idx}")
+    assert len(eng._semantic_match_cache_order) <= 3
+    assert len(eng._semantic_match_cache) <= 3

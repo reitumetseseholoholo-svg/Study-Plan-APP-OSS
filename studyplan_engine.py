@@ -12,6 +12,7 @@ import tempfile
 import copy
 import hashlib
 import time
+import threading
 from typing import Dict, Any, List, Union, Set, Tuple, cast
 
 class StudyPlanEngine:
@@ -32,6 +33,9 @@ class StudyPlanEngine:
     SYLLABUS_IMPORT_CACHE_SCHEMA_VERSION = 2
     SYLLABUS_IMPORT_CACHE_MAX_AGE_DAYS = 30
     SYLLABUS_PARSER_SIGNATURE = "syllabus_parser_ocr_v2"
+    SEMANTIC_MODEL_NAME = "all-MiniLM-L6-v2"
+    SEMANTIC_MIN_SCORE = 0.42
+    SEMANTIC_CACHE_MAX = 2048
     CHAPTERS = [
         "FM Function",
         "FM Environment",
@@ -2460,6 +2464,17 @@ class StudyPlanEngine:
         self.question_stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.outcome_stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.adaptive_quiz_prioritization: bool = True
+        self.semantic_enabled: bool = True
+        self.semantic_model_name: str = str(
+            os.environ.get("STUDYPLAN_SEMANTIC_MODEL", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME
+        )
+        self.semantic_min_score: float = float(self.SEMANTIC_MIN_SCORE)
+        self._semantic_model: Any | None = None
+        self._semantic_model_state: str = "unloaded"
+        self._semantic_block_reason: str | None = None
+        self._semantic_match_cache: Dict[str, str] = {}
+        self._semantic_match_cache_order: List[str] = []
+        self._semantic_lock = threading.Lock()
         self.recall_model_json: Dict[str, Any] | None = None
         self.recall_model_sklearn: Any | None = None
         self.recall_model_sklearn_meta: Dict[str, Any] | None = None
@@ -2525,6 +2540,8 @@ class StudyPlanEngine:
             "completed_chapters_date",
             "daily_plan_cache_date",
             "recall_model_json",
+            "_semantic_model",
+            "_semantic_block_reason",
             "recall_model_sklearn",
             "recall_model_sklearn_meta",
             "recall_model_sklearn_block_reason",
@@ -3198,6 +3215,190 @@ class StudyPlanEngine:
             lookup[outcome_id] = {"id": outcome_id, "text": text, "level": level}
         return lookup
 
+    def _semantic_cache_get(self, key: str) -> str | None:
+        try:
+            value = self._semantic_match_cache.get(key)
+        except Exception:
+            return None
+        if value is None:
+            return None
+        try:
+            if key in self._semantic_match_cache_order:
+                self._semantic_match_cache_order.remove(key)
+            self._semantic_match_cache_order.append(key)
+        except Exception:
+            return value
+        return value
+
+    def _semantic_cache_set(self, key: str, value: str) -> None:
+        try:
+            self._semantic_match_cache[key] = value
+            if key in self._semantic_match_cache_order:
+                self._semantic_match_cache_order.remove(key)
+            self._semantic_match_cache_order.append(key)
+            limit = int(self.SEMANTIC_CACHE_MAX)
+            while len(self._semantic_match_cache_order) > max(1, limit):
+                stale = self._semantic_match_cache_order.pop(0)
+                self._semantic_match_cache.pop(stale, None)
+        except Exception:
+            return
+
+    def _semantic_get_model(self) -> Any | None:
+        if not bool(getattr(self, "semantic_enabled", True)):
+            self._semantic_model_state = "disabled"
+            return None
+        if self._semantic_model_state == "blocked":
+            return None
+        if self._semantic_model is not None:
+            return self._semantic_model
+        with self._semantic_lock:
+            if self._semantic_model is not None:
+                return self._semantic_model
+            try:
+                from sentence_transformers import SentenceTransformer  # type: ignore
+            except Exception:
+                self._semantic_model_state = "blocked"
+                self._semantic_block_reason = "sentence-transformers unavailable"
+                return None
+            model_name = str(getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME).strip()
+            if not model_name:
+                model_name = self.SEMANTIC_MODEL_NAME
+            try:
+                self._semantic_model = SentenceTransformer(model_name)
+                self._semantic_model_state = "ready"
+                self._semantic_block_reason = None
+                return self._semantic_model
+            except Exception:
+                self._semantic_model_state = "blocked"
+                self._semantic_block_reason = "model load failed"
+                self._semantic_model = None
+                return None
+
+    def warmup_semantic_model(self, force: bool = False) -> Dict[str, Any]:
+        current = self.get_semantic_status()
+        if not force and current.get("state") in ("ready", "blocked", "disabled"):
+            return current
+        self._semantic_get_model()
+        return self.get_semantic_status()
+
+    def get_semantic_status(self) -> Dict[str, Any]:
+        state = str(getattr(self, "_semantic_model_state", "unloaded") or "unloaded")
+        if self._semantic_model is not None:
+            state = "ready"
+        enabled = bool(getattr(self, "semantic_enabled", True))
+        cache_size = 0
+        try:
+            cache_size = int(len(self._semantic_match_cache))
+        except Exception:
+            cache_size = 0
+        return {
+            "enabled": enabled,
+            "state": state,
+            "model_name": str(getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME),
+            "min_score": float(getattr(self, "semantic_min_score", self.SEMANTIC_MIN_SCORE)),
+            "cache_size": max(0, cache_size),
+            "block_reason": str(getattr(self, "_semantic_block_reason", "") or ""),
+            "active": bool(enabled and state == "ready"),
+        }
+
+    @staticmethod
+    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+        if not a or not b:
+            return 0.0
+        n = min(len(a), len(b))
+        if n <= 0:
+            return 0.0
+        dot = 0.0
+        norm_a = 0.0
+        norm_b = 0.0
+        for i in range(n):
+            va = float(a[i])
+            vb = float(b[i])
+            dot += va * vb
+            norm_a += va * va
+            norm_b += vb * vb
+        if norm_a <= 0.0 or norm_b <= 0.0:
+            return 0.0
+        return float(dot / (math.sqrt(norm_a) * math.sqrt(norm_b)))
+
+    def _semantic_best_outcome_id(
+        self, chapter: str, source_text: str, outcome_lookup: Dict[str, Dict[str, Any]]
+    ) -> str | None:
+        text = str(source_text or "").strip()
+        if not text:
+            return None
+        if not outcome_lookup:
+            return None
+        ordered_ids = sorted(outcome_lookup.keys())
+        if not ordered_ids:
+            return None
+        outcome_texts = [str((outcome_lookup.get(oid) or {}).get("text", "")).strip() for oid in ordered_ids]
+        if not any(outcome_texts):
+            return None
+        sig = "|".join(ordered_ids)
+        cache_key = hashlib.sha1(f"{chapter}|{sig}|{text.lower()}".encode("utf-8")).hexdigest()
+        cached = self._semantic_cache_get(cache_key)
+        if cached and cached in outcome_lookup:
+            return cached
+
+        threshold = max(0.05, min(0.95, float(getattr(self, "semantic_min_score", self.SEMANTIC_MIN_SCORE))))
+        # Tier 1: sentence-transformers if available.
+        model = self._semantic_get_model()
+        if model is not None:
+            try:
+                raw = model.encode([text] + outcome_texts, normalize_embeddings=True)
+                matrix = list(raw) if raw is not None else []
+                if len(matrix) == len(outcome_texts) + 1:
+                    query = [float(v) for v in matrix[0]]
+                    best_id = None
+                    best_score = -1.0
+                    for idx, vec in enumerate(matrix[1:]):
+                        score = self._cosine_similarity(query, [float(v) for v in vec])
+                        if score > best_score:
+                            best_score = score
+                            best_id = ordered_ids[idx]
+                    if best_id and best_score >= threshold:
+                        self._semantic_cache_set(cache_key, best_id)
+                        return best_id
+            except Exception:
+                # Keep fallback paths active even if semantic model inference fails.
+                pass
+
+        # Tier 2: sklearn TF-IDF cosine similarity.
+        try:
+            from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore
+            from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
+
+            vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
+            matrix = vectorizer.fit_transform([text] + outcome_texts)
+            sims = cast(List[float], cosine_similarity(matrix[0:1], matrix[1:]).flatten().tolist())
+            if sims:
+                best_idx = max(range(len(sims)), key=lambda i: float(sims[i]))
+                best_score = float(sims[best_idx])
+                if best_score >= max(0.18, threshold * 0.55):
+                    best_id = ordered_ids[best_idx]
+                    self._semantic_cache_set(cache_key, best_id)
+                    return best_id
+        except Exception:
+            pass
+
+        # Tier 3: plain text similarity fallback.
+        best_id = None
+        best_ratio = -1.0
+        lower = text.lower()
+        for oid in ordered_ids:
+            candidate_text = str((outcome_lookup.get(oid) or {}).get("text", "")).strip().lower()
+            if not candidate_text:
+                continue
+            ratio = difflib.SequenceMatcher(None, lower, candidate_text).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_id = oid
+        if best_id and best_ratio >= 0.52:
+            self._semantic_cache_set(cache_key, best_id)
+            return best_id
+        return None
+
     def _question_outcome_ids(self, chapter: str, idx: int) -> List[str]:
         """Resolve outcome IDs for a question (explicit tags first, then stable fallback)."""
         questions = self.QUESTIONS.get(chapter, [])
@@ -3234,21 +3435,34 @@ class StudyPlanEngine:
                     candidate = text_to_id[text_key]
                     if candidate not in resolved:
                         resolved.append(candidate)
+                elif text_key:
+                    candidate = self._semantic_best_outcome_id(chapter, str(value or ""), outcome_lookup)
+                    if candidate and candidate in known_ids and candidate not in resolved:
+                        resolved.append(candidate)
 
         capability_tag = str(question.get("capability", "") or "").strip().upper()
         if capability_tag and capability_tag == self._chapter_capability(chapter):
             if not resolved:
-                # For capability-tagged but unlinked questions, deterministically map to one outcome.
-                ordered_ids = sorted(known_ids)
-                qid = self._question_qid(chapter, idx) or str(idx)
-                digest = hashlib.sha1(qid.encode("utf-8")).hexdigest()
-                bucket = int(digest[:8], 16) % max(1, len(ordered_ids))
-                resolved.append(ordered_ids[bucket])
+                # For capability-tagged but unlinked questions, attempt semantic mapping first.
+                question_text = str(question.get("question", "") or "").strip()
+                semantic_match = self._semantic_best_outcome_id(chapter, question_text, outcome_lookup)
+                if semantic_match and semantic_match in known_ids:
+                    resolved.append(semantic_match)
+                else:
+                    ordered_ids = sorted(known_ids)
+                    qid = self._question_qid(chapter, idx) or str(idx)
+                    digest = hashlib.sha1(qid.encode("utf-8")).hexdigest()
+                    bucket = int(digest[:8], 16) % max(1, len(ordered_ids))
+                    resolved.append(ordered_ids[bucket])
 
         if resolved:
             return resolved
 
-        # Stable fallback for untagged legacy questions: map to one outcome deterministically.
+        # Stable fallback for untagged legacy questions: semantic map first, then deterministic map.
+        question_text = str(question.get("question", "") or "").strip()
+        semantic_match = self._semantic_best_outcome_id(chapter, question_text, outcome_lookup)
+        if semantic_match and semantic_match in known_ids:
+            return [semantic_match]
         ordered_ids = sorted(known_ids)
         qid = self._question_qid(chapter, idx) or str(idx)
         digest = hashlib.sha1(qid.encode("utf-8")).hexdigest()
