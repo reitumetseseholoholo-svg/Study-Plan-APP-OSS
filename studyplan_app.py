@@ -12217,7 +12217,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         ]
         self._dialog_smoke_index = 0
         GLib.timeout_add(200, self._run_next_dialog_smoke_step)
-        smoke_timeout_ms = max(12000, len(self._dialog_smoke_steps) * 900)
+        # Give each smoke step enough time to open/close dialogs and sync UI state.
+        smoke_timeout_ms = max(20000, (len(self._dialog_smoke_steps) * 1300) + 3000)
         GLib.timeout_add(smoke_timeout_ms, self._force_end_smoke_test)
         return False
 
