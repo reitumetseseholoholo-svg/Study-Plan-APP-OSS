@@ -4210,6 +4210,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         """Align left coach card with a canonical coach pick/source and log mismatches."""
         if not canonical_topic:
             return
+        self._last_dashboard_coach_topic = canonical_topic
+        self._last_study_room_coach_topic = canonical_topic
         try:
             left_topic = str(getattr(self, "_coach_pick_topic", "") or "")
         except Exception:
@@ -4234,11 +4236,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             dash_topic = str(getattr(self, "_last_dashboard_coach_topic", "") or "").strip()
             topics = [t for t in (left_topic, room_topic, dash_topic) if t]
             if len(set(topics)) <= 1:
+                self._last_coach_sync_key = ""
                 return
-            mismatch_key = "|".join(sorted(set(topics)))
-            if mismatch_key == (self._last_coach_sync_key or ""):
-                return
-            self._last_coach_sync_key = mismatch_key
+            self._last_coach_sync_key = "|".join(sorted(set(topics)))
             self._coach_sync_in_progress = True
             GLib.idle_add(lambda: self._run_coach_sync_after_mismatch(origin))
         except Exception:
@@ -4260,6 +4260,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         finally:
             self._coach_sync_in_progress = False
+            self._last_coach_sync_key = ""
         return False
 
     def _maybe_show_rescue_prompt(self) -> None:
@@ -7515,7 +7516,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _update_study_room_card_impl(self) -> None:
         if not getattr(self, "study_room_summary", None):
             return
-        self._get_coach_pick_snapshot(force=True)
+        self._get_coach_pick_snapshot()
         if getattr(self, "study_room_details_expander", None):
             try:
                 focus_mode = bool(getattr(self, "focus_mode", False))
