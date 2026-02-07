@@ -2092,9 +2092,9 @@ class StudyPlanEngine:
                     payload = json.load(f)
                 if isinstance(payload, dict):
                     q_chapters = [str(k).strip() for k in payload.keys() if str(k).strip()]
-            base_chapters = base_config.get("chapters") if isinstance(base_config, dict) else None
-            if isinstance(base_chapters, list):
-                base_chapters = [str(ch).strip() for ch in base_chapters if str(ch).strip()]
+            raw_base_chapters = base_config.get("chapters") if isinstance(base_config, dict) else None
+            if isinstance(raw_base_chapters, list):
+                base_chapters = [str(ch).strip() for ch in raw_base_chapters if str(ch).strip()]
             else:
                 base_chapters = []
             if len(q_chapters) > len(base_chapters):
