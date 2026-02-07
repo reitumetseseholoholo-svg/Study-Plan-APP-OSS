@@ -1140,6 +1140,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._coach_pick_snapshot_plan_key = ""
         self._last_dashboard_coach_topic = ""
         self._last_study_room_coach_topic = ""
+        self._coach_sync_in_progress = False
+        self._last_coach_sync_key = ""
         self._last_ml_train_date = None
         self._last_ml_train_at = None
         self._last_ml_train_sample_count = 0
@@ -4221,6 +4223,44 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
         except Exception:
             pass
+        self._queue_coach_sync_if_mismatch(origin)
+
+    def _queue_coach_sync_if_mismatch(self, origin: str) -> None:
+        if self._coach_sync_in_progress:
+            return
+        try:
+            left_topic = str(getattr(self, "_coach_pick_topic", "") or "").strip()
+            room_topic = str(getattr(self, "_last_study_room_coach_topic", "") or "").strip()
+            dash_topic = str(getattr(self, "_last_dashboard_coach_topic", "") or "").strip()
+            topics = [t for t in (left_topic, room_topic, dash_topic) if t]
+            if len(set(topics)) <= 1:
+                return
+            mismatch_key = "|".join(sorted(set(topics)))
+            if mismatch_key == (self._last_coach_sync_key or ""):
+                return
+            self._last_coach_sync_key = mismatch_key
+            self._coach_sync_in_progress = True
+            GLib.idle_add(lambda: self._run_coach_sync_after_mismatch(origin))
+        except Exception:
+            self._coach_sync_in_progress = False
+
+    def _run_coach_sync_after_mismatch(self, origin: str = "") -> bool:
+        try:
+            self._invalidate_coach_pick_snapshot()
+            topic, source = self._get_coach_pick_snapshot(force=True)
+            if topic:
+                self._last_dashboard_coach_topic = topic
+                self._last_study_room_coach_topic = topic
+                self._update_coach_pick_card(forced_topic=topic, forced_source=source)
+                if self.current_topic != topic and getattr(self, "coach_only_view", False):
+                    self._set_current_topic(topic)
+            self.update_study_room_card()
+            self.update_dashboard()
+        except Exception:
+            pass
+        finally:
+            self._coach_sync_in_progress = False
+        return False
 
     def _maybe_show_rescue_prompt(self) -> None:
         if self._rescue_prompted:
@@ -7538,6 +7578,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not pick_source:
                 pick_source = "fallback"
         self._last_study_room_coach_topic = str(recommended or "")
+        self._queue_coach_sync_if_mismatch("study_room")
         self._ensure_coach_pick_consistency(recommended, pick_source, "study_room")
         if getattr(self, "study_room_next_due_label", None):
             next_due = self._get_topic_next_due_text(recommended)
@@ -11775,6 +11816,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             recommended_topic = weak_chapter or self.current_topic
             pick_source = "unknown"
         self._last_dashboard_coach_topic = str(recommended_topic or "")
+        self._queue_coach_sync_if_mismatch("dashboard")
         self._ensure_coach_pick_consistency(recommended_topic, pick_source, "dashboard")
         try:
             questions = self.engine.get_questions(recommended_topic)
