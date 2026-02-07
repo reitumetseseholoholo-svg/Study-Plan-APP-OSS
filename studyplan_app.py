@@ -4583,10 +4583,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._update_action_timer_label()
         if self._action_timer_id:
             try:
-                GLib.source_remove(self._action_timer_id)
+                self._remove_glib_source(self._action_timer_id)
             except Exception:
                 pass
         self._action_timer_id = GLib.timeout_add_seconds(1, self._action_timer_tick)
+        self._register_glib_source(self._action_timer_id)
 
     def _pause_action_timer(self) -> None:
         if not self._action_timer_kind:
@@ -4606,6 +4607,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._update_action_timer_label()
         if not self._action_timer_id:
             self._action_timer_id = GLib.timeout_add_seconds(1, self._action_timer_tick)
+            self._register_glib_source(self._action_timer_id)
 
     def _stop_action_timer(self, finalize: bool = True) -> None:
         if not self._action_timer_kind:
@@ -4637,7 +4639,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._action_timer_elapsed = 0.0
         if self._action_timer_id:
             try:
-                GLib.source_remove(self._action_timer_id)
+                self._remove_glib_source(self._action_timer_id)
             except Exception:
                 pass
             self._action_timer_id = None
@@ -6021,7 +6023,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         badge.add_css_class("badge-highlight")
         if self._badge_highlight_id:
             try:
-                GLib.source_remove(self._badge_highlight_id)
+                self._remove_glib_source(self._badge_highlight_id)
             except Exception:
                 pass
         def _clear(_source=None):
@@ -6030,6 +6032,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._badge_highlight_id = None
             return False
         self._badge_highlight_id = GLib.timeout_add_seconds(1, _clear)
+        self._register_glib_source(self._badge_highlight_id)
 
     def _maybe_prompt_reflection(self, topic: str | None, context: str = "") -> None:
         if not topic:
@@ -8491,6 +8494,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if source_id not in self._glib_sources:
             return
         try:
+            ctx = GLib.main_context_default()
+            if hasattr(ctx, "find_source_by_id"):
+                src = ctx.find_source_by_id(source_id)
+                if src is None:
+                    self._glib_sources.discard(source_id)
+                    return
             GLib.source_remove(source_id)
         finally:
             self._glib_sources.discard(source_id)
@@ -8741,6 +8750,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         message = f"{int(minutes)}-minute break. You earned it."
         self.send_notification(label, message)
         self.break_timer_id = GLib.timeout_add_seconds(1, self._break_tick)
+        self._register_glib_source(self.break_timer_id)
 
     def _break_tick(self):
         if self.break_remaining > 0:
@@ -8763,7 +8773,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _stop_break_timer(self) -> None:
         if self.break_timer_id:
             try:
-                GLib.source_remove(self.break_timer_id)
+                self._remove_glib_source(self.break_timer_id)
             except Exception:
                 pass
             self.break_timer_id = None
@@ -8782,11 +8792,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.banner_revealer.set_reveal_child(True)
         if self._banner_hide_id:
             try:
-                GLib.source_remove(self._banner_hide_id)
+                self._remove_glib_source(self._banner_hide_id)
             except Exception:
                 pass
             self._banner_hide_id = None
         self._banner_hide_id = GLib.timeout_add_seconds(15, self._hide_pomodoro_banner)
+        self._register_glib_source(self._banner_hide_id)
 
     def _hide_pomodoro_banner(self) -> bool:
         if getattr(self, "banner_revealer", None):
@@ -8824,7 +8835,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         if self._title_flash_id:
             try:
-                GLib.source_remove(self._title_flash_id)
+                self._remove_glib_source(self._title_flash_id)
             except Exception:
                 pass
             self._title_flash_id = None
@@ -8847,6 +8858,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return True
 
         self._title_flash_id = GLib.timeout_add_seconds(interval, _toggle)
+        self._register_glib_source(self._title_flash_id)
 
     def _ensure_pomodoro_sound_file(self) -> str | None:
         base = os.path.join(os.path.expanduser("~/.config/studyplan"), "sounds")
