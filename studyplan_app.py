@@ -5971,7 +5971,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._apply_coach_only_mode()
 
     def on_focus_coach_pick(self, _btn):
-        topic = getattr(self, "_coach_pick_topic", "") or self._get_coach_pick_topic()
+        topic, _source = self._get_coach_pick_snapshot(force=True)
         if topic:
             try:
                 self._set_current_topic(topic)
@@ -5982,7 +5982,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ensure_coach_selection()
         if not self._ensure_chapters_ready("Coach Next"):
             return
-        topic = getattr(self, "_coach_pick_topic", "") or self._get_coach_pick_topic()
+        topic, _source = self._get_coach_pick_snapshot(force=True)
         if topic:
             try:
                 self._set_current_topic(topic)
@@ -6000,6 +6000,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _set_coach_only_view(self, enabled: bool, *, persist: bool = True, animate_badge: bool = False) -> None:
         self.coach_only_view = bool(enabled)
+        self._invalidate_coach_pick_snapshot()
         if getattr(self, "plan_scroll", None):
             self.plan_scroll.set_visible(not self.coach_only_view)
         if getattr(self, "plan_hint", None):
@@ -6023,6 +6024,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     pass
         self._apply_coach_only_mode()
+        try:
+            topic, source = self._get_coach_pick_snapshot(force=True)
+            self._ensure_coach_pick_consistency(topic, source, "coach_only_toggle")
+        except Exception:
+            pass
         if persist:
             self.save_preferences()
         if animate_badge:
@@ -6059,14 +6065,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _ensure_coach_selection(self):
         if not self.coach_only_view:
             return
-        topic = getattr(self, "_coach_pick_topic", "") or self._get_coach_pick_topic()
+        topic, _source = self._get_coach_pick_snapshot(force=True)
         if topic and topic != self.current_topic:
             self._set_current_topic(topic)
 
     def _focus_coach_pick_if_needed(self):
         if not getattr(self, "coach_only_view", False):
             return
-        topic = getattr(self, "_coach_pick_topic", "") or self._get_coach_pick_topic()
+        topic, _source = self._get_coach_pick_snapshot(force=True)
         if not topic or topic == self.current_topic:
             return
         try:
