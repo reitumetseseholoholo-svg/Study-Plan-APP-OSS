@@ -1372,6 +1372,72 @@ def test_semantic_cache_is_bounded(engine_no_io):
     assert len(eng._semantic_match_cache) <= 3
 
 
+def test_semantic_tfidf_assets_reused_on_repeated_queries(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    outcome_lookup = {
+        "A.1": {"text": "Explain the role and purpose of financial management"},
+        "A.2": {"text": "Discuss financial objectives and policy choices"},
+    }
+    monkeypatch.setattr(eng, "_semantic_get_model", lambda: None)
+    monkeypatch.setattr(eng, "_semantic_get_reranker", lambda: None)
+    eng.semantic_min_score = 0.30
+
+    first = eng._semantic_best_outcome_match(chapter, "What is the role of financial management?", outcome_lookup)
+    second = eng._semantic_best_outcome_match(chapter, "How do policy choices affect financial objectives?", outcome_lookup)
+    assert isinstance(first, dict)
+    assert isinstance(second, dict)
+    stats = eng.get_semantic_perf_stats()
+    assert int(stats.get("tfidf_asset_misses", 0) or 0) >= 1
+    assert int(stats.get("tfidf_asset_hits", 0) or 0) >= 1
+    assert chapter in eng._semantic_chapter_match_assets
+
+
+def test_prefetch_question_route_meta_populates_cache(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Explain the role and purpose of financial management", "level": 1},
+                {"id": "A.2", "text": "Discuss financial objectives and policy choices", "level": 2},
+            ],
+        }
+    }
+    monkeypatch.setattr(eng, "_semantic_get_model", lambda: None)
+    monkeypatch.setattr(eng, "_semantic_get_reranker", lambda: None)
+    eng.prefetch_question_route_meta(chapter, [0, 1, 2])
+    stats = eng.get_semantic_perf_stats()
+    assert int(stats.get("route_meta_calls", 0) or 0) >= 1
+    assert bool(eng._semantic_match_cache)
+
+
+def test_resolve_question_outcomes_semantic_disabled_skips_semantic_route(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Explain the role and purpose of financial management", "level": 1},
+                {"id": "A.2", "text": "Discuss financial objectives and policy choices", "level": 2},
+            ],
+        }
+    }
+    eng.semantic_enabled = False
+
+    def _should_not_run(*_args, **_kwargs):
+        raise AssertionError("semantic matcher should not run while semantic routing is disabled")
+
+    monkeypatch.setattr(eng, "_semantic_best_outcome_match", _should_not_run)
+    route = eng.resolve_question_outcomes(chapter, 0)
+    assert isinstance(route, dict)
+    assert str(route.get("semantic_match_method", "")) == "fallback"
+    stats = eng.get_semantic_perf_stats()
+    assert int(stats.get("route_meta_calls", 0) or 0) == 0
+
+
 def test_resolve_question_outcomes_exposes_semantic_metadata(engine_no_io, monkeypatch):
     eng = engine_no_io
     chapter = "FM Function"

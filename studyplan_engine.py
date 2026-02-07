@@ -2610,6 +2610,16 @@ class StudyPlanEngine:
         self._semantic_reranker_block_reason: str | None = None
         self._semantic_match_cache: Dict[str, Dict[str, Any]] = {}
         self._semantic_match_cache_order: List[str] = []
+        self._semantic_chapter_match_assets: Dict[str, Dict[str, Any]] = {}
+        self._semantic_chapter_assets_lock = threading.Lock()
+        self._semantic_perf_stats: Dict[str, float] = {
+            "route_meta_calls": 0.0,
+            "route_cache_hits": 0.0,
+            "tfidf_asset_hits": 0.0,
+            "tfidf_asset_misses": 0.0,
+            "total_route_ms": 0.0,
+            "max_route_ms": 0.0,
+        }
         self._semantic_lock = threading.Lock()
         self._semantic_rerank_lock = threading.Lock()
         self.recall_model_json: Dict[str, Any] | None = None
@@ -4146,6 +4156,164 @@ class StudyPlanEngine:
         except Exception:
             return
 
+    def _semantic_invalidate_chapter_assets(self, chapter: str | None = None) -> None:
+        """Invalidate semantic chapter assets and related route caches."""
+        with self._semantic_chapter_assets_lock:
+            if chapter is None:
+                self._semantic_chapter_match_assets.clear()
+                self._semantic_match_cache.clear()
+                self._semantic_match_cache_order.clear()
+                return
+            key = str(chapter or "").strip()
+            if not key:
+                return
+            self._semantic_chapter_match_assets.pop(key, None)
+            prefix = f"{key}|"
+            stale = [k for k in list(self._semantic_match_cache.keys()) if k.startswith(prefix)]
+            for cache_key in stale:
+                self._semantic_match_cache.pop(cache_key, None)
+                try:
+                    self._semantic_match_cache_order.remove(cache_key)
+                except ValueError:
+                    pass
+
+    def _semantic_build_chapter_assets(
+        self,
+        chapter: str,
+        outcome_lookup: Dict[str, Dict[str, Any]],
+        ordered_ids: List[str],
+        normalized_outcome_texts: List[str],
+    ) -> Dict[str, Any] | None:
+        """Build per-chapter lexical assets once for fast TF-IDF query matching."""
+        try:
+            from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore
+        except Exception:
+            return None
+        try:
+            vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
+            outcome_matrix = vectorizer.fit_transform(normalized_outcome_texts)
+        except Exception:
+            return None
+        alias_signature = ""
+        try:
+            alias_signature = json.dumps(getattr(self, "semantic_aliases", {}), sort_keys=True, default=str)
+        except Exception:
+            alias_signature = "alias-unknown"
+        signature = hashlib.sha1(
+            (
+                "|".join(ordered_ids)
+                + "||"
+                + "|".join(normalized_outcome_texts)
+                + f"||{float(getattr(self, 'semantic_min_score', self.SEMANTIC_MIN_SCORE)):.6f}"
+                + "||"
+                + alias_signature
+            ).encode("utf-8")
+        ).hexdigest()
+        return {
+            "chapter": chapter,
+            "ordered_ids": list(ordered_ids),
+            "normalized_outcome_texts": list(normalized_outcome_texts),
+            "vectorizer": vectorizer,
+            "outcome_matrix": outcome_matrix,
+            "signature": signature,
+            "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+
+    def _semantic_get_chapter_assets(
+        self,
+        chapter: str,
+        outcome_lookup: Dict[str, Dict[str, Any]],
+        ordered_ids: List[str],
+        normalized_outcome_texts: List[str],
+    ) -> Dict[str, Any] | None:
+        chapter_key = str(chapter or "").strip()
+        if not chapter_key:
+            return None
+        alias_signature = ""
+        try:
+            alias_signature = json.dumps(getattr(self, "semantic_aliases", {}), sort_keys=True, default=str)
+        except Exception:
+            alias_signature = "alias-unknown"
+        signature = hashlib.sha1(
+            (
+                "|".join(ordered_ids)
+                + "||"
+                + "|".join(normalized_outcome_texts)
+                + f"||{float(getattr(self, 'semantic_min_score', self.SEMANTIC_MIN_SCORE)):.6f}"
+                + "||"
+                + alias_signature
+            ).encode("utf-8")
+        ).hexdigest()
+        with self._semantic_chapter_assets_lock:
+            current = self._semantic_chapter_match_assets.get(chapter_key)
+            if isinstance(current, dict) and str(current.get("signature", "")) == signature:
+                self._semantic_perf_stats["tfidf_asset_hits"] = float(
+                    self._semantic_perf_stats.get("tfidf_asset_hits", 0.0) or 0.0
+                ) + 1.0
+                return current
+            self._semantic_perf_stats["tfidf_asset_misses"] = float(
+                self._semantic_perf_stats.get("tfidf_asset_misses", 0.0) or 0.0
+            ) + 1.0
+            built = self._semantic_build_chapter_assets(
+                chapter_key, outcome_lookup, ordered_ids, normalized_outcome_texts
+            )
+            if built is None:
+                return None
+            self._semantic_chapter_match_assets[chapter_key] = built
+            return built
+
+    @staticmethod
+    def _semantic_query_tfidf_assets(
+        assets: Dict[str, Any], normalized_text: str
+    ) -> Tuple[str | None, float]:
+        try:
+            from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
+        except Exception:
+            return None, 0.0
+        try:
+            vectorizer = assets.get("vectorizer")
+            outcome_matrix = assets.get("outcome_matrix")
+            ordered_ids = list(assets.get("ordered_ids", []) or [])
+            if vectorizer is None or outcome_matrix is None or not ordered_ids:
+                return None, 0.0
+            query_vec = vectorizer.transform([normalized_text])
+            sims = cast(List[float], cosine_similarity(query_vec, outcome_matrix).flatten().tolist())
+            if not sims:
+                return None, 0.0
+            best_idx = max(range(len(sims)), key=lambda i: float(sims[i]))
+            if best_idx < 0 or best_idx >= len(ordered_ids):
+                return None, 0.0
+            return ordered_ids[best_idx], float(sims[best_idx])
+        except Exception:
+            return None, 0.0
+
+    def prefetch_question_route_meta(self, chapter: str, indices: List[int]) -> None:
+        """Warm route metadata cache for a set of question indices."""
+        if not bool(getattr(self, "semantic_enabled", True)):
+            return
+        questions = self.QUESTIONS.get(chapter, [])
+        if not isinstance(questions, list) or not isinstance(indices, list):
+            return
+        for idx in indices:
+            if isinstance(idx, int) and 0 <= idx < len(questions):
+                try:
+                    self.get_question_route_meta(chapter, idx)
+                except Exception:
+                    continue
+
+    def get_semantic_perf_stats(self) -> Dict[str, Any]:
+        calls = float(self._semantic_perf_stats.get("route_meta_calls", 0.0) or 0.0)
+        total_ms = float(self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0)
+        avg_ms = total_ms / calls if calls > 0 else 0.0
+        return {
+            "route_meta_calls": int(calls),
+            "route_cache_hits": int(float(self._semantic_perf_stats.get("route_cache_hits", 0.0) or 0.0)),
+            "tfidf_asset_hits": int(float(self._semantic_perf_stats.get("tfidf_asset_hits", 0.0) or 0.0)),
+            "tfidf_asset_misses": int(float(self._semantic_perf_stats.get("tfidf_asset_misses", 0.0) or 0.0)),
+            "max_route_ms": float(self._semantic_perf_stats.get("max_route_ms", 0.0) or 0.0),
+            "avg_route_ms": float(avg_ms),
+        }
+
     def _semantic_get_model(self) -> Any | None:
         if not bool(getattr(self, "semantic_enabled", True)):
             self._semantic_model_state = "disabled"
@@ -4367,6 +4535,10 @@ class StudyPlanEngine:
     def _semantic_best_outcome_match(
         self, chapter: str, source_text: str, outcome_lookup: Dict[str, Dict[str, Any]]
     ) -> Dict[str, Any]:
+        route_started = time.perf_counter()
+        self._semantic_perf_stats["route_meta_calls"] = float(
+            self._semantic_perf_stats.get("route_meta_calls", 0.0) or 0.0
+        ) + 1.0
         text = str(source_text or "").strip()
         if not text:
             return {"outcome_id": None, "score": 0.0, "method": "fallback"}
@@ -4384,21 +4556,34 @@ class StudyPlanEngine:
             (self._semantic_normalize_text(chapter, txt) or txt) for txt in outcome_texts
         ]
         sig = "|".join(ordered_ids)
-        cache_key = hashlib.sha1(f"{chapter}|{sig}|{normalized_text}".encode("utf-8")).hexdigest()
+        cache_digest = hashlib.sha1(f"{chapter}|{sig}|{normalized_text}".encode("utf-8")).hexdigest()
+        cache_key = f"{chapter}|{cache_digest}"
         cached = self._semantic_cache_get(cache_key)
         if isinstance(cached, dict):
             cached_id = str(cached.get("outcome_id", "") or "").strip()
             if cached_id and cached_id in outcome_lookup:
+                self._semantic_perf_stats["route_cache_hits"] = float(
+                    self._semantic_perf_stats.get("route_cache_hits", 0.0) or 0.0
+                ) + 1.0
                 try:
                     cached_score = float(cached.get("score", 0.0) or 0.0)
                 except Exception:
                     cached_score = 0.0
                 cached_method = str(cached.get("method", "fallback") or "fallback").strip().lower()
-                return {
+                result = {
                     "outcome_id": cached_id,
                     "score": max(0.0, min(1.0, cached_score)),
                     "method": cached_method if cached_method in ("cross", "model", "tfidf", "fallback") else "fallback",
                 }
+                elapsed_ms = (time.perf_counter() - route_started) * 1000.0
+                self._semantic_perf_stats["total_route_ms"] = float(
+                    self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
+                ) + elapsed_ms
+                self._semantic_perf_stats["max_route_ms"] = max(
+                    float(self._semantic_perf_stats.get("max_route_ms", 0.0) or 0.0),
+                    elapsed_ms,
+                )
+                return result
 
         threshold = max(0.05, min(0.95, float(getattr(self, "semantic_min_score", self.SEMANTIC_MIN_SCORE))))
         # Tier 1: sentence-transformers if available.
@@ -4450,29 +4635,51 @@ class StudyPlanEngine:
                                 candidate_id = ordered_ids[candidate_idx]
                                 if best_cross >= max(0.18, threshold * 0.55):
                                     self._semantic_cache_set(cache_key, candidate_id, "cross", best_cross)
-                                    return {"outcome_id": candidate_id, "score": best_cross, "method": "cross"}
+                                    result = {"outcome_id": candidate_id, "score": best_cross, "method": "cross"}
+                                    elapsed_ms = (time.perf_counter() - route_started) * 1000.0
+                                    self._semantic_perf_stats["total_route_ms"] = float(
+                                        self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
+                                    ) + elapsed_ms
+                                    self._semantic_perf_stats["max_route_ms"] = max(
+                                        float(self._semantic_perf_stats.get("max_route_ms", 0.0) or 0.0),
+                                        elapsed_ms,
+                                    )
+                                    return result
                     if best_id and best_score >= threshold:
                         self._semantic_cache_set(cache_key, best_id, "model", best_score)
-                        return {"outcome_id": best_id, "score": best_score, "method": "model"}
+                        result = {"outcome_id": best_id, "score": best_score, "method": "model"}
+                        elapsed_ms = (time.perf_counter() - route_started) * 1000.0
+                        self._semantic_perf_stats["total_route_ms"] = float(
+                            self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
+                        ) + elapsed_ms
+                        self._semantic_perf_stats["max_route_ms"] = max(
+                            float(self._semantic_perf_stats.get("max_route_ms", 0.0) or 0.0),
+                            elapsed_ms,
+                        )
+                        return result
             except Exception:
                 # Keep fallback paths active even if semantic model inference fails.
                 pass
 
         # Tier 2: sklearn TF-IDF cosine similarity.
         try:
-            from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore
-            from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
-
-            vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
-            matrix = vectorizer.fit_transform([normalized_text] + normalized_outcome_texts)
-            sims = cast(List[float], cosine_similarity(matrix[0:1], matrix[1:]).flatten().tolist())
-            if sims:
-                best_idx = max(range(len(sims)), key=lambda i: float(sims[i]))
-                best_score = float(sims[best_idx])
-                if best_score >= max(0.18, threshold * 0.55):
-                    best_id = ordered_ids[best_idx]
+            assets = self._semantic_get_chapter_assets(
+                chapter, outcome_lookup, ordered_ids, normalized_outcome_texts
+            )
+            if isinstance(assets, dict):
+                best_id, best_score = self._semantic_query_tfidf_assets(assets, normalized_text)
+                if best_id and best_id in outcome_lookup and best_score >= max(0.18, threshold * 0.55):
                     self._semantic_cache_set(cache_key, best_id, "tfidf", best_score)
-                    return {"outcome_id": best_id, "score": best_score, "method": "tfidf"}
+                    result = {"outcome_id": best_id, "score": best_score, "method": "tfidf"}
+                    elapsed_ms = (time.perf_counter() - route_started) * 1000.0
+                    self._semantic_perf_stats["total_route_ms"] = float(
+                        self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
+                    ) + elapsed_ms
+                    self._semantic_perf_stats["max_route_ms"] = max(
+                        float(self._semantic_perf_stats.get("max_route_ms", 0.0) or 0.0),
+                        elapsed_ms,
+                    )
+                    return result
         except Exception:
             pass
 
@@ -4492,8 +4699,18 @@ class StudyPlanEngine:
                 best_id = oid
         if best_id and best_ratio >= 0.52:
             self._semantic_cache_set(cache_key, best_id, "fallback", best_ratio)
-            return {"outcome_id": best_id, "score": best_ratio, "method": "fallback"}
-        return {"outcome_id": None, "score": 0.0, "method": "fallback"}
+            result = {"outcome_id": best_id, "score": best_ratio, "method": "fallback"}
+        else:
+            result = {"outcome_id": None, "score": 0.0, "method": "fallback"}
+        elapsed_ms = (time.perf_counter() - route_started) * 1000.0
+        self._semantic_perf_stats["total_route_ms"] = float(
+            self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
+        ) + elapsed_ms
+        self._semantic_perf_stats["max_route_ms"] = max(
+            float(self._semantic_perf_stats.get("max_route_ms", 0.0) or 0.0),
+            elapsed_ms,
+        )
+        return result
 
     def _semantic_best_outcome_id(
         self, chapter: str, source_text: str, outcome_lookup: Dict[str, Dict[str, Any]]
@@ -4523,6 +4740,7 @@ class StudyPlanEngine:
         known_ids = set(outcome_lookup.keys())
         text_to_id = {str(v.get("text", "")).strip().lower(): k for k, v in outcome_lookup.items()}
         resolved: List[str] = []
+        semantic_enabled = bool(getattr(self, "semantic_enabled", True))
 
         def _set_semantic(match: Dict[str, Any], default_reason: str) -> None:
             try:
@@ -4561,7 +4779,7 @@ class StudyPlanEngine:
                     candidate = text_to_id[text_key]
                     if candidate not in resolved:
                         resolved.append(candidate)
-                elif text_key:
+                elif text_key and semantic_enabled:
                     match = self._semantic_best_outcome_match(chapter, str(value or ""), outcome_lookup)
                     candidate = str(match.get("outcome_id", "") or "").strip()
                     if candidate and candidate in known_ids and candidate not in resolved:
@@ -4577,12 +4795,22 @@ class StudyPlanEngine:
 
         capability_tag = str(question.get("capability", "") or "").strip().upper()
         if capability_tag and capability_tag == self._chapter_capability(chapter):
-            question_text = str(question.get("question", "") or "").strip()
-            match = self._semantic_best_outcome_match(chapter, question_text, outcome_lookup)
-            candidate = str(match.get("outcome_id", "") or "").strip()
-            if candidate and candidate in known_ids:
-                resolved.append(candidate)
-                _set_semantic(match, "semantic map from capability-tagged question")
+            if semantic_enabled:
+                question_text = str(question.get("question", "") or "").strip()
+                match = self._semantic_best_outcome_match(chapter, question_text, outcome_lookup)
+                candidate = str(match.get("outcome_id", "") or "").strip()
+                if candidate and candidate in known_ids:
+                    resolved.append(candidate)
+                    _set_semantic(match, "semantic map from capability-tagged question")
+                else:
+                    ordered_ids = sorted(known_ids)
+                    qid = self._question_qid(chapter, idx) or str(idx)
+                    digest = hashlib.sha1(qid.encode("utf-8")).hexdigest()
+                    bucket = int(digest[:8], 16) % max(1, len(ordered_ids))
+                    resolved.append(ordered_ids[bucket])
+                    result["semantic_match_confidence"] = 0.0
+                    result["semantic_match_method"] = "fallback"
+                    result["reason"] = "capability deterministic bucket"
             else:
                 ordered_ids = sorted(known_ids)
                 qid = self._question_qid(chapter, idx) or str(idx)
@@ -4591,17 +4819,18 @@ class StudyPlanEngine:
                 resolved.append(ordered_ids[bucket])
                 result["semantic_match_confidence"] = 0.0
                 result["semantic_match_method"] = "fallback"
-                result["reason"] = "capability deterministic bucket"
+                result["reason"] = "capability deterministic bucket (semantic disabled)"
             result["outcome_ids"] = resolved
             return result
 
         question_text = str(question.get("question", "") or "").strip()
-        match = self._semantic_best_outcome_match(chapter, question_text, outcome_lookup)
-        candidate = str(match.get("outcome_id", "") or "").strip()
-        if candidate and candidate in known_ids:
-            _set_semantic(match, "semantic map from question text")
-            result["outcome_ids"] = [candidate]
-            return result
+        if semantic_enabled:
+            match = self._semantic_best_outcome_match(chapter, question_text, outcome_lookup)
+            candidate = str(match.get("outcome_id", "") or "").strip()
+            if candidate and candidate in known_ids:
+                _set_semantic(match, "semantic map from question text")
+                result["outcome_ids"] = [candidate]
+                return result
 
         ordered_ids = sorted(known_ids)
         qid = self._question_qid(chapter, idx) or str(idx)
@@ -4610,7 +4839,10 @@ class StudyPlanEngine:
         result["outcome_ids"] = [ordered_ids[bucket]]
         result["semantic_match_confidence"] = 0.0
         result["semantic_match_method"] = "fallback"
-        result["reason"] = "stable deterministic fallback"
+        if semantic_enabled:
+            result["reason"] = "stable deterministic fallback"
+        else:
+            result["reason"] = "stable deterministic fallback (semantic disabled)"
         return result
 
     def _question_outcome_ids(self, chapter: str, idx: int) -> List[str]:
@@ -6066,6 +6298,7 @@ class StudyPlanEngine:
             except OSError as e:
                 print(f"Error loading questions from JSON: {e}")
         self.QUESTIONS = {k: self.QUESTIONS_DEFAULT.get(k, []) + questions_from_json.get(k, []) for k in self.QUESTIONS_DEFAULT}
+        self._semantic_invalidate_chapter_assets(None)
 
         # If syllabus-only chapters are active but the question bank has legacy chapters, restore them.
         try:
@@ -6222,6 +6455,8 @@ class StudyPlanEngine:
             'interval': 1,
             'efactor': 2.5
         })
+        self.QUESTIONS.setdefault(chapter, []).append(dict(question_dict))
+        self._semantic_invalidate_chapter_assets(chapter)
 
         # Save SRS data
         self.save_data()
@@ -6575,6 +6810,7 @@ class StudyPlanEngine:
 
         self.save_questions()
         self.save_data()
+        self._semantic_invalidate_chapter_assets(chapter)
 
         print(f"Imported {len(new_questions)} AI questions into {chapter_name}")
 
@@ -6615,6 +6851,7 @@ class StudyPlanEngine:
         self.srs_data[chapter].extend(
             [{"last_review": None, "interval": 1, "efactor": 2.5} for _ in valid]
         )
+        self._semantic_invalidate_chapter_assets(chapter)
         return len(valid), semantic_dedup
 
     def _add_questions(self, chapter: str, questions: list[dict]) -> int:

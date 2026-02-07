@@ -1576,6 +1576,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ml_train_queue_pending = False
         self._ml_pending_manual_job = None
         self._semantic_warmup_in_progress = False
+        self.semantic_enabled = True
+        self._quiz_reason_job_token = 0
+        self.quiz_dialog = None
         self._pdf_text_cache: dict[str, tuple[str, dict]] = {}
         self._pdf_text_cache_order: list[str] = []
         self._pdf_text_cache_max = 8
@@ -1592,6 +1595,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             module_id=self.module_id,
             module_title=self.module_title,
         )
+        self.engine.semantic_enabled = bool(self.semantic_enabled)
         self.engine.adaptive_quiz_prioritization = bool(self.adaptive_quiz_prioritization)
         if self.exam_date is not None:
             self.engine.exam_date = self.exam_date
@@ -2344,10 +2348,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._add_action("first_run_tour", self.on_first_run_tour)
         self._add_action("manage_modules", self.on_manage_modules)
         self._add_action("edit_module", self.on_edit_module)
+        self._add_bool_action("semantic_enabled", bool(self.semantic_enabled), self.on_toggle_semantic_action)
 
     def _add_action(self, name: str, handler) -> None:
         action = Gio.SimpleAction.new(name, None)
         action.connect("activate", handler)
+        self.add_action(action)
+
+    def _add_bool_action(self, name: str, initial: bool, handler) -> None:
+        action = Gio.SimpleAction.new_stateful(name, None, GLib.Variant.new_boolean(bool(initial)))
+        action.connect("change-state", handler)
         self.add_action(action)
 
     def _build_menu_bar(self) -> Gtk.Widget:
@@ -2383,6 +2393,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         app_menu.append("View Logs…", "win.view_logs")
         app_menu.append("Review Reflections…", "win.view_reflections")
         app_menu.append("Train ML Models…", "win.train_ml_models")
+        app_menu.append("Enable semantic routing", "win.semantic_enabled")
         app_menu.append("Toggle Menu Bar", "win.toggle_menu")
 
         help_menu = Gio.Menu()
@@ -2410,6 +2421,51 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_toggle_menu_action(self, _action, _param):
         self.toggle_menu_bar()
+
+    def _sync_semantic_action_state(self) -> None:
+        try:
+            action = self.lookup_action("semantic_enabled")
+            if action is None:
+                return
+            current = bool(self.semantic_enabled)
+            state = action.get_state()
+            if state is None or bool(state.get_boolean()) != current:
+                action.set_state(GLib.Variant.new_boolean(current))
+        except Exception:
+            pass
+
+    def _set_semantic_enabled(self, enabled: bool, persist: bool = True) -> None:
+        enabled = bool(enabled)
+        self.semantic_enabled = enabled
+        try:
+            self.engine.semantic_enabled = enabled
+        except Exception:
+            pass
+        self._sync_semantic_action_state()
+        if enabled:
+            self._warmup_semantic_engine_async()
+        try:
+            self.update_study_room_card()
+        except Exception:
+            pass
+        try:
+            self.update_dashboard()
+        except Exception:
+            pass
+        if persist:
+            self.save_preferences()
+
+    def on_toggle_semantic_action(self, action, value) -> None:
+        enabled = bool(value.get_boolean()) if isinstance(value, GLib.Variant) else (not bool(self.semantic_enabled))
+        try:
+            action.set_state(GLib.Variant.new_boolean(enabled))
+        except Exception:
+            pass
+        self._set_semantic_enabled(enabled, persist=True)
+        self.send_notification(
+            "Semantic Routing",
+            "Enabled" if enabled else "Disabled (deterministic fallback only)",
+        )
 
     def toggle_menu_bar(self) -> None:
         self.menu_bar_visible = not self.menu_bar_visible
@@ -3497,6 +3553,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         sticky_pick.set_active(bool(self.sticky_coach_pick))
         adaptive_quiz = Gtk.CheckButton(label="Adaptive quiz prioritization (use recent miss-risk)")
         adaptive_quiz.set_active(bool(self.adaptive_quiz_prioritization))
+        semantic_toggle = Gtk.CheckButton(label="Enable semantic routing (outcome semantic match)")
+        semantic_toggle.set_active(bool(self.semantic_enabled))
         show_perf = Gtk.CheckButton(label="Show performance stats (dashboard render time)")
         show_perf.set_active(bool(self.show_perf_stats))
         recall_release = Gtk.CheckButton(
@@ -3511,6 +3569,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         content.append(coach_only)
         content.append(sticky_pick)
         content.append(adaptive_quiz)
+        content.append(semantic_toggle)
         content.append(show_perf)
         content.append(recall_release)
 
@@ -3778,6 +3837,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.coach_only_view = bool(coach_only.get_active())
             self.sticky_coach_pick = bool(sticky_pick.get_active())
             self.adaptive_quiz_prioritization = bool(adaptive_quiz.get_active())
+            self.semantic_enabled = bool(semantic_toggle.get_active())
             self.show_perf_stats = bool(show_perf.get_active())
             self.recall_counts_for_release = bool(recall_release.get_active())
             self.focus_tracking_enabled = bool(focus_tracking.get_active())
@@ -3791,6 +3851,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             apply_theme(bool(self.use_system_theme))
             if getattr(self, "engine", None) is not None:
                 self.engine.adaptive_quiz_prioritization = bool(self.adaptive_quiz_prioritization)
+                self.engine.semantic_enabled = bool(self.semantic_enabled)
+            self._sync_semantic_action_state()
             self.save_preferences()
             dialog.destroy()
 
@@ -3801,6 +3863,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         hub = getattr(self.engine, "study_hub_stats", {}) or {}
         graph_status = self.engine.get_semantic_graph_status()
         drift = self.engine.get_semantic_drift_kpi(days=7)
+        perf = {}
+        try:
+            perf = self.engine.get_semantic_perf_stats()
+        except Exception:
+            perf = {}
         msg = (
             f"Exam date: {self.exam_date}\n"
             f"Chapters: {len(self.engine.CHAPTERS)}\n"
@@ -3811,7 +3878,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             f"Categories parsed: {len(hub.get('category_totals', {}))}\n"
             f"Concept nodes: {int(graph_status.get('concept_nodes', 0) or 0)}\n"
             f"Outcome clusters: {int(graph_status.get('cluster_count', 0) or 0)} ({graph_status.get('cluster_method', 'fallback')})\n"
-            f"Semantic drift status: {drift.get('status', 'ok')} ({int(drift.get('chapters_flagged', 0) or 0)} flagged)"
+            f"Semantic drift status: {drift.get('status', 'ok')} ({int(drift.get('chapters_flagged', 0) or 0)} flagged)\n"
+            f"Route calls: {int(perf.get('route_meta_calls', 0) or 0)}\n"
+            f"Route cache hits: {int(perf.get('route_cache_hits', 0) or 0)}\n"
+            f"TF-IDF assets hit/miss: {int(perf.get('tfidf_asset_hits', 0) or 0)}/{int(perf.get('tfidf_asset_misses', 0) or 0)}\n"
+            f"Route latency max/avg (ms): {float(perf.get('max_route_ms', 0.0) or 0.0):.2f}/{float(perf.get('avg_route_ms', 0.0) or 0.0):.2f}"
         )
         self._show_text_dialog("Debug Info", msg, Gtk.MessageType.INFO)
 
@@ -4201,6 +4272,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.adaptive_quiz_prioritization = bool(
                         data.get("adaptive_quiz_prioritization", True)
                     )
+                    self.semantic_enabled = bool(data.get("semantic_enabled", True))
                     self.show_perf_stats = bool(data.get("show_perf_stats", False))
                     self.last_coach_pick = data.get("last_coach_pick")
                     self.last_coach_pick_date = data.get("last_coach_pick_date")
@@ -4308,6 +4380,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "coach_only_view": bool(self.coach_only_view),
                 "sticky_coach_pick": bool(self.sticky_coach_pick),
                 "adaptive_quiz_prioritization": bool(self.adaptive_quiz_prioritization),
+                "semantic_enabled": bool(self.semantic_enabled),
                 "show_perf_stats": bool(self.show_perf_stats),
                 "last_coach_pick": self.last_coach_pick,
                 "last_coach_pick_date": self.last_coach_pick_date,
@@ -7064,6 +7137,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _warmup_semantic_engine_async(self) -> None:
         try:
+            if not bool(getattr(self, "semantic_enabled", True)):
+                return
             if getattr(self, "_semantic_warmup_in_progress", False):
                 return
             status = {}
@@ -9917,6 +9992,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
 
+        self._quiz_reason_job_token += 1
+        reason_token = int(self._quiz_reason_job_token)
         self.quiz_session = {
             "indices": session_indices,
             "position": 0,
@@ -9930,6 +10007,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "kind": kind,
             "mix": {"new": int(new_count), "review": int(review_count)},
             "gap_routing": gap_routing_meta,
+            "route_meta_cache": {},
+            "route_reason_cache": {},
+            "route_reason_pending": {str(i) for i in session_indices},
+            "route_reason_token": reason_token,
+            "route_reason_prefetch_started": False,
+            "route_reason_prefetch_running": False,
         }
         if kind == "interleave" and hasattr(self.engine, "get_semantic_interleave_mix"):
             try:
@@ -9945,10 +10028,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
         self.selected_option = None
+        self._start_quiz_reason_prefetch()
         self.show_quiz_dialog()
 
     def show_quiz_dialog(self):
         dialog = self._new_dialog(title="Quiz", transient_for=self, modal=True)
+        self.quiz_dialog = dialog
         dialog.set_default_size(460, 260)
         dialog.add_css_class("quiz-dialog")
         content_area = dialog.get_content_area()
@@ -10058,6 +10143,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._start_action_timer(kind, topic=self.current_topic)
         try:
             def _on_close(_w, *_args):
+                self._quiz_reason_job_token += 1
+                self.quiz_dialog = None
                 self._stop_action_timer(finalize=True)
                 return False
             dialog.connect("close-request", _on_close)
@@ -10259,7 +10346,115 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if getattr(self, "quiz_confirm_btn", None):
                 self.quiz_confirm_btn.set_sensitive(True)
 
+    def _start_quiz_reason_prefetch(self, indices: list[int] | None = None) -> None:
+        session = self.quiz_session if isinstance(getattr(self, "quiz_session", None), dict) else None
+        if not session:
+            return
+        if bool(session.get("route_reason_prefetch_running", False)):
+            return
+        chapter = str(session.get("topic") or self.current_topic or "").strip()
+        if not chapter:
+            return
+        token = int(session.get("route_reason_token", self._quiz_reason_job_token) or self._quiz_reason_job_token)
+        if indices is None:
+            raw_indices = list(session.get("indices", []) or [])
+        else:
+            raw_indices = list(indices)
+        pick_indices = sorted({int(i) for i in raw_indices if isinstance(i, int)})
+        if not pick_indices:
+            return
+        session["route_reason_prefetch_running"] = True
+        if indices is None:
+            session["route_reason_prefetch_started"] = True
+
+        def _worker() -> None:
+            try:
+                if bool(getattr(self.engine, "semantic_enabled", True)) and hasattr(self.engine, "prefetch_question_route_meta"):
+                    self.engine.prefetch_question_route_meta(chapter, pick_indices)
+            except Exception:
+                pass
+            computed: dict[str, str] = {}
+            for qidx in pick_indices:
+                if token != int(getattr(self, "_quiz_reason_job_token", -1)):
+                    break
+                try:
+                    computed[str(qidx)] = self._compute_quiz_pick_reason(chapter, qidx, include_route_meta=True)
+                except Exception:
+                    computed[str(qidx)] = "Picked for balanced practice."
+            GLib.idle_add(self._apply_quiz_reason_prefetch, token, chapter, computed)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_quiz_reason_prefetch(self, token: int, chapter: str, computed: dict[str, str]) -> bool:
+        if token != int(getattr(self, "_quiz_reason_job_token", -1)):
+            return False
+        session = self.quiz_session if isinstance(getattr(self, "quiz_session", None), dict) else None
+        if not session:
+            return False
+        session["route_reason_prefetch_running"] = False
+        current_topic = str(session.get("topic") or self.current_topic or "").strip()
+        if chapter != current_topic:
+            return False
+        cache = session.get("route_reason_cache")
+        if not isinstance(cache, dict):
+            cache = {}
+            session["route_reason_cache"] = cache
+        pending = session.get("route_reason_pending")
+        if not isinstance(pending, set):
+            if isinstance(pending, list):
+                pending = {str(x) for x in pending}
+            else:
+                pending = set()
+            session["route_reason_pending"] = pending
+        for key, value in (computed or {}).items():
+            skey = str(key)
+            cache[skey] = str(value)
+            pending.discard(skey)
+        try:
+            if getattr(self, "quiz_reason_label", None):
+                indices = session.get("indices", []) if isinstance(session.get("indices", []), list) else []
+                position = int(session.get("position", 0) or 0)
+                if 0 <= position < len(indices):
+                    current_idx = int(indices[position])
+                    current_key = str(current_idx)
+                    reason = cache.get(current_key)
+                    if isinstance(reason, str) and reason.strip():
+                        self.quiz_reason_label.set_text(reason)
+                        self.quiz_reason_label.set_visible(True)
+        except Exception:
+            pass
+        return False
+
     def _get_quiz_pick_reason(self, chapter: str, question_index: int) -> str:
+        """Fast quiz reason lookup for UI paint; background worker fills semantic detail."""
+        session = self.quiz_session if isinstance(getattr(self, "quiz_session", None), dict) else None
+        if not session:
+            return self._compute_quiz_pick_reason(chapter, question_index, include_route_meta=False)
+        route_key = str(question_index)
+        reason_cache = session.get("route_reason_cache")
+        if isinstance(reason_cache, dict):
+            cached = reason_cache.get(route_key)
+            if isinstance(cached, str) and cached.strip():
+                return cached
+        pending = session.get("route_reason_pending")
+        if not isinstance(pending, set):
+            if isinstance(pending, list):
+                pending = {str(x) for x in pending}
+            else:
+                pending = set()
+            session["route_reason_pending"] = pending
+        if route_key not in pending:
+            pending.add(route_key)
+            if not bool(session.get("route_reason_prefetch_started", False)):
+                self._start_quiz_reason_prefetch()
+        return "Reason: loading..."
+
+    def _compute_quiz_pick_reason(
+        self,
+        chapter: str,
+        question_index: int,
+        include_route_meta: bool = True,
+    ) -> str:
         """Explain why a question was chosen (overdue, low retention, miss risk, etc.)."""
         reasons: list[str] = []
         today = datetime.date.today()
@@ -10280,7 +10475,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
         try:
-            route_meta = self.engine.get_question_route_meta(chapter, question_index)
+            route_meta_cache = self.quiz_session.get("route_meta_cache", {})
+            route_key = str(question_index)
+            route_meta = None
+            cache_on_main = threading.current_thread() is threading.main_thread()
+            if cache_on_main and isinstance(route_meta_cache, dict):
+                route_meta = route_meta_cache.get(route_key)
+            if (
+                include_route_meta
+                and route_meta is None
+                and bool(getattr(self.engine, "semantic_enabled", True))
+            ):
+                route_meta = self.engine.get_question_route_meta(chapter, question_index)
+                if cache_on_main and isinstance(route_meta_cache, dict):
+                    route_meta_cache[route_key] = route_meta
             if isinstance(route_meta, dict):
                 route_vals = route_meta.get("outcome_ids", [])
                 if isinstance(route_vals, list):
@@ -10288,7 +10496,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 method = str(route_meta.get("semantic_match_method", "fallback") or "fallback").strip().lower()
                 score = float(route_meta.get("semantic_match_confidence", 0.0) or 0.0)
                 score_pct = max(0.0, min(100.0, score * 100.0))
-                if method in ("model", "tfidf"):
+                if method in ("cross", "model", "tfidf"):
                     reasons.append(f"semantic {method} match {score_pct:.0f}%")
         except Exception:
             route_outcomes = []
@@ -10465,12 +10673,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.engine.save_data()
         self.update_streak()
         self.update_streak_display()
-        # Keep quiz interactions responsive: full dashboard rebuild (charts/cards)
-        # is expensive when done on every single answer.
-        # We do lightweight card updates per-answer and a full dashboard refresh
-        # once at quiz completion in `on_quiz_next`.
-        self._update_coach_pick_card()
-        self.update_study_room_card()
+        # Keep quiz interactions responsive by avoiding expensive cross-panel
+        # updates while stepping question-by-question. Full updates run once at
+        # quiz completion in `on_quiz_next`.
 
         self.quiz_confirm_btn.set_sensitive(False)
         self.quiz_next_btn.set_sensitive(True)
@@ -10626,6 +10831,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             result_dialog.connect("response", _on_result_close)
             result_dialog.present()
             self._stop_action_timer(finalize=True)
+            self._quiz_reason_job_token += 1
+            self.quiz_dialog = None
             dialog.destroy()
             self.update_dashboard()
             self.update_recommendations()
