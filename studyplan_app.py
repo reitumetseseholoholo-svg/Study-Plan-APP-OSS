@@ -4244,6 +4244,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             self._coach_sync_in_progress = False
 
+    def _post_refresh_coach_consistency_check(self, origin: str) -> None:
+        """Validate left/study-room/dashboard coach topics after a render step."""
+        try:
+            left_topic = str(getattr(self, "_coach_pick_topic", "") or "").strip()
+            room_topic = str(getattr(self, "_last_study_room_coach_topic", "") or "").strip()
+            dash_topic = str(getattr(self, "_last_dashboard_coach_topic", "") or "").strip()
+        except Exception:
+            return
+        topics = [t for t in (left_topic, room_topic, dash_topic) if t]
+        if len(set(topics)) <= 1:
+            return
+        canonical = left_topic or dash_topic or room_topic
+        if canonical:
+            mismatch_topic = room_topic if room_topic and room_topic != canonical else dash_topic
+            if mismatch_topic and mismatch_topic != canonical:
+                self._log_coach_mismatch(mismatch_topic, canonical, f"post-refresh:{origin}")
+        self._queue_coach_sync_if_mismatch(f"post-refresh:{origin}")
+
     def _run_coach_sync_after_mismatch(self, origin: str = "") -> bool:
         try:
             self._invalidate_coach_pick_snapshot()
@@ -8043,6 +8061,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.study_room_leitner_btn.set_tooltip_text("Start a quick drill from Leitner Box 1.")
             except Exception:
                 pass
+        self._post_refresh_coach_consistency_check("study_room")
 
     def _should_show_onboarding(self) -> bool:
         if self.onboarding_dismissed:
@@ -11831,6 +11850,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._queue_coach_sync_if_mismatch("dashboard")
         self._ensure_coach_pick_consistency(recommended_topic, pick_source, "dashboard")
         recommended_topic = str(getattr(self, "_coach_pick_topic", "") or recommended_topic or "")
+        self._post_refresh_coach_consistency_check("dashboard")
         try:
             questions = self.engine.get_questions(recommended_topic)
             base_quiz_target = self._get_quiz_target_for_topic(recommended_topic, len(questions))
