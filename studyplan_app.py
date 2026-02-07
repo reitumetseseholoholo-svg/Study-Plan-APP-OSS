@@ -149,6 +149,105 @@ DEFAULT_SHORT_BREAK_MINUTES = 5
 DEFAULT_LONG_BREAK_MINUTES = 15
 DEFAULT_LONG_BREAK_EVERY = 4
 DEFAULT_MAX_BREAK_SKIPS = 1
+DEFAULT_OUTCOME_GAP_QUIZ_RATIO = 0.5
+DEFAULT_OUTCOME_GAP_MIN_QUESTIONS = 1
+
+
+def _merge_gap_and_srs_indices(gap_indices: list[int], srs_indices: list[int], total: int) -> list[int]:
+    """Return ordered unique indices with gap-first precedence."""
+    try:
+        target = max(0, int(total))
+    except Exception:
+        target = 0
+    if target <= 0:
+        return []
+    merged: list[int] = []
+    seen: set[int] = set()
+    for idx in list(gap_indices or []) + list(srs_indices or []):
+        if not isinstance(idx, int):
+            continue
+        if idx in seen:
+            continue
+        seen.add(idx)
+        merged.append(idx)
+        if len(merged) >= target:
+            break
+    return merged[:target]
+
+
+def _combine_quiz_indices(kind: str, primary_indices: list[int], total: int, gap_indices: list[int] | None = None) -> list[int]:
+    """Combine selector outputs for a quiz session while preserving review semantics."""
+    if str(kind or "").strip().lower() == "review":
+        try:
+            target = max(0, int(total))
+        except Exception:
+            target = 0
+        return [idx for idx in list(primary_indices or [])[:target] if isinstance(idx, int)]
+    return _merge_gap_and_srs_indices(list(gap_indices or []), list(primary_indices or []), total)
+
+
+def _adjust_outcome_gap_ratio(base_ratio: float, capability_hit_rate: float | None) -> float:
+    """Adjust outcome-gap quota ratio using recent capability-level KPI hit rate."""
+    try:
+        ratio = float(base_ratio)
+    except Exception:
+        ratio = DEFAULT_OUTCOME_GAP_QUIZ_RATIO
+    ratio = max(0.0, min(1.0, ratio))
+    if capability_hit_rate is None:
+        return ratio
+    try:
+        hit_rate = float(capability_hit_rate)
+    except Exception:
+        return ratio
+    if not math.isfinite(hit_rate):
+        return ratio
+    hit_rate = max(0.0, min(1.0, hit_rate))
+    if hit_rate < 0.45:
+        ratio += 0.20
+    elif hit_rate < 0.60:
+        ratio += 0.10
+    elif hit_rate >= 0.85:
+        ratio -= 0.10
+    return max(0.20, min(0.90, ratio))
+
+
+def _build_gap_routing_meta(
+    kind: str,
+    session_indices: list[int],
+    gap_indices: list[int],
+    requested_quota: int,
+    eligible: bool,
+    capability: str = "",
+    capability_hit_rate: float | None = None,
+) -> dict[str, Any]:
+    """Build deterministic telemetry for outcome-gap routing quality."""
+    kind_norm = str(kind or "").strip().lower()
+    requested = max(0, int(requested_quota or 0))
+    session_clean = [i for i in list(session_indices or []) if isinstance(i, int)]
+    gap_unique: list[int] = []
+    seen_gap: set[int] = set()
+    for idx in list(gap_indices or []):
+        if not isinstance(idx, int):
+            continue
+        if idx in seen_gap:
+            continue
+        seen_gap.add(idx)
+        gap_unique.append(idx)
+    gap_set = set(gap_unique)
+    hit = sum(1 for idx in session_clean if idx in gap_set)
+    denominator = max(1, requested)
+    return {
+        "kind": kind_norm,
+        "eligible": bool(eligible),
+        "requested": requested,
+        "available": len(gap_unique),
+        "hit": int(hit),
+        "selected_total": len(session_clean),
+        "hit_ratio": float(hit / denominator),
+        "active": kind_norm in {"quiz", "drill", "leech"} and bool(eligible) and requested > 0,
+        "capability": str(capability or "").strip().upper(),
+        "capability_hit_rate": capability_hit_rate if isinstance(capability_hit_rate, (int, float)) else None,
+    }
 
 DEFAULT_FOCUS_ALLOWLIST = [
     "com.studyplan.assistant",
@@ -4261,6 +4360,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
         except Exception:
             pass
+        try:
+            if bool(getattr(self, "coach_only_view", False)) and self.current_topic != canonical_topic:
+                # Keep the canonical pick stable while syncing coach-only topic.
+                self._set_current_topic(canonical_topic, invalidate_snapshot=False)
+        except Exception:
+            pass
         self._queue_coach_sync_if_mismatch(origin)
 
     def _queue_coach_sync_if_mismatch(self, origin: str) -> None:
@@ -4307,7 +4412,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self._last_study_room_coach_topic = topic
                 self._update_coach_pick_card(forced_topic=topic, forced_source=source)
                 if self.current_topic != topic and getattr(self, "coach_only_view", False):
-                    self._set_current_topic(topic)
+                    self._set_current_topic(topic, invalidate_snapshot=False)
             self.update_study_room_card()
             self.update_dashboard()
         except Exception:
@@ -6086,6 +6191,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._ensure_coach_pick_consistency(topic, source, "coach_only_toggle")
         except Exception:
             pass
+        # Run one extra idle consistency pass after visibility/layout settles.
+        try:
+            GLib.idle_add(lambda: self._run_coach_sync_after_mismatch("coach_only_post_toggle"))
+        except Exception:
+            pass
         if persist:
             self.save_preferences()
         if animate_badge:
@@ -6732,11 +6842,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.current_topic = topic
         self.update_study_room_card()
 
-    def _set_current_topic(self, topic: str) -> None:
+    def _set_current_topic(self, topic: str, *, invalidate_snapshot: bool = True) -> None:
         if topic not in self.engine.CHAPTERS:
             return
         self.current_topic = topic
-        self._invalidate_coach_pick_snapshot()
+        if invalidate_snapshot:
+            self._invalidate_coach_pick_snapshot()
         try:
             idx = self.engine.CHAPTERS.index(topic)
             self.topic_combo.set_selected(idx)
@@ -7009,13 +7120,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             plan = []
         today_iso = datetime.date.today().isoformat()
         plan_key = "|".join(plan)
+        weak_key = ""
+        try:
+            weak_key = str(self._get_weak_chapter(60.0) or "")
+        except Exception:
+            weak_key = ""
         context_key = "|".join(
             [
                 plan_key,
-                str(self.current_topic or ""),
                 str(self.last_coach_pick or ""),
                 str(self.last_coach_pick_date or ""),
                 "sticky=1" if bool(self.sticky_coach_pick) else "sticky=0",
+                "coach_only=1" if bool(getattr(self, "coach_only_view", False)) else "coach_only=0",
+                f"weak={weak_key}",
                 f"day={today_iso}",
             ]
         )
@@ -7743,7 +7860,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             else:
                 undercovered_caps = []
             if undercovered_caps:
-                outcome_task_done = bool(self.engine.has_outcome_activity_today(undercovered_caps))
+                if hasattr(self.engine, "has_undercovered_outcome_activity_today"):
+                    outcome_task_done = bool(self.engine.has_undercovered_outcome_activity_today(undercovered_caps))
+                else:
+                    outcome_task_done = bool(self.engine.has_outcome_activity_today(undercovered_caps))
                 caps_preview = ", ".join(undercovered_caps[:3])
                 if len(undercovered_caps) > 3:
                     caps_preview += ", ..."
@@ -8277,7 +8397,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.send_notification("Interleave", "No alternate chapter available right now.")
             return
         self._set_current_topic(topic)
-        self.start_quiz_session(topic=topic, total_override=6, kind="quiz")
+        self.start_quiz_session(topic=topic, total_override=6, kind="interleave")
 
     def on_drill_weak(self, _button):
         self._ensure_coach_selection()
@@ -9223,6 +9343,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             total = min(self._get_quiz_target_for_topic(self.current_topic, len(questions)), len(questions))
         if total <= 0:
             return
+        gap_indices: list[int] = []
+        gap_quota = 0
+        has_uncovered = False
+        gap_capability = ""
+        gap_capability_hit_rate: float | None = None
         if indices_override:
             session_indices = indices_override[:total]
         elif kind == "review" and hasattr(self.engine, "select_due_review_questions"):
@@ -9230,23 +9355,102 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 session_indices = self.engine.select_due_review_questions(self.current_topic, total)
             except Exception:
                 session_indices = []
-        elif kind == "leech" and hasattr(self.engine, "select_leech_questions"):
-            try:
-                session_indices = self.engine.select_leech_questions(self.current_topic, total)
-            except Exception:
-                session_indices = []
-        elif hasattr(self.engine, "select_srs_questions"):
-            try:
-                session_indices = self.engine.select_srs_questions(self.current_topic, total)
-            except Exception:
-                session_indices = []
         else:
             session_indices = []
+            interleave_indices: list[int] = []
+            if kind == "interleave" and hasattr(self.engine, "select_semantic_interleave_questions"):
+                try:
+                    raw_interleave = self.engine.select_semantic_interleave_questions(self.current_topic, total)
+                    if isinstance(raw_interleave, list):
+                        interleave_indices = [i for i in raw_interleave if isinstance(i, int) and 0 <= i < len(questions)]
+                except Exception:
+                    interleave_indices = []
+            if interleave_indices:
+                session_indices = interleave_indices[:total]
+            if session_indices:
+                srs_indices = []
+            else:
+                srs_indices = []
+            if not session_indices and kind in {"quiz", "drill", "leech"} and hasattr(self.engine, "select_outcome_gap_questions"):
+                try:
+                    if hasattr(self.engine, "_chapter_has_uncovered_outcomes"):
+                        has_uncovered = bool(self.engine._chapter_has_uncovered_outcomes(self.current_topic))
+                    else:
+                        chapter_outcome = self.engine.get_chapter_outcome_mastery(self.current_topic)
+                        has_uncovered = int(chapter_outcome.get("uncovered_outcomes", 0) or 0) > 0
+                    if has_uncovered:
+                        try:
+                            if hasattr(self.engine, "_chapter_capability"):
+                                gap_capability = str(self.engine._chapter_capability(self.current_topic) or "").strip().upper()
+                            if gap_capability and hasattr(self.engine, "get_gap_routing_summary_by_capability"):
+                                by_cap = self.engine.get_gap_routing_summary_by_capability(14).get("by_capability", {})
+                                cap_row = by_cap.get(gap_capability, {}) if isinstance(by_cap, dict) else {}
+                                if isinstance(cap_row, dict):
+                                    active_sessions = int(cap_row.get("active_sessions", 0) or 0)
+                                    requested_total = int(cap_row.get("requested_total", 0) or 0)
+                                    if active_sessions >= 3 and requested_total >= 6:
+                                        gap_capability_hit_rate = float(cap_row.get("hit_rate", 0.0) or 0.0)
+                        except Exception:
+                            gap_capability = ""
+                            gap_capability_hit_rate = None
+                        try:
+                            ratio = float(
+                                getattr(self.engine, "OUTCOME_GAP_QUIZ_RATIO", DEFAULT_OUTCOME_GAP_QUIZ_RATIO)
+                            )
+                        except Exception:
+                            ratio = DEFAULT_OUTCOME_GAP_QUIZ_RATIO
+                        ratio = _adjust_outcome_gap_ratio(ratio, gap_capability_hit_rate)
+                        try:
+                            min_questions = int(
+                                getattr(
+                                    self.engine,
+                                    "OUTCOME_GAP_MIN_QUESTIONS",
+                                    DEFAULT_OUTCOME_GAP_MIN_QUESTIONS,
+                                )
+                                or DEFAULT_OUTCOME_GAP_MIN_QUESTIONS
+                            )
+                        except Exception:
+                            min_questions = DEFAULT_OUTCOME_GAP_MIN_QUESTIONS
+                        min_questions = max(0, min_questions)
+                        gap_quota = min(total, max(min_questions, int(round(total * ratio))))
+                        if gap_quota > 0:
+                            raw_gap = self.engine.select_outcome_gap_questions(self.current_topic, gap_quota)
+                            if isinstance(raw_gap, list):
+                                gap_indices = [i for i in raw_gap if isinstance(i, int) and 0 <= i < len(questions)]
+                except Exception:
+                    gap_indices = []
+            if not session_indices and hasattr(self.engine, "select_srs_questions"):
+                try:
+                    raw_srs = self.engine.select_srs_questions(self.current_topic, total)
+                    if isinstance(raw_srs, list):
+                        srs_indices = [i for i in raw_srs if isinstance(i, int) and 0 <= i < len(questions)]
+                except Exception:
+                    srs_indices = []
+            if not session_indices:
+                session_indices = _combine_quiz_indices(kind, srs_indices, total, gap_indices)
+        gap_routing_meta = _build_gap_routing_meta(
+            kind,
+            session_indices,
+            gap_indices,
+            gap_quota,
+            has_uncovered,
+            capability=gap_capability,
+            capability_hit_rate=gap_capability_hit_rate,
+        )
 
         if not session_indices:
             indices = list(range(len(questions)))
             random.shuffle(indices)
             session_indices = indices[:total]
+            gap_routing_meta = _build_gap_routing_meta(
+                kind,
+                session_indices,
+                gap_indices,
+                gap_quota,
+                has_uncovered,
+                capability=gap_capability,
+                capability_hit_rate=gap_capability_hit_rate,
+            )
 
         new_count = 0
         try:
@@ -9316,7 +9520,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "topic": self.current_topic,
             "kind": kind,
             "mix": {"new": int(new_count), "review": int(review_count)},
+            "gap_routing": gap_routing_meta,
         }
+        if kind == "interleave" and hasattr(self.engine, "get_semantic_interleave_mix"):
+            try:
+                interleave_mix = self.engine.get_semantic_interleave_mix(self.current_topic, session_indices)
+                if isinstance(interleave_mix, dict):
+                    self.quiz_session["interleave_mix"] = interleave_mix
+            except Exception:
+                pass
         self.selected_option = None
         self.show_quiz_dialog()
 
@@ -9341,6 +9553,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.quiz_mix_label.add_css_class("muted")
         self.quiz_mix_label.add_css_class("quiz-meta")
         content_area.append(self.quiz_mix_label)
+
+        self.quiz_interleave_label = Gtk.Label()
+        self.quiz_interleave_label.set_halign(Gtk.Align.START)
+        self.quiz_interleave_label.add_css_class("muted")
+        self.quiz_interleave_label.add_css_class("quiz-meta")
+        self.quiz_interleave_label.set_visible(False)
+        content_area.append(self.quiz_interleave_label)
+
+        self.quiz_gap_label = Gtk.Label()
+        self.quiz_gap_label.set_halign(Gtk.Align.START)
+        self.quiz_gap_label.add_css_class("muted")
+        self.quiz_gap_label.add_css_class("quiz-meta")
+        self.quiz_gap_label.set_visible(False)
+        content_area.append(self.quiz_gap_label)
 
         self.quiz_mix_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.quiz_mix_row.add_css_class("quiz-mix-row")
@@ -9467,6 +9693,65 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             self.quiz_mix_label.set_text("")
             self.quiz_mix_row.set_visible(False)
+        interleave_mix = self.quiz_session.get("interleave_mix", {})
+        kind = str(self.quiz_session.get("kind", "quiz") or "quiz").strip().lower()
+        if kind == "interleave" and isinstance(interleave_mix, dict):
+            try:
+                target_count = int(interleave_mix.get("target", 0) or 0)
+                adjacent_count = int(interleave_mix.get("adjacent", 0) or 0)
+                far_count = int(interleave_mix.get("far", 0) or 0)
+                unknown_count = int(interleave_mix.get("unknown", 0) or 0)
+            except Exception:
+                target_count = 0
+                adjacent_count = 0
+                far_count = 0
+                unknown_count = 0
+            label = f"Interleave mix: target/adjacent/far {target_count}/{adjacent_count}/{far_count}"
+            if unknown_count > 0:
+                label += f" • unknown {unknown_count}"
+            self.quiz_interleave_label.set_text(label)
+            self.quiz_interleave_label.set_visible(True)
+        else:
+            self.quiz_interleave_label.set_text("")
+            self.quiz_interleave_label.set_visible(False)
+        gap_routing = self.quiz_session.get("gap_routing", {})
+        if kind in {"quiz", "drill", "leech"} and isinstance(gap_routing, dict):
+            try:
+                active = bool(gap_routing.get("active", False))
+                hit = int(gap_routing.get("hit", 0) or 0)
+                requested = int(gap_routing.get("requested", 0) or 0)
+                available = int(gap_routing.get("available", 0) or 0)
+                eligible = bool(gap_routing.get("eligible", False))
+                capability = str(gap_routing.get("capability", "") or "").strip().upper()
+                cap_hit_rate_val = gap_routing.get("capability_hit_rate")
+                cap_hit_rate = (
+                    float(cap_hit_rate_val)
+                    if isinstance(cap_hit_rate_val, (int, float)) and math.isfinite(float(cap_hit_rate_val))
+                    else None
+                )
+            except Exception:
+                active = False
+                hit = 0
+                requested = 0
+                available = 0
+                eligible = False
+                capability = ""
+                cap_hit_rate = None
+            if active and requested > 0:
+                line = f"Outcome-gap routing: hit {hit}/{requested} • available {available}"
+                if capability and cap_hit_rate is not None:
+                    line += f" • {capability} 14d {cap_hit_rate*100:.0f}%"
+                self.quiz_gap_label.set_text(line)
+                self.quiz_gap_label.set_visible(True)
+            elif eligible:
+                self.quiz_gap_label.set_text("Outcome-gap routing: eligible, no gap picks available")
+                self.quiz_gap_label.set_visible(True)
+            else:
+                self.quiz_gap_label.set_text("")
+                self.quiz_gap_label.set_visible(False)
+        else:
+            self.quiz_gap_label.set_text("")
+            self.quiz_gap_label.set_visible(False)
         self.quiz_progress.set_fraction(pos / max(1, total))
         self.quiz_progress.set_text(f"{pos}/{total}")
         if getattr(self, "quiz_next_btn", None):
@@ -9543,6 +9828,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         """Explain why a question was chosen (overdue, low retention, miss risk, etc.)."""
         reasons: list[str] = []
         today = datetime.date.today()
+        route_outcomes: list[str] = []
         try:
             must_review = getattr(self.engine, "must_review", {}) or {}
             if isinstance(must_review, dict):
@@ -9559,9 +9845,43 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
         try:
+            route_meta = self.engine.get_question_route_meta(chapter, question_index)
+            if isinstance(route_meta, dict):
+                route_vals = route_meta.get("outcome_ids", [])
+                if isinstance(route_vals, list):
+                    route_outcomes = [str(v).strip() for v in route_vals if str(v).strip()]
+                method = str(route_meta.get("semantic_match_method", "fallback") or "fallback").strip().lower()
+                score = float(route_meta.get("semantic_match_confidence", 0.0) or 0.0)
+                score_pct = max(0.0, min(100.0, score * 100.0))
+                if method in ("model", "tfidf"):
+                    reasons.append(f"semantic {method} match {score_pct:.0f}%")
+        except Exception:
+            route_outcomes = []
+        try:
+            if route_outcomes:
+                chapter_outcome = self.engine.get_chapter_outcome_mastery(chapter)
+                uncovered = set(chapter_outcome.get("uncovered_ids", []) or [])
+                if uncovered and any(oid in uncovered for oid in route_outcomes):
+                    reasons.append("outcome gap")
+        except Exception:
+            pass
+        try:
+            cap = str(self.engine._chapter_capability(chapter) or "").strip().upper()
+            under_caps = set(self.engine.get_undercovered_capabilities())
+            if cap and cap in under_caps:
+                reasons.append("under-covered capability")
+        except Exception:
+            pass
+        try:
             retention = float(self.engine.get_retention_probability(chapter, question_index))
             if retention <= 0.45:
                 reasons.append("low retention")
+        except Exception:
+            pass
+        try:
+            recall_prob = self.engine.predict_recall_prob(chapter, question_index)
+            if isinstance(recall_prob, (int, float)) and float(recall_prob) <= 0.55:
+                reasons.append("low recall probability")
         except Exception:
             pass
         try:
@@ -9798,6 +10118,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.engine.record_quiz_history(
                         self.current_topic,
                         list(self.quiz_session.get("indices", []))
+                    )
+                gap_meta = self.quiz_session.get("gap_routing", {})
+                session_topic = str(self.quiz_session.get("topic") or self.current_topic or "")
+                session_kind = str(self.quiz_session.get("kind", "quiz") or "quiz")
+                if (
+                    session_topic
+                    and hasattr(self.engine, "record_gap_routing_event")
+                    and isinstance(gap_meta, dict)
+                ):
+                    self.engine.record_gap_routing_event(
+                        session_topic,
+                        session_kind,
+                        gap_meta,
+                        score_pct=new_score,
                     )
                 self.engine.save_data()
             except Exception:
@@ -10707,8 +11041,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 chapters = result.get("chapters", []) if isinstance(result, dict) else []
                 low_conf = result.get("low_confidence", []) if isinstance(result, dict) else []
                 unmatched = result.get("unmatched", []) if isinstance(result, dict) else []
+                semantic_import = result.get("semantic_import", {}) if isinstance(result, dict) else {}
                 chapter_text = ", ".join(chapters) if chapters else "N/A"
                 msg = f"AI questions imported: {added}\nChapters: {chapter_text}"
+                if isinstance(semantic_import, dict) and int(semantic_import.get("total_new", 0) or 0) > 0:
+                    mapped = int(semantic_import.get("mapped", 0) or 0)
+                    total_new = int(semantic_import.get("total_new", 0) or 0)
+                    coverage_pct = float(semantic_import.get("coverage_pct", 0.0) or 0.0)
+                    quality_score = float(semantic_import.get("quality_score", 0.0) or 0.0)
+                    low_conf_count = int(semantic_import.get("low_confidence", 0) or 0)
+                    unmapped_count = int(semantic_import.get("unmapped", 0) or 0)
+                    msg += (
+                        f"\n\nSemantic mapping:"
+                        f"\n- Coverage: {mapped}/{total_new} ({coverage_pct:.0f}%)"
+                        f"\n- Quality score: {quality_score * 100:.0f}%"
+                        f"\n- Low confidence: {low_conf_count}"
+                        f"\n- Unmapped: {unmapped_count}"
+                    )
+                    warnings = semantic_import.get("warnings", [])
+                    if isinstance(warnings, list) and warnings:
+                        warn_preview = "\n".join(str(w) for w in warnings[:4])
+                        msg += f"\n\nSemantic warnings:\n{warn_preview}"
                 if low_conf:
                     preview = "\n".join(low_conf[:6])
                     msg += f"\n\nLow-confidence matches:\n{preview}"
@@ -10719,13 +11072,51 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     msg += f"\n\nUnmatched chapters:\n{preview}"
                     if len(unmatched) > 6:
                         msg += f"\n(+{len(unmatched) - 6} more)"
-                success_dialog = self._new_message_dialog(
-                        transient_for=self,
-                        modal=True,
-                        message_type=Gtk.MessageType.INFO,
-                        buttons=Gtk.ButtonsType.OK,
-                        text=msg
+                success_dialog = self._new_dialog(
+                    title="AI Question Import Summary",
+                    transient_for=self,
+                    modal=True,
                 )
+                success_dialog.set_default_size(560, 520)
+                success_dialog.add_button("OK", Gtk.ResponseType.OK)
+                content = success_dialog.get_content_area()
+                content.set_spacing(10)
+
+                summary_label = Gtk.Label(label=msg)
+                summary_label.set_wrap(True)
+                summary_label.set_halign(Gtk.Align.START)
+                summary_label.set_xalign(0.0)
+                content.append(summary_label)
+
+                chapter_breakdown = semantic_import.get("chapter_breakdown", {}) if isinstance(semantic_import, dict) else {}
+                table_rows: list[tuple[str, str, str, str]] = []
+                if isinstance(chapter_breakdown, dict):
+                    for chapter, row in chapter_breakdown.items():
+                        if not isinstance(row, dict):
+                            continue
+                        total_new = int(row.get("total", 0) or 0)
+                        mapped_count = int(row.get("mapped", 0) or 0)
+                        low_conf_count = int(row.get("low_confidence", 0) or 0)
+                        unmapped_count = int(row.get("unmapped", 0) or 0)
+                        coverage_pct = (100.0 * mapped_count / max(1, total_new)) if total_new > 0 else 0.0
+                        table_rows.append(
+                            (
+                                str(chapter),
+                                f"{mapped_count}/{total_new} ({coverage_pct:.0f}%)",
+                                str(low_conf_count),
+                                str(unmapped_count),
+                            )
+                        )
+                table_rows.sort(key=lambda item: (item[0]))
+                if table_rows:
+                    content.append(
+                        self._build_import_table(
+                            "Semantic mapping by chapter",
+                            ["Chapter", "Coverage", "Low conf", "Unmapped"],
+                            table_rows,
+                            min_height=180,
+                        )
+                    )
                 success_dialog.connect("response", lambda d, r: d.destroy())
                 success_dialog.present()
             except Exception as e:
@@ -11434,6 +11825,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ("Preferences", lambda: self.on_open_preferences(None, None)),
             ("Coach-only Toggle", self._smoke_toggle_coach_only),
             ("Coach Pick Consistency", self._smoke_check_coach_pick_consistency),
+            ("Coach Next Burst", self._smoke_coach_next_burst),
             ("Focus Allowlist", lambda: self.on_edit_focus_allowlist(None, None)),
             ("Switch Module", lambda: self.on_switch_module(None, None)),
             ("Manage Modules", lambda: self.on_manage_modules(None, None)),
@@ -11461,7 +11853,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if not self._has_chapters():
             return
         initial = bool(getattr(self, "coach_only_view", False))
-        for target in (True, False, True, False):
+        # Stress repeated toggles to catch transient UI/state mismatches.
+        sequence = ([True, False] * 12)
+        for target in sequence:
             self._set_coach_only_view(target, persist=False, animate_badge=False)
             if bool(getattr(self, "coach_only_view", False)) != target:
                 raise RuntimeError("Coach-only state flag mismatch during smoke test")
@@ -11477,6 +11871,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 raise RuntimeError("Coach-only badge visibility mismatch")
             if toggle_visible == target:
                 raise RuntimeError("Coach-only toggle visibility mismatch")
+            self._smoke_check_coach_pick_consistency()
         self._set_coach_only_view(initial, persist=False, animate_badge=False)
 
     def _smoke_check_coach_pick_consistency(self) -> None:
@@ -11496,6 +11891,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             raise RuntimeError(
                 f"Coach consistency smoke mismatch: left={left_topic!r}, room={room_topic!r}, dash={dash_topic!r}"
             )
+
+    def _smoke_coach_next_burst(self) -> None:
+        if not self._has_chapters():
+            return
+        initial = bool(getattr(self, "coach_only_view", False))
+        self._set_coach_only_view(True, persist=False, animate_badge=False)
+        for _ in range(20):
+            self.on_do_coach_next(None)
+            self._smoke_check_coach_pick_consistency()
+            coach_topic = str(getattr(self, "_coach_pick_topic", "") or "").strip()
+            current_topic = str(getattr(self, "current_topic", "") or "").strip()
+            if coach_topic and current_topic and coach_topic != current_topic:
+                raise RuntimeError(
+                    f"Coach-only burst mismatch: coach={coach_topic!r}, current={current_topic!r}"
+                )
+        self._set_coach_only_view(initial, persist=False, animate_badge=False)
 
     def _count_question_samples(self) -> int:
         stats = getattr(self.engine, "question_stats", {}) or {}
@@ -12047,6 +12458,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
         try:
+            debt_map = self.engine.get_capability_coverage_debt(max_coverage=85.0, min_uncovered=1)
+            if isinstance(debt_map, dict) and debt_map:
+                top_cap = next(iter(debt_map.keys()))
+                top = debt_map.get(top_cap, {})
+                uncovered = int(top.get("uncovered_outcomes", 0) or 0)
+                coverage = float(top.get("coverage_pct", 0.0) or 0.0)
+                debt_line = Gtk.Label(
+                    label=f"Coverage debt: {top_cap} ({uncovered} uncovered, {coverage:.0f}% coverage)"
+                )
+                debt_line.set_halign(Gtk.Align.START)
+                debt_line.add_css_class("muted")
+                coach_box.append(debt_line)
+        except Exception:
+            pass
+        try:
             daily_poms = int(self.daily_pomodoros_by_chapter.get(recommended_topic, 0) or 0)
         except Exception:
             daily_poms = 0
@@ -12399,7 +12825,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             else:
                 undercovered_caps = []
             if undercovered_caps:
-                outcome_task_done = bool(self.engine.has_outcome_activity_today(undercovered_caps))
+                if hasattr(self.engine, "has_undercovered_outcome_activity_today"):
+                    outcome_task_done = bool(self.engine.has_undercovered_outcome_activity_today(undercovered_caps))
+                else:
+                    outcome_task_done = bool(self.engine.has_outcome_activity_today(undercovered_caps))
                 caps_preview = ", ".join(undercovered_caps[:3])
                 if len(undercovered_caps) > 3:
                     caps_preview += ", ..."
@@ -12655,6 +13084,60 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if semantic_warn:
                         semantic_label.add_css_class("status-warn")
                     insights.append(semantic_label)
+                    try:
+                        if hasattr(self.engine, "get_gap_routing_summary"):
+                            gap_summary = self.engine.get_gap_routing_summary(7)
+                        else:
+                            gap_summary = {}
+                        if isinstance(gap_summary, dict) and int(gap_summary.get("sessions", 0) or 0) > 0:
+                            sessions = int(gap_summary.get("sessions", 0) or 0)
+                            active_sessions = int(gap_summary.get("active_sessions", 0) or 0)
+                            hit_total = int(gap_summary.get("hit_total", 0) or 0)
+                            requested_total = int(gap_summary.get("requested_total", 0) or 0)
+                            hit_rate = float(gap_summary.get("hit_rate", 0.0) or 0.0)
+                            gap_label = Gtk.Label(
+                                label=(
+                                    f"Outcome-gap KPI (7d): hit {hit_total}/{requested_total} "
+                                    f"({hit_rate*100:.0f}%) • active {active_sessions}/{sessions}"
+                                )
+                            )
+                            gap_label.set_halign(Gtk.Align.START)
+                            gap_label.add_css_class("muted")
+                            if requested_total > 0 and hit_rate < 0.6:
+                                gap_label.add_css_class("status-warn")
+                            insights.append(gap_label)
+                            if hasattr(self.engine, "get_gap_routing_summary_by_capability"):
+                                by_cap_summary = self.engine.get_gap_routing_summary_by_capability(14)
+                            else:
+                                by_cap_summary = {}
+                            by_cap = by_cap_summary.get("by_capability", {}) if isinstance(by_cap_summary, dict) else {}
+                            if isinstance(by_cap, dict) and by_cap:
+                                rows: list[tuple[float, int, str]] = []
+                                for cap, row in by_cap.items():
+                                    if not isinstance(row, dict):
+                                        continue
+                                    req = int(row.get("requested_total", 0) or 0)
+                                    act = int(row.get("active_sessions", 0) or 0)
+                                    if req <= 0 or act <= 0:
+                                        continue
+                                    rate = float(row.get("hit_rate", 0.0) or 0.0)
+                                    rows.append((rate, req, str(cap)))
+                                if rows:
+                                    rows.sort(key=lambda item: (item[0], -item[1], item[2]))
+                                    worst_rate, worst_req, worst_cap = rows[0]
+                                    cap_label = Gtk.Label(
+                                        label=(
+                                            f"Gap KPI by capability (14d): weakest {worst_cap} "
+                                            f"{worst_rate*100:.0f}% over {worst_req} quota"
+                                        )
+                                    )
+                                    cap_label.set_halign(Gtk.Align.START)
+                                    cap_label.add_css_class("muted")
+                                    if worst_rate < 0.6:
+                                        cap_label.add_css_class("status-warn")
+                                    insights.append(cap_label)
+                    except Exception:
+                        pass
                     try:
                         if risk_rows:
                             top_chapter = str(risk_rows[0][0])

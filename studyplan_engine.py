@@ -36,6 +36,13 @@ class StudyPlanEngine:
     SEMANTIC_MODEL_NAME = "all-MiniLM-L6-v2"
     SEMANTIC_MIN_SCORE = 0.42
     SEMANTIC_CACHE_MAX = 2048
+    OUTCOME_GAP_QUIZ_RATIO = 0.5
+    OUTCOME_GAP_MIN_QUESTIONS = 1
+    IMPORT_SEMANTIC_TAG_MIN_SCORE = 0.55
+    INTERLEAVE_TARGET_RATIO = 0.60
+    INTERLEAVE_ADJACENT_RATIO = 0.25
+    INTERLEAVE_FAR_RATIO = 0.15
+    INTERLEAVE_MIN_TARGET = 1
     CHAPTERS = [
         "FM Function",
         "FM Environment",
@@ -2461,6 +2468,7 @@ class StudyPlanEngine:
         self.quiz_results: Dict[str, float] = {}
         self.quiz_recent: Dict[str, List[int]] = {}
         self.error_notebook: Dict[str, List[Dict[str, Any]]] = {}
+        self.gap_routing_log: List[Dict[str, Any]] = []
         self.question_stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.outcome_stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.adaptive_quiz_prioritization: bool = True
@@ -2472,7 +2480,7 @@ class StudyPlanEngine:
         self._semantic_model: Any | None = None
         self._semantic_model_state: str = "unloaded"
         self._semantic_block_reason: str | None = None
-        self._semantic_match_cache: Dict[str, str] = {}
+        self._semantic_match_cache: Dict[str, Dict[str, Any]] = {}
         self._semantic_match_cache_order: List[str] = []
         self._semantic_lock = threading.Lock()
         self.recall_model_json: Dict[str, Any] | None = None
@@ -2945,6 +2953,75 @@ class StudyPlanEngine:
                 cleaned[k] = entries[-max_keep:]
         return cleaned
 
+    def _coerce_gap_routing_log(self, raw, max_keep: int = 500):
+        """Normalize outcome-gap routing telemetry entries."""
+        cleaned: List[Dict[str, Any]] = []
+        if not isinstance(raw, list):
+            return cleaned
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            chapter = str(item.get("chapter", "") or "").strip()
+            if chapter not in self.CHAPTERS:
+                continue
+            capability = str(item.get("capability", "") or "").strip().upper()
+            if not capability:
+                capability = self._chapter_capability(chapter) or "?"
+            kind = str(item.get("kind", "quiz") or "quiz").strip().lower()
+            if kind not in {"quiz", "drill", "leech", "review", "interleave"}:
+                kind = "quiz"
+            date_val = self._parse_date(item.get("date"))
+            if date_val is None:
+                ts = str(item.get("ts", "") or "").strip()
+                if ts:
+                    try:
+                        date_val = datetime.datetime.fromisoformat(ts).date()
+                    except Exception:
+                        date_val = None
+            if date_val is None:
+                continue
+            try:
+                requested = max(0, int(item.get("requested", 0) or 0))
+            except Exception:
+                requested = 0
+            try:
+                available = max(0, int(item.get("available", 0) or 0))
+            except Exception:
+                available = 0
+            try:
+                hit = max(0, int(item.get("hit", 0) or 0))
+            except Exception:
+                hit = 0
+            try:
+                selected_total = max(0, int(item.get("selected_total", 0) or 0))
+            except Exception:
+                selected_total = 0
+            try:
+                score_pct = float(item.get("score_pct", 0.0) or 0.0)
+            except Exception:
+                score_pct = 0.0
+            score_pct = max(0.0, min(100.0, score_pct))
+            hit = min(hit, max(1, requested))
+            cleaned.append(
+                {
+                    "ts": str(item.get("ts", datetime.datetime.now().isoformat(timespec="seconds"))),
+                    "date": date_val.isoformat(),
+                    "chapter": chapter,
+                    "capability": capability,
+                    "kind": kind,
+                    "eligible": bool(item.get("eligible", False)),
+                    "active": bool(item.get("active", False)),
+                    "requested": requested,
+                    "available": available,
+                    "hit": hit,
+                    "selected_total": selected_total,
+                    "hit_ratio": float(hit / max(1, requested)),
+                    "score_pct": score_pct,
+                }
+            )
+        cleaned.sort(key=lambda row: str(row.get("ts", "")))
+        return cleaned[-max_keep:]
+
     def _coerce_question_stats(self, raw):
         """Normalize per-question stats to {chapter: {key: stats}}."""
         if not isinstance(raw, dict):
@@ -3215,24 +3292,31 @@ class StudyPlanEngine:
             lookup[outcome_id] = {"id": outcome_id, "text": text, "level": level}
         return lookup
 
-    def _semantic_cache_get(self, key: str) -> str | None:
+    def _semantic_cache_get(self, key: str) -> Dict[str, Any] | None:
         try:
             value = self._semantic_match_cache.get(key)
         except Exception:
             return None
         if value is None:
             return None
+        if isinstance(value, str):
+            # Backward compatibility with older in-memory cache shapes.
+            value = {"outcome_id": value, "method": "fallback", "score": 1.0}
         try:
             if key in self._semantic_match_cache_order:
                 self._semantic_match_cache_order.remove(key)
             self._semantic_match_cache_order.append(key)
         except Exception:
             return value
-        return value
+        return value if isinstance(value, dict) else None
 
-    def _semantic_cache_set(self, key: str, value: str) -> None:
+    def _semantic_cache_set(self, key: str, outcome_id: str, method: str, score: float) -> None:
         try:
-            self._semantic_match_cache[key] = value
+            self._semantic_match_cache[key] = {
+                "outcome_id": str(outcome_id or "").strip(),
+                "method": str(method or "fallback").strip().lower(),
+                "score": max(0.0, min(1.0, float(score))),
+            }
             if key in self._semantic_match_cache_order:
                 self._semantic_match_cache_order.remove(key)
             self._semantic_match_cache_order.append(key)
@@ -3321,25 +3405,36 @@ class StudyPlanEngine:
             return 0.0
         return float(dot / (math.sqrt(norm_a) * math.sqrt(norm_b)))
 
-    def _semantic_best_outcome_id(
+    def _semantic_best_outcome_match(
         self, chapter: str, source_text: str, outcome_lookup: Dict[str, Dict[str, Any]]
-    ) -> str | None:
+    ) -> Dict[str, Any]:
         text = str(source_text or "").strip()
         if not text:
-            return None
+            return {"outcome_id": None, "score": 0.0, "method": "fallback"}
         if not outcome_lookup:
-            return None
+            return {"outcome_id": None, "score": 0.0, "method": "fallback"}
         ordered_ids = sorted(outcome_lookup.keys())
         if not ordered_ids:
-            return None
+            return {"outcome_id": None, "score": 0.0, "method": "fallback"}
         outcome_texts = [str((outcome_lookup.get(oid) or {}).get("text", "")).strip() for oid in ordered_ids]
         if not any(outcome_texts):
-            return None
+            return {"outcome_id": None, "score": 0.0, "method": "fallback"}
         sig = "|".join(ordered_ids)
         cache_key = hashlib.sha1(f"{chapter}|{sig}|{text.lower()}".encode("utf-8")).hexdigest()
         cached = self._semantic_cache_get(cache_key)
-        if cached and cached in outcome_lookup:
-            return cached
+        if isinstance(cached, dict):
+            cached_id = str(cached.get("outcome_id", "") or "").strip()
+            if cached_id and cached_id in outcome_lookup:
+                try:
+                    cached_score = float(cached.get("score", 0.0) or 0.0)
+                except Exception:
+                    cached_score = 0.0
+                cached_method = str(cached.get("method", "fallback") or "fallback").strip().lower()
+                return {
+                    "outcome_id": cached_id,
+                    "score": max(0.0, min(1.0, cached_score)),
+                    "method": cached_method if cached_method in ("model", "tfidf", "fallback") else "fallback",
+                }
 
         threshold = max(0.05, min(0.95, float(getattr(self, "semantic_min_score", self.SEMANTIC_MIN_SCORE))))
         # Tier 1: sentence-transformers if available.
@@ -3358,8 +3453,8 @@ class StudyPlanEngine:
                             best_score = score
                             best_id = ordered_ids[idx]
                     if best_id and best_score >= threshold:
-                        self._semantic_cache_set(cache_key, best_id)
-                        return best_id
+                        self._semantic_cache_set(cache_key, best_id, "model", best_score)
+                        return {"outcome_id": best_id, "score": best_score, "method": "model"}
             except Exception:
                 # Keep fallback paths active even if semantic model inference fails.
                 pass
@@ -3377,8 +3472,8 @@ class StudyPlanEngine:
                 best_score = float(sims[best_idx])
                 if best_score >= max(0.18, threshold * 0.55):
                     best_id = ordered_ids[best_idx]
-                    self._semantic_cache_set(cache_key, best_id)
-                    return best_id
+                    self._semantic_cache_set(cache_key, best_id, "tfidf", best_score)
+                    return {"outcome_id": best_id, "score": best_score, "method": "tfidf"}
         except Exception:
             pass
 
@@ -3395,24 +3490,48 @@ class StudyPlanEngine:
                 best_ratio = ratio
                 best_id = oid
         if best_id and best_ratio >= 0.52:
-            self._semantic_cache_set(cache_key, best_id)
-            return best_id
-        return None
+            self._semantic_cache_set(cache_key, best_id, "fallback", best_ratio)
+            return {"outcome_id": best_id, "score": best_ratio, "method": "fallback"}
+        return {"outcome_id": None, "score": 0.0, "method": "fallback"}
 
-    def _question_outcome_ids(self, chapter: str, idx: int) -> List[str]:
-        """Resolve outcome IDs for a question (explicit tags first, then stable fallback)."""
+    def _semantic_best_outcome_id(
+        self, chapter: str, source_text: str, outcome_lookup: Dict[str, Dict[str, Any]]
+    ) -> str | None:
+        match = self._semantic_best_outcome_match(chapter, source_text, outcome_lookup)
+        candidate = str(match.get("outcome_id", "") or "").strip()
+        return candidate if candidate in outcome_lookup else None
+
+    def resolve_question_outcomes(self, chapter: str, idx: int) -> Dict[str, Any]:
+        """Resolve question outcome routing with semantic metadata."""
+        result: Dict[str, Any] = {
+            "outcome_ids": [],
+            "semantic_match_confidence": 0.0,
+            "semantic_match_method": "fallback",
+            "reason": "deterministic fallback",
+        }
         questions = self.QUESTIONS.get(chapter, [])
         if not isinstance(questions, list) or not (0 <= idx < len(questions)):
-            return []
+            return result
         question = questions[idx]
         if not isinstance(question, dict):
-            return []
+            return result
         outcome_lookup = self._chapter_outcome_lookup(chapter)
         if not outcome_lookup:
-            return []
+            return result
+
         known_ids = set(outcome_lookup.keys())
         text_to_id = {str(v.get("text", "")).strip().lower(): k for k, v in outcome_lookup.items()}
         resolved: List[str] = []
+
+        def _set_semantic(match: Dict[str, Any], default_reason: str) -> None:
+            try:
+                score = float(match.get("score", 0.0) or 0.0)
+            except Exception:
+                score = 0.0
+            method = str(match.get("method", "fallback") or "fallback").strip().lower()
+            result["semantic_match_confidence"] = max(0.0, min(1.0, score))
+            result["semantic_match_method"] = method if method in ("model", "tfidf", "fallback") else "fallback"
+            result["reason"] = default_reason
 
         tagged_ids = question.get("outcome_ids", [])
         if isinstance(tagged_ids, list):
@@ -3420,6 +3539,12 @@ class StudyPlanEngine:
                 candidate = str(value or "").strip()
                 if candidate and candidate in known_ids and candidate not in resolved:
                     resolved.append(candidate)
+        if resolved:
+            result["outcome_ids"] = resolved
+            result["semantic_match_confidence"] = 1.0
+            result["semantic_match_method"] = "fallback"
+            result["reason"] = "explicit outcome_ids tag"
+            return result
 
         tagged_outcomes = question.get("outcomes", [])
         if isinstance(tagged_outcomes, list):
@@ -3436,38 +3561,78 @@ class StudyPlanEngine:
                     if candidate not in resolved:
                         resolved.append(candidate)
                 elif text_key:
-                    candidate = self._semantic_best_outcome_id(chapter, str(value or ""), outcome_lookup)
+                    match = self._semantic_best_outcome_match(chapter, str(value or ""), outcome_lookup)
+                    candidate = str(match.get("outcome_id", "") or "").strip()
                     if candidate and candidate in known_ids and candidate not in resolved:
                         resolved.append(candidate)
+                        _set_semantic(match, "semantic map from tagged outcome text")
+        if resolved:
+            result["outcome_ids"] = resolved
+            if str(result.get("reason", "")).startswith("deterministic"):
+                result["semantic_match_confidence"] = 1.0
+                result["semantic_match_method"] = "fallback"
+                result["reason"] = "explicit outcomes tag"
+            return result
 
         capability_tag = str(question.get("capability", "") or "").strip().upper()
         if capability_tag and capability_tag == self._chapter_capability(chapter):
-            if not resolved:
-                # For capability-tagged but unlinked questions, attempt semantic mapping first.
-                question_text = str(question.get("question", "") or "").strip()
-                semantic_match = self._semantic_best_outcome_id(chapter, question_text, outcome_lookup)
-                if semantic_match and semantic_match in known_ids:
-                    resolved.append(semantic_match)
-                else:
-                    ordered_ids = sorted(known_ids)
-                    qid = self._question_qid(chapter, idx) or str(idx)
-                    digest = hashlib.sha1(qid.encode("utf-8")).hexdigest()
-                    bucket = int(digest[:8], 16) % max(1, len(ordered_ids))
-                    resolved.append(ordered_ids[bucket])
+            question_text = str(question.get("question", "") or "").strip()
+            match = self._semantic_best_outcome_match(chapter, question_text, outcome_lookup)
+            candidate = str(match.get("outcome_id", "") or "").strip()
+            if candidate and candidate in known_ids:
+                resolved.append(candidate)
+                _set_semantic(match, "semantic map from capability-tagged question")
+            else:
+                ordered_ids = sorted(known_ids)
+                qid = self._question_qid(chapter, idx) or str(idx)
+                digest = hashlib.sha1(qid.encode("utf-8")).hexdigest()
+                bucket = int(digest[:8], 16) % max(1, len(ordered_ids))
+                resolved.append(ordered_ids[bucket])
+                result["semantic_match_confidence"] = 0.0
+                result["semantic_match_method"] = "fallback"
+                result["reason"] = "capability deterministic bucket"
+            result["outcome_ids"] = resolved
+            return result
 
-        if resolved:
-            return resolved
-
-        # Stable fallback for untagged legacy questions: semantic map first, then deterministic map.
         question_text = str(question.get("question", "") or "").strip()
-        semantic_match = self._semantic_best_outcome_id(chapter, question_text, outcome_lookup)
-        if semantic_match and semantic_match in known_ids:
-            return [semantic_match]
+        match = self._semantic_best_outcome_match(chapter, question_text, outcome_lookup)
+        candidate = str(match.get("outcome_id", "") or "").strip()
+        if candidate and candidate in known_ids:
+            _set_semantic(match, "semantic map from question text")
+            result["outcome_ids"] = [candidate]
+            return result
+
         ordered_ids = sorted(known_ids)
         qid = self._question_qid(chapter, idx) or str(idx)
         digest = hashlib.sha1(qid.encode("utf-8")).hexdigest()
         bucket = int(digest[:8], 16) % max(1, len(ordered_ids))
-        return [ordered_ids[bucket]]
+        result["outcome_ids"] = [ordered_ids[bucket]]
+        result["semantic_match_confidence"] = 0.0
+        result["semantic_match_method"] = "fallback"
+        result["reason"] = "stable deterministic fallback"
+        return result
+
+    def _question_outcome_ids(self, chapter: str, idx: int) -> List[str]:
+        """Compatibility wrapper that returns only outcome ids."""
+        route = self.resolve_question_outcomes(chapter, idx)
+        ids = route.get("outcome_ids", [])
+        if isinstance(ids, list):
+            cleaned = [str(v).strip() for v in ids if str(v).strip()]
+            if cleaned:
+                return cleaned
+        return []
+
+    def get_question_route_meta(self, chapter: str, idx: int) -> Dict[str, Any]:
+        """Public accessor for question routing metadata used by UI diagnostics."""
+        route = self.resolve_question_outcomes(chapter, idx)
+        if not isinstance(route, dict):
+            return {
+                "outcome_ids": [],
+                "semantic_match_confidence": 0.0,
+                "semantic_match_method": "fallback",
+                "reason": "deterministic fallback",
+            }
+        return route
 
     def _is_outcome_covered(self, stats: Dict[str, Any] | None) -> bool:
         """Return whether an outcome is considered covered."""
@@ -3634,6 +3799,557 @@ class StudyPlanEngine:
                     return True
         return False
 
+    def has_undercovered_outcome_activity_today(self, capabilities: List[str] | None = None) -> bool:
+        """Return True if today's attempts touched currently uncovered outcomes."""
+        today_iso = datetime.date.today().isoformat()
+        cap_set = {str(c).strip().upper() for c in (capabilities or []) if str(c).strip()} if capabilities else None
+        if not isinstance(self.outcome_stats, dict):
+            return False
+
+        uncovered_by_chapter: Dict[str, Set[str]] = {}
+        for chapter in self.CHAPTERS:
+            if cap_set is not None and self._chapter_capability(chapter) not in cap_set:
+                continue
+            mastery = self.get_chapter_outcome_mastery(chapter)
+            uncovered_ids = mastery.get("uncovered_ids", [])
+            if isinstance(uncovered_ids, list):
+                cleaned = {str(v).strip() for v in uncovered_ids if str(v).strip()}
+                if cleaned:
+                    uncovered_by_chapter[chapter] = cleaned
+
+        if not uncovered_by_chapter:
+            return False
+
+        for chapter, items in self.outcome_stats.items():
+            if chapter not in uncovered_by_chapter:
+                continue
+            if not isinstance(items, dict):
+                continue
+            uncovered_ids = uncovered_by_chapter[chapter]
+            for outcome_id, entry in items.items():
+                if str(outcome_id).strip() not in uncovered_ids:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("last_seen", "") or "").strip() != today_iso:
+                    continue
+                try:
+                    attempts = int(entry.get("attempts", 0) or 0)
+                except Exception:
+                    attempts = 0
+                if attempts > 0:
+                    return True
+        return False
+
+    def get_capability_coverage_debt(
+        self, max_coverage: float = 85.0, min_uncovered: int = 1
+    ) -> Dict[str, Dict[str, Any]]:
+        """Return per-capability coverage debt summary."""
+        mastery = self.get_outcome_mastery_map()
+        by_capability = mastery.get("by_capability", {})
+        if not isinstance(by_capability, dict):
+            return {}
+
+        rows: list[tuple[float, str, Dict[str, Any]]] = []
+        for capability, item in by_capability.items():
+            if not isinstance(item, dict):
+                continue
+            cap = str(capability).strip().upper()
+            uncovered = int(item.get("uncovered_outcomes", 0) or 0)
+            coverage_pct = float(item.get("coverage_pct", 0.0) or 0.0)
+            chapters = item.get("chapters", [])
+            if not isinstance(chapters, list):
+                chapters = []
+            chapters = [str(ch).strip() for ch in chapters if str(ch).strip()]
+            if uncovered < int(min_uncovered):
+                continue
+            if coverage_pct >= float(max_coverage):
+                continue
+
+            # Syllabus pressure multiplier from average L2/L3 mix.
+            total_level = 0.0
+            level2_sum = 0.0
+            level3_sum = 0.0
+            for chapter in chapters:
+                info = getattr(self, "syllabus_structure", {}).get(chapter, {})
+                if not isinstance(info, dict):
+                    continue
+                mix = info.get("intellectual_level_mix", {})
+                if not isinstance(mix, dict):
+                    continue
+                l1 = float(mix.get("level_1", 0) or 0)
+                l2 = float(mix.get("level_2", 0) or 0)
+                l3 = float(mix.get("level_3", 0) or 0)
+                level_total = max(0.0, l1 + l2 + l3)
+                if level_total <= 0:
+                    continue
+                total_level += level_total
+                level2_sum += l2
+                level3_sum += l3
+            if total_level > 0:
+                avg_level2_ratio = level2_sum / total_level
+                avg_level3_ratio = level3_sum / total_level
+            else:
+                avg_level2_ratio = 0.0
+                avg_level3_ratio = 0.0
+
+            coverage_ratio = max(0.0, min(1.0, coverage_pct / 100.0))
+            pressure = 1.0 + min(0.20, (avg_level3_ratio * 0.5) + (avg_level2_ratio * 0.25))
+            debt_score = float(uncovered) * (1.0 + (1.0 - coverage_ratio)) * pressure
+            payload = {
+                "capability": cap,
+                "uncovered_outcomes": uncovered,
+                "coverage_pct": coverage_pct,
+                "debt_score": debt_score,
+                "chapters": chapters,
+            }
+            rows.append((debt_score, cap, payload))
+
+        rows.sort(key=lambda x: (-x[0], x[1]))
+        return {cap: payload for _score, cap, payload in rows}
+
+    def _chapter_has_uncovered_outcomes(self, chapter: str) -> bool:
+        """Return True when chapter has any uncovered syllabus outcomes."""
+        try:
+            mastery = self.get_chapter_outcome_mastery(chapter)
+        except Exception:
+            return False
+        try:
+            return int(mastery.get("uncovered_outcomes", 0) or 0) > 0
+        except Exception:
+            return False
+
+    def _resolve_interleave_target_outcomes(
+        self, chapter: str, target_outcome_ids: List[str] | None = None
+    ) -> list[str]:
+        """Resolve stable target outcomes for semantic interleave routing."""
+        outcome_lookup = self._chapter_outcome_lookup(chapter)
+        if not outcome_lookup:
+            return []
+        outcome_order = [oid for oid in outcome_lookup.keys() if isinstance(oid, str) and oid.strip()]
+        if not outcome_order:
+            return []
+        outcome_pos = {oid: idx for idx, oid in enumerate(outcome_order)}
+
+        normalized_targets: list[str] = []
+        if isinstance(target_outcome_ids, list):
+            for item in target_outcome_ids:
+                oid = str(item or "").strip()
+                if oid and oid in outcome_pos and oid not in normalized_targets:
+                    normalized_targets.append(oid)
+        if not normalized_targets:
+            chapter_outcome = self.get_chapter_outcome_mastery(chapter)
+            uncovered = chapter_outcome.get("uncovered_ids", []) if isinstance(chapter_outcome, dict) else []
+            if isinstance(uncovered, list):
+                for item in uncovered:
+                    oid = str(item or "").strip()
+                    if oid and oid in outcome_pos and oid not in normalized_targets:
+                        normalized_targets.append(oid)
+        if not normalized_targets:
+            stats_by_ch = self.outcome_stats.get(chapter, {}) if isinstance(self.outcome_stats, dict) else {}
+            ranked_outcomes: list[tuple[float, int, str]] = []
+            for oid in outcome_order:
+                stats = stats_by_ch.get(oid, {}) if isinstance(stats_by_ch, dict) else {}
+                if not isinstance(stats, dict):
+                    stats = {}
+                try:
+                    attempts = int(stats.get("attempts", 0) or 0)
+                except Exception:
+                    attempts = 0
+                try:
+                    correct = int(stats.get("correct", 0) or 0)
+                except Exception:
+                    correct = 0
+                accuracy = 0.0 if attempts <= 0 else (correct / max(1, attempts))
+                ranked_outcomes.append((accuracy, attempts, oid))
+            ranked_outcomes.sort(key=lambda x: (x[0], x[1], outcome_pos.get(x[2], 9999)))
+            if ranked_outcomes:
+                normalized_targets.append(ranked_outcomes[0][2])
+        if not normalized_targets:
+            normalized_targets = [outcome_order[0]]
+        return normalized_targets
+
+    def get_semantic_interleave_mix(
+        self, chapter: str, indices: List[int], target_outcome_ids: List[str] | None = None
+    ) -> Dict[str, Any]:
+        """Return semantic interleave mix counts for provided question indices."""
+        result: Dict[str, Any] = {
+            "target": 0,
+            "adjacent": 0,
+            "far": 0,
+            "unknown": 0,
+            "total": 0,
+            "target_outcomes": [],
+        }
+        questions = self.QUESTIONS.get(chapter, [])
+        if not isinstance(questions, list) or not questions:
+            return result
+        if not isinstance(indices, list):
+            return result
+
+        cleaned_indices: list[int] = []
+        seen: set[int] = set()
+        for item in indices:
+            if not isinstance(item, int):
+                continue
+            if item < 0 or item >= len(questions):
+                continue
+            if item in seen:
+                continue
+            seen.add(item)
+            cleaned_indices.append(item)
+        if not cleaned_indices:
+            return result
+
+        outcome_lookup = self._chapter_outcome_lookup(chapter)
+        if not outcome_lookup:
+            result["unknown"] = len(cleaned_indices)
+            result["total"] = len(cleaned_indices)
+            return result
+        outcome_order = [oid for oid in outcome_lookup.keys() if isinstance(oid, str) and oid.strip()]
+        if not outcome_order:
+            result["unknown"] = len(cleaned_indices)
+            result["total"] = len(cleaned_indices)
+            return result
+        outcome_pos = {oid: idx for idx, oid in enumerate(outcome_order)}
+
+        targets = self._resolve_interleave_target_outcomes(chapter, target_outcome_ids)
+        target_set = set(targets)
+        target_positions = [outcome_pos[oid] for oid in targets if oid in outcome_pos]
+        if not target_positions:
+            result["unknown"] = len(cleaned_indices)
+            result["total"] = len(cleaned_indices)
+            return result
+
+        for idx in cleaned_indices:
+            outcome_ids = self._question_outcome_ids(chapter, idx)
+            if not outcome_ids:
+                result["unknown"] = int(result["unknown"]) + 1
+                continue
+            nearest = 9999
+            in_target = False
+            for oid in outcome_ids:
+                pos = outcome_pos.get(oid)
+                if pos is None:
+                    continue
+                if oid in target_set:
+                    in_target = True
+                for tpos in target_positions:
+                    dist = abs(pos - tpos)
+                    if dist < nearest:
+                        nearest = dist
+            if in_target:
+                result["target"] = int(result["target"]) + 1
+            elif nearest <= 1:
+                result["adjacent"] = int(result["adjacent"]) + 1
+            elif nearest < 9999:
+                result["far"] = int(result["far"]) + 1
+            else:
+                result["unknown"] = int(result["unknown"]) + 1
+
+        result["total"] = len(cleaned_indices)
+        result["target_outcomes"] = targets
+        return result
+
+    def select_outcome_gap_questions(self, chapter: str, count: int = 10) -> list[int]:
+        """Select question indices that target uncovered outcomes first."""
+        questions = self.QUESTIONS.get(chapter, [])
+        if not isinstance(questions, list) or not questions:
+            return []
+        try:
+            count = int(count)
+        except Exception:
+            count = 10
+        if count <= 0:
+            return []
+
+        chapter_outcome = self.get_chapter_outcome_mastery(chapter)
+        uncovered_ids = set(chapter_outcome.get("uncovered_ids", []) or [])
+        if not uncovered_ids:
+            return []
+
+        today = datetime.date.today()
+        srs_list = self.srs_data.get(chapter, [])
+        must_review = self.must_review.get(chapter, {}) if isinstance(self.must_review, dict) else {}
+        recent_raw = self.quiz_recent.get(chapter, []) if isinstance(self.quiz_recent, dict) else []
+        if not isinstance(recent_raw, list):
+            recent_raw = []
+        recent: list[int] = []
+        for item in recent_raw[-500:]:
+            try:
+                idx = int(item)
+            except Exception:
+                continue
+            if 0 <= idx < len(questions):
+                recent.append(idx)
+        cooldown_n = max(8, int(count) * 2)
+        cooldown_set = set(recent[-cooldown_n:])
+
+        rows: list[tuple[int, int, float, float, float, int, int]] = []
+        for idx in range(len(questions)):
+            outcome_ids = self._question_outcome_ids(chapter, idx)
+            if not outcome_ids:
+                continue
+            hits = sum(1 for oid in outcome_ids if oid in uncovered_ids)
+            if hits <= 0:
+                continue
+            srs = srs_list[idx] if idx < len(srs_list) and isinstance(srs_list[idx], dict) else {}
+            due_kind = 0
+            try:
+                due_date = self._parse_date(must_review.get(str(idx))) if isinstance(must_review, dict) else None
+                if due_date and due_date <= today:
+                    due_kind = 2
+            except Exception:
+                due_kind = 0
+            if due_kind == 0 and self.is_overdue(srs, today):
+                due_kind = 1
+            try:
+                retention = float(self.get_retention_probability(chapter, idx))
+            except Exception:
+                retention = 1.0
+            if not math.isfinite(retention):
+                retention = 1.0
+            retention = max(0.0, min(1.0, retention))
+            model_prob = self.predict_recall_prob(chapter, idx)
+            recall_prob = float(model_prob) if isinstance(model_prob, (int, float)) else retention
+            if not math.isfinite(recall_prob):
+                recall_prob = 1.0
+            recall_prob = max(0.0, min(1.0, recall_prob))
+            try:
+                miss_risk = float(self._estimate_question_miss_risk(chapter, idx))
+            except Exception:
+                miss_risk = 0.0
+            if not math.isfinite(miss_risk):
+                miss_risk = 0.0
+            miss_risk = max(0.0, min(1.0, miss_risk))
+            in_cooldown = 1 if idx in cooldown_set else 0
+            rows.append((due_kind, hits, retention, recall_prob, miss_risk, in_cooldown, idx))
+
+        if not rows:
+            return []
+
+        rows.sort(
+            key=lambda r: (
+                -r[0],      # must-review due, then overdue
+                -r[1],      # more uncovered outcome hits first
+                r[2],       # lower retention first
+                r[3],       # lower recall first
+                -r[4],      # higher miss risk first
+                r[5],       # prefer not in cooldown
+                r[6],       # deterministic tie-break
+            )
+        )
+
+        selected = [idx for *_rest, idx in rows[: min(count, len(rows))]]
+        return selected
+
+    def select_semantic_interleave_questions(
+        self, chapter: str, count: int = 10, target_outcome_ids: List[str] | None = None
+    ) -> list[int]:
+        """Build an interleaved quiz mix using target/adjacent/far semantic buckets."""
+        questions = self.QUESTIONS.get(chapter, [])
+        if not isinstance(questions, list) or not questions:
+            return []
+        try:
+            count = int(count)
+        except Exception:
+            count = 10
+        if count <= 0:
+            return []
+
+        outcome_lookup = self._chapter_outcome_lookup(chapter)
+        if not outcome_lookup:
+            return self.select_srs_questions(chapter, count)
+        outcome_order = [oid for oid in outcome_lookup.keys() if isinstance(oid, str) and oid.strip()]
+        if not outcome_order:
+            return self.select_srs_questions(chapter, count)
+        outcome_pos = {oid: idx for idx, oid in enumerate(outcome_order)}
+        normalized_targets = self._resolve_interleave_target_outcomes(chapter, target_outcome_ids)
+
+        target_set = set(normalized_targets)
+        target_pos = [outcome_pos[oid] for oid in normalized_targets if oid in outcome_pos]
+        if not target_pos:
+            target_pos = [0]
+
+        today = datetime.date.today()
+        srs_list = self.srs_data.get(chapter, [])
+        must_review = self.must_review.get(chapter, {}) if isinstance(self.must_review, dict) else {}
+        recent_raw = self.quiz_recent.get(chapter, []) if isinstance(self.quiz_recent, dict) else []
+        if not isinstance(recent_raw, list):
+            recent_raw = []
+        recent: list[int] = []
+        for item in recent_raw[-500:]:
+            try:
+                idx = int(item)
+            except Exception:
+                continue
+            if 0 <= idx < len(questions):
+                recent.append(idx)
+        cooldown_n = max(8, int(count) * 2)
+        cooldown_set = set(recent[-cooldown_n:])
+
+        rows_by_bucket: dict[int, list[tuple[int, float, float, float, int, int]]] = {0: [], 1: [], 2: []}
+        all_rows: list[tuple[int, int, float, float, float, int, int]] = []
+        for idx in range(len(questions)):
+            outcome_ids = self._question_outcome_ids(chapter, idx)
+            if not outcome_ids:
+                continue
+            nearest = 9999
+            in_target = False
+            for oid in outcome_ids:
+                pos = outcome_pos.get(oid)
+                if pos is None:
+                    continue
+                if oid in target_set:
+                    in_target = True
+                for tpos in target_pos:
+                    dist = abs(pos - tpos)
+                    if dist < nearest:
+                        nearest = dist
+            if in_target:
+                bucket = 0
+            elif nearest <= 1:
+                bucket = 1
+            else:
+                bucket = 2
+
+            srs = srs_list[idx] if idx < len(srs_list) and isinstance(srs_list[idx], dict) else {}
+            due_kind = 0
+            try:
+                due_date = self._parse_date(must_review.get(str(idx))) if isinstance(must_review, dict) else None
+                if due_date and due_date <= today:
+                    due_kind = 2
+            except Exception:
+                due_kind = 0
+            if due_kind == 0 and self.is_overdue(srs, today):
+                due_kind = 1
+            try:
+                retention = float(self.get_retention_probability(chapter, idx))
+            except Exception:
+                retention = 1.0
+            if not math.isfinite(retention):
+                retention = 1.0
+            retention = max(0.0, min(1.0, retention))
+            model_prob = self.predict_recall_prob(chapter, idx)
+            recall_prob = float(model_prob) if isinstance(model_prob, (int, float)) else retention
+            if not math.isfinite(recall_prob):
+                recall_prob = 1.0
+            recall_prob = max(0.0, min(1.0, recall_prob))
+            try:
+                miss_risk = float(self._estimate_question_miss_risk(chapter, idx))
+            except Exception:
+                miss_risk = 0.0
+            if not math.isfinite(miss_risk):
+                miss_risk = 0.0
+            miss_risk = max(0.0, min(1.0, miss_risk))
+            in_cooldown = 1 if idx in cooldown_set else 0
+
+            row = (due_kind, retention, recall_prob, miss_risk, in_cooldown, idx)
+            rows_by_bucket[bucket].append(row)
+            all_rows.append((bucket, *row))
+
+        if not all_rows:
+            return self.select_srs_questions(chapter, count)
+
+        for bucket in rows_by_bucket.keys():
+            rows_by_bucket[bucket].sort(
+                key=lambda r: (
+                    -r[0],    # must-review due, then overdue
+                    r[1],     # low retention first
+                    r[2],     # low recall first
+                    -r[3],    # high miss risk first
+                    r[4],     # prefer not in cooldown
+                    r[5],     # deterministic index tie-break
+                )
+            )
+        all_rows.sort(
+            key=lambda r: (
+                -r[1],    # due pressure first across all buckets
+                r[2],     # low retention
+                r[3],     # low recall
+                -r[4],    # high miss risk
+                r[5],     # cooldown
+                r[6],     # index
+            )
+        )
+
+        try:
+            target_ratio = float(getattr(self, "INTERLEAVE_TARGET_RATIO", 0.60) or 0.60)
+        except Exception:
+            target_ratio = 0.60
+        try:
+            adjacent_ratio = float(getattr(self, "INTERLEAVE_ADJACENT_RATIO", 0.25) or 0.25)
+        except Exception:
+            adjacent_ratio = 0.25
+        try:
+            far_ratio = float(getattr(self, "INTERLEAVE_FAR_RATIO", 0.15) or 0.15)
+        except Exception:
+            far_ratio = 0.15
+        try:
+            min_target = int(getattr(self, "INTERLEAVE_MIN_TARGET", 1) or 1)
+        except Exception:
+            min_target = 1
+        target_ratio = max(0.0, min(1.0, target_ratio))
+        adjacent_ratio = max(0.0, min(1.0, adjacent_ratio))
+        far_ratio = max(0.0, min(1.0, far_ratio))
+        min_target = max(0, min_target)
+
+        selected: list[int] = []
+        selected_set: set[int] = set()
+
+        for _bucket, due_kind, _ret, _rec, _risk, _cool, idx in all_rows:
+            if due_kind <= 0:
+                continue
+            if idx in selected_set:
+                continue
+            selected.append(idx)
+            selected_set.add(idx)
+            if len(selected) >= count:
+                return selected[:count]
+
+        remaining = max(0, count - len(selected))
+        if remaining <= 0:
+            return selected[:count]
+
+        target_quota = int(round(count * target_ratio))
+        adjacent_quota = int(round(count * adjacent_ratio))
+        far_quota = int(round(count * far_ratio))
+        if rows_by_bucket[0]:
+            target_quota = max(target_quota, min_target)
+        target_quota = min(count, target_quota)
+        adjacent_quota = min(max(0, count - target_quota), adjacent_quota)
+        far_quota = min(max(0, count - target_quota - adjacent_quota), far_quota)
+
+        bucket_order = [
+            (0, target_quota),
+            (1, adjacent_quota),
+            (2, far_quota),
+        ]
+        for bucket, quota in bucket_order:
+            if quota <= 0:
+                continue
+            added = 0
+            for due_kind, _ret, _rec, _risk, _cool, idx in rows_by_bucket.get(bucket, []):
+                if idx in selected_set:
+                    continue
+                selected.append(idx)
+                selected_set.add(idx)
+                added += 1
+                if len(selected) >= count:
+                    return selected[:count]
+                if added >= quota:
+                    break
+
+        for _bucket, _due_kind, _ret, _rec, _risk, _cool, idx in all_rows:
+            if idx in selected_set:
+                continue
+            selected.append(idx)
+            selected_set.add(idx)
+            if len(selected) >= count:
+                break
+
+        return selected[:count]
+
     def record_outcome_event(self, chapter: str, question_index: int, is_correct: bool) -> None:
         """Record an attempt against mapped syllabus outcomes for a question."""
         if chapter not in self.CHAPTERS:
@@ -3788,6 +4504,7 @@ class StudyPlanEngine:
             self.quiz_results = {}
         self.quiz_recent = self._coerce_quiz_recent(getattr(self, "quiz_recent", {}))
         self.error_notebook = self._coerce_error_notebook(getattr(self, "error_notebook", {}))
+        self.gap_routing_log = self._coerce_gap_routing_log(getattr(self, "gap_routing_log", []))
         self.question_stats = self._coerce_question_stats(getattr(self, "question_stats", {}))
         self.outcome_stats = self._coerce_outcome_stats(getattr(self, "outcome_stats", {}))
         self._normalize_chapter_keys()
@@ -3968,6 +4685,20 @@ class StudyPlanEngine:
                 fixed[nk] = v
             self.error_notebook = fixed
 
+        def _merge_gap_routing_log():
+            if not isinstance(getattr(self, "gap_routing_log", None), list):
+                return
+            merged_rows: list[dict[str, Any]] = []
+            for row in self.gap_routing_log:
+                if not isinstance(row, dict):
+                    continue
+                chapter = row.get("chapter")
+                if isinstance(chapter, str):
+                    row = dict(row)
+                    row["chapter"] = _norm_key(chapter) or chapter
+                merged_rows.append(row)
+            self.gap_routing_log = merged_rows
+
         def _merge_question_stats():
             if not isinstance(getattr(self, "question_stats", None), dict):
                 return
@@ -4005,6 +4736,7 @@ class StudyPlanEngine:
         _merge_difficulty_counts()
         _merge_quiz_recent()
         _merge_error_notebook()
+        _merge_gap_routing_log()
         _merge_question_stats()
         _merge_outcome_stats()
 
@@ -4571,6 +5303,163 @@ class StudyPlanEngine:
         )
         return len(valid)
 
+    def _build_semantic_import_stats(self) -> dict[str, Any]:
+        return {
+            "total_new": 0,
+            "mapped": 0,
+            "pretagged": 0,
+            "low_confidence": 0,
+            "unmapped": 0,
+            "coverage_pct": 0.0,
+            "quality_score": 0.0,
+            "dominant_outcome": "",
+            "dominant_ratio": 0.0,
+            "method_counts": {"model": 0, "tfidf": 0, "fallback": 0},
+            "outcome_counts": {},
+            "chapter_breakdown": {},
+            "warnings": [],
+        }
+
+    def _finalize_semantic_import_stats(self, stats: dict[str, Any]) -> dict[str, Any]:
+        total_new = int(stats.get("total_new", 0) or 0)
+        mapped = int(stats.get("mapped", 0) or 0)
+        low_conf = int(stats.get("low_confidence", 0) or 0)
+        unmapped = int(stats.get("unmapped", 0) or 0)
+        outcome_counts = stats.get("outcome_counts", {})
+        if not isinstance(outcome_counts, dict):
+            outcome_counts = {}
+        method_counts = stats.get("method_counts", {})
+        if not isinstance(method_counts, dict):
+            method_counts = {"model": 0, "tfidf": 0, "fallback": 0}
+
+        coverage_pct = (100.0 * mapped / max(1, total_new)) if total_new > 0 else 0.0
+        dominant_outcome = ""
+        dominant_ratio = 0.0
+        if outcome_counts:
+            dominant_outcome = max(outcome_counts.items(), key=lambda kv: int(kv[1] or 0))[0]
+            try:
+                dominant_count = int(outcome_counts.get(dominant_outcome, 0) or 0)
+            except Exception:
+                dominant_count = 0
+            dominant_ratio = dominant_count / max(1, mapped) if mapped > 0 else 0.0
+
+        penalty = 0.0
+        if total_new > 0:
+            penalty += (low_conf / total_new) * 0.35
+            penalty += (unmapped / total_new) * 0.45
+        if mapped >= 5 and dominant_ratio > 0.70:
+            penalty += min(0.20, dominant_ratio - 0.70)
+        quality = max(0.0, min(1.0, (mapped / max(1, total_new)) - penalty)) if total_new > 0 else 0.0
+
+        warnings: list[str] = []
+        if total_new > 0 and coverage_pct < 65.0:
+            warnings.append("Low semantic mapping coverage for imported questions.")
+        if total_new > 0 and low_conf > 0:
+            warnings.append(f"{low_conf} imported questions had low-confidence semantic matches.")
+        if mapped >= 5 and dominant_ratio > 0.70 and dominant_outcome:
+            warnings.append(
+                f"Outcome concentration detected: {dominant_outcome} dominates {dominant_ratio * 100:.0f}% of mapped imports."
+            )
+
+        stats["coverage_pct"] = float(coverage_pct)
+        stats["quality_score"] = float(quality)
+        stats["dominant_outcome"] = dominant_outcome
+        stats["dominant_ratio"] = float(max(0.0, min(1.0, dominant_ratio)))
+        stats["warnings"] = warnings
+        return stats
+
+    def _semantic_tag_imported_questions(
+        self,
+        chapter: str,
+        start_idx: int,
+        added_count: int,
+        stats_acc: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        stats = stats_acc if isinstance(stats_acc, dict) else self._build_semantic_import_stats()
+        if chapter not in self.CHAPTERS:
+            return stats
+        questions = self.QUESTIONS.get(chapter, [])
+        if not isinstance(questions, list):
+            return stats
+        if added_count <= 0:
+            return stats
+        start = max(0, int(start_idx))
+        end = min(len(questions), start + int(added_count))
+        if start >= end:
+            return stats
+
+        chapter_row = stats.setdefault("chapter_breakdown", {}).setdefault(
+            chapter, {"total": 0, "mapped": 0, "low_confidence": 0, "unmapped": 0}
+        )
+        outcome_counts = stats.setdefault("outcome_counts", {})
+        method_counts = stats.setdefault("method_counts", {"model": 0, "tfidf": 0, "fallback": 0})
+        if not isinstance(outcome_counts, dict):
+            outcome_counts = {}
+            stats["outcome_counts"] = outcome_counts
+        if not isinstance(method_counts, dict):
+            method_counts = {"model": 0, "tfidf": 0, "fallback": 0}
+            stats["method_counts"] = method_counts
+
+        try:
+            threshold = float(getattr(self, "IMPORT_SEMANTIC_TAG_MIN_SCORE", 0.55) or 0.55)
+        except Exception:
+            threshold = 0.55
+        threshold = max(0.05, min(0.95, threshold))
+        fallback_threshold = max(0.60, threshold)
+
+        for idx in range(start, end):
+            q = questions[idx]
+            if not isinstance(q, dict):
+                continue
+            stats["total_new"] = int(stats.get("total_new", 0) or 0) + 1
+            chapter_row["total"] = int(chapter_row.get("total", 0) or 0) + 1
+
+            pretagged = q.get("outcome_ids", [])
+            pretagged_ids = [str(v).strip() for v in pretagged if str(v).strip()] if isinstance(pretagged, list) else []
+            if pretagged_ids:
+                stats["mapped"] = int(stats.get("mapped", 0) or 0) + 1
+                stats["pretagged"] = int(stats.get("pretagged", 0) or 0) + 1
+                chapter_row["mapped"] = int(chapter_row.get("mapped", 0) or 0) + 1
+                for oid in pretagged_ids:
+                    outcome_counts[oid] = int(outcome_counts.get(oid, 0) or 0) + 1
+                continue
+
+            route = self.resolve_question_outcomes(chapter, idx)
+            if not isinstance(route, dict):
+                route = {}
+            route_outcomes = route.get("outcome_ids", [])
+            outcome_ids = [str(v).strip() for v in route_outcomes if str(v).strip()] if isinstance(route_outcomes, list) else []
+            method = str(route.get("semantic_match_method", "fallback") or "fallback").strip().lower()
+            if method not in ("model", "tfidf", "fallback"):
+                method = "fallback"
+            try:
+                score = float(route.get("semantic_match_confidence", 0.0) or 0.0)
+            except Exception:
+                score = 0.0
+            score = max(0.0, min(1.0, score))
+
+            can_tag = bool(outcome_ids) and (
+                (method in ("model", "tfidf") and score >= threshold)
+                or (method == "fallback" and score >= fallback_threshold)
+            )
+            if can_tag:
+                q["outcome_ids"] = outcome_ids
+                q["semantic_match_confidence"] = score
+                q["semantic_match_method"] = method
+                stats["mapped"] = int(stats.get("mapped", 0) or 0) + 1
+                chapter_row["mapped"] = int(chapter_row.get("mapped", 0) or 0) + 1
+                method_counts[method] = int(method_counts.get(method, 0) or 0) + 1
+                for oid in outcome_ids:
+                    outcome_counts[oid] = int(outcome_counts.get(oid, 0) or 0) + 1
+            elif outcome_ids:
+                stats["low_confidence"] = int(stats.get("low_confidence", 0) or 0) + 1
+                chapter_row["low_confidence"] = int(chapter_row.get("low_confidence", 0) or 0) + 1
+            else:
+                stats["unmapped"] = int(stats.get("unmapped", 0) or 0) + 1
+                chapter_row["unmapped"] = int(chapter_row.get("unmapped", 0) or 0) + 1
+
+        return self._finalize_semantic_import_stats(stats)
+
     def import_questions_json(self, json_path: str) -> dict:
         """
         Flexible AI question import.
@@ -4593,6 +5482,7 @@ class StudyPlanEngine:
         chapters_touched = set()
         low_confidence_matches: list[str] = []
         unmatched_chapters: list[str] = []
+        semantic_import = self._build_semantic_import_stats()
 
         if isinstance(data, dict) and "chapter" in data and "questions" in data:
             chapter_name = data.get("chapter")
@@ -4601,8 +5491,14 @@ class StudyPlanEngine:
                 if chapter and score >= 0.35:
                     if score < 0.5:
                         low_confidence_matches.append(f"{chapter_name} -> {chapter} ({score:.0%})")
-                    total_added += self._add_questions(chapter, data.get("questions", []))
-                    chapters_touched.add(chapter)
+                    start_idx = len(self.QUESTIONS.get(chapter, []))
+                    added = self._add_questions(chapter, data.get("questions", []))
+                    if added:
+                        chapters_touched.add(chapter)
+                        semantic_import = self._semantic_tag_imported_questions(
+                            chapter, start_idx, added, semantic_import
+                        )
+                    total_added += added
                 else:
                     unmatched_chapters.append(chapter_name)
         elif isinstance(data, dict) and "questions_by_chapter" in data:
@@ -4619,9 +5515,13 @@ class StudyPlanEngine:
                         continue
                     if score < 0.5:
                         low_confidence_matches.append(f"{ch_key} -> {chapter} ({score:.0%})")
+                    start_idx = len(self.QUESTIONS.get(chapter, []))
                     added = self._add_questions(chapter, questions)
                     if added:
                         chapters_touched.add(chapter)
+                        semantic_import = self._semantic_tag_imported_questions(
+                            chapter, start_idx, added, semantic_import
+                        )
                     total_added += added
         elif isinstance(data, dict):
             for ch_key, questions in data.items():
@@ -4635,9 +5535,13 @@ class StudyPlanEngine:
                     continue
                 if score < 0.5:
                     low_confidence_matches.append(f"{ch_key} -> {chapter} ({score:.0%})")
+                start_idx = len(self.QUESTIONS.get(chapter, []))
                 added = self._add_questions(chapter, questions)
                 if added:
                     chapters_touched.add(chapter)
+                    semantic_import = self._semantic_tag_imported_questions(
+                        chapter, start_idx, added, semantic_import
+                    )
                 total_added += added
         elif isinstance(data, list):
             # Group by chapter field
@@ -4656,9 +5560,13 @@ class StudyPlanEngine:
                     low_confidence_matches.append(f"{chapter_name} -> {chapter} ({score:.0%})")
                 grouped.setdefault(chapter, []).append(item)
             for chapter, questions in grouped.items():
+                start_idx = len(self.QUESTIONS.get(chapter, []))
                 added = self._add_questions(chapter, questions)
                 if added:
                     chapters_touched.add(chapter)
+                    semantic_import = self._semantic_tag_imported_questions(
+                        chapter, start_idx, added, semantic_import
+                    )
                 total_added += added
         else:
             raise ValueError("Unsupported JSON format for AI questions")
@@ -4671,12 +5579,14 @@ class StudyPlanEngine:
             "chapters": sorted(chapters_touched),
             "low_confidence": sorted(set(low_confidence_matches)),
             "unmatched": sorted(set(unmatched_chapters)),
+            "semantic_import": self._finalize_semantic_import_stats(semantic_import),
         }
 
     def _import_questions_csv(self, csv_path: str) -> dict:
         """Import AI questions from CSV template."""
         total_added = 0
         chapters_touched = set()
+        semantic_import = self._build_semantic_import_stats()
 
         with open(csv_path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
@@ -4707,15 +5617,23 @@ class StudyPlanEngine:
                 grouped.setdefault(chapter, []).append(item)
 
             for chapter, questions in grouped.items():
+                start_idx = len(self.QUESTIONS.get(chapter, []))
                 added = self._add_questions(chapter, questions)
                 if added:
                     chapters_touched.add(chapter)
+                    semantic_import = self._semantic_tag_imported_questions(
+                        chapter, start_idx, added, semantic_import
+                    )
                 total_added += added
 
         self.save_questions()
         self.save_data()
 
-        return {"added": total_added, "chapters": sorted(chapters_touched)}
+        return {
+            "added": total_added,
+            "chapters": sorted(chapters_touched),
+            "semantic_import": self._finalize_semantic_import_stats(semantic_import),
+        }
 
     def import_pdf_scores(self, pdf_text: str, allow_lower: bool = False) -> dict:
         """
@@ -5476,6 +6394,41 @@ class StudyPlanEngine:
         # Pick most forgotten overdue question
         return min(retention_scores, key=lambda x: x[1])[0]
 
+    def _estimate_question_miss_risk(self, chapter: str, idx: int) -> float:
+        """Estimate miss risk from question stats and optional recall model output."""
+        if not getattr(self, "adaptive_quiz_prioritization", True):
+            return 0.0
+        stats = self._get_question_stats(chapter, idx)
+        if not isinstance(stats, dict):
+            return 0.0
+        try:
+            attempts = int(stats.get("attempts", 0) or 0)
+        except Exception:
+            attempts = 0
+        try:
+            correct = int(stats.get("correct", 0) or 0)
+        except Exception:
+            correct = 0
+        try:
+            streak = int(stats.get("streak", 0) or 0)
+        except Exception:
+            streak = 0
+        try:
+            avg_time = float(stats.get("avg_time_sec", 0) or 0.0)
+        except Exception:
+            avg_time = 0.0
+        if attempts <= 0:
+            miss_rate = 0.5
+        else:
+            miss_rate = 1.0 - min(1.0, max(0.0, correct / max(1, attempts)))
+        time_factor = min(1.0, max(0.0, avg_time / 60.0))
+        streak_factor = 1.0 - min(1.0, max(0.0, streak / 5.0))
+        risk = (0.65 * miss_rate) + (0.2 * time_factor) + (0.15 * streak_factor)
+        model_prob = self.predict_recall_prob(chapter, idx)
+        if model_prob is not None:
+            risk = max(risk, 1.0 - model_prob)
+        return max(0.0, min(1.0, risk))
+
     def select_srs_questions(self, chapter: str, count: int = 10) -> list[int]:
         """Select multiple questions prioritizing due/overdue, with anti-repeat cooldown."""
         questions = self.QUESTIONS.get(chapter, [])
@@ -5510,38 +6463,7 @@ class StudyPlanEngine:
         uncovered_outcome_ids = set(chapter_outcome.get("uncovered_ids", []) or [])
 
         def _miss_risk(idx: int) -> float:
-            if not getattr(self, "adaptive_quiz_prioritization", True):
-                return 0.0
-            stats = self._get_question_stats(chapter, idx)
-            if not isinstance(stats, dict):
-                return 0.0
-            try:
-                attempts = int(stats.get("attempts", 0) or 0)
-            except Exception:
-                attempts = 0
-            try:
-                correct = int(stats.get("correct", 0) or 0)
-            except Exception:
-                correct = 0
-            try:
-                streak = int(stats.get("streak", 0) or 0)
-            except Exception:
-                streak = 0
-            try:
-                avg_time = float(stats.get("avg_time_sec", 0) or 0.0)
-            except Exception:
-                avg_time = 0.0
-            if attempts <= 0:
-                miss_rate = 0.5
-            else:
-                miss_rate = 1.0 - min(1.0, max(0.0, correct / max(1, attempts)))
-            time_factor = min(1.0, max(0.0, avg_time / 60.0))
-            streak_factor = 1.0 - min(1.0, max(0.0, streak / 5.0))
-            risk = (0.65 * miss_rate) + (0.2 * time_factor) + (0.15 * streak_factor)
-            model_prob = self.predict_recall_prob(chapter, idx)
-            if model_prob is not None:
-                risk = max(risk, 1.0 - model_prob)
-            return max(0.0, min(1.0, risk))
+            return self._estimate_question_miss_risk(chapter, idx)
 
         def _outcome_gap_bonus(idx: int) -> float:
             if not uncovered_outcome_ids:
@@ -6201,6 +7123,159 @@ class StudyPlanEngine:
         dedup = list(reversed(dedup_rev))
         self.quiz_recent[chapter] = dedup[-max_keep:]
 
+    def record_gap_routing_event(
+        self,
+        chapter: str,
+        kind: str,
+        meta: Dict[str, Any],
+        score_pct: float | None = None,
+        max_keep: int = 500,
+    ) -> None:
+        """Persist per-session outcome-gap routing KPI telemetry."""
+        if chapter not in self.CHAPTERS:
+            return
+        if not isinstance(meta, dict):
+            return
+        kind_norm = str(kind or "quiz").strip().lower()
+        if kind_norm not in {"quiz", "drill", "leech", "review", "interleave"}:
+            kind_norm = "quiz"
+        try:
+            requested = max(0, int(meta.get("requested", 0) or 0))
+        except Exception:
+            requested = 0
+        try:
+            available = max(0, int(meta.get("available", 0) or 0))
+        except Exception:
+            available = 0
+        try:
+            hit = max(0, int(meta.get("hit", 0) or 0))
+        except Exception:
+            hit = 0
+        hit = min(hit, max(1, requested))
+        try:
+            selected_total = max(0, int(meta.get("selected_total", 0) or 0))
+        except Exception:
+            selected_total = 0
+        try:
+            score = float(score_pct) if score_pct is not None else 0.0
+        except Exception:
+            score = 0.0
+        score = max(0.0, min(100.0, score))
+        capability = self._chapter_capability(chapter) or "?"
+
+        now = datetime.datetime.now()
+        row = {
+            "ts": now.isoformat(timespec="seconds"),
+            "date": now.date().isoformat(),
+            "chapter": chapter,
+            "capability": capability,
+            "kind": kind_norm,
+            "eligible": bool(meta.get("eligible", False)),
+            "active": bool(meta.get("active", False)),
+            "requested": requested,
+            "available": available,
+            "hit": hit,
+            "selected_total": selected_total,
+            "hit_ratio": float(hit / max(1, requested)),
+            "score_pct": score,
+        }
+        if not isinstance(self.gap_routing_log, list):
+            self.gap_routing_log = []
+        self.gap_routing_log.append(row)
+        self.gap_routing_log = self._coerce_gap_routing_log(self.gap_routing_log, max_keep=max_keep)
+
+    def get_gap_routing_summary(self, days: int = 7) -> Dict[str, Any]:
+        """Summarize outcome-gap routing KPIs over a rolling day window."""
+        try:
+            window_days = max(1, int(days))
+        except Exception:
+            window_days = 7
+        today = datetime.date.today()
+        cutoff = today - datetime.timedelta(days=window_days - 1)
+        rows = self._coerce_gap_routing_log(getattr(self, "gap_routing_log", []), max_keep=5000)
+        sessions = 0
+        eligible_sessions = 0
+        active_sessions = 0
+        requested_total = 0
+        available_total = 0
+        hit_total = 0
+        for row in rows:
+            date_val = self._parse_date(row.get("date"))
+            if date_val is None or date_val < cutoff:
+                continue
+            sessions += 1
+            if bool(row.get("eligible", False)):
+                eligible_sessions += 1
+            if bool(row.get("active", False)):
+                active_sessions += 1
+            requested_total += max(0, int(row.get("requested", 0) or 0))
+            available_total += max(0, int(row.get("available", 0) or 0))
+            hit_total += max(0, int(row.get("hit", 0) or 0))
+        hit_rate = float(hit_total / max(1, requested_total)) if requested_total > 0 else 0.0
+        return {
+            "days": window_days,
+            "sessions": sessions,
+            "eligible_sessions": eligible_sessions,
+            "active_sessions": active_sessions,
+            "requested_total": requested_total,
+            "available_total": available_total,
+            "hit_total": hit_total,
+            "hit_rate": hit_rate,
+        }
+
+    def get_gap_routing_summary_by_capability(self, days: int = 7) -> Dict[str, Any]:
+        """Return outcome-gap routing KPI summary grouped by capability."""
+        try:
+            window_days = max(1, int(days))
+        except Exception:
+            window_days = 7
+        today = datetime.date.today()
+        cutoff = today - datetime.timedelta(days=window_days - 1)
+        rows = self._coerce_gap_routing_log(getattr(self, "gap_routing_log", []), max_keep=5000)
+        by_capability: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            date_val = self._parse_date(row.get("date"))
+            if date_val is None or date_val < cutoff:
+                continue
+            chapter = str(row.get("chapter", "") or "").strip()
+            capability = str(row.get("capability", "") or "").strip().upper()
+            if not capability:
+                capability = self._chapter_capability(chapter) or "?"
+            bucket = by_capability.setdefault(
+                capability,
+                {
+                    "capability": capability,
+                    "sessions": 0,
+                    "eligible_sessions": 0,
+                    "active_sessions": 0,
+                    "requested_total": 0,
+                    "available_total": 0,
+                    "hit_total": 0,
+                },
+            )
+            bucket["sessions"] = int(bucket.get("sessions", 0) or 0) + 1
+            if bool(row.get("eligible", False)):
+                bucket["eligible_sessions"] = int(bucket.get("eligible_sessions", 0) or 0) + 1
+            if bool(row.get("active", False)):
+                bucket["active_sessions"] = int(bucket.get("active_sessions", 0) or 0) + 1
+            bucket["requested_total"] = int(bucket.get("requested_total", 0) or 0) + max(
+                0, int(row.get("requested", 0) or 0)
+            )
+            bucket["available_total"] = int(bucket.get("available_total", 0) or 0) + max(
+                0, int(row.get("available", 0) or 0)
+            )
+            bucket["hit_total"] = int(bucket.get("hit_total", 0) or 0) + max(
+                0, int(row.get("hit", 0) or 0)
+            )
+        for bucket in by_capability.values():
+            requested = int(bucket.get("requested_total", 0) or 0)
+            hit = int(bucket.get("hit_total", 0) or 0)
+            bucket["hit_rate"] = float(hit / max(1, requested)) if requested > 0 else 0.0
+        return {
+            "days": window_days,
+            "by_capability": by_capability,
+        }
+
     def record_error_notebook(self, chapter: str, question: dict, selected: str | None, tags: list[str] | None = None) -> None:
         """Record a wrong answer into the error notebook."""
         if chapter not in self.CHAPTERS:
@@ -6270,6 +7345,19 @@ class StudyPlanEngine:
             self.hourly_quiz_stats[hour_key] = bucket
         except Exception:
             pass
+        route_meta = self.resolve_question_outcomes(chapter, question_index)
+        route_outcomes = route_meta.get("outcome_ids", []) if isinstance(route_meta, dict) else []
+        primary_outcome = str(route_outcomes[0]).strip() if isinstance(route_outcomes, list) and route_outcomes else ""
+        try:
+            semantic_score = float(route_meta.get("semantic_match_confidence", 0.0) or 0.0)
+        except Exception:
+            semantic_score = 0.0
+        semantic_score = max(0.0, min(1.0, semantic_score))
+        semantic_method = str(route_meta.get("semantic_match_method", "fallback") or "fallback").strip().lower()
+        if semantic_method not in ("model", "tfidf", "fallback"):
+            semantic_method = "fallback"
+        route_reason = str(route_meta.get("reason", "") or "").strip()
+
         stats_by_ch = self.question_stats.get(chapter)
         if not isinstance(stats_by_ch, dict):
             stats_by_ch = {}
@@ -6329,6 +7417,7 @@ class StudyPlanEngine:
                 avg_time = ((avg_time * (time_count - 1)) + elapsed_val) / time_count
 
         correct = min(correct, attempts)
+        today_iso = datetime.date.today().isoformat()
         stats_by_ch[key] = {
             "attempts": attempts,
             "correct": correct,
@@ -6336,7 +7425,12 @@ class StudyPlanEngine:
             "time_count": time_count,
             "avg_time_sec": max(0.0, avg_time),
             "last_time_sec": max(0.0, last_time),
-            "last_seen": datetime.date.today().isoformat(),
+            "last_seen": today_iso,
+            "outcome_id": primary_outcome,
+            "semantic_score": semantic_score,
+            "semantic_method": semantic_method,
+            "semantic_reason": route_reason,
+            "last_semantic_refresh": today_iso,
         }
         if qid:
             idx_key = str(question_index)
@@ -7670,6 +8764,7 @@ class StudyPlanEngine:
         self.quiz_results = data.get('quiz_results', self.quiz_results)
         self.quiz_recent = data.get('quiz_recent', self.quiz_recent)
         self.error_notebook = data.get('error_notebook', self.error_notebook)
+        self.gap_routing_log = data.get('gap_routing_log', self.gap_routing_log)
         self.question_stats = data.get('question_stats', self.question_stats)
         self.outcome_stats = data.get('outcome_stats', self.outcome_stats)
         self.progress_log = data.get('progress_log', self.progress_log)
@@ -7781,6 +8876,7 @@ class StudyPlanEngine:
         self.daily_plan_cache_date = None
         self.quiz_recent = {}
         self.error_notebook = {}
+        self.gap_routing_log = []
         self.question_stats = {}
         self.outcome_stats = {}
         self.chapter_miss_streak = {}
@@ -7809,6 +8905,7 @@ class StudyPlanEngine:
             "quiz_results": dict(self.quiz_results),
             "quiz_recent": {k: list(v) for k, v in self.quiz_recent.items()},
             "error_notebook": {k: list(v) for k, v in self.error_notebook.items()},
+            "gap_routing_log": list(self.gap_routing_log) if isinstance(self.gap_routing_log, list) else [],
             "question_stats": {k: dict(v) for k, v in self.question_stats.items()},
             "outcome_stats": {k: dict(v) for k, v in self.outcome_stats.items()},
             "progress_log": list(self.progress_log),

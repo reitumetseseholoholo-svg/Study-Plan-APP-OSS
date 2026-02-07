@@ -248,6 +248,93 @@ def test_select_srs_questions_handles_corrupt_recent_history(engine_no_io):
     assert all(0 <= i < total for i in picked)
 
 
+def test_import_questions_json_reports_semantic_mapping_quality(engine_no_io, monkeypatch, tmp_path):
+    eng = engine_no_io
+    monkeypatch.setattr(eng, "save_questions", lambda: None)
+    monkeypatch.setattr(eng, "save_data", lambda: None)
+
+    payload = {
+        "chapter": "FM Function",
+        "questions": [
+            {
+                "question": "Import semantic mapping question 1?",
+                "options": ["A", "B", "C", "D"],
+                "correct": "A",
+                "explanation": "x",
+            },
+            {
+                "question": "Import semantic mapping question 2?",
+                "options": ["A", "B", "C", "D"],
+                "correct": "B",
+                "explanation": "y",
+            },
+        ],
+    }
+    path = tmp_path / "import_questions.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def _route(_chapter, idx):
+        if idx % 2 == 0:
+            return {
+                "outcome_ids": ["A.1"],
+                "semantic_match_confidence": 0.86,
+                "semantic_match_method": "model",
+                "reason": "semantic map from question text",
+            }
+        return {
+            "outcome_ids": ["A.2"],
+            "semantic_match_confidence": 0.33,
+            "semantic_match_method": "tfidf",
+            "reason": "semantic map from question text",
+        }
+
+    monkeypatch.setattr(eng, "resolve_question_outcomes", _route)
+    result = eng.import_questions_json(str(path))
+    assert result.get("added") == 2
+    semantic = result.get("semantic_import", {})
+    assert isinstance(semantic, dict)
+    assert int(semantic.get("total_new", 0) or 0) == 2
+    assert int(semantic.get("mapped", 0) or 0) == 1
+    assert int(semantic.get("low_confidence", 0) or 0) == 1
+    assert float(semantic.get("coverage_pct", 0.0) or 0.0) > 0.0
+
+
+def test_import_questions_json_keeps_pretagged_outcomes(engine_no_io, monkeypatch, tmp_path):
+    eng = engine_no_io
+    monkeypatch.setattr(eng, "save_questions", lambda: None)
+    monkeypatch.setattr(eng, "save_data", lambda: None)
+
+    payload = {
+        "chapter": "FM Function",
+        "questions": [
+            {
+                "question": "Pretagged outcome import question?",
+                "options": ["A", "B", "C", "D"],
+                "correct": "C",
+                "explanation": "z",
+                "outcome_ids": ["A.7"],
+            }
+        ],
+    }
+    path = tmp_path / "import_pretagged.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(
+        eng,
+        "resolve_question_outcomes",
+        lambda *_args, **_kwargs: {
+            "outcome_ids": ["A.1"],
+            "semantic_match_confidence": 0.1,
+            "semantic_match_method": "fallback",
+            "reason": "stable deterministic fallback",
+        },
+    )
+
+    result = eng.import_questions_json(str(path))
+    semantic = result.get("semantic_import", {})
+    assert int(semantic.get("mapped", 0) or 0) == 1
+    assert int(semantic.get("pretagged", 0) or 0) == 1
+
+
 def test_import_data_snapshot_clamps_srs_to_question_count(tmp_path, monkeypatch):
     monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
     monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
@@ -1005,6 +1092,392 @@ def test_semantic_cache_is_bounded(engine_no_io):
     eng = engine_no_io
     eng.SEMANTIC_CACHE_MAX = 3
     for idx in range(6):
-        eng._semantic_cache_set(f"k{idx}", f"v{idx}")
+        eng._semantic_cache_set(f"k{idx}", f"v{idx}", "fallback", 1.0)
     assert len(eng._semantic_match_cache_order) <= 3
     assert len(eng._semantic_match_cache) <= 3
+
+
+def test_resolve_question_outcomes_exposes_semantic_metadata(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    outcome_id = "A.1"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": outcome_id, "text": "Explain the purpose of financial management", "level": 1}
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        eng,
+        "_semantic_best_outcome_match",
+        lambda *_args, **_kwargs: {"outcome_id": outcome_id, "score": 0.82, "method": "model"},
+    )
+    route = eng.resolve_question_outcomes(chapter, 0)
+    assert route.get("outcome_ids") == [outcome_id]
+    assert route.get("semantic_match_method") == "model"
+    assert float(route.get("semantic_match_confidence", 0.0) or 0.0) >= 0.80
+
+
+def test_resolve_question_outcomes_falls_back_deterministically(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Outcome one", "level": 1},
+                {"id": "A.2", "text": "Outcome two", "level": 2},
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        eng,
+        "_semantic_best_outcome_match",
+        lambda *_args, **_kwargs: {"outcome_id": None, "score": 0.0, "method": "fallback"},
+    )
+    route = eng.resolve_question_outcomes(chapter, 0)
+    ids = route.get("outcome_ids")
+    assert isinstance(ids, list)
+    assert len(ids) == 1
+    assert route.get("semantic_match_method") == "fallback"
+    assert float(route.get("semantic_match_confidence", 0.0) or 0.0) == 0.0
+
+
+def test_record_question_event_stores_semantic_fields(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    outcome_id = "A.4"
+    monkeypatch.setattr(
+        eng,
+        "resolve_question_outcomes",
+        lambda *_args, **_kwargs: {
+            "outcome_ids": [outcome_id],
+            "semantic_match_confidence": 0.73,
+            "semantic_match_method": "tfidf",
+            "reason": "semantic map from question text",
+        },
+    )
+
+    eng.record_question_event(chapter, 0, is_correct=True, elapsed_sec=12.0)
+    qid = eng._question_qid(chapter, 0) or "0"
+    entry = eng.question_stats.get(chapter, {}).get(qid, {})
+    assert isinstance(entry, dict)
+    assert entry.get("outcome_id") == outcome_id
+    assert float(entry.get("semantic_score", 0.0) or 0.0) == pytest.approx(0.73, rel=1e-6)
+    assert entry.get("semantic_method") == "tfidf"
+    assert isinstance(entry.get("last_semantic_refresh"), str)
+
+
+def test_select_outcome_gap_questions_returns_uncovered_only(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Covered outcome", "level": 1},
+                {"id": "A.2", "text": "Uncovered outcome", "level": 2},
+            ],
+        }
+    }
+    eng.outcome_stats = {
+        chapter: {
+            "A.1": {"attempts": 3, "correct": 3, "streak": 3, "last_seen": datetime.date.today().isoformat()},
+            "A.2": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": datetime.date.today().isoformat()},
+        }
+    }
+
+    mapping = {0: ["A.1"], 1: ["A.2"], 2: ["A.2"], 3: ["A.1"]}
+    monkeypatch.setattr(eng, "_question_outcome_ids", lambda _chapter, idx: mapping.get(idx, []))
+
+    picked = eng.select_outcome_gap_questions(chapter, count=4)
+    assert picked
+    assert set(picked).issubset({1, 2})
+
+
+def test_select_outcome_gap_questions_empty_when_no_outcomes(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {}
+    eng.outcome_stats = {}
+    assert eng.select_outcome_gap_questions(chapter, count=5) == []
+
+
+def test_select_outcome_gap_questions_empty_when_fully_covered(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Outcome one", "level": 1},
+            ],
+        }
+    }
+    eng.outcome_stats = {
+        chapter: {
+            "A.1": {"attempts": 4, "correct": 4, "streak": 4, "last_seen": datetime.date.today().isoformat()},
+        }
+    }
+    monkeypatch.setattr(eng, "_question_outcome_ids", lambda _chapter, _idx: ["A.1"])
+    assert eng.select_outcome_gap_questions(chapter, count=3) == []
+
+
+def test_select_outcome_gap_questions_prioritizes_due_then_low_recall(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.2", "text": "Outcome two", "level": 2},
+            ],
+        }
+    }
+    eng.outcome_stats = {
+        chapter: {
+            "A.2": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": datetime.date.today().isoformat()},
+        }
+    }
+    monkeypatch.setattr(eng, "_question_outcome_ids", lambda _chapter, idx: ["A.2"] if idx in (0, 1) else [])
+    eng.must_review[chapter] = {"1": datetime.date.today().isoformat()}
+    eng.srs_data[chapter] = [
+        {"last_review": datetime.date.today().isoformat(), "interval": 30, "efactor": 2.5}
+        for _ in range(len(eng.QUESTIONS.get(chapter, [])))
+    ]
+    monkeypatch.setattr(eng, "predict_recall_prob", lambda _chapter, idx: 0.2 if idx == 1 else 0.4 if idx == 0 else None)
+    monkeypatch.setattr(
+        type(eng),
+        "_estimate_question_miss_risk",
+        lambda self, _chapter, idx: 0.9 if idx == 1 else 0.3 if idx == 0 else 0.0,
+    )
+    picked = eng.select_outcome_gap_questions(chapter, count=2)
+    assert picked[:1] == [1]
+
+
+def test_has_undercovered_outcome_activity_today_strict(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    today_iso = datetime.date.today().isoformat()
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Covered", "level": 1},
+                {"id": "A.2", "text": "Uncovered", "level": 2},
+            ],
+        }
+    }
+    eng.outcome_stats = {
+        chapter: {
+            "A.1": {"attempts": 4, "correct": 4, "streak": 4, "last_seen": today_iso},
+            "A.2": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": "1999-01-01"},
+        }
+    }
+    assert eng.has_outcome_activity_today(["A"]) is True
+    assert eng.has_undercovered_outcome_activity_today(["A"]) is False
+    eng.outcome_stats[chapter]["A.2"]["last_seen"] = today_iso
+    assert eng.has_undercovered_outcome_activity_today(["A"]) is True
+
+
+def test_record_gap_routing_event_and_summary(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.record_gap_routing_event(
+        chapter=chapter,
+        kind="quiz",
+        meta={
+            "eligible": True,
+            "active": True,
+            "requested": 4,
+            "available": 5,
+            "hit": 3,
+            "selected_total": 8,
+        },
+        score_pct=75.0,
+    )
+    eng.record_gap_routing_event(
+        chapter=chapter,
+        kind="review",
+        meta={
+            "eligible": False,
+            "active": False,
+            "requested": 0,
+            "available": 0,
+            "hit": 0,
+            "selected_total": 6,
+        },
+        score_pct=60.0,
+    )
+    summary = eng.get_gap_routing_summary(days=7)
+    assert int(summary.get("sessions", 0) or 0) == 2
+    assert int(summary.get("active_sessions", 0) or 0) == 1
+    assert int(summary.get("requested_total", 0) or 0) == 4
+    assert int(summary.get("hit_total", 0) or 0) == 3
+    assert float(summary.get("hit_rate", 0.0) or 0.0) == pytest.approx(0.75, rel=1e-9)
+
+
+def test_gap_routing_summary_by_capability(engine_no_io):
+    eng = engine_no_io
+    eng.syllabus_structure = {
+        "FM Function": {"capability": "A", "learning_outcomes": [{"id": "A.1", "text": "x", "level": 1}]},
+        "FM Environment": {"capability": "B", "learning_outcomes": [{"id": "B.1", "text": "y", "level": 1}]},
+    }
+    eng.record_gap_routing_event(
+        chapter="FM Function",
+        kind="quiz",
+        meta={"eligible": True, "active": True, "requested": 4, "available": 5, "hit": 3, "selected_total": 8},
+        score_pct=70.0,
+    )
+    eng.record_gap_routing_event(
+        chapter="FM Environment",
+        kind="quiz",
+        meta={"eligible": True, "active": True, "requested": 2, "available": 2, "hit": 1, "selected_total": 6},
+        score_pct=55.0,
+    )
+    summary = eng.get_gap_routing_summary_by_capability(days=7)
+    by_cap = summary.get("by_capability", {})
+    assert isinstance(by_cap, dict)
+    assert set(by_cap.keys()) >= {"A", "B"}
+    assert int(by_cap["A"].get("requested_total", 0) or 0) == 4
+    assert int(by_cap["A"].get("hit_total", 0) or 0) == 3
+    assert float(by_cap["A"].get("hit_rate", 0.0) or 0.0) == pytest.approx(0.75, rel=1e-9)
+    assert int(by_cap["B"].get("requested_total", 0) or 0) == 2
+    assert int(by_cap["B"].get("hit_total", 0) or 0) == 1
+    assert float(by_cap["B"].get("hit_rate", 0.0) or 0.0) == pytest.approx(0.5, rel=1e-9)
+
+
+def test_coerce_gap_routing_log_filters_invalid_rows(engine_no_io):
+    eng = engine_no_io
+    raw = [
+        {"chapter": "FM Function", "kind": "quiz", "date": datetime.date.today().isoformat(), "requested": 2, "hit": 1},
+        {"chapter": "Unknown", "kind": "quiz", "date": datetime.date.today().isoformat(), "requested": 2, "hit": 2},
+        {"chapter": "FM Function", "kind": "quiz", "date": "bad-date", "requested": 2, "hit": 2},
+    ]
+    cleaned = eng._coerce_gap_routing_log(raw, max_keep=50)
+    assert len(cleaned) == 1
+    assert cleaned[0]["chapter"] == "FM Function"
+
+
+def test_get_capability_coverage_debt_ranking(engine_no_io):
+    eng = engine_no_io
+    today_iso = datetime.date.today().isoformat()
+    eng.syllabus_structure = {
+        "FM Function": {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "A1", "level": 1},
+                {"id": "A.2", "text": "A2", "level": 2},
+                {"id": "A.3", "text": "A3", "level": 3},
+            ],
+            "intellectual_level_mix": {"level_1": 1, "level_2": 1, "level_3": 1},
+        },
+        "FM Environment": {
+            "capability": "B",
+            "learning_outcomes": [
+                {"id": "B.1", "text": "B1", "level": 1},
+                {"id": "B.2", "text": "B2", "level": 1},
+            ],
+            "intellectual_level_mix": {"level_1": 2, "level_2": 0, "level_3": 0},
+        },
+    }
+    eng.outcome_stats = {
+        "FM Function": {
+            "A.1": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": today_iso},
+            "A.2": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": "1999-01-01"},
+            "A.3": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": "1999-01-01"},
+        },
+        "FM Environment": {
+            "B.1": {"attempts": 3, "correct": 3, "streak": 3, "last_seen": today_iso},
+            "B.2": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": "1999-01-01"},
+        },
+    }
+    debt = eng.get_capability_coverage_debt(max_coverage=95.0, min_uncovered=1)
+    assert isinstance(debt, dict)
+    caps = list(debt.keys())
+    assert caps
+    assert caps[0] == "A"
+    assert float(debt["A"]["debt_score"]) >= float(debt.get("B", {"debt_score": 0.0})["debt_score"])
+
+
+def test_select_semantic_interleave_questions_prioritizes_due_and_targets(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    today_iso = datetime.date.today().isoformat()
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Target", "level": 2},
+                {"id": "A.2", "text": "Adjacent", "level": 2},
+                {"id": "A.3", "text": "Far", "level": 2},
+            ],
+        }
+    }
+    eng.outcome_stats = {chapter: {"A.1": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": today_iso}}}
+    mapping = {
+        0: ["A.1"],  # target
+        1: ["A.2"],  # adjacent
+        2: ["A.3"],  # far
+        3: ["A.3"],  # far + due
+    }
+    monkeypatch.setattr(eng, "_question_outcome_ids", lambda _chapter, idx: mapping.get(idx, []))
+    eng.must_review[chapter] = {"3": today_iso}
+    eng.srs_data[chapter] = [
+        {"last_review": today_iso, "interval": 20, "efactor": 2.5}
+        for _ in range(len(eng.QUESTIONS.get(chapter, [])))
+    ]
+    monkeypatch.setattr(eng, "predict_recall_prob", lambda _chapter, _idx: 0.4)
+    monkeypatch.setattr(
+        type(eng),
+        "_estimate_question_miss_risk",
+        lambda self, _chapter, _idx: 0.5,
+    )
+
+    picked = eng.select_semantic_interleave_questions(chapter, count=3, target_outcome_ids=["A.1"])
+    assert picked
+    assert 3 in picked  # must-review due question should survive quota filling
+    assert any(idx in picked for idx in (0,))  # include at least one target-outcome question
+    assert len(picked) == len(set(picked))
+
+
+def test_select_semantic_interleave_questions_falls_back_to_srs(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {}
+    monkeypatch.setattr(eng, "select_srs_questions", lambda _chapter, count: [7, 6, 5][:count])
+    picked = eng.select_semantic_interleave_questions(chapter, count=3)
+    assert picked == [7, 6, 5]
+
+
+def test_get_semantic_interleave_mix_counts(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Target", "level": 2},
+                {"id": "A.2", "text": "Adjacent", "level": 2},
+                {"id": "A.3", "text": "Far", "level": 2},
+            ],
+        }
+    }
+    eng.outcome_stats = {chapter: {"A.1": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": datetime.date.today().isoformat()}}}
+    mapping = {
+        0: ["A.1"],
+        1: ["A.2"],
+        2: ["A.3"],
+        3: [],
+    }
+    monkeypatch.setattr(eng, "_question_outcome_ids", lambda _chapter, idx: mapping.get(idx, []))
+    mix = eng.get_semantic_interleave_mix(chapter, [0, 1, 2, 3], target_outcome_ids=["A.1"])
+    assert mix["target"] == 1
+    assert mix["adjacent"] == 1
+    assert mix["far"] == 1
+    assert mix["unknown"] == 1
+    assert mix["total"] == 4
