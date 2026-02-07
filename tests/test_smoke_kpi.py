@@ -8,6 +8,7 @@ def test_evaluate_smoke_kpi_thresholds_passes_when_metrics_meet_thresholds():
         "coach_pick_consistency_rate": 0.999,
         "coach_only_toggle_integrity_rate": 1.0,
         "coach_next_burst_integrity_rate": 1.0,
+        "ui_trigger_integrity_rate": 1.0,
     }
     failures = _evaluate_smoke_kpi_thresholds(kpi)
     assert failures == []
@@ -18,12 +19,14 @@ def test_evaluate_smoke_kpi_thresholds_reports_expected_failures():
         "coach_pick_consistency_rate": 0.95,
         "coach_only_toggle_integrity_rate": 0.98,
         "coach_next_burst_integrity_rate": 1.0,
+        "ui_trigger_integrity_rate": 0.9,
     }
     failures = _evaluate_smoke_kpi_thresholds(kpi)
     metrics = {item["metric"] for item in failures}
     assert "coach_pick_consistency_rate" in metrics
     assert "coach_only_toggle_integrity_rate" in metrics
     assert "coach_next_burst_integrity_rate" not in metrics
+    assert "ui_trigger_integrity_rate" in metrics
 
 
 def test_compute_strict_smoke_exit_code_uses_status_and_kpi(tmp_path):
@@ -36,6 +39,7 @@ def test_compute_strict_smoke_exit_code_uses_status_and_kpi(tmp_path):
             "coach_pick_consistency_rate": 1.0,
             "coach_only_toggle_integrity_rate": 1.0,
             "coach_next_burst_integrity_rate": 1.0,
+            "ui_trigger_integrity_rate": 1.0,
         },
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -53,4 +57,3 @@ def test_compute_strict_smoke_exit_code_uses_status_and_kpi(tmp_path):
 
     # Missing report should fail strict mode.
     assert _compute_strict_smoke_exit_code(str(tmp_path / "missing.json")) == 1
-

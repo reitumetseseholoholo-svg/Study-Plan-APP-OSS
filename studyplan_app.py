@@ -21,7 +21,7 @@ import warnings
 import wave
 import struct
 import threading
-from typing import Optional, Any, cast
+from typing import Optional, Any, Callable, cast
 
 # Suppress known noisy GTK/GLib warnings without hiding real errors.
 def _install_log_filters() -> None:
@@ -31,6 +31,7 @@ def _install_log_filters() -> None:
         "Unknown key gtk-button-images",
         "Unknown key gtk-menu-images",
         "Unknown key gtk-modules",
+        "Warning: You are sending unauthenticated requests to the HF Hub.",
         "g_main_context_pop_thread_default: assertion 'stack != NULL' failed",
     )
 
@@ -156,6 +157,7 @@ SMOKE_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
     "coach_pick_consistency_rate": {"op": ">=", "value": 0.999},
     "coach_only_toggle_integrity_rate": {"op": "==", "value": 1.0},
     "coach_next_burst_integrity_rate": {"op": "==", "value": 1.0},
+    "ui_trigger_integrity_rate": {"op": "==", "value": 1.0},
 }
 
 
@@ -675,11 +677,11 @@ class AppMessageDialog:
 
 SYSTEM_THEME_CSS = b"""
 @define-color app_accent alpha(@theme_selected_bg_color, 0.98);
-@define-color app_border alpha(@theme_fg_color, 0.18);
-@define-color app_border_strong alpha(@theme_fg_color, 0.28);
-@define-color app_surface alpha(@theme_bg_color, 0.96);
-@define-color app_surface_alt alpha(@theme_bg_color, 0.93);
-@define-color app_muted alpha(@theme_fg_color, 0.88);
+@define-color app_border alpha(@theme_fg_color, 0.24);
+@define-color app_border_strong alpha(@theme_fg_color, 0.38);
+@define-color app_surface alpha(@theme_bg_color, 0.93);
+@define-color app_surface_alt alpha(@theme_bg_color, 0.90);
+@define-color app_muted alpha(@theme_fg_color, 0.95);
 window {
     background-color: @theme_bg_color;
     background-image: linear-gradient(
@@ -697,41 +699,49 @@ window {
     box-shadow: 0 3px 10px alpha(@theme_fg_color, 0.12);
 }
 .panel-left {
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
-    border-right: none;
-    box-shadow: none;
+    border-right: 1px solid app_border_strong;
+    border-top-right-radius: 14px;
+    border-bottom-right-radius: 14px;
+    margin-right: 2px;
 }
 .panel-right {
-    border-top-left-radius: 0;
-    border-bottom-left-radius: 0;
-    border-left: none;
-    box-shadow: none;
+    border-left: 1px solid app_border_strong;
+    border-top-left-radius: 14px;
+    border-bottom-left-radius: 14px;
+    margin-left: 2px;
 }
 .card {
     background-color: app_surface_alt;
-    border: 1px solid app_border;
-    border-radius: 12px;
-    padding: 10px;
-    box-shadow: 0 2px 7px alpha(@theme_fg_color, 0.1);
+    background-image: linear-gradient(
+        to bottom,
+        alpha(@theme_selected_bg_color, 0.04),
+        alpha(@theme_bg_color, 0.0)
+    );
+    border: 2px solid app_border_strong;
+    border-radius: 13px;
+    padding: 11px;
+    box-shadow: 0 1px 0 alpha(@theme_fg_color, 0.08), 0 4px 12px alpha(@theme_fg_color, 0.12);
+    margin-top: 4px;
+    margin-bottom: 4px;
 }
 .card-tight {
-    padding: 6px;
+    padding: 7px;
 }
 .chart-card {
     padding-top: 8px;
     padding-bottom: 6px;
 }
 .hero-card {
-    border-color: alpha(@theme_selected_bg_color, 0.46);
-    box-shadow: 0 3px 12px alpha(@theme_selected_bg_color, 0.2);
+    border-color: alpha(@theme_selected_bg_color, 0.62);
+    box-shadow: 0 1px 0 alpha(@theme_selected_bg_color, 0.28), 0 4px 14px alpha(@theme_selected_bg_color, 0.24);
 }
 .hero-card .coach-title,
 .hero-card .section-title {
     color: app_accent;
 }
 .card:hover {
-    border-color: app_border_strong;
+    border-color: alpha(@theme_selected_bg_color, 0.82);
+    box-shadow: 0 0 0 1px alpha(@theme_selected_bg_color, 0.35), 0 6px 16px alpha(@theme_selected_bg_color, 0.22);
 }
 .title {
     font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
@@ -747,20 +757,50 @@ window {
 }
 .section-title {
     font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
-    font-weight: 760;
-    font-size: 13px;
-    letter-spacing: 0.85px;
+    font-weight: 780;
+    font-size: 12px;
+    letter-spacing: 0.4px;
     text-transform: uppercase;
-    color: alpha(@theme_fg_color, 0.94);
-    margin-top: 5px;
-    margin-bottom: 3px;
+    color: alpha(@theme_fg_color, 0.99);
+    background-color: alpha(@theme_selected_bg_color, 0.22);
+    border: 1px solid alpha(@theme_selected_bg_color, 0.52);
+    border-radius: 8px;
+    padding: 3px 9px;
+    margin-top: 3px;
+    margin-bottom: 6px;
 }
 .section-title + .muted {
     margin-top: 1px;
 }
+.coach-title {
+    font-weight: 760;
+    letter-spacing: 0.25px;
+    background-color: alpha(@theme_selected_bg_color, 0.24);
+    border: 1px solid alpha(@theme_selected_bg_color, 0.55);
+    border-radius: 8px;
+    padding: 3px 9px;
+    margin-top: 3px;
+    margin-bottom: 6px;
+}
 .muted {
     color: app_muted;
-    line-height: 1.42;
+    line-height: 1.45;
+}
+.insight-card {
+    border-left: 4px solid alpha(@theme_selected_bg_color, 0.42);
+    background-image: linear-gradient(
+        to right,
+        alpha(@theme_selected_bg_color, 0.07),
+        alpha(@theme_bg_color, 0.0)
+    );
+}
+.insight-card .section-title {
+    margin-bottom: 8px;
+}
+.dashboard-block-body {
+    color: alpha(@theme_fg_color, 0.98);
+    font-size: 12px;
+    line-height: 1.52;
 }
 .quiz-dialog {
     min-width: 640px;
@@ -820,7 +860,7 @@ window {
     font-size: 11px;
 }
 .study-summary {
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.4;
 }
 .rule {
@@ -879,8 +919,33 @@ window.compact button {
     color: @error_color;
     font-weight: 600;
 }
-.coach-title {
+.nudge-warn {
+    color: @warning_color;
+    font-weight: 760;
+    font-style: italic;
+}
+.nudge-info {
+    color: app_accent;
     font-weight: 700;
+    font-style: italic;
+}
+.nudge-good {
+    color: @success_color;
+    font-weight: 760;
+    font-style: italic;
+}
+.coach-title {
+    font-weight: 780;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.45px;
+    color: alpha(@theme_fg_color, 0.99);
+    background-color: alpha(@theme_selected_bg_color, 0.24);
+    border: 1px solid alpha(@theme_selected_bg_color, 0.55);
+    border-radius: 8px;
+    padding: 3px 9px;
+    margin-top: 3px;
+    margin-bottom: 6px;
 }
 .focus-list row {
     border: none;
@@ -905,28 +970,49 @@ button {
     border-radius: 10px;
     padding: 7px 11px;
     min-height: 34px;
-    background: alpha(@theme_fg_color, 0.08);
-    border: 1px solid alpha(@theme_fg_color, 0.2);
+    background: alpha(@theme_fg_color, 0.07);
+    border: 1px solid alpha(@theme_fg_color, 0.26);
     color: @theme_fg_color;
+    box-shadow: 0 1px 0 alpha(@theme_bg_color, 0.22);
+}
+button:hover {
+    background: alpha(@theme_fg_color, 0.12);
+    border-color: alpha(@theme_fg_color, 0.36);
+}
+button:active {
+    background: alpha(@theme_fg_color, 0.16);
+    border-color: alpha(@theme_fg_color, 0.42);
+}
+button:disabled {
+    background: alpha(@theme_fg_color, 0.04);
+    border-color: alpha(@theme_fg_color, 0.12);
+    color: alpha(@theme_fg_color, 0.5);
+    box-shadow: none;
 }
 button.suggested-action {
     background: @theme_selected_bg_color;
     color: @theme_selected_fg_color;
     border-color: alpha(@theme_selected_fg_color, 0.4);
+    box-shadow: 0 1px 0 alpha(@theme_selected_fg_color, 0.2), 0 2px 6px alpha(@theme_selected_bg_color, 0.35);
 }
 button.suggested-action:hover {
     background: mix(@theme_selected_bg_color, @theme_fg_color, 0.16);
 }
+button.suggested-action:active {
+    background: mix(@theme_selected_bg_color, @theme_fg_color, 0.24);
+}
 button.flat {
     background: transparent;
     border-color: transparent;
+    box-shadow: none;
 }
 button.flat:hover {
     background: alpha(@theme_fg_color, 0.08);
-    border-color: alpha(@theme_fg_color, 0.12);
+    border-color: alpha(@theme_fg_color, 0.2);
 }
 button.flat:active {
     background: alpha(@theme_fg_color, 0.12);
+    border-color: alpha(@theme_fg_color, 0.24);
 }
 button:focus-visible {
     box-shadow: 0 0 0 2px alpha(@theme_selected_bg_color, 0.35);
@@ -963,11 +1049,11 @@ scrollbar slider:active {
 COACH_THEME_CSS = b"""
 @define-color coach_bg #121724;
 @define-color coach_panel #1a2233;
-@define-color coach_card #1f2a3d;
-@define-color coach_border #415272;
-@define-color coach_border_strong #5e759f;
+@define-color coach_card #212d43;
+@define-color coach_border #526487;
+@define-color coach_border_strong #7792c1;
 @define-color coach_text #e8edf7;
-@define-color coach_muted #c6d0e2;
+@define-color coach_muted #d4def0;
 @define-color coach_accent #4fd1c5;
 @define-color coach_accent_alt #8bafff;
 window {
@@ -982,30 +1068,46 @@ window {
     padding: 12px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.32);
 }
+.panel-left {
+    border-right: 1px solid coach_border_strong;
+    border-top-right-radius: 14px;
+    border-bottom-right-radius: 14px;
+    margin-right: 2px;
+}
+.panel-right {
+    border-left: 1px solid coach_border_strong;
+    border-top-left-radius: 14px;
+    border-bottom-left-radius: 14px;
+    margin-left: 2px;
+}
 .card {
     background: coach_card;
-    border: 1px solid coach_border;
-    border-radius: 12px;
-    padding: 10px;
-    box-shadow: 0 1px 5px rgba(0,0,0,0.32);
+    border: 2px solid coach_border;
+    border-radius: 13px;
+    padding: 11px;
+    box-shadow: 0 1px 0 rgba(179, 198, 232, 0.08), 0 4px 14px rgba(0,0,0,0.34);
+    margin-top: 4px;
+    margin-bottom: 4px;
 }
 .card-tight {
-    padding: 6px;
+    padding: 7px;
 }
 .chart-card {
     padding-top: 8px;
     padding-bottom: 6px;
 }
 .hero-card {
-    border-color: #5a6e9d;
-    box-shadow: 0 3px 12px rgba(79, 209, 197, 0.2);
+    border-color: #7b95c8;
+    box-shadow: 0 1px 0 rgba(123, 149, 200, 0.28), 0 4px 14px rgba(79, 209, 197, 0.24);
 }
 .hero-card .coach-title,
 .hero-card .section-title {
     color: coach_accent;
 }
 .card:hover {
-    border-color: coach_border_strong;
+    border-color: #93b8ff;
+    background: #263653;
+    box-shadow: 0 0 0 1px rgba(139, 175, 255, 0.36), 0 6px 18px rgba(139, 175, 255, 0.2);
 }
 .title {
     font-weight: 760;
@@ -1020,13 +1122,17 @@ window {
     color: coach_text;
 }
 .section-title {
-    font-weight: 760;
-    font-size: 13px;
-    letter-spacing: 0.85px;
+    font-weight: 780;
+    font-size: 12px;
+    letter-spacing: 0.4px;
     text-transform: uppercase;
-    color: #dce6fa;
-    margin-top: 5px;
-    margin-bottom: 3px;
+    color: #e9f0ff;
+    background: rgba(139, 175, 255, 0.22);
+    border: 1px solid rgba(139, 175, 255, 0.5);
+    border-radius: 8px;
+    padding: 3px 9px;
+    margin-top: 3px;
+    margin-bottom: 6px;
 }
 .section-title + .muted {
     margin-top: 1px;
@@ -1034,6 +1140,22 @@ window {
 .muted {
     color: coach_muted;
     line-height: 1.42;
+}
+.insight-card {
+    border-left: 4px solid rgba(139, 175, 255, 0.62);
+    background: linear-gradient(
+        to right,
+        rgba(139, 175, 255, 0.11),
+        rgba(33, 45, 67, 0.0)
+    );
+}
+.insight-card .section-title {
+    margin-bottom: 8px;
+}
+.dashboard-block-body {
+    color: #e7efff;
+    font-size: 12px;
+    line-height: 1.52;
 }
 .quiz-dialog {
     min-width: 640px;
@@ -1092,7 +1214,7 @@ window {
     font-size: 11px;
 }
 .study-summary {
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.4;
 }
 .rule {
@@ -1105,14 +1227,33 @@ button {
     color: coach_text;
     padding: 7px 11px;
     min-height: 34px;
+    box-shadow: 0 1px 0 rgba(169, 190, 227, 0.12);
+}
+button:hover {
+    background: #354766;
+    border-color: #7d98c8;
+}
+button:active {
+    background: #3f5376;
+    border-color: #8da9da;
+}
+button:disabled {
+    background: #26334d;
+    border-color: #425579;
+    color: #95a2bc;
+    box-shadow: none;
 }
 button.suggested-action {
     background: coach_accent;
     border-color: #7fe0d8;
     color: #072326;
+    box-shadow: 0 1px 0 rgba(188, 246, 240, 0.42), 0 2px 7px rgba(79, 209, 197, 0.36);
 }
 button.suggested-action:hover {
     background: #66ddd2;
+}
+button.suggested-action:active {
+    background: #54cfc3;
 }
 .error { background-color: #6d2a2a; }
 .warning { background-color: #6a4b1f; }
@@ -1172,8 +1313,33 @@ window.compact button {
     color: #f28b82;
     font-weight: 600;
 }
-.coach-title {
+.nudge-warn {
+    color: #f6c453;
+    font-weight: 760;
+    font-style: italic;
+}
+.nudge-info {
+    color: #8bafff;
     font-weight: 700;
+    font-style: italic;
+}
+.nudge-good {
+    color: #4fd1c5;
+    font-weight: 760;
+    font-style: italic;
+}
+.coach-title {
+    font-weight: 760;
+    letter-spacing: 0.25px;
+    color: #f1f5ff;
+    text-transform: uppercase;
+    font-size: 12px;
+    background: rgba(139, 175, 255, 0.24);
+    border: 1px solid rgba(139, 175, 255, 0.55);
+    border-radius: 8px;
+    padding: 3px 9px;
+    margin-top: 3px;
+    margin-bottom: 6px;
 }
 .focus-list row {
     border: none;
@@ -1184,10 +1350,10 @@ window.compact button {
     background: rgba(79, 209, 197, 0.12);
 }
 .quest-card {
-    background: #1d2534;
-    border: 1px solid #41516c;
-    border-radius: 12px;
-    padding: 10px;
+    background: #212d43;
+    border: 1px solid #526487;
+    border-radius: 13px;
+    padding: 11px;
 }
 .xp-progress {
     min-height: 12px;
@@ -1198,6 +1364,7 @@ progressbar {
 button.flat {
     background: transparent;
     border-color: transparent;
+    box-shadow: none;
 }
 button.flat:hover {
     background: #324160;
@@ -1205,6 +1372,7 @@ button.flat:hover {
 }
 button.flat:active {
     background: #3b4b6b;
+    border-color: #7a95c3;
 }
 button:focus-visible {
     box-shadow: 0 0 0 2px rgba(79, 209, 197, 0.42);
@@ -1450,7 +1618,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.menu_bar = self._build_menu_bar()
 
         # Main layout
-        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         hbox.set_margin_top(16)
         hbox.set_margin_bottom(16)
         hbox.set_margin_start(16)
@@ -1518,7 +1686,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.exam_warning_label = Gtk.Label(label="Set an exam date to unlock accurate planning.")
         self.exam_warning_label.set_halign(Gtk.Align.START)
         self.exam_warning_label.set_wrap(True)
-        self.exam_warning_label.add_css_class("warning")
+        self.exam_warning_label.add_css_class("nudge-warn")
         left_panel.append(self.exam_warning_label)
 
         # Exam date picker button
@@ -1531,7 +1699,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.availability_warning_label = Gtk.Label(label="Set weekday/weekend minutes to personalize your plan.")
         self.availability_warning_label.set_halign(Gtk.Align.START)
         self.availability_warning_label.set_wrap(True)
-        self.availability_warning_label.add_css_class("warning")
+        self.availability_warning_label.add_css_class("nudge-warn")
         avail_box.append(self.availability_warning_label)
 
         avail_grid = Gtk.Grid(column_spacing=8, row_spacing=6)
@@ -1621,12 +1789,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.coach_pick_why_label.set_halign(Gtk.Align.START)
         self.coach_pick_why_label.set_wrap(True)
         self.coach_pick_why_label.add_css_class("muted")
+        self.coach_pick_why_label.add_css_class("nudge-info")
         self.coach_pick_why_label.set_visible(False)
         coach_card.append(self.coach_pick_why_label)
         self.coach_pick_why_history = Gtk.Label(label="Recent reasons:")
         self.coach_pick_why_history.set_halign(Gtk.Align.START)
         self.coach_pick_why_history.set_wrap(True)
         self.coach_pick_why_history.add_css_class("muted")
+        self.coach_pick_why_history.add_css_class("nudge-info")
         self.coach_pick_why_history.set_visible(False)
         coach_card.append(self.coach_pick_why_history)
         self.coach_pick_why_btn = Gtk.Button(label="Why this topic?")
@@ -2005,7 +2175,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.backup_warning_label = Gtk.Label(label="Backup warning: last save could not create a .bak file.")
         self.backup_warning_label.set_halign(Gtk.Align.START)
         self.backup_warning_label.set_wrap(True)
-        self.backup_warning_label.add_css_class("warning")
+        self.backup_warning_label.add_css_class("nudge-warn")
         left_panel.append(self.backup_warning_label)
 
         # Focus mode toggle
@@ -7525,6 +7695,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _get_drill_topic(self) -> str:
         if not self._has_chapters():
             return ""
+        chapter_set = set(getattr(self.engine, "CHAPTERS", []) or [])
         today = datetime.date.today()
         best_topic = None
         best_due = -1
@@ -7532,6 +7703,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             must_review = getattr(self.engine, "must_review", {}) or {}
             if isinstance(must_review, dict):
                 for ch, items in must_review.items():
+                    if ch not in chapter_set or not self._topic_has_questions(ch):
+                        continue
                     if not isinstance(items, dict):
                         continue
                     due = 0
@@ -7549,10 +7722,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         try:
             comp = getattr(self.engine, "competence", {}) or {}
             if isinstance(comp, dict) and comp:
-                return sorted(comp.items(), key=lambda x: x[1])[0][0]
+                for ch, _score in sorted(comp.items(), key=lambda x: x[1]):
+                    if ch in chapter_set and self._topic_has_questions(ch):
+                        return ch
         except Exception:
             pass
-        return self._get_recommended_topic()
+        rec = self._get_recommended_topic()
+        if rec in chapter_set and self._topic_has_questions(rec):
+            return rec
+        for ch in getattr(self.engine, "CHAPTERS", []):
+            if isinstance(ch, str) and ch and self._topic_has_questions(ch):
+                return ch
+        return ""
 
     def _get_weak_chapter(self, threshold: float = 60.0) -> str | None:
         try:
@@ -8570,6 +8751,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._set_current_topic(topic)
         self.on_take_quiz(self.quiz_btn)
 
+    def _topic_has_questions(self, topic: str | None) -> bool:
+        if not isinstance(topic, str) or not topic:
+            return False
+        try:
+            questions = self.engine.get_questions(topic)
+        except Exception:
+            return False
+        return isinstance(questions, list) and bool(questions)
+
+    def _topic_has_due_review(self, topic: str | None) -> bool:
+        if not isinstance(topic, str) or not topic:
+            return False
+        if not self._topic_has_questions(topic):
+            return False
+        try:
+            if hasattr(self.engine, "select_due_review_questions"):
+                due = self.engine.select_due_review_questions(topic, 1)
+                return isinstance(due, list) and bool(due)
+        except Exception:
+            return False
+        return False
+
     def _get_interleave_topic(self) -> str | None:
         current = self.current_topic or self._get_recommended_topic()
         daily_plan = getattr(self, "_last_daily_plan", None) or []
@@ -8583,9 +8786,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 continue
             if chapter == current:
                 continue
+            if not self._topic_has_questions(chapter):
+                continue
             return chapter
         for chapter in getattr(self.engine, "CHAPTERS", []):
-            if isinstance(chapter, str) and chapter and chapter != current:
+            if isinstance(chapter, str) and chapter and chapter != current and self._topic_has_questions(chapter):
                 return chapter
         return None
 
@@ -8594,7 +8799,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         topic = self._get_interleave_topic()
         if not topic:
-            self.send_notification("Interleave", "No alternate chapter available right now.")
+            self.send_notification("Interleave", "No alternate chapter with questions is available yet.")
             return
         self._set_current_topic(topic)
         self.start_quiz_session(topic=topic, total_override=6, kind="interleave")
@@ -8605,6 +8810,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         topic = self._get_drill_topic()
         if not topic:
+            self.send_notification("Drill Weak Area", "No drillable questions are available yet.")
             return
         self._set_current_topic(topic)
         self.start_quiz_session(topic=topic, total_override=8, kind="drill")
@@ -8615,6 +8821,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         topic = self._get_drill_topic()
         if not topic:
+            return
+        if not self._topic_has_due_review(topic):
+            self.send_notification("Clear Must-Review", "No due review cards yet for this chapter.")
             return
         self._set_current_topic(topic)
         # Shorter burst focused on overdue cards
@@ -12240,6 +12449,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ("Coach-only Toggle", self._smoke_toggle_coach_only),
             ("Coach Pick Consistency", self._smoke_check_coach_pick_consistency),
             ("Coach Next Burst", self._smoke_coach_next_burst),
+            ("UI Trigger Sweep", self._smoke_trigger_ui_controls),
             ("Focus Allowlist", lambda: self.on_edit_focus_allowlist(None, None)),
             ("Switch Module", lambda: self.on_switch_module(None, None)),
             ("Manage Modules", lambda: self.on_manage_modules(None, None)),
@@ -12277,7 +12487,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "coach_only_toggle_failures": 0,
             "coach_next_burst_checks": 0,
             "coach_next_burst_failures": 0,
+            "ui_trigger_checks": 0,
+            "ui_trigger_failures": 0,
         }
+        self._smoke_trigger_failures: list[dict[str, str]] = []
         self._smoke_report = {
             "started_at": datetime.datetime.now().isoformat(timespec="seconds"),
             "steps_total": 0,
@@ -12321,16 +12534,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         toggle_failures = int(metrics.get("coach_only_toggle_failures", 0) or 0)
         burst_checks = int(metrics.get("coach_next_burst_checks", 0) or 0)
         burst_failures = int(metrics.get("coach_next_burst_failures", 0) or 0)
+        ui_checks = int(metrics.get("ui_trigger_checks", 0) or 0)
+        ui_failures = int(metrics.get("ui_trigger_failures", 0) or 0)
         kpi = {
             "coach_pick_consistency_rate": (max(0, consistency_checks - consistency_failures) / max(1, consistency_checks)),
             "coach_only_toggle_integrity_rate": (max(0, toggle_checks - toggle_failures) / max(1, toggle_checks)),
             "coach_next_burst_integrity_rate": (max(0, burst_checks - burst_failures) / max(1, burst_checks)),
+            "ui_trigger_integrity_rate": (max(0, ui_checks - ui_failures) / max(1, ui_checks)),
             "coach_consistency_checks": consistency_checks,
             "coach_consistency_failures": consistency_failures,
             "coach_only_toggle_checks": toggle_checks,
             "coach_only_toggle_failures": toggle_failures,
             "coach_next_burst_checks": burst_checks,
             "coach_next_burst_failures": burst_failures,
+            "ui_trigger_checks": ui_checks,
+            "ui_trigger_failures": ui_failures,
         }
         self._smoke_report["kpi"] = kpi
         self._smoke_report["kpi_thresholds"] = dict(SMOKE_KPI_THRESHOLDS)
@@ -12350,6 +12568,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 int(getattr(self, "_coach_sync_retry_count", 0) or 0) - int(getattr(self, "_smoke_sync_retry_base", 0) or 0),
             ),
             "last_coach_sync_origin": str(getattr(self, "_last_coach_sync_origin", "") or ""),
+            "ui_trigger_failures": list(getattr(self, "_smoke_trigger_failures", []) or []),
         }
         path = SMOKE_REPORT_PATH
         try:
@@ -12441,6 +12660,75 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     f"Coach-only burst mismatch: coach={coach_topic!r}, current={current_topic!r}"
                 )
         self._set_coach_only_view(initial, persist=False, animate_badge=False)
+
+    def _smoke_trigger_ui_controls(self) -> None:
+        """Trigger primary UI controls and fail if any trigger path throws."""
+        if not isinstance(self._smoke_metrics, dict):
+            return
+
+        failures: list[dict[str, str]] = []
+
+        def _run(label: str, fn: Callable[[], None]) -> None:
+            self._smoke_metrics["ui_trigger_checks"] = int(self._smoke_metrics.get("ui_trigger_checks", 0) or 0) + 1
+            try:
+                fn()
+            except Exception as exc:
+                self._smoke_metrics["ui_trigger_failures"] = int(self._smoke_metrics.get("ui_trigger_failures", 0) or 0) + 1
+                failures.append({"trigger": str(label), "error": str(exc)})
+
+        # Trigger static controls on the left panel and toolbar flows.
+        _run("Set Exam Date Button", lambda: self.exam_date_btn.emit("clicked"))
+        _run("Save Availability Button", lambda: self.availability_save_btn.emit("clicked"))
+        _run("Coach Why Button", lambda: self.coach_pick_why_btn.emit("clicked"))
+        _run("Coach Focus Action", lambda: self.on_focus_coach_pick(None))
+        _run("Coach Next Action", lambda: self.on_do_coach_next(None))
+        _run("Coach-only Toggle Button", lambda: self.coach_only_toggle.emit("clicked"))
+        _run("Focus Mode Toggle", lambda: self.focus_mode_btn.emit("clicked"))
+        _run("Focus Mode Toggle Reset", lambda: self.focus_mode_btn.emit("clicked"))
+
+        # Study room action strip.
+        _run("Study Room Swap", lambda: self.study_room_blocks_swap_btn.emit("clicked"))
+        _run("Study Room Focus", lambda: self.study_room_focus_btn.emit("clicked"))
+        _run("Study Room Quiz", lambda: self.study_room_quiz_btn.emit("clicked"))
+        _run("Study Room Drill", lambda: self.study_room_drill_btn.emit("clicked"))
+        _run("Study Room Interleave", lambda: self.study_room_interleave_btn.emit("clicked"))
+        _run("Study Room Leitner", lambda: self.study_room_leitner_btn.emit("clicked"))
+        _run("Study Room Error Drill", lambda: self.study_room_error_btn.emit("clicked"))
+        _run("Study Room Leech Drill", lambda: self.study_room_leech_btn.emit("clicked"))
+
+        # Pomodoro controls.
+        _run("Pomodoro Start", lambda: self.on_pomodoro_start(self.pomodoro_btn_start))
+        _run("Pomodoro Pause", lambda: self.on_pomodoro_pause(self.pomodoro_btn_pause))
+        _run("Pomodoro Resume", lambda: self.on_pomodoro_pause(self.pomodoro_btn_pause))
+        _run("Pomodoro Stop", lambda: self.on_pomodoro_stop(self.pomodoro_btn_stop))
+        _run("Break Banner Action", lambda: self.banner_action_btn.emit("clicked"))
+
+        # Topic change trigger.
+        if self._has_chapters():
+            current_sel = int(self.topic_combo.get_selected())
+            next_sel = 1 if len(self.engine.CHAPTERS) > 1 else 0
+            _run("Topic Dropdown Change", lambda: self.topic_combo.set_selected(next_sel))
+            _run("Topic Dropdown Reset", lambda: self.topic_combo.set_selected(current_sel))
+
+        # Tools and data controls.
+        _run("Take Quiz Button", lambda: self.quiz_btn.emit("clicked"))
+        _run("Quiz Prev Button", lambda: self.quiz_prev_btn.emit("clicked") if getattr(self, "quiz_prev_btn", None) else None)
+        _run("Quiz Confirm Button", lambda: self.quiz_confirm_btn.emit("clicked") if getattr(self, "quiz_confirm_btn", None) else None)
+        _run("Quiz Next Button", lambda: self.quiz_next_btn.emit("clicked") if getattr(self, "quiz_next_btn", None) else None)
+        _run("Import PDF Button", lambda: self.import_btn.emit("clicked"))
+        _run("Import AI Button", lambda: self.ai_questions_import_btn.emit("clicked"))
+        _run("Export Data Button", lambda: self.export_btn.emit("clicked"))
+        _run("Export Template Button", lambda: self.template_btn.emit("clicked"))
+        _run("Reset Data Button", lambda: self.reset_btn.emit("clicked"))
+        _run("Health Log Button", lambda: self.health_log_btn.emit("clicked"))
+        _run("Run Health Check Button", lambda: self.health_check_btn.emit("clicked"))
+        _run("Syllabus Cache Stats Button", lambda: self.view_syllabus_cache_stats_btn.emit("clicked"))
+        _run("Clear Syllabus Cache Button", lambda: self.clear_syllabus_cache_btn.emit("clicked"))
+
+        if failures:
+            self._smoke_trigger_failures = list(failures[:20])
+            top = failures[0]
+            raise RuntimeError(f"UI trigger sweep failed: {top.get('trigger')} -> {top.get('error')}")
 
     def _count_question_samples(self) -> int:
         stats = getattr(self.engine, "question_stats", {}) or {}
@@ -13278,6 +13566,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             main_warning = Gtk.Label(label=coach_warnings[0])
             main_warning.set_halign(Gtk.Align.START)
             main_warning.add_css_class("status-warn")
+            main_warning.add_css_class("nudge-warn")
             coach_box.append(main_warning)
             if len(coach_warnings) > 1:
                 detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -13285,6 +13574,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     lbl = Gtk.Label(label=note)
                     lbl.set_halign(Gtk.Align.START)
                     lbl.add_css_class("muted")
+                    lbl.add_css_class("nudge-info")
                     detail_box.append(lbl)
                 revealer = Gtk.Revealer()
                 revealer.set_reveal_child(False)
@@ -13330,6 +13620,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             note_label.set_halign(Gtk.Align.START)
             note_label.set_wrap(True)
             note_label.add_css_class("muted")
+            note_label.add_css_class("nudge-info")
             coach_box.append(note_label)
 
         try:
@@ -13362,6 +13653,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     trend_label = Gtk.Label(label=trend_text)
                     trend_label.set_halign(Gtk.Align.START)
                     trend_label.add_css_class("muted")
+                    if "improving" in trend_text:
+                        trend_label.add_css_class("nudge-good")
+                    elif "slipping" in trend_text:
+                        trend_label.add_css_class("nudge-warn")
+                    else:
+                        trend_label.add_css_class("nudge-info")
                     coach_box.append(trend_label)
         except Exception:
             pass
@@ -13377,6 +13674,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 hindsight_label = Gtk.Label(label=hindsight_text)
                 hindsight_label.set_halign(Gtk.Align.START)
                 hindsight_label.add_css_class("muted")
+                hindsight_label.add_css_class("nudge-info")
                 coach_box.append(hindsight_label)
                 week_key = self._get_week_key(today)
                 if self.last_hindsight_week != week_key:
@@ -13395,6 +13693,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             note_label.set_halign(Gtk.Align.START)
             note_label.set_wrap(True)
             note_label.add_css_class("muted")
+            note_label.add_css_class("nudge-info")
             coach_box.append(note_label)
 
         mission_lines = []
@@ -13467,15 +13766,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if pace_status == "behind":
             pace_label.set_text("Intervention: extra topic + shorter breaks until on pace.")
             pace_label.add_css_class("status-bad")
+            pace_label.add_css_class("nudge-warn")
         elif pace_status == "ahead":
             pace_label.set_text("Deep dive unlocked: longer focus blocks on hardest topics.")
             pace_label.add_css_class("status-ok")
+            pace_label.add_css_class("nudge-good")
         elif pace_status == "on_track":
             pace_label.set_text("Pace: on track. Keep steady focus.")
             pace_label.add_css_class("status-ok")
+            pace_label.add_css_class("nudge-good")
         else:
             pace_label.set_text("Pace: set exam date to calibrate.")
             pace_label.add_css_class("status-warn")
+            pace_label.add_css_class("nudge-warn")
         coach_box.append(pace_label)
 
         try:
@@ -13524,6 +13827,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if isinstance(self.action_time_log, dict) and self.action_time_log:
                 analytics = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                 analytics.add_css_class("card")
+                analytics.add_css_class("insight-card")
                 title = Gtk.Label(label="Time Analytics")
                 title.set_halign(Gtk.Align.START)
                 title.add_css_class("section-title")
@@ -13552,6 +13856,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     label.set_halign(Gtk.Align.START)
                     label.set_wrap(True)
                     label.add_css_class("muted")
+                    label.add_css_class("dashboard-block-body")
                     analytics.append(label)
                     self.dashboard.append(analytics)
         except Exception:
@@ -13793,6 +14098,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if focus_lines:
                 leaderboard = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                 leaderboard.add_css_class("card")
+                leaderboard.add_css_class("insight-card")
                 title = Gtk.Label(label="Focus Topics (7 days)")
                 title.set_halign(Gtk.Align.START)
                 title.add_css_class("section-title")
@@ -13801,6 +14107,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 label.set_halign(Gtk.Align.START)
                 label.set_wrap(True)
                 label.add_css_class("muted")
+                label.add_css_class("dashboard-block-body")
                 leaderboard.append(label)
                 self.dashboard.append(leaderboard)
 
@@ -13808,6 +14115,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if retrieval_lines:
                 leaderboard = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                 leaderboard.add_css_class("card")
+                leaderboard.add_css_class("insight-card")
                 title = Gtk.Label(label="Retrieval Topics (7 days)")
                 title.set_halign(Gtk.Align.START)
                 title.add_css_class("section-title")
@@ -13816,6 +14124,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 label.set_halign(Gtk.Align.START)
                 label.set_wrap(True)
                 label.add_css_class("muted")
+                label.add_css_class("dashboard-block-body")
                 leaderboard.append(label)
                 self.dashboard.append(leaderboard)
 
@@ -13823,6 +14132,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if today_lines:
                 leaderboard = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                 leaderboard.add_css_class("card")
+                leaderboard.add_css_class("insight-card")
                 title = Gtk.Label(label="Today's Top Topics")
                 title.set_halign(Gtk.Align.START)
                 title.add_css_class("section-title")
@@ -13831,6 +14141,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 label.set_halign(Gtk.Align.START)
                 label.set_wrap(True)
                 label.add_css_class("muted")
+                label.add_css_class("dashboard-block-body")
                 leaderboard.append(label)
                 self.dashboard.append(leaderboard)
         except Exception:
@@ -13840,6 +14151,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if summary_lines:
                 summary_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                 summary_card.add_css_class("card")
+                summary_card.add_css_class("insight-card")
                 title = Gtk.Label(label="Daily Summary")
                 title.set_halign(Gtk.Align.START)
                 title.add_css_class("section-title")
@@ -13848,6 +14160,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 label.set_halign(Gtk.Align.START)
                 label.set_wrap(True)
                 label.add_css_class("muted")
+                label.add_css_class("dashboard-block-body")
                 summary_card.append(label)
                 self.dashboard.append(summary_card)
         except Exception:
@@ -13974,6 +14287,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if isinstance(recap, dict) and recap.get("lines"):
                     recap_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                     recap_card.add_css_class("card")
+                    recap_card.add_css_class("insight-card")
                     recap_title = recap.get("title", "Session recap")
                     when = recap.get("when")
                     title_text = f"{recap_title}" if not when else f"{recap_title} • {when}"
@@ -13985,6 +14299,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     recap_label.set_halign(Gtk.Align.START)
                     recap_label.set_wrap(True)
                     recap_label.add_css_class("muted")
+                    recap_label.add_css_class("dashboard-block-body")
                     recap_card.append(recap_label)
                     self.dashboard.append(recap_card)
             except Exception:
@@ -14024,6 +14339,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             try:
                 recap_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                 recap_card.add_css_class("card")
+                recap_card.add_css_class("insight-card")
                 recap_title = Gtk.Label(label="Coach Recap (7 days)")
                 recap_title.set_halign(Gtk.Align.START)
                 recap_title.add_css_class("section-title")
@@ -14070,6 +14386,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 recap_label.set_halign(Gtk.Align.START)
                 recap_label.set_wrap(True)
                 recap_label.add_css_class("muted")
+                recap_label.add_css_class("dashboard-block-body")
                 recap_card.append(recap_label)
                 self.dashboard.append(recap_card)
             except Exception:
@@ -14078,6 +14395,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if not focus_mode:
             today_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             today_card.add_css_class("card")
+            today_card.add_css_class("insight-card")
             today_title = Gtk.Label(label="Today Overview")
             today_title.set_halign(Gtk.Align.START)
             today_title.add_css_class("section-title")
@@ -14102,6 +14420,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             today_label.set_halign(Gtk.Align.START)
             today_label.set_wrap(True)
             today_label.add_css_class("muted")
+            today_label.add_css_class("dashboard-block-body")
             today_card.append(today_label)
             self.dashboard.append(today_card)
 
