@@ -7590,6 +7590,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._last_study_room_coach_topic = str(recommended or "")
         self._queue_coach_sync_if_mismatch("study_room")
         self._ensure_coach_pick_consistency(recommended, pick_source, "study_room")
+        recommended = str(getattr(self, "_coach_pick_topic", "") or recommended or "")
         if getattr(self, "study_room_next_due_label", None):
             next_due = self._get_topic_next_due_text(recommended)
             self._set_label_text_if_changed(self.study_room_next_due_label, next_due or "")
@@ -11829,6 +11830,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._last_dashboard_coach_topic = str(recommended_topic or "")
         self._queue_coach_sync_if_mismatch("dashboard")
         self._ensure_coach_pick_consistency(recommended_topic, pick_source, "dashboard")
+        recommended_topic = str(getattr(self, "_coach_pick_topic", "") or recommended_topic or "")
         try:
             questions = self.engine.get_questions(recommended_topic)
             base_quiz_target = self._get_quiz_target_for_topic(recommended_topic, len(questions))
