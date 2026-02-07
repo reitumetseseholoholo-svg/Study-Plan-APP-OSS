@@ -21,7 +21,7 @@ import warnings
 import wave
 import struct
 import threading
-from typing import Optional, Any
+from typing import Optional, Any, cast
 
 # Suppress known noisy GTK/GLib warnings without hiding real errors.
 def _install_log_filters() -> None:
@@ -1135,6 +1135,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._perf_last_dashboard_ms = 0.0
         self._coach_only_toggle_handler_id = 0
         self._coach_only_apply_in_progress = False
+        self._coach_pick_snapshot = None
+        self._coach_pick_snapshot_at = 0.0
+        self._coach_pick_snapshot_plan_key = ""
         self._last_ml_train_date = None
         self._last_ml_train_at = None
         self._last_ml_train_sample_count = 0
@@ -5810,7 +5813,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             topic = forced_topic
             source = str(forced_source or getattr(self, "_last_coach_pick_source", "forced"))
         else:
-            topic, source = self._get_coach_pick_meta()
+            topic, source = self._get_coach_pick_snapshot()
         if not topic:
             self.coach_pick_label.set_text("Coach pick: —")
             return
@@ -5995,7 +5998,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             combo.set_sensitive(not self.coach_only_view)
         if not self.coach_only_view:
             return
-        topic = getattr(self, "_coach_pick_topic", "") or self._get_coach_pick_topic()
+        topic, _source = self._get_coach_pick_snapshot()
         if topic and topic != self.current_topic:
             try:
                 self._coach_only_apply_in_progress = True
@@ -6821,7 +6824,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         """Single source of truth for coach pick used across panels."""
         if not self._has_chapters():
             return ""
-        topic, _source = self._get_coach_pick_meta()
+        topic, _source = self._get_coach_pick_snapshot()
         return topic
 
     def _get_coach_pick_meta(self) -> tuple[str, str]:
@@ -6835,6 +6838,29 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         topic = self._get_recommended_topic()
         source = getattr(self, "_last_coach_pick_source", "plan")
         return topic, str(source)
+
+    def _get_coach_pick_snapshot(self, *, force: bool = False) -> tuple[str, str]:
+        """Return a stable coach pick for the current refresh cycle."""
+        if not self._has_chapters():
+            return "", "none"
+        now = time.monotonic()
+        try:
+            plan = [ch for ch in (getattr(self, "_last_daily_plan", None) or []) if isinstance(ch, str)]
+        except Exception:
+            plan = []
+        plan_key = "|".join(plan)
+        if (
+            not force
+            and isinstance(self._coach_pick_snapshot, tuple)
+            and (now - float(self._coach_pick_snapshot_at or 0.0)) < 0.5
+            and plan_key == (self._coach_pick_snapshot_plan_key or "")
+        ):
+            return cast(tuple[str, str], self._coach_pick_snapshot)
+        topic, source = self._get_coach_pick_meta()
+        self._coach_pick_snapshot = (topic, source)
+        self._coach_pick_snapshot_at = now
+        self._coach_pick_snapshot_plan_key = plan_key
+        return topic, source
 
     def _get_last_coach_log_summary(self) -> str:
         path = os.path.join(self.DEFAULT_DATA_DIR, "coach_debug.log")
@@ -7425,6 +7451,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _update_study_room_card_impl(self) -> None:
         if not getattr(self, "study_room_summary", None):
             return
+        self._get_coach_pick_snapshot(force=True)
         if getattr(self, "study_room_details_expander", None):
             try:
                 focus_mode = bool(getattr(self, "focus_mode", False))
@@ -7478,7 +7505,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ensure_valid_topic()
         today = datetime.date.today()
         try:
-            recommended, pick_source = self._get_coach_pick_meta()
+            recommended, pick_source = self._get_coach_pick_snapshot()
         except Exception:
             recommended = ""
             pick_source = "unknown"
@@ -11670,11 +11697,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             readiness_info = self._compute_exam_readiness_details()
         except Exception:
             readiness_info = {"score": 0.0, "tier": "Foundation", "mastery_pct": 0.0, "comp_min": 0.0}
+        self._get_coach_pick_snapshot(force=True)
         pace_info = self._get_pace_info()
         pace_status = pace_info.get("status", "unknown")
         weak_chapter = self._get_weak_chapter(60.0)
         try:
-            recommended_topic, pick_source = self._get_coach_pick_meta()
+            recommended_topic, pick_source = self._get_coach_pick_snapshot()
         except Exception:
             recommended_topic = weak_chapter or self.current_topic
             pick_source = "unknown"
