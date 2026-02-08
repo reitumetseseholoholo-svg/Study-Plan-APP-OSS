@@ -152,6 +152,11 @@ DEFAULT_LONG_BREAK_EVERY = 4
 DEFAULT_MAX_BREAK_SKIPS = 1
 DEFAULT_OUTCOME_GAP_QUIZ_RATIO = 0.5
 DEFAULT_OUTCOME_GAP_MIN_QUESTIONS = 1
+COACH_AGGRESSIVE_MIN_DWELL = 1
+COACH_AGGRESSIVE_TARGET_DWELL = 2
+COACH_AGGRESSIVE_MAX_DWELL = 3
+COACH_ROTATION_MARGIN = 0.08
+COACH_WEAK_TIE_WINDOW = 4.0
 SMOKE_REPORT_PATH = os.path.expanduser("~/.config/studyplan/smoke_last.json")
 SMOKE_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
     "coach_pick_consistency_rate": {"op": ">=", "value": 0.999},
@@ -7352,26 +7357,39 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 hard_ratio = float(ratio_info.get("hard_ratio", 0) or 0)
         except Exception:
             hard_ratio = 0.0
-        hard_cap = 7
-        soft_cap = 5
+        min_dwell = COACH_AGGRESSIVE_MIN_DWELL
+        target_dwell = COACH_AGGRESSIVE_TARGET_DWELL
+        max_dwell = COACH_AGGRESSIVE_MAX_DWELL
         if hard_ratio >= 0.4:
-            hard_cap -= 1
-            soft_cap -= 1
+            target_dwell = max(1, target_dwell - 1)
+            max_dwell = max(2, max_dwell - 1)
         try:
             best_hours = self.engine.get_best_quiz_hours()
             if best_hours and datetime.datetime.now().hour not in best_hours and hard_ratio >= 0.35:
-                hard_cap -= 1
-                soft_cap -= 1
+                max_dwell = max(2, max_dwell - 1)
         except Exception:
             pass
-        hard_cap = max(5, hard_cap)
-        soft_cap = max(3, soft_cap)
+        target_dwell = max(min_dwell, target_dwell)
+        max_dwell = max(target_dwell, max_dwell)
+
+        try:
+            must_due = self._get_must_review_due_count(datetime.date.today())
+        except Exception:
+            must_due = 0
+        weak = ""
+        try:
+            weak = self._get_weak_chapter(60.0)
+            weak_other_exists = bool(weak and weak != topic)
+        except Exception:
+            weak_other_exists = False
 
         # Hard-stop and soft-stop guards to prevent all-day lock-in on a single topic.
-        if daily_poms >= hard_cap:
-            return True, f"hard cap reached ({hard_cap}+ focus blocks)"
-        if daily_poms >= soft_cap and effective_poms >= 3:
-            return True, f"soft cap reached ({soft_cap}+ focus blocks)"
+        if daily_poms >= max_dwell:
+            return True, f"rotation cap reached ({max_dwell}+ focus blocks)"
+        if daily_poms < min_dwell and must_due <= 0 and not weak_other_exists:
+            return False, f"minimum dwell ({min_dwell}) not met"
+        if daily_poms >= target_dwell and effective_poms >= max(2, target_dwell):
+            return True, f"target dwell reached ({target_dwell}+ focus blocks)"
 
         # Mastery checkpoint release: 2-3 deep blocks + decent quiz = rotate.
         if effective_poms >= 3 and last_quiz >= 75:
@@ -7387,55 +7405,75 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
-        try:
-            today = datetime.date.today()
-            must_due = self._get_must_review_due_count(today)
-            if must_due > 0:
-                return True, "must-review items are due"
-        except Exception:
-            pass
-        try:
-            weak = self._get_weak_chapter(60.0)
-            if weak and weak != topic:
-                return True, f"weaker chapter exists ({weak})"
-        except Exception:
-            pass
+        if must_due > 0:
+            return True, "must-review items are due"
+        if weak_other_exists:
+            return True, f"weaker chapter exists ({weak})"
         return False, "continue deep focus"
 
-    def _pick_topic_after_sticky_release(self, sticky_topic: str, plan: list[str]) -> str:
+    def _pick_topic_after_sticky_release(self, sticky_topic: str, plan: list[str], release_reason: str = "") -> str:
         """Pick the next topic when sticky coach is released."""
         if not self._has_chapters():
             return ""
 
-        # Prefer mandatory weak chapter first.
+        candidates: list[str] = []
+        seen: set[str] = set()
         try:
             threshold = float(getattr(self.engine, "mandatory_weak_threshold", 60.0) or 60.0)
             weak = self._get_weak_chapter(threshold)
-            if weak and weak != sticky_topic:
-                return weak
+            if weak and weak != sticky_topic and weak not in seen:
+                seen.add(weak)
+                candidates.append(weak)
         except Exception:
             pass
 
-        # Then daily plan candidates (in order), excluding the sticky topic.
         for chapter in plan:
-            if chapter in self.engine.CHAPTERS and chapter != sticky_topic:
-                return chapter
+            if chapter in self.engine.CHAPTERS and chapter != sticky_topic and chapter not in seen:
+                seen.add(chapter)
+                candidates.append(chapter)
 
-        # Then urgency model candidates.
         try:
             recs = self.engine.top_recommendations(max(3, len(self.engine.CHAPTERS))) or []
             for chapter, _score in recs:
-                if chapter in self.engine.CHAPTERS and chapter != sticky_topic:
-                    return chapter
+                if chapter in self.engine.CHAPTERS and chapter != sticky_topic and chapter not in seen:
+                    seen.add(chapter)
+                    candidates.append(chapter)
         except Exception:
             pass
 
-        # Final fallback: least-studied chapter today (excluding sticky topic).
-        candidates = [ch for ch in self.engine.CHAPTERS if ch != sticky_topic]
+        for chapter in self.engine.CHAPTERS:
+            if chapter != sticky_topic and chapter not in seen:
+                seen.add(chapter)
+                candidates.append(chapter)
+
         if not candidates:
             return ""
-        candidates.sort(key=lambda ch: int(self.daily_pomodoros_by_chapter.get(ch, 0) or 0))
-        return candidates[0]
+        ranked = sorted(
+            candidates,
+            key=lambda ch: (
+                -self._get_coach_candidate_score(ch),
+                int(self.daily_pomodoros_by_chapter.get(ch, 0) or 0),
+                ch,
+            ),
+        )
+        best = ranked[0]
+        sticky_score = self._get_coach_candidate_score(sticky_topic)
+        best_score = self._get_coach_candidate_score(best)
+        forced_release = any(
+            token in str(release_reason or "").lower()
+            for token in ("must-review", "miss cooldown", "rotation cap", "interval model")
+        )
+        try:
+            sticky_poms = int(self.daily_pomodoros_by_chapter.get(sticky_topic, 0) or 0)
+        except Exception:
+            sticky_poms = 0
+        if (
+            not forced_release
+            and sticky_poms < COACH_AGGRESSIVE_MAX_DWELL
+            and best_score < (sticky_score + COACH_ROTATION_MARGIN)
+        ):
+            return sticky_topic
+        return best
 
     def _get_recommended_topic(self) -> str:
         if not self._has_chapters():
@@ -7470,10 +7508,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             self._log_coach_decision(topic, plan, release_flag, release_reason)
                             return topic
                     else:
-                        rotated = self._pick_topic_after_sticky_release(last_pick, plan)
+                        rotated = self._pick_topic_after_sticky_release(last_pick, plan, release_reason or "")
                         if rotated:
                             topic = rotated
-                            self._last_coach_pick_source = "sticky release rotate"
+                            self._last_coach_pick_source = "sticky release hold" if topic == last_pick else "sticky release rotate"
                             self._log_coach_decision(topic, plan, release_flag, release_reason)
                             return topic
         except Exception:
@@ -7508,13 +7546,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return topic
         except Exception:
             pass
+
         if self.current_topic in self.engine.CHAPTERS:
             topic = self.current_topic if isinstance(self.current_topic, str) else ""
             if release_flag and sticky_topic and topic == sticky_topic:
-                rotated = self._pick_topic_after_sticky_release(sticky_topic, plan)
+                rotated = self._pick_topic_after_sticky_release(sticky_topic, plan, release_reason or "")
                 if rotated:
                     topic = rotated
-                    self._last_coach_pick_source = "current rotate"
+                    self._last_coach_pick_source = "current hold" if topic == sticky_topic else "current rotate"
                 else:
                     self._last_coach_pick_source = "current"
             else:
@@ -7524,10 +7563,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         topic = self.engine.CHAPTERS[0] if self.engine.CHAPTERS else ""
         if topic:
             if release_flag and sticky_topic and topic == sticky_topic:
-                rotated = self._pick_topic_after_sticky_release(sticky_topic, plan)
+                rotated = self._pick_topic_after_sticky_release(sticky_topic, plan, release_reason or "")
                 if rotated:
                     topic = rotated
-                    self._last_coach_pick_source = "fallback rotate"
+                    self._last_coach_pick_source = "fallback hold" if topic == sticky_topic else "fallback rotate"
                 else:
                     self._last_coach_pick_source = "fallback"
             else:
@@ -7767,6 +7806,78 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 continue
         return count
 
+    def _get_chapter_miss_risk(self, chapter: str) -> float | None:
+        if not chapter:
+            return None
+        try:
+            stats = getattr(self.engine, "question_stats", {}) or {}
+            chapter_stats = stats.get(chapter, {}) if isinstance(stats, dict) else {}
+        except Exception:
+            chapter_stats = {}
+        if not isinstance(chapter_stats, dict) or not chapter_stats:
+            return None
+        risks: list[float] = []
+        for entry in chapter_stats.values():
+            if not isinstance(entry, dict):
+                continue
+            try:
+                attempts = int(entry.get("attempts", 0) or 0)
+            except Exception:
+                attempts = 0
+            if attempts <= 0:
+                continue
+            try:
+                correct = int(entry.get("correct", 0) or 0)
+            except Exception:
+                correct = 0
+            try:
+                streak = int(entry.get("streak", 0) or 0)
+            except Exception:
+                streak = 0
+            try:
+                avg_time = float(entry.get("avg_time_sec", 0) or 0.0)
+            except Exception:
+                avg_time = 0.0
+            miss_rate = 1.0 - min(1.0, max(0.0, correct / max(1, attempts)))
+            time_factor = min(1.0, max(0.0, avg_time / 60.0))
+            streak_factor = 1.0 - min(1.0, max(0.0, streak / 5.0))
+            risk = (0.65 * miss_rate) + (0.2 * time_factor) + (0.15 * streak_factor)
+            risks.append(max(0.0, min(1.0, risk)))
+        if not risks:
+            return None
+        return sum(risks) / float(len(risks))
+
+    def _get_coach_candidate_score(self, chapter: str) -> float:
+        if not chapter or chapter not in getattr(self.engine, "CHAPTERS", []):
+            return -1.0
+        today = datetime.date.today()
+        try:
+            comp = getattr(self.engine, "competence", {}) or {}
+            competence = float(comp.get(chapter, 0) or 0)
+        except Exception:
+            competence = 0.0
+        urgency = (100.0 - max(0.0, min(100.0, competence))) / 100.0
+        try:
+            due = float(self._get_topic_due_count(chapter, today))
+        except Exception:
+            due = 0.0
+        due_factor = min(1.0, due / 12.0)
+        try:
+            recall_risk = self.engine.get_chapter_recall_risk(chapter)
+            recall_factor = float(recall_risk) if recall_risk is not None else 0.0
+        except Exception:
+            recall_factor = 0.0
+        miss_risk = self._get_chapter_miss_risk(chapter)
+        miss_factor = float(miss_risk) if miss_risk is not None else 0.0
+        score = (0.35 * urgency) + (0.25 * due_factor) + (0.20 * recall_factor) + (0.20 * miss_factor)
+        try:
+            undercovered = self.engine.get_undercovered_capability_chapters(max_coverage=70.0, min_uncovered=1)
+            if isinstance(undercovered, list) and chapter in undercovered:
+                score += 0.08
+        except Exception:
+            pass
+        return score
+
     def _get_drill_topic(self) -> str:
         if not self._has_chapters():
             return ""
@@ -7814,9 +7925,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         try:
             comp = getattr(self.engine, "competence", {}) or {}
             if isinstance(comp, dict) and comp:
-                weakest = sorted(comp.items(), key=lambda x: x[1])[0]
-                if float(weakest[1] or 0) < threshold:
-                    return weakest[0]
+                weak_rows: list[tuple[str, float]] = []
+                for chapter, value in comp.items():
+                    if chapter not in getattr(self.engine, "CHAPTERS", []):
+                        continue
+                    try:
+                        score = float(value or 0)
+                    except Exception:
+                        score = 0.0
+                    if score < threshold:
+                        weak_rows.append((chapter, score))
+                if not weak_rows:
+                    return None
+                weak_rows.sort(key=lambda item: (item[1], item[0]))
+                min_comp = weak_rows[0][1]
+                window = max(0.0, float(COACH_WEAK_TIE_WINDOW))
+                tie_rows = [item for item in weak_rows if item[1] <= (min_comp + window)]
+                if len(tie_rows) == 1:
+                    return tie_rows[0][0]
+                today = datetime.date.today()
+                ranked = sorted(
+                    tie_rows,
+                    key=lambda item: (
+                        -int(self._get_topic_due_count(item[0], today)),
+                        -float(self.engine.get_chapter_recall_risk(item[0]) or 0.0),
+                        -float(self._get_chapter_miss_risk(item[0]) or 0.0),
+                        int(self.daily_pomodoros_by_chapter.get(item[0], 0) or 0),
+                        item[1],
+                        item[0],
+                    ),
+                )
+                if ranked:
+                    return ranked[0][0]
         except Exception:
             pass
         return None
