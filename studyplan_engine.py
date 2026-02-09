@@ -40,6 +40,11 @@ class StudyPlanEngine:
     SEMANTIC_MIN_SCORE = 0.42
     SEMANTIC_CACHE_MAX = 2048
     SEMANTIC_RERANK_TOP_K = 4
+    SEMANTIC_WARMUP_BUDGET_MS = 3000.0
+    SEMANTIC_ROUTE_BUDGET_MS = 120.0
+    SEMANTIC_ROUTE_FAIL_STREAK_LIMIT = 3
+    SEMANTIC_ROUTE_CIRCUIT_SECONDS = 180.0
+    SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT = 6
     SEMANTIC_CANONICAL_ALIASES: Dict[str, str] = {
         "fs analysis": "financial statement analysis",
         "fsa": "financial statement analysis",
@@ -2601,6 +2606,18 @@ class StudyPlanEngine:
         self.semantic_rerank_enabled: bool = str(
             os.environ.get("STUDYPLAN_SEMANTIC_RERANK", "1")
         ).strip().lower() not in {"0", "false", "no", "off"}
+        self.semantic_offline_mode: bool = str(
+            os.environ.get("STUDYPLAN_SEMANTIC_OFFLINE", "0")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self.semantic_local_first: bool = str(
+            os.environ.get("STUDYPLAN_SEMANTIC_LOCAL_FIRST", "1")
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        try:
+            self.semantic_warmup_prefetch_chapters = max(
+                0, int(os.environ.get("STUDYPLAN_SEMANTIC_PREFETCH_CHAPTERS", str(self.SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT)) or self.SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT)
+            )
+        except Exception:
+            self.semantic_warmup_prefetch_chapters = int(self.SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT)
         self.semantic_min_score: float = float(self.SEMANTIC_MIN_SCORE)
         self._semantic_model: Any | None = None
         self._semantic_model_state: str = "unloaded"
@@ -2612,6 +2629,18 @@ class StudyPlanEngine:
         self._semantic_match_cache_order: List[str] = []
         self._semantic_chapter_match_assets: Dict[str, Dict[str, Any]] = {}
         self._semantic_chapter_assets_lock = threading.Lock()
+        self._semantic_failure_streak: int = 0
+        self._semantic_circuit_until_ts: float = 0.0
+        self._semantic_circuit_reason: str = ""
+        self._semantic_warmup_stats: Dict[str, Any] = {
+            "last_warmup_at": "",
+            "last_warmup_ms": 0.0,
+            "model_loaded": False,
+            "reranker_loaded": False,
+            "assets_prebuilt": 0,
+            "offline_mode": bool(self.semantic_offline_mode),
+            "degraded_reason": "",
+        }
         self._semantic_perf_stats: Dict[str, float] = {
             "route_meta_calls": 0.0,
             "route_cache_hits": 0.0,
@@ -4314,7 +4343,28 @@ class StudyPlanEngine:
             "avg_route_ms": float(avg_ms),
         }
 
-    def _semantic_get_model(self) -> Any | None:
+    def _semantic_reset_runtime_state(self, clear_shared: bool = False) -> None:
+        self._semantic_model = None
+        self._semantic_model_state = "unloaded"
+        self._semantic_block_reason = None
+        self._semantic_reranker = None
+        self._semantic_reranker_state = "unloaded"
+        self._semantic_reranker_block_reason = None
+        self._semantic_failure_streak = 0
+        self._semantic_circuit_until_ts = 0.0
+        self._semantic_circuit_reason = ""
+        if clear_shared:
+            model_name = str(getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME).strip()
+            rerank_name = str(
+                getattr(self, "semantic_rerank_model_name", self.SEMANTIC_RERANK_MODEL_NAME)
+                or self.SEMANTIC_RERANK_MODEL_NAME
+            ).strip()
+            with self._SEMANTIC_SHARED_MODEL_LOCK:
+                self._SEMANTIC_SHARED_MODELS.pop(model_name, None)
+            with self._SEMANTIC_SHARED_RERANK_LOCK:
+                self._SEMANTIC_SHARED_RERANKERS.pop(rerank_name, None)
+
+    def _semantic_get_model(self, allow_remote: bool = True) -> Any | None:
         if not bool(getattr(self, "semantic_enabled", True)):
             self._semantic_model_state = "disabled"
             return None
@@ -4347,25 +4397,49 @@ class StudyPlanEngine:
                 self._semantic_model_state = "blocked"
                 self._semantic_block_reason = "sentence-transformers unavailable"
                 return None
+
+            offline_mode = bool(getattr(self, "semantic_offline_mode", False))
+            local_first = bool(getattr(self, "semantic_local_first", True))
+
+            def _load_with_flags(local_only: bool) -> Any:
+                return self._semantic_quiet_load(
+                    lambda: SentenceTransformer(model_name, local_files_only=local_only)
+                )
+
             with self._SEMANTIC_SHARED_MODEL_LOCK:
                 shared = self._SEMANTIC_SHARED_MODELS.get(model_name)
                 if shared is None:
-                    try:
-                        shared = self._semantic_quiet_load(
-                            lambda: SentenceTransformer(model_name)
-                        )
-                        self._SEMANTIC_SHARED_MODELS[model_name] = shared
-                    except Exception:
+                    local_error: Exception | None = None
+                    if local_first or offline_mode or not allow_remote:
+                        try:
+                            shared = _load_with_flags(True)
+                        except Exception as exc:
+                            local_error = exc
+                            shared = None
+                    if shared is None and allow_remote and not offline_mode:
+                        try:
+                            shared = self._semantic_quiet_load(
+                                lambda: SentenceTransformer(model_name)
+                            )
+                        except Exception:
+                            shared = None
+                    if shared is None:
                         self._semantic_model_state = "blocked"
-                        self._semantic_block_reason = "model load failed"
+                        if offline_mode or not allow_remote:
+                            self._semantic_block_reason = "offline mode: local semantic model not found"
+                        elif local_error is not None:
+                            self._semantic_block_reason = "model load failed"
+                        else:
+                            self._semantic_block_reason = "model load failed"
                         self._semantic_model = None
                         return None
+                    self._SEMANTIC_SHARED_MODELS[model_name] = shared
                 self._semantic_model = shared
                 self._semantic_model_state = "ready"
                 self._semantic_block_reason = None
                 return self._semantic_model
 
-    def _semantic_get_reranker(self) -> Any | None:
+    def _semantic_get_reranker(self, allow_remote: bool = True) -> Any | None:
         if not bool(getattr(self, "semantic_enabled", True)):
             self._semantic_reranker_state = "disabled"
             return None
@@ -4405,19 +4479,43 @@ class StudyPlanEngine:
                 self._semantic_reranker_state = "blocked"
                 self._semantic_reranker_block_reason = "cross-encoder unavailable"
                 return None
+
+            offline_mode = bool(getattr(self, "semantic_offline_mode", False))
+            local_first = bool(getattr(self, "semantic_local_first", True))
+
+            def _load_with_flags(local_only: bool) -> Any:
+                return self._semantic_quiet_load(
+                    lambda: CrossEncoder(model_name, local_files_only=local_only)
+                )
+
             with self._SEMANTIC_SHARED_RERANK_LOCK:
                 shared = self._SEMANTIC_SHARED_RERANKERS.get(model_name)
                 if shared is None:
-                    try:
-                        shared = self._semantic_quiet_load(
-                            lambda: CrossEncoder(model_name)
-                        )
-                        self._SEMANTIC_SHARED_RERANKERS[model_name] = shared
-                    except Exception:
+                    local_error: Exception | None = None
+                    if local_first or offline_mode or not allow_remote:
+                        try:
+                            shared = _load_with_flags(True)
+                        except Exception as exc:
+                            local_error = exc
+                            shared = None
+                    if shared is None and allow_remote and not offline_mode:
+                        try:
+                            shared = self._semantic_quiet_load(
+                                lambda: CrossEncoder(model_name)
+                            )
+                        except Exception:
+                            shared = None
+                    if shared is None:
                         self._semantic_reranker_state = "blocked"
-                        self._semantic_reranker_block_reason = "cross-encoder load failed"
+                        if offline_mode or not allow_remote:
+                            self._semantic_reranker_block_reason = "offline mode: local reranker model not found"
+                        elif local_error is not None:
+                            self._semantic_reranker_block_reason = "cross-encoder load failed"
+                        else:
+                            self._semantic_reranker_block_reason = "cross-encoder load failed"
                         self._semantic_reranker = None
                         return None
+                    self._SEMANTIC_SHARED_RERANKERS[model_name] = shared
                 self._semantic_reranker = shared
                 self._semantic_reranker_state = "ready"
                 self._semantic_reranker_block_reason = None
@@ -4430,6 +4528,7 @@ class StudyPlanEngine:
             return
         try:
             os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+            os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
             os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
             os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         except Exception:
@@ -4444,11 +4543,97 @@ class StudyPlanEngine:
         with contextlib.redirect_stdout(sink_out), contextlib.redirect_stderr(sink_err):
             return loader()
 
+    def _semantic_prefetch_chapter_assets(self, limit: int = 0) -> int:
+        try:
+            max_chapters = int(limit or 0)
+        except Exception:
+            max_chapters = 0
+        if max_chapters <= 0:
+            return 0
+
+        by_chapter = {}
+        try:
+            raw = getattr(self, "pomodoro_log", {}).get("by_chapter", {})
+            if isinstance(raw, dict):
+                by_chapter = raw
+        except Exception:
+            by_chapter = {}
+
+        scored: List[Tuple[float, str]] = []
+        for chapter in list(self.CHAPTERS):
+            questions = self.QUESTIONS.get(chapter, [])
+            if not isinstance(questions, list) or not questions:
+                continue
+            lookup = self._chapter_outcome_lookup(chapter)
+            if not lookup:
+                continue
+            score = 1.0
+            try:
+                score += float(by_chapter.get(chapter, 0.0) or 0.0) * 0.02
+            except Exception:
+                pass
+            try:
+                score += float(len((self.must_review or {}).get(chapter, {}) or {})) * 2.0
+            except Exception:
+                pass
+            chapter_stats = (self.question_stats or {}).get(chapter, {})
+            if isinstance(chapter_stats, dict):
+                attempted = 0
+                for item in chapter_stats.values():
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        if int(item.get("attempts", 0) or 0) > 0:
+                            attempted += 1
+                    except Exception:
+                        continue
+                score += float(attempted) * 0.1
+            scored.append((score, chapter))
+
+        scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        built = 0
+        for _score, chapter in scored[:max_chapters]:
+            lookup = self._chapter_outcome_lookup(chapter)
+            ordered_ids = sorted(lookup.keys())
+            if not ordered_ids:
+                continue
+            outcome_texts = [str((lookup.get(oid) or {}).get("text", "")).strip() for oid in ordered_ids]
+            normalized = [(self._semantic_normalize_text(chapter, txt) or txt) for txt in outcome_texts]
+            assets = self._semantic_get_chapter_assets(chapter, lookup, ordered_ids, normalized)
+            if isinstance(assets, dict):
+                built += 1
+        return built
+
     def warmup_semantic_model(self, force: bool = False) -> Dict[str, Any]:
+        started = time.perf_counter()
+        if bool(force):
+            self._semantic_reset_runtime_state(clear_shared=True)
+            self._semantic_invalidate_chapter_assets(None)
         current = self.get_semantic_status()
         if not force and current.get("state") in ("ready", "blocked", "disabled"):
             return current
-        self._semantic_get_model()
+        model_loaded = self._semantic_get_model(allow_remote=True) is not None
+        reranker_loaded = False
+        if bool(getattr(self, "semantic_rerank_enabled", True)):
+            reranker_loaded = self._semantic_get_reranker(allow_remote=True) is not None
+        prefetched = self._semantic_prefetch_chapter_assets(
+            int(getattr(self, "semantic_warmup_prefetch_chapters", self.SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT))
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        degraded_reason = ""
+        if elapsed_ms > float(self.SEMANTIC_WARMUP_BUDGET_MS):
+            degraded_reason = "warmup slow on CPU"
+        if model_loaded:
+            self._semantic_failure_streak = 0
+        self._semantic_warmup_stats = {
+            "last_warmup_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "last_warmup_ms": max(0.0, float(elapsed_ms)),
+            "model_loaded": bool(model_loaded),
+            "reranker_loaded": bool(reranker_loaded),
+            "assets_prebuilt": max(0, int(prefetched)),
+            "offline_mode": bool(getattr(self, "semantic_offline_mode", False)),
+            "degraded_reason": degraded_reason,
+        }
         return self.get_semantic_status()
 
     def get_semantic_status(self) -> Dict[str, Any]:
@@ -4491,9 +4676,25 @@ class StudyPlanEngine:
             + int(module_global_alias_count)
             + int(module_chapter_alias_count),
         )
+        asset_count = 0
+        try:
+            asset_count = int(len(self._semantic_chapter_match_assets))
+        except Exception:
+            asset_count = 0
+        warmup = copy.deepcopy(getattr(self, "_semantic_warmup_stats", {}) or {})
+        degraded_reason = str(warmup.get("degraded_reason", "") or "")
+        readiness = state
+        if enabled:
+            if state == "ready" and degraded_reason:
+                readiness = "degraded"
+            elif state == "blocked" and asset_count > 0:
+                readiness = "degraded"
+        else:
+            readiness = "disabled"
         return {
             "enabled": enabled,
             "state": state,
+            "readiness": readiness,
             "model_name": str(getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME),
             "rerank_enabled": rerank_enabled,
             "reranker_state": reranker_state,
@@ -4510,6 +4711,13 @@ class StudyPlanEngine:
             "module_global_alias_count": max(0, int(module_global_alias_count)),
             "module_chapter_alias_count": max(0, int(module_chapter_alias_count)),
             "alias_count_total": alias_count_total,
+            "offline_mode": bool(getattr(self, "semantic_offline_mode", False)),
+            "local_first": bool(getattr(self, "semantic_local_first", True)),
+            "warmup": warmup,
+            "circuit_active": bool(time.time() < float(getattr(self, "_semantic_circuit_until_ts", 0.0) or 0.0)),
+            "circuit_reason": str(getattr(self, "_semantic_circuit_reason", "") or ""),
+            "failure_streak": int(getattr(self, "_semantic_failure_streak", 0) or 0),
+            "asset_count": max(0, int(asset_count)),
         }
 
     @staticmethod
@@ -4536,6 +4744,9 @@ class StudyPlanEngine:
         self, chapter: str, source_text: str, outcome_lookup: Dict[str, Dict[str, Any]]
     ) -> Dict[str, Any]:
         route_started = time.perf_counter()
+        now_ts = time.time()
+        circuit_until = float(getattr(self, "_semantic_circuit_until_ts", 0.0) or 0.0)
+        circuit_active = bool(now_ts < circuit_until)
         self._semantic_perf_stats["route_meta_calls"] = float(
             self._semantic_perf_stats.get("route_meta_calls", 0.0) or 0.0
         ) + 1.0
@@ -4587,7 +4798,13 @@ class StudyPlanEngine:
 
         threshold = max(0.05, min(0.95, float(getattr(self, "semantic_min_score", self.SEMANTIC_MIN_SCORE))))
         # Tier 1: sentence-transformers if available.
-        model = self._semantic_get_model()
+        model = None
+        if not circuit_active:
+            try:
+                model = self._semantic_get_model(allow_remote=False)
+            except TypeError:
+                # Test doubles may still patch the legacy no-arg signature.
+                model = self._semantic_get_model()
         if model is not None:
             try:
                 raw = model.encode([normalized_text] + normalized_outcome_texts, normalize_embeddings=True)
@@ -4602,7 +4819,10 @@ class StudyPlanEngine:
                     best_id = ordered_ids[dense_scores[0][0]] if dense_scores else None
                     best_score = float(dense_scores[0][1]) if dense_scores else -1.0
                     # Optional Tier 1b: Cross-encoder rerank over top candidates.
-                    reranker = self._semantic_get_reranker()
+                    try:
+                        reranker = self._semantic_get_reranker(allow_remote=False)
+                    except TypeError:
+                        reranker = self._semantic_get_reranker()
                     if reranker is not None and len(dense_scores) >= 2:
                         top_k = max(2, int(getattr(self, "SEMANTIC_RERANK_TOP_K", 4) or 4))
                         rerank_candidates = dense_scores[:top_k]
@@ -4637,6 +4857,9 @@ class StudyPlanEngine:
                                     self._semantic_cache_set(cache_key, candidate_id, "cross", best_cross)
                                     result = {"outcome_id": candidate_id, "score": best_cross, "method": "cross"}
                                     elapsed_ms = (time.perf_counter() - route_started) * 1000.0
+                                    self._semantic_failure_streak = 0
+                                    self._semantic_circuit_until_ts = 0.0
+                                    self._semantic_circuit_reason = ""
                                     self._semantic_perf_stats["total_route_ms"] = float(
                                         self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
                                     ) + elapsed_ms
@@ -4649,6 +4872,9 @@ class StudyPlanEngine:
                         self._semantic_cache_set(cache_key, best_id, "model", best_score)
                         result = {"outcome_id": best_id, "score": best_score, "method": "model"}
                         elapsed_ms = (time.perf_counter() - route_started) * 1000.0
+                        self._semantic_failure_streak = 0
+                        self._semantic_circuit_until_ts = 0.0
+                        self._semantic_circuit_reason = ""
                         self._semantic_perf_stats["total_route_ms"] = float(
                             self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
                         ) + elapsed_ms
@@ -4659,7 +4885,10 @@ class StudyPlanEngine:
                         return result
             except Exception:
                 # Keep fallback paths active even if semantic model inference fails.
-                pass
+                self._semantic_failure_streak = int(getattr(self, "_semantic_failure_streak", 0) or 0) + 1
+                if self._semantic_failure_streak >= int(self.SEMANTIC_ROUTE_FAIL_STREAK_LIMIT):
+                    self._semantic_circuit_until_ts = time.time() + float(self.SEMANTIC_ROUTE_CIRCUIT_SECONDS)
+                    self._semantic_circuit_reason = "semantic inference failures"
 
         # Tier 2: sklearn TF-IDF cosine similarity.
         try:
@@ -4672,6 +4901,9 @@ class StudyPlanEngine:
                     self._semantic_cache_set(cache_key, best_id, "tfidf", best_score)
                     result = {"outcome_id": best_id, "score": best_score, "method": "tfidf"}
                     elapsed_ms = (time.perf_counter() - route_started) * 1000.0
+                    if elapsed_ms > float(self.SEMANTIC_ROUTE_BUDGET_MS):
+                        self._semantic_circuit_until_ts = time.time() + float(self.SEMANTIC_ROUTE_CIRCUIT_SECONDS)
+                        self._semantic_circuit_reason = "semantic route budget exceeded"
                     self._semantic_perf_stats["total_route_ms"] = float(
                         self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
                     ) + elapsed_ms

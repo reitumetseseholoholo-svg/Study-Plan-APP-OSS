@@ -448,10 +448,23 @@ def configure_font_rendering() -> None:
 
 class AppDialog(Gtk.Window):
     def __init__(self, title: str | None = None, transient_for=None, modal: bool = False):
-        super().__init__(transient_for=transient_for)
+        app = None
+        try:
+            if transient_for is not None:
+                app = transient_for.get_application()
+        except Exception:
+            app = None
+        if app is not None:
+            super().__init__(application=app, transient_for=transient_for)
+        else:
+            super().__init__(transient_for=transient_for)
         if title:
             self.set_title(title)
         self.set_modal(bool(modal))
+        try:
+            self.set_destroy_with_parent(True)
+        except Exception:
+            pass
         self._response_handlers: list[tuple] = []
         self._default_response = None
 
@@ -7225,15 +7238,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.send_notification("Data Auto-Recovery", msg)
 
     def _auto_train_ml_tick(self):
+        if getattr(self, "_dialog_smoke_mode", False):
+            return True
         self._auto_train_ml_models()
         return True
 
     def _semantic_warmup_tick(self):
+        if getattr(self, "_dialog_smoke_mode", False):
+            return False
         self._warmup_semantic_engine_async()
         return False
 
     def _warmup_semantic_engine_async(self) -> None:
         try:
+            if getattr(self, "_dialog_smoke_mode", False):
+                return
             if not bool(getattr(self, "semantic_enabled", True)):
                 return
             if getattr(self, "_semantic_warmup_in_progress", False):
@@ -7256,6 +7275,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
                 def _finish():
                     self._semantic_warmup_in_progress = False
+                    active_kind = str(getattr(self, "_action_timer_kind", "") or "").strip().lower()
+                    quiz_active = bool(active_kind in {"quiz", "drill", "review"}) or bool(
+                        isinstance(getattr(self, "quiz_session", None), dict)
+                    )
+                    if quiz_active:
+                        return False
                     try:
                         self.update_study_room_card()
                     except Exception:
@@ -12867,6 +12892,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 win.destroy()
             except Exception:
                 pass
+        # Some custom transient dialogs can exist outside the application
+        # window list; close those explicitly during smoke cleanup.
+        try:
+            top_levels = Gtk.Window.list_toplevels()
+        except Exception:
+            top_levels = []
+
+        def _is_transient_child_of_main(win: Gtk.Window) -> bool:
+            cur = win
+            for _ in range(8):
+                try:
+                    parent = cur.get_transient_for()
+                except Exception:
+                    parent = None
+                if parent is None:
+                    return False
+                if parent is self:
+                    return True
+                cur = parent
+            return False
+
+        for win in top_levels:
+            if win is self:
+                continue
+            if win in windows:
+                continue
+            if not _is_transient_child_of_main(win):
+                continue
+            try:
+                win.destroy()
+            except Exception:
+                pass
         dlg = getattr(self, "_active_native_dialog", None)
         if dlg is not None:
             try:
@@ -13266,13 +13323,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not enabled:
                 return ("Semantic map: off", False)
             state = str(status.get("state", "unloaded") or "unloaded")
+            readiness = str(status.get("readiness", state) or state)
             model_name = str(status.get("model_name", "model") or "model")
             cache_size = int(status.get("cache_size", 0) or 0)
+            asset_count = int(status.get("asset_count", 0) or 0)
             min_score = float(status.get("min_score", 0.0) or 0.0)
             alias_count = int(status.get("alias_count_total", 0) or 0)
             block_reason = str(status.get("block_reason", "") or "")
+            warmup = status.get("warmup", {}) if isinstance(status.get("warmup", {}), dict) else {}
+            warmup_ms = float(warmup.get("last_warmup_ms", 0.0) or 0.0)
+            degraded_reason = str(warmup.get("degraded_reason", "") or "")
             reranker_state = str(status.get("reranker_state", "unloaded") or "unloaded")
             rerank_enabled = bool(status.get("rerank_enabled", True))
+            circuit_active = bool(status.get("circuit_active", False))
+            circuit_reason = str(status.get("circuit_reason", "") or "")
             if state == "ready":
                 rerank_suffix = ""
                 if rerank_enabled and reranker_state == "ready":
@@ -13280,6 +13344,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 elif rerank_enabled and reranker_state == "blocked":
                     rerank_suffix = " • rerank fallback"
                 alias_suffix = f" • aliases {alias_count}" if alias_count > 0 else ""
+                perf_suffix = f" • warmup {warmup_ms:.0f}ms • assets {asset_count}"
+                circuit_suffix = f" • circuit ({circuit_reason or 'active'})" if circuit_active else ""
                 concept_nodes = int(graph_status.get("concept_nodes", 0) or 0)
                 cluster_count = int(graph_status.get("cluster_count", 0) or 0)
                 cluster_method = str(graph_status.get("cluster_method", "fallback") or "fallback")
@@ -13289,16 +13355,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     else ""
                 )
                 return (
-                    f"Semantic map: ready ({model_name}) • threshold {min_score:.2f} • cache {cache_size}{alias_suffix}{graph_suffix}{rerank_suffix}",
-                    False,
+                    f"Semantic map: {readiness} ({model_name}) • threshold {min_score:.2f} • cache {cache_size}{perf_suffix}{alias_suffix}{graph_suffix}{rerank_suffix}{circuit_suffix}",
+                    bool(readiness == "degraded" or circuit_active),
                 )
             if state == "blocked":
                 detail = block_reason if block_reason else "fallback"
+                if readiness == "degraded":
+                    degraded_detail = degraded_reason or "lexical fallback active"
+                    return (
+                        f"Semantic map: degraded ({degraded_detail}) • cache {cache_size} • assets {asset_count}",
+                        True,
+                    )
                 return (f"Semantic map: fallback ({detail})", True)
             if state == "disabled":
                 return ("Semantic map: disabled", False)
             if getattr(self, "_semantic_warmup_in_progress", False):
                 return (f"Semantic map: warming up ({model_name})", False)
+            if circuit_active:
+                detail = circuit_reason or "semantic route protection active"
+                return (f"Semantic map: circuit active ({detail})", True)
             return (f"Semantic map: pending ({model_name})", False)
         except Exception:
             return ("Semantic map: n/a", False)
@@ -13392,7 +13467,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._write_smoke_report("failed", "timeout")
         self._close_aux_windows()
         try:
+            self._closing_from_recap = True
             self.close()
+        except Exception:
+            pass
+        try:
+            app = self.get_application()
+            if app is not None:
+                app.quit()
         except Exception:
             pass
         return False
@@ -13405,7 +13487,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             GLib.timeout_add(200, self._close_aux_windows)
             def _close_main():
                 self._closing_from_recap = True
-                self.close()
+                try:
+                    self.close()
+                except Exception:
+                    pass
+                try:
+                    app = self.get_application()
+                    if app is not None:
+                        app.quit()
+                except Exception:
+                    pass
+                return False
             GLib.timeout_add(1000, _close_main)
             return False
         label, func = self._dialog_smoke_steps[self._dialog_smoke_index]
