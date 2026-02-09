@@ -682,11 +682,11 @@ class AppMessageDialog:
 
 SYSTEM_THEME_CSS = b"""
 @define-color app_accent alpha(@theme_selected_bg_color, 0.98);
-@define-color app_border alpha(@theme_fg_color, 0.24);
-@define-color app_border_strong alpha(@theme_fg_color, 0.38);
+@define-color app_border alpha(@theme_fg_color, 0.30);
+@define-color app_border_strong alpha(@theme_fg_color, 0.48);
 @define-color app_surface alpha(@theme_bg_color, 0.93);
 @define-color app_surface_alt alpha(@theme_bg_color, 0.90);
-@define-color app_muted alpha(@theme_fg_color, 0.95);
+@define-color app_muted alpha(@theme_fg_color, 0.99);
 window {
     background-color: @theme_bg_color;
     background-image: linear-gradient(
@@ -704,30 +704,34 @@ window {
     box-shadow: 0 3px 10px alpha(@theme_fg_color, 0.12);
 }
 .panel-left {
-    border-right: 1px solid app_border_strong;
+    background-color: alpha(@theme_bg_color, 0.965);
+    border-right: 2px solid app_border_strong;
     border-top-right-radius: 14px;
     border-bottom-right-radius: 14px;
-    margin-right: 2px;
+    margin-right: 8px;
+    box-shadow: 2px 0 0 alpha(@theme_fg_color, 0.16);
 }
 .panel-right {
-    border-left: 1px solid app_border_strong;
+    background-color: alpha(@theme_bg_color, 0.935);
+    border-left: 2px solid app_border_strong;
     border-top-left-radius: 14px;
     border-bottom-left-radius: 14px;
-    margin-left: 2px;
+    margin-left: 8px;
+    box-shadow: -2px 0 0 alpha(@theme_fg_color, 0.16);
 }
 .card {
-    background-color: app_surface_alt;
+    background-color: alpha(@theme_bg_color, 0.88);
     background-image: linear-gradient(
         to bottom,
         alpha(@theme_selected_bg_color, 0.04),
         alpha(@theme_bg_color, 0.0)
     );
-    border: 2px solid app_border_strong;
+    border: 2px solid alpha(@theme_fg_color, 0.52);
     border-radius: 13px;
     padding: 11px;
-    box-shadow: 0 1px 0 alpha(@theme_fg_color, 0.08), 0 4px 12px alpha(@theme_fg_color, 0.12);
-    margin-top: 4px;
-    margin-bottom: 4px;
+    box-shadow: 0 1px 0 alpha(@theme_fg_color, 0.10), 0 4px 14px alpha(@theme_fg_color, 0.14);
+    margin-top: 6px;
+    margin-bottom: 6px;
 }
 .card-tight {
     padding: 7px;
@@ -745,8 +749,8 @@ window {
     color: app_accent;
 }
 .card:hover {
-    border-color: alpha(@theme_selected_bg_color, 0.82);
-    box-shadow: 0 0 0 1px alpha(@theme_selected_bg_color, 0.35), 0 6px 16px alpha(@theme_selected_bg_color, 0.22);
+    border-color: alpha(@theme_selected_bg_color, 0.90);
+    box-shadow: 0 0 0 1px alpha(@theme_selected_bg_color, 0.42), 0 6px 18px alpha(@theme_selected_bg_color, 0.26);
 }
 .title {
     font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
@@ -762,34 +766,32 @@ window {
 }
 .section-title {
     font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
-    font-weight: 780;
-    font-size: 12px;
+    font-weight: 820;
+    font-size: 13px;
     letter-spacing: 0.4px;
     text-transform: uppercase;
-    color: alpha(@theme_fg_color, 0.99);
-    background-color: alpha(@theme_selected_bg_color, 0.22);
-    border: 1px solid alpha(@theme_selected_bg_color, 0.52);
+    color: alpha(@theme_fg_color, 1.0);
+    background-color: alpha(@theme_selected_bg_color, 0.30);
+    border: 1px solid alpha(@theme_selected_bg_color, 0.68);
     border-radius: 8px;
-    padding: 3px 9px;
+    padding: 4px 10px;
     margin-top: 3px;
     margin-bottom: 6px;
+}
+label.section-title {
+    color: alpha(@theme_fg_color, 1.0);
+    font-weight: 820;
 }
 .section-title + .muted {
     margin-top: 1px;
 }
-.coach-title {
-    font-weight: 760;
-    letter-spacing: 0.25px;
-    background-color: alpha(@theme_selected_bg_color, 0.24);
-    border: 1px solid alpha(@theme_selected_bg_color, 0.55);
-    border-radius: 8px;
-    padding: 3px 9px;
-    margin-top: 3px;
-    margin-bottom: 6px;
+label.coach-title {
+    color: alpha(@theme_fg_color, 1.0);
+    font-weight: 820;
 }
 .muted {
     color: app_muted;
-    line-height: 1.45;
+    line-height: 1.5;
 }
 .insight-card {
     border-left: 4px solid alpha(@theme_selected_bg_color, 0.42);
@@ -803,9 +805,9 @@ window {
     margin-bottom: 8px;
 }
 .dashboard-block-body {
-    color: alpha(@theme_fg_color, 0.98);
-    font-size: 12px;
-    line-height: 1.52;
+    color: alpha(@theme_fg_color, 1.0);
+    font-size: 13px;
+    line-height: 1.58;
 }
 .quiz-dialog {
     min-width: 640px;
@@ -859,7 +861,13 @@ window {
     font-style: normal;
 }
 .plan-title {
-    font-weight: 600;
+    font-weight: 760;
+    color: alpha(@theme_fg_color, 1.0);
+    letter-spacing: 0.15px;
+}
+label.plan-title {
+    color: alpha(@theme_fg_color, 1.0);
+    font-weight: 760;
 }
 .plan-meta {
     font-size: 11px;
@@ -928,27 +936,39 @@ window.compact button {
     color: @warning_color;
     font-weight: 760;
     font-style: italic;
+    background-color: alpha(@warning_color, 0.16);
+    border: 1px solid alpha(@warning_color, 0.38);
+    border-radius: 8px;
+    padding: 2px 8px;
 }
 .nudge-info {
     color: app_accent;
     font-weight: 700;
     font-style: italic;
+    background-color: alpha(@theme_selected_bg_color, 0.16);
+    border: 1px solid alpha(@theme_selected_bg_color, 0.36);
+    border-radius: 8px;
+    padding: 2px 8px;
 }
 .nudge-good {
     color: @success_color;
     font-weight: 760;
     font-style: italic;
+    background-color: alpha(@success_color, 0.16);
+    border: 1px solid alpha(@success_color, 0.36);
+    border-radius: 8px;
+    padding: 2px 8px;
 }
 .coach-title {
-    font-weight: 780;
-    font-size: 12px;
+    font-weight: 820;
+    font-size: 13px;
     text-transform: uppercase;
     letter-spacing: 0.45px;
-    color: alpha(@theme_fg_color, 0.99);
-    background-color: alpha(@theme_selected_bg_color, 0.24);
-    border: 1px solid alpha(@theme_selected_bg_color, 0.55);
+    color: alpha(@theme_fg_color, 1.0);
+    background-color: alpha(@theme_selected_bg_color, 0.32);
+    border: 1px solid alpha(@theme_selected_bg_color, 0.72);
     border-radius: 8px;
-    padding: 3px 9px;
+    padding: 4px 10px;
     margin-top: 3px;
     margin-bottom: 6px;
 }
@@ -1055,10 +1075,10 @@ COACH_THEME_CSS = b"""
 @define-color coach_bg #121724;
 @define-color coach_panel #1a2233;
 @define-color coach_card #212d43;
-@define-color coach_border #526487;
-@define-color coach_border_strong #7792c1;
+@define-color coach_border #647fb3;
+@define-color coach_border_strong #9bb8ef;
 @define-color coach_text #e8edf7;
-@define-color coach_muted #d4def0;
+@define-color coach_muted #e4edff;
 @define-color coach_accent #4fd1c5;
 @define-color coach_accent_alt #8bafff;
 window {
@@ -1074,25 +1094,29 @@ window {
     box-shadow: 0 2px 8px rgba(0,0,0,0.32);
 }
 .panel-left {
-    border-right: 1px solid coach_border_strong;
+    background: #1a2233;
+    border-right: 2px solid coach_border_strong;
     border-top-right-radius: 14px;
     border-bottom-right-radius: 14px;
-    margin-right: 2px;
+    margin-right: 8px;
+    box-shadow: 2px 0 0 rgba(155, 184, 239, 0.24);
 }
 .panel-right {
-    border-left: 1px solid coach_border_strong;
+    background: #182135;
+    border-left: 2px solid coach_border_strong;
     border-top-left-radius: 14px;
     border-bottom-left-radius: 14px;
-    margin-left: 2px;
+    margin-left: 8px;
+    box-shadow: -2px 0 0 rgba(155, 184, 239, 0.24);
 }
 .card {
-    background: coach_card;
-    border: 2px solid coach_border;
+    background: #23314a;
+    border: 2px solid #7b95c8;
     border-radius: 13px;
     padding: 11px;
     box-shadow: 0 1px 0 rgba(179, 198, 232, 0.08), 0 4px 14px rgba(0,0,0,0.34);
-    margin-top: 4px;
-    margin-bottom: 4px;
+    margin-top: 6px;
+    margin-bottom: 6px;
 }
 .card-tight {
     padding: 7px;
@@ -1110,9 +1134,9 @@ window {
     color: coach_accent;
 }
 .card:hover {
-    border-color: #93b8ff;
+    border-color: #a6c2ff;
     background: #263653;
-    box-shadow: 0 0 0 1px rgba(139, 175, 255, 0.36), 0 6px 18px rgba(139, 175, 255, 0.2);
+    box-shadow: 0 0 0 1px rgba(139, 175, 255, 0.44), 0 6px 20px rgba(139, 175, 255, 0.24);
 }
 .title {
     font-weight: 760;
@@ -1127,24 +1151,45 @@ window {
     color: coach_text;
 }
 .section-title {
-    font-weight: 780;
-    font-size: 12px;
+    font-weight: 820;
+    font-size: 13px;
     letter-spacing: 0.4px;
     text-transform: uppercase;
-    color: #e9f0ff;
-    background: rgba(139, 175, 255, 0.22);
-    border: 1px solid rgba(139, 175, 255, 0.5);
+    color: #f5f8ff;
+    background: rgba(139, 175, 255, 0.30);
+    border: 1px solid rgba(139, 175, 255, 0.74);
     border-radius: 8px;
-    padding: 3px 9px;
+    padding: 4px 10px;
     margin-top: 3px;
     margin-bottom: 6px;
+}
+label.section-title {
+    color: #f5f8ff;
+    font-weight: 820;
 }
 .section-title + .muted {
     margin-top: 1px;
 }
+.coach-title {
+    font-weight: 820;
+    letter-spacing: 0.3px;
+    color: #f5f8ff;
+    text-transform: uppercase;
+    font-size: 13px;
+    background: rgba(139, 175, 255, 0.30);
+    border: 1px solid rgba(139, 175, 255, 0.74);
+    border-radius: 8px;
+    padding: 4px 10px;
+    margin-top: 3px;
+    margin-bottom: 6px;
+}
+label.coach-title {
+    color: #f5f8ff;
+    font-weight: 820;
+}
 .muted {
     color: coach_muted;
-    line-height: 1.42;
+    line-height: 1.5;
 }
 .insight-card {
     border-left: 4px solid rgba(139, 175, 255, 0.62);
@@ -1158,9 +1203,9 @@ window {
     margin-bottom: 8px;
 }
 .dashboard-block-body {
-    color: #e7efff;
-    font-size: 12px;
-    line-height: 1.52;
+    color: #f2f7ff;
+    font-size: 13px;
+    line-height: 1.58;
 }
 .quiz-dialog {
     min-width: 640px;
@@ -1213,7 +1258,13 @@ window {
     font-style: normal;
 }
 .plan-title {
-    font-weight: 600;
+    font-weight: 760;
+    color: #f5f8ff;
+    letter-spacing: 0.15px;
+}
+label.plan-title {
+    color: #f5f8ff;
+    font-weight: 760;
 }
 .plan-meta {
     font-size: 11px;
@@ -1322,29 +1373,28 @@ window.compact button {
     color: #f6c453;
     font-weight: 760;
     font-style: italic;
+    background: rgba(246, 196, 83, 0.16);
+    border: 1px solid rgba(246, 196, 83, 0.42);
+    border-radius: 8px;
+    padding: 2px 8px;
 }
 .nudge-info {
     color: #8bafff;
     font-weight: 700;
     font-style: italic;
+    background: rgba(139, 175, 255, 0.16);
+    border: 1px solid rgba(139, 175, 255, 0.42);
+    border-radius: 8px;
+    padding: 2px 8px;
 }
 .nudge-good {
     color: #4fd1c5;
     font-weight: 760;
     font-style: italic;
-}
-.coach-title {
-    font-weight: 760;
-    letter-spacing: 0.25px;
-    color: #f1f5ff;
-    text-transform: uppercase;
-    font-size: 12px;
-    background: rgba(139, 175, 255, 0.24);
-    border: 1px solid rgba(139, 175, 255, 0.55);
+    background: rgba(79, 209, 197, 0.16);
+    border: 1px solid rgba(79, 209, 197, 0.42);
     border-radius: 8px;
-    padding: 3px 9px;
-    margin-top: 3px;
-    margin-bottom: 6px;
+    padding: 2px 8px;
 }
 .focus-list row {
     border: none;
@@ -1416,13 +1466,18 @@ provider = Gtk.CssProvider()
 def apply_theme(use_system: bool) -> None:
     css = SYSTEM_THEME_CSS if use_system else COACH_THEME_CSS
     try:
-        # Gtk4 prefers load_from_string; keep a fallback for older bindings.
+        # Gtk4 prefers load_from_string(str). Decode bytes constants explicitly.
         if hasattr(provider, "load_from_string"):
-            provider.load_from_string(css)
+            css_text = css.decode("utf-8", errors="replace") if isinstance(css, (bytes, bytearray)) else str(css)
+            provider.load_from_string(css_text)
         else:
             provider.load_from_data(css)
     except Exception:
-        return
+        # Fallback path for bindings that may reject one API variant.
+        try:
+            provider.load_from_data(css)
+        except Exception:
+            return
     display = Gdk.Display.get_default()
     if display is not None:
         Gtk.StyleContext.add_provider_for_display(
@@ -13721,6 +13776,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ml_label.add_css_class("muted")
             if confidence_tier == "low":
                 ml_label.add_css_class("status-warn")
+                ml_label.add_css_class("nudge-warn")
             coach_box.append(ml_label)
             fresh_text, fresh_warn = self._get_ml_freshness_status(sample_count)
             fresh_label = Gtk.Label(label=fresh_text)
@@ -13728,6 +13784,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             fresh_label.add_css_class("muted")
             if fresh_warn:
                 fresh_label.add_css_class("status-warn")
+                fresh_label.add_css_class("nudge-warn")
             coach_box.append(fresh_label)
             quality_text, quality_warn = self._get_recall_model_quality_status()
             quality_label = Gtk.Label(label=quality_text)
@@ -13735,6 +13792,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             quality_label.add_css_class("muted")
             if quality_warn:
                 quality_label.add_css_class("status-warn")
+                quality_label.add_css_class("nudge-warn")
             coach_box.append(quality_label)
             semantic_text, semantic_warn = self._get_semantic_status_line()
             semantic_label = Gtk.Label(label=semantic_text)
@@ -13742,6 +13800,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             semantic_label.add_css_class("muted")
             if semantic_warn:
                 semantic_label.add_css_class("status-warn")
+                semantic_label.add_css_class("nudge-warn")
             coach_box.append(semantic_label)
             try:
                 chapter_ml = self.engine.get_chapter_ml_status(recommended_topic)
@@ -13760,6 +13819,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 ch_line.add_css_class("muted")
                 if not ch_ready:
                     ch_line.add_css_class("status-warn")
+                    ch_line.add_css_class("nudge-warn")
                 coach_box.append(ch_line)
             except Exception:
                 pass
@@ -13774,6 +13834,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 drift_label.add_css_class("muted")
                 if drift_status in {"warning", "severe"}:
                     drift_label.add_css_class("status-warn")
+                    drift_label.add_css_class("nudge-warn")
                 coach_box.append(drift_label)
                 alerts = self.engine.get_semantic_drift_alerts(days=7)
                 if isinstance(alerts, list) and alerts:
@@ -14309,6 +14370,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     confidence_label.add_css_class("muted")
                     if confidence_tier == "low":
                         confidence_label.add_css_class("status-warn")
+                        confidence_label.add_css_class("nudge-warn")
                     insights.append(confidence_label)
                     fresh_text, fresh_warn = self._get_ml_freshness_status(sample_count)
                     fresh_label = Gtk.Label(label=fresh_text)
@@ -14316,6 +14378,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     fresh_label.add_css_class("muted")
                     if fresh_warn:
                         fresh_label.add_css_class("status-warn")
+                        fresh_label.add_css_class("nudge-warn")
                     insights.append(fresh_label)
                     quality_text, quality_warn = self._get_recall_model_quality_status()
                     quality_label = Gtk.Label(label=quality_text)
@@ -14323,6 +14386,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     quality_label.add_css_class("muted")
                     if quality_warn:
                         quality_label.add_css_class("status-warn")
+                        quality_label.add_css_class("nudge-warn")
                     insights.append(quality_label)
                     semantic_text, semantic_warn = self._get_semantic_status_line()
                     semantic_label = Gtk.Label(label=semantic_text)
@@ -14330,6 +14394,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     semantic_label.add_css_class("muted")
                     if semantic_warn:
                         semantic_label.add_css_class("status-warn")
+                        semantic_label.add_css_class("nudge-warn")
                     insights.append(semantic_label)
                     try:
                         if hasattr(self.engine, "get_gap_routing_summary"):
@@ -14352,6 +14417,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             gap_label.add_css_class("muted")
                             if requested_total > 0 and hit_rate < 0.6:
                                 gap_label.add_css_class("status-warn")
+                                gap_label.add_css_class("nudge-warn")
                             insights.append(gap_label)
                             if hasattr(self.engine, "get_gap_routing_summary_by_capability"):
                                 by_cap_summary = self.engine.get_gap_routing_summary_by_capability(14)
@@ -14382,6 +14448,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                     cap_label.add_css_class("muted")
                                     if worst_rate < 0.6:
                                         cap_label.add_css_class("status-warn")
+                                        cap_label.add_css_class("nudge-warn")
                                     insights.append(cap_label)
                     except Exception:
                         pass
@@ -14404,6 +14471,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             chapter_ml_label.add_css_class("muted")
                             if not ch_ready:
                                 chapter_ml_label.add_css_class("status-warn")
+                                chapter_ml_label.add_css_class("nudge-warn")
                             insights.append(chapter_ml_label)
                     except Exception:
                         pass
