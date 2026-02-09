@@ -1042,6 +1042,15 @@ button.flat:active {
 button:focus-visible {
     box-shadow: 0 0 0 2px alpha(@theme_selected_bg_color, 0.35);
 }
+spinbutton button {
+    min-height: 26px;
+    min-width: 26px;
+    padding: 2px 6px;
+    border-radius: 8px;
+}
+spinbutton entry {
+    min-height: 30px;
+}
 progressbar trough {
     border-radius: 999px;
     background-color: alpha(@theme_fg_color, 0.2);
@@ -1431,6 +1440,15 @@ button.flat:active {
 }
 button:focus-visible {
     box-shadow: 0 0 0 2px rgba(79, 209, 197, 0.42);
+}
+spinbutton button {
+    min-height: 26px;
+    min-width: 26px;
+    padding: 2px 6px;
+    border-radius: 8px;
+}
+spinbutton entry {
+    min-height: 30px;
 }
 progressbar trough {
     border-radius: 999px;
@@ -3585,6 +3603,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         content = dialog.get_content_area()
         content.set_spacing(8)
 
+        def _configure_numeric_row(row: Gtk.Box, label: Gtk.Label, spin: Gtk.SpinButton) -> None:
+            # Keep numeric preference rows visually aligned: fixed label lane + compact control lane.
+            row.set_spacing(10)
+            row.set_hexpand(True)
+            row.set_halign(Gtk.Align.FILL)
+            label.set_halign(Gtk.Align.START)
+            label.set_xalign(0.0)
+            label.set_hexpand(True)
+            label.set_width_chars(30)
+            label.set_max_width_chars(34)
+            spin.set_hexpand(False)
+            spin.set_halign(Gtk.Align.END)
+            spin.set_size_request(124, -1)
+
         general_title = Gtk.Label(label="General")
         general_title.set_halign(Gtk.Align.START)
         general_title.add_css_class("section-title")
@@ -3655,6 +3687,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         short_break_spin = Gtk.SpinButton.new_with_range(1, 20, 1)
         short_break_spin.set_value(int(self.short_break_minutes))
         short_break_spin.set_numeric(True)
+        _configure_numeric_row(short_break_row, short_break_label, short_break_spin)
         short_break_row.append(short_break_label)
         short_break_row.append(short_break_spin)
         long_break_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -3663,6 +3696,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         long_break_spin = Gtk.SpinButton.new_with_range(5, 30, 1)
         long_break_spin.set_value(int(self.long_break_minutes))
         long_break_spin.set_numeric(True)
+        _configure_numeric_row(long_break_row, long_break_label, long_break_spin)
         long_break_row.append(long_break_label)
         long_break_row.append(long_break_spin)
         long_every_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -3671,6 +3705,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         long_every_spin = Gtk.SpinButton.new_with_range(2, 6, 1)
         long_every_spin.set_value(int(self.long_break_every))
         long_every_spin.set_numeric(True)
+        _configure_numeric_row(long_every_row, long_every_label, long_every_spin)
         long_every_row.append(long_every_label)
         long_every_row.append(long_every_spin)
         skip_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -3679,6 +3714,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         skip_spin = Gtk.SpinButton.new_with_range(0, 3, 1)
         skip_spin.set_value(int(self.max_break_skips))
         skip_spin.set_numeric(True)
+        _configure_numeric_row(skip_row, skip_label, skip_spin)
         skip_row.append(skip_label)
         skip_row.append(skip_spin)
 
@@ -3729,6 +3765,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         idle_spin = Gtk.SpinButton.new_with_range(30, 600, 10)
         idle_spin.set_value(int(self.focus_idle_threshold))
         idle_spin.set_numeric(True)
+        _configure_numeric_row(idle_row, idle_label, idle_spin)
         if not self._focus_tracking_available:
             idle_spin.set_sensitive(False)
         idle_row.append(idle_label)
