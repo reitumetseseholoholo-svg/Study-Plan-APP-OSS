@@ -462,6 +462,10 @@ class AppDialog(Gtk.Window):
             self.set_title(title)
         self.set_modal(bool(modal))
         try:
+            self.add_css_class("app-dialog-window")
+        except Exception:
+            pass
+        try:
             self.set_destroy_with_parent(True)
         except Exception:
             pass
@@ -488,6 +492,10 @@ class AppDialog(Gtk.Window):
             btn = Gtk.Button.new_with_mnemonic(label)
         else:
             btn = Gtk.Button(label=label)
+        try:
+            btn.add_css_class("dialog-action")
+        except Exception:
+            pass
         btn.connect("clicked", lambda _b, resp=response_id: self.response(resp))
         self._action_area.append(btn)
         if self._default_response == response_id:
@@ -739,10 +747,10 @@ window {
         alpha(@theme_selected_bg_color, 0.04),
         alpha(@theme_bg_color, 0.0)
     );
-    border: 2px solid alpha(@theme_fg_color, 0.52);
+    border: 2px solid alpha(@theme_fg_color, 0.46);
     border-radius: 13px;
     padding: 11px;
-    box-shadow: 0 1px 0 alpha(@theme_fg_color, 0.10), 0 4px 14px alpha(@theme_fg_color, 0.14);
+    box-shadow: 0 1px 0 alpha(@theme_fg_color, 0.10), 0 5px 16px alpha(@theme_fg_color, 0.16);
     margin-top: 6px;
     margin-bottom: 6px;
 }
@@ -762,8 +770,8 @@ window {
     color: app_accent;
 }
 .card:hover {
-    border-color: alpha(@theme_selected_bg_color, 0.90);
-    box-shadow: 0 0 0 1px alpha(@theme_selected_bg_color, 0.42), 0 6px 18px alpha(@theme_selected_bg_color, 0.26);
+    border-color: alpha(@theme_selected_bg_color, 0.96);
+    box-shadow: 0 0 0 1px alpha(@theme_selected_bg_color, 0.48), 0 7px 20px alpha(@theme_selected_bg_color, 0.28);
 }
 .title {
     font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
@@ -780,12 +788,16 @@ window {
 .section-title {
     font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
     font-weight: 820;
-    font-size: 13px;
-    letter-spacing: 0.4px;
+    font-size: 12px;
+    letter-spacing: 0.55px;
     text-transform: uppercase;
     color: alpha(@theme_fg_color, 1.0);
-    background-color: alpha(@theme_selected_bg_color, 0.30);
-    border: 1px solid alpha(@theme_selected_bg_color, 0.68);
+    background-image: linear-gradient(
+        to bottom,
+        alpha(@theme_selected_bg_color, 0.38),
+        alpha(@theme_selected_bg_color, 0.24)
+    );
+    border: 1px solid alpha(@theme_selected_bg_color, 0.78);
     border-radius: 8px;
     padding: 4px 10px;
     margin-top: 3px;
@@ -974,16 +986,28 @@ window.compact button {
 }
 .coach-title {
     font-weight: 820;
-    font-size: 13px;
+    font-size: 12px;
     text-transform: uppercase;
-    letter-spacing: 0.45px;
+    letter-spacing: 0.62px;
     color: alpha(@theme_fg_color, 1.0);
-    background-color: alpha(@theme_selected_bg_color, 0.32);
-    border: 1px solid alpha(@theme_selected_bg_color, 0.72);
+    background-image: linear-gradient(
+        to bottom,
+        alpha(@theme_selected_bg_color, 0.40),
+        alpha(@theme_selected_bg_color, 0.26)
+    );
+    border: 1px solid alpha(@theme_selected_bg_color, 0.82);
     border-radius: 8px;
     padding: 4px 10px;
     margin-top: 3px;
     margin-bottom: 6px;
+}
+label.today-focus-chip {
+    font-size: 11px;
+    letter-spacing: 0.48px;
+    padding: 2px 8px;
+    border-radius: 7px;
+    margin-top: 2px;
+    margin-bottom: 4px;
 }
 .focus-list row {
     border: none;
@@ -1006,12 +1030,29 @@ progressbar {
 }
 button {
     border-radius: 10px;
-    padding: 7px 11px;
-    min-height: 34px;
+    padding: 6px 10px;
+    min-height: 32px;
     background: alpha(@theme_fg_color, 0.07);
     border: 1px solid alpha(@theme_fg_color, 0.26);
     color: @theme_fg_color;
     box-shadow: 0 1px 0 alpha(@theme_bg_color, 0.22);
+}
+window.app-dialog-window button,
+window.app-dialog-window button.dialog-action {
+    min-height: 30px;
+    padding: 4px 10px;
+    border-radius: 9px;
+}
+window.app-dialog-window spinbutton button {
+    min-height: 22px;
+    min-width: 22px;
+    padding: 1px 4px;
+}
+window.app-dialog-window spinbutton entry {
+    min-height: 26px;
+}
+window.app-dialog-window button.suggested-action {
+    min-height: 30px;
 }
 button:hover {
     background: alpha(@theme_fg_color, 0.12);
@@ -1056,13 +1097,13 @@ button:focus-visible {
     box-shadow: 0 0 0 2px alpha(@theme_selected_bg_color, 0.35);
 }
 spinbutton button {
-    min-height: 26px;
-    min-width: 26px;
-    padding: 2px 6px;
+    min-height: 24px;
+    min-width: 24px;
+    padding: 1px 5px;
     border-radius: 8px;
 }
 spinbutton entry {
-    min-height: 30px;
+    min-height: 28px;
 }
 progressbar trough {
     border-radius: 999px;
@@ -1133,10 +1174,10 @@ window {
 }
 .card {
     background: #23314a;
-    border: 2px solid #7b95c8;
+    border: 2px solid #7590c5;
     border-radius: 13px;
     padding: 11px;
-    box-shadow: 0 1px 0 rgba(179, 198, 232, 0.08), 0 4px 14px rgba(0,0,0,0.34);
+    box-shadow: 0 1px 0 rgba(179, 198, 232, 0.08), 0 5px 16px rgba(0,0,0,0.36);
     margin-top: 6px;
     margin-bottom: 6px;
 }
@@ -1156,9 +1197,9 @@ window {
     color: coach_accent;
 }
 .card:hover {
-    border-color: #a6c2ff;
+    border-color: #b2caff;
     background: #263653;
-    box-shadow: 0 0 0 1px rgba(139, 175, 255, 0.44), 0 6px 20px rgba(139, 175, 255, 0.24);
+    box-shadow: 0 0 0 1px rgba(139, 175, 255, 0.50), 0 7px 22px rgba(139, 175, 255, 0.28);
 }
 .title {
     font-weight: 760;
@@ -1174,12 +1215,16 @@ window {
 }
 .section-title {
     font-weight: 820;
-    font-size: 13px;
-    letter-spacing: 0.4px;
+    font-size: 12px;
+    letter-spacing: 0.58px;
     text-transform: uppercase;
     color: #f5f8ff;
-    background: rgba(139, 175, 255, 0.30);
-    border: 1px solid rgba(139, 175, 255, 0.74);
+    background: linear-gradient(
+        to bottom,
+        rgba(139, 175, 255, 0.40),
+        rgba(139, 175, 255, 0.24)
+    );
+    border: 1px solid rgba(139, 175, 255, 0.84);
     border-radius: 8px;
     padding: 4px 10px;
     margin-top: 3px;
@@ -1194,16 +1239,28 @@ label.section-title {
 }
 .coach-title {
     font-weight: 820;
-    letter-spacing: 0.3px;
+    letter-spacing: 0.62px;
     color: #f5f8ff;
     text-transform: uppercase;
-    font-size: 13px;
-    background: rgba(139, 175, 255, 0.30);
-    border: 1px solid rgba(139, 175, 255, 0.74);
+    font-size: 12px;
+    background: linear-gradient(
+        to bottom,
+        rgba(139, 175, 255, 0.42),
+        rgba(139, 175, 255, 0.26)
+    );
+    border: 1px solid rgba(139, 175, 255, 0.84);
     border-radius: 8px;
     padding: 4px 10px;
     margin-top: 3px;
     margin-bottom: 6px;
+}
+label.today-focus-chip {
+    font-size: 11px;
+    letter-spacing: 0.48px;
+    padding: 2px 8px;
+    border-radius: 7px;
+    margin-top: 2px;
+    margin-bottom: 4px;
 }
 label.coach-title {
     color: #f5f8ff;
@@ -1303,9 +1360,26 @@ button {
     border: 1px solid #5b6f95;
     border-radius: 10px;
     color: coach_text;
-    padding: 7px 11px;
-    min-height: 34px;
+    padding: 6px 10px;
+    min-height: 32px;
     box-shadow: 0 1px 0 rgba(169, 190, 227, 0.12);
+}
+window.app-dialog-window button,
+window.app-dialog-window button.dialog-action {
+    min-height: 30px;
+    padding: 4px 10px;
+    border-radius: 9px;
+}
+window.app-dialog-window spinbutton button {
+    min-height: 22px;
+    min-width: 22px;
+    padding: 1px 4px;
+}
+window.app-dialog-window spinbutton entry {
+    min-height: 26px;
+}
+window.app-dialog-window button.suggested-action {
+    min-height: 30px;
 }
 button:hover {
     background: #354766;
@@ -1455,13 +1529,13 @@ button:focus-visible {
     box-shadow: 0 0 0 2px rgba(79, 209, 197, 0.42);
 }
 spinbutton button {
-    min-height: 26px;
-    min-width: 26px;
-    padding: 2px 6px;
+    min-height: 24px;
+    min-width: 24px;
+    padding: 1px 5px;
     border-radius: 8px;
 }
 spinbutton entry {
-    min-height: 30px;
+    min-height: 28px;
 }
 progressbar trough {
     border-radius: 999px;
@@ -1524,8 +1598,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def __init__(self, app, exam_date=None):
         super().__init__(application=app)
         configure_font_rendering()
-        # Slightly smaller default size helps on 1280x1024 while staying roomy.
-        self.set_default_size(960, 700)
+        # Keep startup compact, but guarantee a usable floor for small laptops.
+        self.set_default_size(1100, 760)
+        self.set_size_request(1024, 768)
         self.module_id = DEFAULT_MODULE_ID
         self.module_title = DEFAULT_MODULE_TITLE
         self.set_title(f"{self.module_title} Study Assistant")
@@ -7316,9 +7391,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return True
 
     def _handle_window_size(self, width: int, height: int) -> None:
-        """Adapt layout for smaller screens (e.g., 1280x1024 and below)."""
-        compact = width <= 1280 or height <= 900
-        if width < 980:
+        """Adapt layout for smaller screens, including a 1024x768 baseline."""
+        compact = width <= 1366 or height <= 900
+        stack_layout = width <= 1180 or height <= 760
+        if stack_layout:
             if self.main_box.get_orientation() != Gtk.Orientation.VERTICAL:
                 self.main_box.set_orientation(Gtk.Orientation.VERTICAL)
             # Let left panel stretch full width in vertical mode.
@@ -7329,7 +7405,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.left_scroll.set_halign(Gtk.Align.FILL)
                 self.left_scroll.set_propagate_natural_width(False)
                 try:
-                    self.left_scroll.set_min_content_height(max(260, int(height * 0.45)))
+                    # Reserve more room for dashboard content on short screens.
+                    self.left_scroll.set_min_content_height(max(220, int(height * 0.38)))
                 except Exception:
                     pass
             self.left_panel.set_hexpand(True)
@@ -8279,6 +8356,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     # --- Dialog helpers ---
     def _harden_window(self, window: Gtk.Window):
+        try:
+            window.add_css_class("app-dialog-window")
+        except Exception:
+            pass
         try:
             def _on_close(_w, *_args):
                 try:
@@ -13337,35 +13418,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             rerank_enabled = bool(status.get("rerank_enabled", True))
             circuit_active = bool(status.get("circuit_active", False))
             circuit_reason = str(status.get("circuit_reason", "") or "")
+            cluster_method = str(graph_status.get("cluster_method", "fallback") or "fallback")
+            cluster_count = int(graph_status.get("cluster_count", 0) or 0)
             if state == "ready":
-                rerank_suffix = ""
-                if rerank_enabled and reranker_state == "ready":
-                    rerank_suffix = " • rerank on"
-                elif rerank_enabled and reranker_state == "blocked":
-                    rerank_suffix = " • rerank fallback"
-                alias_suffix = f" • aliases {alias_count}" if alias_count > 0 else ""
-                perf_suffix = f" • warmup {warmup_ms:.0f}ms • assets {asset_count}"
-                circuit_suffix = f" • circuit ({circuit_reason or 'active'})" if circuit_active else ""
-                concept_nodes = int(graph_status.get("concept_nodes", 0) or 0)
-                cluster_count = int(graph_status.get("cluster_count", 0) or 0)
-                cluster_method = str(graph_status.get("cluster_method", "fallback") or "fallback")
-                graph_suffix = (
-                    f" • concept {concept_nodes} • clusters {cluster_count} ({cluster_method})"
-                    if concept_nodes > 0 or cluster_count > 0
-                    else ""
-                )
-                return (
-                    f"Semantic map: {readiness} ({model_name}) • threshold {min_score:.2f} • cache {cache_size}{perf_suffix}{alias_suffix}{graph_suffix}{rerank_suffix}{circuit_suffix}",
-                    bool(readiness == "degraded" or circuit_active),
-                )
+                rerank_state = "on" if (rerank_enabled and reranker_state == "ready") else "fallback"
+                if not rerank_enabled:
+                    rerank_state = "off"
+                mode = f"{cluster_method} clusters" if cluster_count > 0 else "clusters pending"
+                line = f"Semantic map: {readiness} • {mode} • rerank {rerank_state}"
+                if circuit_active:
+                    line += " • circuit active"
+                return (line, bool(readiness == "degraded" or circuit_active))
             if state == "blocked":
                 detail = block_reason if block_reason else "fallback"
                 if readiness == "degraded":
                     degraded_detail = degraded_reason or "lexical fallback active"
-                    return (
-                        f"Semantic map: degraded ({degraded_detail}) • cache {cache_size} • assets {asset_count}",
-                        True,
-                    )
+                    return (f"Semantic map: degraded • {degraded_detail}", True)
                 return (f"Semantic map: fallback ({detail})", True)
             if state == "disabled":
                 return ("Semantic map: disabled", False)
@@ -13788,6 +13856,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         coach_box.add_css_class("card")
         coach_box.add_css_class("hero-card")
         coach_warnings: list[str] = []
+        def _enforce_coach_label_wrap(root: Gtk.Widget) -> None:
+            """Keep Coach Briefing readable on 1024x768 and other narrow layouts."""
+            try:
+                if isinstance(root, Gtk.Label):
+                    root.set_wrap(True)
+                    root.set_xalign(0.0)
+                    root.set_max_width_chars(96)
+            except Exception:
+                pass
+            try:
+                child = root.get_first_child()
+                while child is not None:
+                    _enforce_coach_label_wrap(child)
+                    child = child.get_next_sibling()
+            except Exception:
+                pass
 
         coach_title = Gtk.Label(label="Coach Briefing")
         coach_title.set_halign(Gtk.Align.START)
@@ -14223,6 +14307,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         today_label = Gtk.Label(label=f"Today focus: {recommended_topic or '—'}")
         today_label.set_halign(Gtk.Align.START)
         today_label.add_css_class("coach-title")
+        today_label.add_css_class("today-focus-chip")
         coach_box.append(today_label)
         note = self._get_confidence_note(recommended_topic)
         if note and recommended_topic:
@@ -14358,6 +14443,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         coach_actions.append(drill_btn)
         coach_actions.append(review_btn)
         coach_box.append(coach_actions)
+        _enforce_coach_label_wrap(coach_box)
         self.dashboard.append(coach_box)
 
         try:
