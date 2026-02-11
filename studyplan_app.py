@@ -10568,7 +10568,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             kind = self.quiz_session.get("kind", "quiz")
         except Exception:
             kind = "quiz"
-        self._start_action_timer(kind, topic=self.current_topic)
+        session_topic = str(self.quiz_session.get("topic") or self.current_topic or "").strip()
+        self._start_action_timer(kind, topic=session_topic or self.current_topic)
         try:
             def _on_close(_w, *_args):
                 self._quiz_reason_job_token += 1
@@ -10709,7 +10710,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if getattr(self, "quiz_hint_label", None):
             self.quiz_hint_label.set_visible(True)
         if getattr(self, "quiz_reason_label", None):
-            self.quiz_reason_label.set_text(self._get_quiz_pick_reason(self.current_topic, idx))
+            session_topic = str(self.quiz_session.get("topic") or self.current_topic or "").strip()
+            self.quiz_reason_label.set_text(self._get_quiz_pick_reason(session_topic or self.current_topic, idx))
             self.quiz_reason_label.set_visible(True)
 
         header = Gtk.Label(label=f"Question {pos} of {total}")
@@ -10989,6 +10991,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_quiz_confirm(self, button, dialog):
         idx = self.quiz_session["indices"][self.quiz_session["position"]]
+        session_topic = str(self.quiz_session.get("topic") or self.current_topic or "").strip()
+        if not session_topic:
+            session_topic = str(self.current_topic or "").strip()
         if self.quiz_session.get("answers", {}).get(idx, {}).get("confirmed"):
             return
         if self.selected_option is None:
@@ -11037,24 +11042,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         else:
             try:
                 if hasattr(self.engine, "flag_incorrect"):
-                    self.engine.flag_incorrect(self.current_topic, idx, days=2)
+                    self.engine.flag_incorrect(session_topic, idx, days=2)
             except Exception:
                 pass
             try:
                 if hasattr(self.engine, "record_difficulty"):
-                    self.engine.record_difficulty(self.current_topic, idx)
+                    self.engine.record_difficulty(session_topic, idx)
             except Exception:
                 pass
             try:
-                self._prompt_error_tags(question, self.selected_option)
+                self._prompt_error_tags(question, self.selected_option, topic=session_topic)
             except Exception:
                 pass
             self.quiz_session["current_streak"] = 0
 
         delta = 10 if is_correct else -5
-        before_comp = float(getattr(self.engine, "competence", {}).get(self.current_topic, 0) or 0)
+        before_comp = float(getattr(self.engine, "competence", {}).get(session_topic, 0) or 0)
         try:
-            self.engine.update_competence(self.current_topic, delta, question_index=idx)
+            self.engine.update_competence(session_topic, delta, question_index=idx)
         except Exception:
             pass
         try:
@@ -11063,19 +11068,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if isinstance(started, (int, float)):
                 elapsed = time.monotonic() - started
             if hasattr(self.engine, "record_question_event"):
-                self.engine.record_question_event(self.current_topic, idx, is_correct, elapsed_sec=elapsed)
+                self.engine.record_question_event(session_topic, idx, is_correct, elapsed_sec=elapsed)
         except Exception:
             pass
         try:
             if hasattr(self.engine, "record_outcome_event"):
-                self.engine.record_outcome_event(self.current_topic, idx, bool(is_correct))
+                self.engine.record_outcome_event(session_topic, idx, bool(is_correct))
         except Exception:
             pass
-        after_comp = float(getattr(self.engine, "competence", {}).get(self.current_topic, 0) or 0)
+        after_comp = float(getattr(self.engine, "competence", {}).get(session_topic, 0) or 0)
         if before_comp is not None and after_comp is not None:
-            self._maybe_notify_weak_cleared(self.current_topic, float(before_comp), float(after_comp))
+            self._maybe_notify_weak_cleared(session_topic, float(before_comp), float(after_comp))
         try:
-            self.engine.update_srs(self.current_topic, idx, is_correct)
+            self.engine.update_srs(session_topic, idx, is_correct)
         except Exception:
             pass
 
@@ -11116,9 +11121,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.quiz_session["position"] -= 1
         self.render_quiz_question()
 
-    def _prompt_error_tags(self, question: dict, selected: str | None) -> None:
+    def _prompt_error_tags(self, question: dict, selected: str | None, topic: str | None = None) -> None:
         if not hasattr(self.engine, "record_error_notebook"):
             return
+        session_topic = str(topic or self.quiz_session.get("topic") or self.current_topic or "").strip()
         dialog = self._new_dialog(title="Tag this mistake", transient_for=self, modal=True)
         dialog.set_default_size(420, 160)
         content = dialog.get_content_area()
@@ -11149,7 +11155,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 tags = ["untagged"]
             if r in (Gtk.ResponseType.OK, Gtk.ResponseType.CANCEL):
                 try:
-                    self.engine.record_error_notebook(self.current_topic, question, selected, tags if r == Gtk.ResponseType.OK else [])
+                    self.engine.record_error_notebook(
+                        session_topic,
+                        question,
+                        selected,
+                        tags if r == Gtk.ResponseType.OK else [],
+                    )
                     self.engine.save_data()
                 except Exception:
                     pass
@@ -11159,6 +11170,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         dialog.present()
 
     def on_quiz_next(self, button, dialog):
+        session_topic = str(self.quiz_session.get("topic") or self.current_topic or "").strip()
+        if not session_topic:
+            session_topic = str(self.current_topic or "").strip()
         self.quiz_session["position"] += 1
         if self.quiz_session["position"] >= len(self.quiz_session["indices"]):
             score = self.quiz_session["correct"]
@@ -11173,31 +11187,30 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ratio = score / max(1, total)
             try:
                 new_score = ratio * 100.0
-                self.engine.record_quiz_result(self.current_topic, new_score)
+                self.engine.record_quiz_result(session_topic, new_score)
             except Exception:
                 new_score = ratio * 100.0
             try:
-                if self.current_topic:
-                    self.daily_recall_by_chapter.setdefault(self.current_topic, 0)
-                    self.daily_recall_by_chapter[self.current_topic] += 1
+                if session_topic:
+                    self.daily_recall_by_chapter.setdefault(session_topic, 0)
+                    self.daily_recall_by_chapter[session_topic] += 1
                     try:
-                        self._maybe_mark_topic_completed(self.current_topic)
+                        self._maybe_mark_topic_completed(session_topic)
                     except Exception:
                         pass
             except Exception:
                 pass
             try:
-                self._maybe_notify_confidence_delta(self.current_topic, new_score)
+                self._maybe_notify_confidence_delta(session_topic, new_score)
             except Exception:
                 pass
             try:
                 if hasattr(self.engine, "record_quiz_history"):
                     self.engine.record_quiz_history(
-                        self.current_topic,
+                        session_topic,
                         list(self.quiz_session.get("indices", []))
                     )
                 gap_meta = self.quiz_session.get("gap_routing", {})
-                session_topic = str(self.quiz_session.get("topic") or self.current_topic or "")
                 session_kind = str(self.quiz_session.get("kind", "quiz") or "quiz")
                 if (
                     session_topic
@@ -11253,7 +11266,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             def _on_result_close(d, _r):
                 d.destroy()
                 try:
-                    self._maybe_prompt_reflection(self.current_topic, context="Quiz complete")
+                    self._maybe_prompt_reflection(session_topic, context="Quiz complete")
                 except Exception:
                     pass
             result_dialog.connect("response", _on_result_close)
