@@ -932,6 +932,21 @@ window.compact .study-summary {
 window.compact button {
     padding: 4px 6px;
 }
+window.tile .panel-left {
+    margin-right: 10px;
+    border-right: 2px solid app_border_strong;
+}
+window.tile .panel-right {
+    margin-left: 10px;
+    border-left: 2px solid app_border_strong;
+}
+window.tile .card {
+    padding: 8px;
+}
+window.tile .section-title,
+window.tile .coach-title {
+    font-size: 11px;
+}
 .badge {
     background: alpha(@theme_fg_color, 0.1);
     border: 1px solid alpha(@theme_fg_color, 0.24);
@@ -1435,6 +1450,21 @@ window.compact .study-summary {
 window.compact button {
     padding: 4px 6px;
 }
+window.tile .panel-left {
+    margin-right: 10px;
+    border-right: 2px solid coach_border_strong;
+}
+window.tile .panel-right {
+    margin-left: 10px;
+    border-left: 2px solid coach_border_strong;
+}
+window.tile .card {
+    padding: 8px;
+}
+window.tile .section-title,
+window.tile .coach-title {
+    font-size: 11px;
+}
 .badge {
     background: #252f44;
     border: 1px solid #44536e;
@@ -1599,12 +1629,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         super().__init__(application=app)
         configure_font_rendering()
         # Keep startup compact, but guarantee a usable floor for small laptops.
-        self.set_default_size(1100, 760)
-        self.set_size_request(1024, 768)
+        self.set_default_size(1280, 768)
         self.module_id = DEFAULT_MODULE_ID
         self.module_title = DEFAULT_MODULE_TITLE
         self.set_title(f"{self.module_title} Study Assistant")
-        self._left_panel_width = 308
+        self._left_panel_default_width = 250
+        self._left_panel_tile_width = 228
+        self._left_panel_width = self._left_panel_default_width
 
         self.allow_lower_scores = False
         self.menu_bar_visible = True
@@ -2375,6 +2406,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.focus_mode_btn: ("Focus Mode", "Focus"),
         }
         self._compact_mode = False
+        self._tile_mode = False
 
         # Right panel - dashboard
         dash_scroll = Gtk.ScrolledWindow()
@@ -2421,6 +2453,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._cached_topic_chart_widget = None
         self._last_dashboard_refresh_ts = 0.0
         GLib.timeout_add(700, self._poll_window_size)
+        GLib.idle_add(self._apply_current_layout_mode)
         shortcut_controller = Gtk.ShortcutController()
         shortcut_controller.add_shortcut(
             Gtk.Shortcut.new(
@@ -7301,6 +7334,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._notify_startup_data_recovery()
         except Exception:
             pass
+        try:
+            self._apply_current_layout_mode()
+        except Exception:
+            pass
         return False
 
     def _notify_startup_data_recovery(self) -> None:
@@ -7390,10 +7427,62 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._handle_window_size(width, height)
         return True
 
-    def _handle_window_size(self, width: int, height: int) -> None:
-        """Adapt layout for smaller screens, including a 1024x768 baseline."""
+    def _apply_current_layout_mode(self):
+        try:
+            width = int(self.get_width() or 0)
+            height = int(self.get_height() or 0)
+        except Exception:
+            return False
+        if width > 0 and height > 0:
+            self._last_window_size = (width, height)
+            self._handle_window_size(width, height)
+        return False
+
+    def _compute_layout_mode(self, width: int, height: int) -> tuple[bool, bool, bool]:
         compact = width <= 1366 or height <= 900
         stack_layout = width <= 1180 or height <= 760
+        tile_mode = width <= 1120 or (width <= 1280 and height <= 820)
+        return compact, stack_layout, tile_mode
+
+    def _apply_tile_mode(self, tile_mode: bool) -> None:
+        if tile_mode == self._tile_mode:
+            return
+        self._tile_mode = tile_mode
+        if tile_mode:
+            self.add_css_class("tile")
+            self._left_panel_width = self._left_panel_tile_width
+            self.main_box.set_spacing(10)
+            self.main_box.set_margin_start(8)
+            self.main_box.set_margin_end(8)
+            self.main_box.set_margin_top(8)
+            self.main_box.set_margin_bottom(8)
+            self.dashboard.set_spacing(8)
+            self.left_panel.set_spacing(6)
+            if getattr(self, "study_room_details_expander", None):
+                self.study_room_details_expander.set_expanded(False)
+            if getattr(self, "availability_expander", None):
+                self.availability_expander.set_expanded(False)
+            if getattr(self, "rec_expander", None):
+                self.rec_expander.set_expanded(False)
+        else:
+            self.remove_css_class("tile")
+            self._left_panel_width = self._left_panel_default_width
+            self.main_box.set_spacing(12)
+            self.main_box.set_margin_start(16)
+            self.main_box.set_margin_end(16)
+            self.main_box.set_margin_top(16)
+            self.main_box.set_margin_bottom(16)
+            self.dashboard.set_spacing(12)
+            self.left_panel.set_spacing(12)
+
+        if self.main_box.get_orientation() == Gtk.Orientation.HORIZONTAL:
+            self.left_panel.set_size_request(self._left_panel_width, -1)
+            if getattr(self, "left_scroll", None):
+                self.left_scroll.set_size_request(self._left_panel_width, -1)
+
+    def _handle_window_size(self, width: int, height: int) -> None:
+        """Adapt layout for smaller screens, including a 1024x768 baseline."""
+        compact, stack_layout, tile_mode = self._compute_layout_mode(width, height)
         if stack_layout:
             if self.main_box.get_orientation() != Gtk.Orientation.VERTICAL:
                 self.main_box.set_orientation(Gtk.Orientation.VERTICAL)
@@ -7429,6 +7518,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.left_panel.set_halign(Gtk.Align.FILL)
             self.left_panel.set_vexpand(False)
         self.apply_compact_mode(compact)
+        self._apply_tile_mode(tile_mode)
 
     def apply_compact_mode(self, compact: bool) -> None:
         if compact == self._compact_mode:
@@ -13446,6 +13536,37 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             return ("Semantic map: n/a", False)
 
+    def _format_semantic_status_short(self, status: dict[str, Any]) -> str:
+        try:
+            enabled = bool(status.get("enabled", True))
+            if not enabled:
+                return "Semantic: off"
+            state = str(status.get("state", "unloaded") or "unloaded")
+            readiness = str(status.get("readiness", state) or state)
+            warmup = status.get("warmup", {}) if isinstance(status.get("warmup", {}), dict) else {}
+            warmup_ms = int(float(warmup.get("last_warmup_ms", 0.0) or 0.0))
+            asset_count = int(status.get("asset_count", 0) or 0)
+            graph_status = self.engine.get_semantic_graph_status()
+            cluster_method = str(graph_status.get("cluster_method", "fallback") or "fallback")
+            cluster_count = int(graph_status.get("cluster_count", 0) or 0)
+            reranker_state = str(status.get("reranker_state", "unloaded") or "unloaded")
+            rerank_enabled = bool(status.get("rerank_enabled", True))
+            rerank_text = "rerank on" if (rerank_enabled and reranker_state == "ready") else "rerank off"
+            if state in {"blocked", "disabled"}:
+                detail = str(status.get("block_reason", "") or state)
+                return f"Semantic: fallback ({detail})"
+            parts = [f"Semantic: {readiness}"]
+            if warmup_ms > 0:
+                parts.append(f"warmup {warmup_ms}ms")
+            if asset_count > 0:
+                parts.append(f"assets {asset_count}")
+            if cluster_count > 0:
+                parts.append(f"{cluster_method} clusters")
+            parts.append(rerank_text)
+            return " • ".join(parts)
+        except Exception:
+            return "Semantic: n/a"
+
     def _auto_train_ml_models(self) -> None:
         try:
             if getattr(self, "_ml_auto_train_due", False):
@@ -13705,14 +13826,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             child = self.dashboard.get_first_child()
 
         focus_mode = bool(getattr(self, "focus_mode", False))
+        tile_mode = bool(getattr(self, "_tile_mode", False))
 
         try:
             self._update_risk_manager_progress()
         except Exception:
             pass
 
-        charts_available = (plt is not None and FigureCanvas is not None and not focus_mode)
-        if not charts_available:
+        charts_available = (plt is not None and FigureCanvas is not None and not focus_mode and not tile_mode)
+        if not charts_available and not tile_mode:
             charts_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             charts_card.add_css_class("card")
             charts_title = Gtk.Label(label="Charts")
@@ -14008,6 +14130,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 quality_label.add_css_class("nudge-warn")
             coach_box.append(quality_label)
             semantic_text, semantic_warn = self._get_semantic_status_line()
+            if tile_mode:
+                try:
+                    semantic_text = self._format_semantic_status_short(self.engine.get_semantic_status())
+                except Exception:
+                    pass
             semantic_label = Gtk.Label(label=semantic_text)
             semantic_label.set_halign(Gtk.Align.START)
             semantic_label.add_css_class("muted")
@@ -14604,6 +14731,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         quality_label.add_css_class("nudge-warn")
                     insights.append(quality_label)
                     semantic_text, semantic_warn = self._get_semantic_status_line()
+                    if tile_mode:
+                        try:
+                            semantic_text = self._format_semantic_status_short(self.engine.get_semantic_status())
+                        except Exception:
+                            pass
                     semantic_label = Gtk.Label(label=semantic_text)
                     semantic_label.set_halign(Gtk.Align.START)
                     semantic_label.add_css_class("muted")
@@ -15685,7 +15817,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     weekly_label.set_wrap(True)
                     weekly_label.add_css_class("muted")
                     weekly_card = self._wrap_expander_card("Weekly Summary (Last 7 Days)", weekly_label, expanded=False)
-                    self.dashboard.append(weekly_card)
+                    if not tile_mode:
+                        self.dashboard.append(weekly_card)
                 else:
                     fallback = "Weekly Summary: not enough data yet."
                     if active_days_week is not None:
@@ -15695,7 +15828,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     weekly_label.set_wrap(True)
                     weekly_label.add_css_class("muted")
                     weekly_card = self._wrap_expander_card("Weekly Summary (Last 7 Days)", weekly_label, expanded=False)
-                    self.dashboard.append(weekly_card)
+                    if not tile_mode:
+                        self.dashboard.append(weekly_card)
         except Exception:
             pass
 
@@ -15742,7 +15876,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             schedule_label.add_css_class("muted")
 
             plan_card = self._wrap_expander_card("Plan View (Next 7 Days)", schedule_label, expanded=False)
-            self.dashboard.append(plan_card)
+            if not tile_mode:
+                self.dashboard.append(plan_card)
         except Exception:
             pass
 
@@ -16052,7 +16187,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         hub_box.append(ch_label)
 
                     hub_card = self._wrap_expander_card("Study Hub", hub_box, expanded=False)
-                    self.dashboard.append(hub_card)
+                    if not tile_mode:
+                        self.dashboard.append(hub_card)
             except Exception:
                 pass
 
@@ -16075,7 +16211,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 health_label.add_css_class("muted")
                 health_box.append(health_label)
                 health_card = self._wrap_expander_card("Data Health Checks", health_box, expanded=False)
-                self.dashboard.append(health_card)
+                if not tile_mode:
+                    self.dashboard.append(health_card)
 
         _finalize_perf()
         self.update_save_status_display()
