@@ -6474,7 +6474,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             modal=True,
             message_type=Gtk.MessageType.INFO,
             buttons=Gtk.ButtonsType.NONE,
-            text="Recall Block Due",
+            text="Recall Due",
             secondary_text=f"Two focus blocks completed on {topic}. Start a 10‑minute recall block?",
         )
         dialog.add_button("Start Recall", Gtk.ResponseType.OK)
