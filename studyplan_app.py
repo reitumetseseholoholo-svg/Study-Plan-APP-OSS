@@ -157,6 +157,8 @@ COACH_AGGRESSIVE_TARGET_DWELL = 2
 COACH_AGGRESSIVE_MAX_DWELL = 3
 COACH_ROTATION_MARGIN = 0.08
 COACH_WEAK_TIE_WINDOW = 4.0
+# Prevent rapid sticky-release ping-pong between near-equal chapters.
+COACH_POST_RELEASE_HOLD_SECONDS = 150
 SMOKE_REPORT_PATH = os.path.expanduser("~/.config/studyplan/smoke_last.json")
 SMOKE_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
     "coach_pick_consistency_rate": {"op": ">=", "value": 0.999},
@@ -1760,6 +1762,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._coach_pick_snapshot = None
         self._coach_pick_snapshot_at = 0.0
         self._coach_pick_snapshot_plan_key = ""
+        self._sticky_post_release_hold_topic = ""
+        self._sticky_post_release_hold_until = 0.0
         self._last_dashboard_coach_topic = ""
         self._last_study_room_coach_topic = ""
         self._coach_sync_in_progress = False
@@ -5053,8 +5057,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _run_coach_sync_after_mismatch(self, origin: str = "") -> bool:
         try:
-            self._invalidate_coach_pick_snapshot()
-            topic, source = self._get_coach_pick_snapshot(force=True)
+            # Keep the existing snapshot stable while syncing labels/panels.
+            topic, source = self._get_coach_pick_snapshot()
             if topic:
                 self._last_dashboard_coach_topic = topic
                 self._last_study_room_coach_topic = topic
@@ -7781,6 +7785,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if self.sticky_coach_pick and self.last_coach_pick_date == today_iso:
                 last_pick = self.last_coach_pick if isinstance(self.last_coach_pick, str) else None
                 if last_pick and last_pick in self.engine.CHAPTERS:
+                    try:
+                        hold_topic = str(getattr(self, "_sticky_post_release_hold_topic", "") or "")
+                        hold_until = float(getattr(self, "_sticky_post_release_hold_until", 0.0) or 0.0)
+                    except Exception:
+                        hold_topic = ""
+                        hold_until = 0.0
+                    if hold_topic == last_pick and time.monotonic() < hold_until:
+                        topic = last_pick
+                        self._last_coach_pick_source = "sticky post-release hold"
+                        self._log_coach_decision(topic, plan, False, "post-release stabilization hold")
+                        return topic
                     release, _reason = self._sticky_release_status(last_pick)
                     release_flag = bool(release)
                     release_reason = _reason
@@ -7795,6 +7810,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         rotated = self._pick_topic_after_sticky_release(last_pick, plan, release_reason or "")
                         if rotated:
                             topic = rotated
+                            if topic != last_pick:
+                                try:
+                                    self._sticky_post_release_hold_topic = topic
+                                    self._sticky_post_release_hold_until = time.monotonic() + float(COACH_POST_RELEASE_HOLD_SECONDS)
+                                except Exception:
+                                    pass
                             self._last_coach_pick_source = "sticky release hold" if topic == last_pick else "sticky release rotate"
                             self._log_coach_decision(topic, plan, release_flag, release_reason)
                             return topic
@@ -7881,7 +7902,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         """Return a stable coach pick for the current refresh cycle."""
         if not self._has_chapters():
             return "", "none"
-        now = time.monotonic()
         try:
             plan = [ch for ch in (getattr(self, "_last_daily_plan", None) or []) if isinstance(ch, str)]
         except Exception:
@@ -7907,13 +7927,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if (
             not force
             and isinstance(self._coach_pick_snapshot, tuple)
-            and (now - float(self._coach_pick_snapshot_at or 0.0)) < 0.5
             and context_key == (self._coach_pick_snapshot_plan_key or "")
         ):
             return cast(tuple[str, str], self._coach_pick_snapshot)
         topic, source = self._get_coach_pick_meta()
         self._coach_pick_snapshot = (topic, source)
-        self._coach_pick_snapshot_at = now
+        self._coach_pick_snapshot_at = time.monotonic()
         self._coach_pick_snapshot_plan_key = context_key
         return topic, source
 
