@@ -45,6 +45,13 @@ Coach Briefing also shows:
 - Plan is **stable within a day** unless a major import refreshes it.
 - If the list is empty, the app shows a short tip (load a module, set an exam date, or import questions).
 
+### E. AI Tutor (local Ollama)
+- Open from **Application → AI Tutor…** or **Tools & Data → AI tutor (Ollama)**.
+- Pick a local model, type your prompt, and generate an in-app response.
+- Responses stream live, include **Stop**, and keep multi-turn chat context until **New chat**.
+- Chat history persists across reopen/restart (last 20 messages), supports **Copy chat**, and **Ctrl+Enter** to send.
+- Configure host/default model/timeout in **Preferences → Local AI (Ollama)**.
+
 ## 3) Coach‑only view
 
 When coach‑only is enabled:

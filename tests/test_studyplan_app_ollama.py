@@ -115,6 +115,33 @@ def test_format_ai_tutor_transcript_labels_roles():
     assert "Tutor:\nAnswer" in transcript
 
 
+def test_clean_ai_tutor_text_removes_markdown_and_latex_noise():
+    dummy = _make_dummy()
+    raw = (
+        "### Practice Questions\n\n"
+        "**Q1:** Cost = \\\\frac{2}{98} \\\\times \\\\frac{365}{20} = 37.2\\\\%.\n"
+        "```json\n{\"ignore\": true}\n```\n"
+    )
+    cleaned = StudyPlanGUI._clean_ai_tutor_text(dummy, raw)
+    assert "Practice Questions" in cleaned
+    assert "Q1: Cost = (2/98) x (365/20) = 37.2%." in cleaned
+    assert "```" not in cleaned
+    assert "\\frac" not in cleaned
+    assert "\\times" not in cleaned
+    assert "\\%" not in cleaned
+
+
+def test_format_ai_tutor_transcript_cleans_assistant_content():
+    dummy = _make_dummy()
+    transcript = StudyPlanGUI._format_ai_tutor_transcript(
+        dummy,
+        [
+            {"role": "assistant", "content": "**A:** \\\\frac{1}{2} \\\\times 100\\\\%"},
+        ],
+    )
+    assert "Tutor:\nA: (1/2) x 100%" in transcript
+
+
 def test_ollama_generate_text_stream_parses_ndjson_and_emits_chunks(monkeypatch):
     dummy = _make_dummy()
 

@@ -31,6 +31,7 @@
 - **Focus Now** → starts Pomodoro on coach topic
 - **Quick Quiz** → short quiz on coach topic
 - **Weak Drill** → targets weakest chapter
+- **AI tutor (Ollama)** → local LLM explanations and quick drills
 - **Run Data Health Check** → normalizes data + shows health summary
 - **Train ML Models** → runs recall/difficulty/interval trainers
 

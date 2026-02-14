@@ -48,6 +48,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **Smart empty states**: Daily plan explains how to populate when no topics are available
 - **Insights**: mastery stats, weak/strong areas, reviews & due items
 - **Reflections**: quick reflections + confidence notes (Review Reflections…)
+- **Local AI Tutor (Ollama)**: run local GGUF models in-app for explanations and revision drills
 - **Hardest Concepts**: tracks repeated misses per chapter
 - **Time Analytics**: time per action + per‑topic leaderboards
 - **Balance checks**: topic saturation + confidence drift (competence vs mastery/quiz)
