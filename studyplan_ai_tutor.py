@@ -3,7 +3,16 @@ from __future__ import annotations
 import re
 import threading
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - type-only import
+    try:
+        import gi  # type: ignore
+
+        gi.require_version("Gtk", "4.0")
+        from gi.repository import Gtk as _Gtk  # type: ignore
+    except Exception:  # fallback for editors without gi stubs
+        from typing import Any as _Gtk  # type: ignore
 
 
 AI_TUTOR_MAX_RESPONSE_CHARS = 12000
@@ -509,7 +518,7 @@ class AITutorDialogController:
             ("Formula sheet", "List the must-know formulas for '{topic}' and when to use each."),
             ("Exam pitfalls", "Give common exam pitfalls for '{topic}' and how to avoid them."),
         ]
-        quick_prompt_buttons: list[tuple[Gtk.Button, str]] = []
+        quick_prompt_buttons: list[tuple["_Gtk.Button", str]] = []
         for label, template in quick_prompt_templates:
             btn = Gtk.Button(label=label)
             btn.add_css_class("flat")
@@ -744,7 +753,7 @@ class AITutorDialogController:
             text = format_ai_tutor_transcript(entries)
             response_buf.set_text(text if text else "No conversation yet.")
             _sync_stream_tracking_from_draft()
-            if should_keep_bottom:
+            if should_keep_bottom and text:
                 _scroll_response_end_deferred()
 
         def _append_stream_delta(force_scroll: bool = False) -> None:
@@ -1127,6 +1136,11 @@ class AITutorDialogController:
                 status_parts.append(f"RAG: {rag_count} snippet(s) from {rag_sources} PDF(s) [{rag_method}]")
             elif rag_sources > 0:
                 status_parts.append("RAG: no relevant snippets")
+            elif rag_method == "disabled":
+                status_parts.append("RAG disabled (add syllabus PDF or set STUDYPLAN_AI_TUTOR_RAG_PDFS)")
+            rag_errors = [err for err in rag_meta.get("errors", []) if err]
+            if rag_errors:
+                status_parts.append(f"RAG errors: {rag_errors[0][:72]}")
             status_label.set_text(" • ".join(status_parts))
             _set_running(True)
             _render_transcript(force_scroll=True)
@@ -1190,7 +1204,7 @@ class AITutorDialogController:
                             history.append({"role": "assistant", "content": f"{final_text}\n\n{suffix}"})
                             _persist_history()
                             if bool(guard_state.get("timeout_hit", False)):
-                                status_label.set_text(f"Turn timed out ({model_name}) • turns: {_turn_count()}")
+                                status_label.set_text(f"Turn timed out after {int(turn_timeout_seconds)}s ({model_name}).")
                             elif bool(guard_state.get("truncated", False)):
                                 status_label.set_text(
                                     f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars) • turns: {_turn_count()}"

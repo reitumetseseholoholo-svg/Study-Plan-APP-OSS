@@ -15,6 +15,7 @@ from studyplan_ai_tutor import (
     clean_ai_tutor_text,
     format_ai_tutor_transcript,
     lexical_rank_rag_chunks,
+    classify_ollama_error,
 )
 
 
@@ -4780,9 +4781,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         weak_chapter = str(self._get_weak_chapter(60.0) or "")
         drill_topic = str(self._get_drill_topic() or "")
         interleave_topic = str(self._get_interleave_topic() or "")
-        review_topic = ""
-        if drill_topic and self._topic_has_due_review(drill_topic):
-            review_topic = drill_topic
+        review_topic, _review_due, _review_must_due = self._find_due_review_topic(drill_topic)
         must_review_due = int(self._get_must_review_due_count(today) or 0)
         pace_info = self._get_pace_info()
         if not isinstance(pace_info, dict):
@@ -5084,7 +5083,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             rec = self._build_ai_coach_fallback_recommendation(payload, "Ollama request failed")
             rec["model"] = model_name
             rec["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-            return rec, f"Ollama request failed: {err}"
+            code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
+            return rec, f"Ollama request failed: {friendly}"
         json_text = self._extract_first_json_object(text)
         if not json_text:
             rec = self._build_ai_coach_fallback_recommendation(payload, "non-JSON response")
@@ -5219,12 +5219,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.start_quiz_session(topic=drill_topic, total_override=8, kind="drill")
             return True, f"Started weak drill on {drill_topic}."
         if action == "review":
-            review_topic = topic if self._topic_has_due_review(topic) else ""
+            review_topic, _due_total, _must_due = self._find_due_review_topic(topic)
             if not review_topic:
-                candidate = self._get_drill_topic()
-                if candidate and self._topic_has_due_review(candidate):
-                    review_topic = candidate
+                repair = self._sanitize_must_review_desync(backfill_from_srs=True)
+                review_topic, _due_total, _must_due = self._find_due_review_topic(topic)
+            else:
+                repair = {}
             if not review_topic:
+                if bool((repair or {}).get("changed", False)):
+                    return False, "Review queue was sanitized, but no due review cards remain."
                 return False, "No due review cards are available right now."
             self.start_quiz_session(topic=review_topic, total_override=6, kind="review")
             return True, f"Started due review on {review_topic}."
@@ -8945,11 +8948,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         continue
                     if not isinstance(items, dict):
                         continue
-                    due = 0
-                    for due_str in items.values():
-                        due_date = self.engine._parse_date(due_str)
-                        if due_date and due_date <= today:
-                            due += 1
+                    due = int(self._get_topic_must_review_due_count(ch, today))
                     if due > best_due:
                         best_due = due
                         best_topic = ch
@@ -9126,18 +9125,297 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             today = datetime.date.today()
         count = 0
         try:
-            must_review = getattr(self.engine, "must_review", {}) or {}
-            if isinstance(must_review, dict):
-                for items in must_review.values():
-                    if not isinstance(items, dict):
-                        continue
-                    for due in items.values():
-                        due_date = self.engine._parse_date(due)
-                        if due_date and due_date <= today:
-                            count += 1
+            for chapter in list(getattr(self.engine, "CHAPTERS", []) or []):
+                if not isinstance(chapter, str) or not chapter:
+                    continue
+                count += int(self._get_topic_must_review_due_count(chapter, today))
         except Exception:
             return 0
         return count
+
+    def _get_topic_must_review_due_count(self, topic: str, today: datetime.date | None = None) -> int:
+        if not isinstance(topic, str) or not topic:
+            return 0
+        if today is None:
+            today = datetime.date.today()
+        try:
+            questions = self.engine.get_questions(topic)
+        except Exception:
+            questions = []
+        if not isinstance(questions, list) or not questions:
+            return 0
+        question_total = int(len(questions))
+        due_count = 0
+        seen: set[int] = set()
+        try:
+            must_review = getattr(self.engine, "must_review", {}) or {}
+            chapter_items = must_review.get(topic, {}) if isinstance(must_review, dict) else {}
+            if not isinstance(chapter_items, dict):
+                return 0
+            for idx_raw, due_raw in chapter_items.items():
+                try:
+                    idx = int(idx_raw)
+                except Exception:
+                    continue
+                if idx < 0 or idx >= question_total or idx in seen:
+                    continue
+                due_date = self.engine._parse_date(due_raw)
+                if due_date and due_date <= today:
+                    seen.add(idx)
+                    due_count += 1
+        except Exception:
+            return 0
+        return int(due_count)
+
+    def _get_topic_due_review_count(self, topic: str, today: datetime.date | None = None) -> int:
+        if not isinstance(topic, str) or not topic:
+            return 0
+        if today is None:
+            today = datetime.date.today()
+        try:
+            questions = self.engine.get_questions(topic)
+        except Exception:
+            questions = []
+        if not isinstance(questions, list) or not questions:
+            return 0
+        question_total = int(len(questions))
+        try:
+            srs_list = self.engine.srs_data.get(topic, [])
+        except Exception:
+            srs_list = []
+        if not isinstance(srs_list, list):
+            srs_list = []
+        due_indices: set[int] = set()
+        try:
+            must_review = getattr(self.engine, "must_review", {}) or {}
+            chapter_items = must_review.get(topic, {}) if isinstance(must_review, dict) else {}
+            if isinstance(chapter_items, dict):
+                for idx_raw, due_raw in chapter_items.items():
+                    try:
+                        idx = int(idx_raw)
+                    except Exception:
+                        continue
+                    if idx < 0 or idx >= question_total:
+                        continue
+                    due_date = self.engine._parse_date(due_raw)
+                    if due_date and due_date <= today:
+                        due_indices.add(idx)
+        except Exception:
+            pass
+
+        upper = min(question_total, len(srs_list))
+        for idx in range(upper):
+            if idx in due_indices:
+                continue
+            srs = srs_list[idx] if isinstance(srs_list[idx], dict) else {}
+            try:
+                if self.engine.is_overdue(srs, today):
+                    due_indices.add(idx)
+                    continue
+            except Exception:
+                pass
+            last_review = srs.get("last_review")
+            if not isinstance(last_review, str) or not last_review:
+                continue
+            try:
+                last_date = datetime.date.fromisoformat(last_review)
+                interval = max(1, int(srs.get("interval", 1) or 1))
+            except Exception:
+                continue
+            if (last_date + datetime.timedelta(days=interval)) <= today:
+                due_indices.add(idx)
+        return int(len(due_indices))
+
+    def _find_due_review_topic(self, preferred_topic: str | None = None) -> tuple[str, int, int]:
+        if not self._has_chapters():
+            return "", 0, 0
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def _push(topic: str | None) -> None:
+            text = str(topic or "").strip()
+            if not text or text in seen:
+                return
+            seen.add(text)
+            candidates.append(text)
+
+        _push(preferred_topic)
+        _push(self.current_topic)
+        _push(self._get_recommended_topic())
+        for chapter in list(getattr(self.engine, "CHAPTERS", []) or []):
+            _push(chapter if isinstance(chapter, str) else "")
+
+        today = datetime.date.today()
+        best_topic = ""
+        best_due = 0
+        best_must_due = 0
+        best_score = -1.0
+        for topic in candidates:
+            if not self._topic_has_questions(topic):
+                continue
+            must_due = int(self._get_topic_must_review_due_count(topic, today))
+            due_total = int(self._get_topic_due_review_count(topic, today))
+            if due_total <= 0:
+                continue
+            try:
+                coach_score = float(self._get_coach_candidate_score(topic))
+            except Exception:
+                coach_score = 0.0
+            better = (
+                must_due > best_must_due
+                or (must_due == best_must_due and due_total > best_due)
+                or (
+                    must_due == best_must_due
+                    and due_total == best_due
+                    and coach_score > best_score
+                )
+            )
+            if not better:
+                continue
+            best_topic = topic
+            best_due = due_total
+            best_must_due = must_due
+            best_score = coach_score
+        return best_topic, int(best_due), int(best_must_due)
+
+    def _sanitize_must_review_desync(
+        self,
+        backfill_from_srs: bool = True,
+        today: datetime.date | None = None,
+    ) -> dict[str, Any]:
+        if today is None:
+            today = datetime.date.today()
+        chapter_list = [ch for ch in list(getattr(self.engine, "CHAPTERS", []) or []) if isinstance(ch, str) and ch]
+        chapter_set = set(chapter_list)
+        question_counts: dict[str, int] = {}
+        for chapter in chapter_list:
+            try:
+                questions = self.engine.get_questions(chapter)
+            except Exception:
+                questions = []
+            question_counts[chapter] = int(len(questions)) if isinstance(questions, list) else 0
+
+        raw_must_review = getattr(self.engine, "must_review", {}) or {}
+        if not isinstance(raw_must_review, dict):
+            raw_must_review = {}
+
+        raw_due_unvalidated = 0
+        raw_total_rows = 0
+        for chapter, items in raw_must_review.items():
+            if not isinstance(items, dict):
+                continue
+            raw_total_rows += int(len(items))
+            for _idx_raw, due_raw in items.items():
+                due_date = self.engine._parse_date(due_raw)
+                if due_date and due_date <= today:
+                    raw_due_unvalidated += 1
+
+        cleaned: dict[str, dict[str, str]] = {chapter: {} for chapter in chapter_list}
+        dropped_unknown_chapter = 0
+        dropped_invalid_row = 0
+        dropped_invalid_index = 0
+        dropped_out_of_range = 0
+        dropped_invalid_due = 0
+        kept = 0
+
+        for chapter, items in raw_must_review.items():
+            if not isinstance(items, dict):
+                dropped_invalid_row += 1
+                continue
+            if chapter not in chapter_set:
+                dropped_unknown_chapter += int(len(items))
+                continue
+            question_total = int(question_counts.get(chapter, 0) or 0)
+            for idx_raw, due_raw in items.items():
+                try:
+                    idx = int(idx_raw)
+                except Exception:
+                    dropped_invalid_index += 1
+                    continue
+                if idx < 0 or idx >= question_total:
+                    dropped_out_of_range += 1
+                    continue
+                due_date = self.engine._parse_date(due_raw)
+                if not due_date:
+                    dropped_invalid_due += 1
+                    continue
+                cleaned[chapter][str(idx)] = due_date.isoformat()
+                kept += 1
+
+        backfilled = 0
+        cleaned_due_now = 0
+        for chapter_items in cleaned.values():
+            for due_raw in chapter_items.values():
+                due_date = self.engine._parse_date(due_raw)
+                if due_date and due_date <= today:
+                    cleaned_due_now += 1
+        if bool(backfill_from_srs) and cleaned_due_now <= 0 and raw_due_unvalidated > 0:
+            for chapter in chapter_list:
+                if question_counts.get(chapter, 0) <= 0:
+                    continue
+                try:
+                    srs_list = self.engine.srs_data.get(chapter, [])
+                except Exception:
+                    srs_list = []
+                if not isinstance(srs_list, list) or not srs_list:
+                    continue
+                limit = min(2, int(question_counts.get(chapter, 0) or 0))
+                if limit <= 0:
+                    continue
+                picked: list[int] = []
+                for idx in range(min(len(srs_list), int(question_counts.get(chapter, 0) or 0))):
+                    srs = srs_list[idx] if isinstance(srs_list[idx], dict) else {}
+                    try:
+                        if self.engine.is_overdue(srs, today):
+                            picked.append(idx)
+                    except Exception:
+                        continue
+                    if len(picked) >= limit:
+                        break
+                for idx in picked:
+                    cleaned[chapter][str(idx)] = today.isoformat()
+                    backfilled += 1
+
+        normalized_raw: dict[str, dict[str, str]] = {chapter: {} for chapter in chapter_list}
+        for chapter in chapter_list:
+            items = raw_must_review.get(chapter, {}) if isinstance(raw_must_review, dict) else {}
+            if not isinstance(items, dict):
+                continue
+            for idx_raw, due_raw in items.items():
+                normalized_raw[chapter][str(idx_raw)] = str(due_raw)
+        changed = bool(normalized_raw != cleaned)
+
+        if changed:
+            try:
+                self.engine.must_review = cleaned
+                self.engine.save_data()
+            except Exception:
+                pass
+
+        due_after = 0
+        for chapter in chapter_list:
+            due_after += int(self._get_topic_must_review_due_count(chapter, today))
+        dropped_total = (
+            int(dropped_unknown_chapter)
+            + int(dropped_invalid_row)
+            + int(dropped_invalid_index)
+            + int(dropped_out_of_range)
+            + int(dropped_invalid_due)
+        )
+        return {
+            "changed": bool(changed),
+            "raw_total": int(raw_total_rows),
+            "raw_due_unvalidated": int(raw_due_unvalidated),
+            "kept": int(kept),
+            "dropped_total": int(dropped_total),
+            "dropped_unknown_chapter": int(dropped_unknown_chapter),
+            "dropped_invalid_row": int(dropped_invalid_row),
+            "dropped_invalid_index": int(dropped_invalid_index),
+            "dropped_out_of_range": int(dropped_out_of_range),
+            "dropped_invalid_due": int(dropped_invalid_due),
+            "backfilled": int(backfilled),
+            "due_after": int(due_after),
+        }
 
     # --- UI builders ---
     def _wrap_expander_card(self, title: str, child: Gtk.Widget, expanded: bool = False) -> Gtk.Widget:
@@ -10048,12 +10326,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if not self._topic_has_questions(topic):
             return False
         try:
-            if hasattr(self.engine, "select_due_review_questions"):
-                due = self.engine.select_due_review_questions(topic, 1)
-                return isinstance(due, list) and bool(due)
+            return int(self._get_topic_due_review_count(topic, datetime.date.today())) > 0
         except Exception:
             return False
-        return False
 
     def _get_interleave_topic(self) -> str | None:
         current = self.current_topic or self._get_recommended_topic()
@@ -10101,13 +10376,46 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ensure_coach_selection()
         if not self._ensure_chapters_ready("Clear Must-Review"):
             return
-        topic = self._get_drill_topic()
+        preferred_topic = self._get_drill_topic() or self.current_topic or self._get_recommended_topic()
+        topic, due_total, must_due = self._find_due_review_topic(preferred_topic)
+        repair: dict[str, Any] = {}
         if not topic:
-            return
-        if not self._topic_has_due_review(topic):
-            self.send_notification("Clear Must-Review", "No due review cards yet for this chapter.")
+            repair = self._sanitize_must_review_desync(backfill_from_srs=True)
+            topic, due_total, must_due = self._find_due_review_topic(preferred_topic)
+        if not topic:
+            if bool((repair or {}).get("changed", False)):
+                dropped_total = int((repair or {}).get("dropped_total", 0) or 0)
+                self.send_notification(
+                    "Clear Must-Review",
+                    "Review queue sanitized after desync; no due review cards remain."
+                    if dropped_total > 0
+                    else "Review queue sanitized; no due review cards remain.",
+                )
+            else:
+                self.send_notification("Clear Must-Review", "No due review cards yet for any chapter.")
             return
         self._set_current_topic(topic)
+        if bool((repair or {}).get("changed", False)) and (
+            int((repair or {}).get("dropped_total", 0) or 0) > 0
+            or int((repair or {}).get("backfilled", 0) or 0) > 0
+        ):
+            backfilled = int((repair or {}).get("backfilled", 0) or 0)
+            dropped = int((repair or {}).get("dropped_total", 0) or 0)
+            note_bits = []
+            if dropped > 0:
+                note_bits.append(f"cleaned {dropped} stale flags")
+            if backfilled > 0:
+                note_bits.append(f"recovered {backfilled} overdue cards")
+            detail = " • ".join(note_bits) if note_bits else "queue repaired"
+            self.send_notification(
+                "Clear Must-Review",
+                f"Recovered due review on {topic} ({detail}).",
+            )
+        elif preferred_topic and topic != preferred_topic:
+            self.send_notification(
+                "Clear Must-Review",
+                f"Starting due review on {topic} ({must_due} must-review, {due_total} total due).",
+            )
         # Shorter burst focused on overdue cards
         self.start_quiz_session(topic=topic, total_override=6, kind="review")
 

@@ -1,3 +1,4 @@
+import datetime
 import json
 import types
 import urllib.request
@@ -644,6 +645,126 @@ def test_build_ai_coach_fallback_prefers_review_when_due_exists():
     rec = StudyPlanGUI._build_ai_coach_fallback_recommendation(dummy, payload, issue="")
     assert rec["action"] == "review"
     assert rec["topic"] == "Topic A"
+
+
+def test_get_topic_must_review_due_count_ignores_out_of_range_indices():
+    today = datetime.date(2026, 2, 14)
+    today_iso = today.isoformat()
+    engine = types.SimpleNamespace(
+        CHAPTERS=["Topic A"],
+        must_review={"Topic A": {"999": today_iso, "0": today_iso}},
+        get_questions=lambda _topic: ["Q0", "Q1"],
+        _parse_date=lambda value: datetime.date.fromisoformat(value) if isinstance(value, str) else None,
+    )
+    dummy = types.SimpleNamespace(engine=engine)
+    count = StudyPlanGUI._get_topic_must_review_due_count(dummy, "Topic A", today=today)
+    assert count == 1
+
+
+def test_find_due_review_topic_prefers_chapter_with_must_review_pressure():
+    today = datetime.date(2026, 2, 14)
+    engine = types.SimpleNamespace(
+        CHAPTERS=["Topic A", "Topic B"],
+        must_review={"Topic A": {}, "Topic B": {"0": today.isoformat()}},
+        srs_data={"Topic A": [], "Topic B": []},
+        get_questions=lambda topic: ["Q0", "Q1"] if topic in {"Topic A", "Topic B"} else [],
+        _parse_date=lambda value: datetime.date.fromisoformat(value) if isinstance(value, str) else None,
+        is_overdue=lambda _item, _today: False,
+    )
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        current_topic="Topic A",
+        _has_chapters=lambda: True,
+        _get_recommended_topic=lambda: "Topic A",
+        _get_coach_candidate_score=lambda _topic: 0.0,
+        _topic_has_questions=lambda topic: topic in {"Topic A", "Topic B"},
+    )
+    dummy._get_topic_must_review_due_count = types.MethodType(StudyPlanGUI._get_topic_must_review_due_count, dummy)
+    dummy._get_topic_due_review_count = types.MethodType(StudyPlanGUI._get_topic_due_review_count, dummy)
+    topic, due_total, must_due = StudyPlanGUI._find_due_review_topic(dummy, preferred_topic="Topic A")
+    assert topic == "Topic B"
+    assert due_total == 1
+    assert must_due == 1
+
+
+def test_sanitize_must_review_desync_backfills_from_overdue_after_dropping_stale_indices():
+    today = datetime.date(2026, 2, 14)
+    today_iso = today.isoformat()
+    saved = {"count": 0}
+
+    def _parse_date(value):
+        try:
+            return datetime.date.fromisoformat(str(value))
+        except Exception:
+            return None
+
+    def _is_overdue(item, ref_day):
+        if not isinstance(item, dict):
+            return False
+        raw_last = item.get("last_review")
+        if not isinstance(raw_last, str) or not raw_last:
+            return False
+        try:
+            last = datetime.date.fromisoformat(raw_last)
+            interval = max(1, int(item.get("interval", 1) or 1))
+        except Exception:
+            return False
+        return (last + datetime.timedelta(days=interval)) <= ref_day
+
+    engine = types.SimpleNamespace(
+        CHAPTERS=["Topic A"],
+        must_review={"Topic A": {"8": today_iso}},
+        srs_data={"Topic A": [{"last_review": "2026-01-01", "interval": 1, "efactor": 2.5}]},
+        get_questions=lambda _topic: ["Q0"],
+        _parse_date=_parse_date,
+        is_overdue=_is_overdue,
+        save_data=lambda: saved.__setitem__("count", saved["count"] + 1),
+    )
+    dummy = types.SimpleNamespace(engine=engine)
+    dummy._get_topic_must_review_due_count = types.MethodType(StudyPlanGUI._get_topic_must_review_due_count, dummy)
+    stats = StudyPlanGUI._sanitize_must_review_desync(dummy, backfill_from_srs=True, today=today)
+    assert stats["changed"] is True
+    assert stats["dropped_out_of_range"] == 1
+    assert stats["backfilled"] == 1
+    assert stats["due_after"] == 1
+    assert engine.must_review["Topic A"].get("0") == today_iso
+    assert saved["count"] == 1
+
+
+def test_on_clear_must_review_sanitizes_then_starts_recovered_topic():
+    picked_topics: list[str] = []
+    started: list[tuple[str, int, str]] = []
+    notices: list[str] = []
+    state = {"calls": 0}
+
+    def _find_due(_preferred):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return "", 0, 0
+        return "Topic B", 3, 2
+
+    dummy = types.SimpleNamespace(
+        current_topic="Topic A",
+        _ensure_coach_selection=lambda: None,
+        _ensure_chapters_ready=lambda _label: True,
+        _get_drill_topic=lambda: "Topic A",
+        _get_recommended_topic=lambda: "Topic A",
+        _find_due_review_topic=_find_due,
+        _sanitize_must_review_desync=lambda backfill_from_srs=True: {
+            "changed": True,
+            "dropped_total": 2,
+            "backfilled": 1,
+        },
+        _set_current_topic=lambda topic: picked_topics.append(topic),
+        start_quiz_session=lambda topic=None, total_override=None, kind="quiz": started.append(
+            (str(topic or ""), int(total_override or 0), str(kind or ""))
+        ),
+        send_notification=lambda _title, msg: notices.append(str(msg)),
+    )
+    StudyPlanGUI.on_clear_must_review(dummy, None)
+    assert picked_topics[-1] == "Topic B"
+    assert started[-1] == ("Topic B", 6, "review")
+    assert any("Recovered due review on Topic B" in msg for msg in notices)
 
 
 def test_validate_selected_file_size_rejects_directory(tmp_path):
