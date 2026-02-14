@@ -16,6 +16,7 @@ import threading
 import io
 import contextlib
 from typing import Dict, Any, List, Union, Set, Tuple, cast
+from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
 
 class StudyPlanEngine:
 
@@ -138,6 +139,10 @@ class StudyPlanEngine:
     DEFAULT_QUESTIONS_FILE = os.path.join(DEFAULT_DATA_DIR, "questions.json")
     MODULES_DIR = os.path.join(DEFAULT_DATA_DIR, "modules")
     BACKUP_RETENTION = 20
+    MAX_DATA_FILE_BYTES = 64 * 1024 * 1024
+    MAX_SNAPSHOT_IMPORT_BYTES = 64 * 1024 * 1024
+    MAX_QUESTION_IMPORT_BYTES = 32 * 1024 * 1024
+    MAX_CSV_IMPORT_BYTES = 16 * 1024 * 1024
     DATA_FILE = DEFAULT_DATA_FILE
     QUESTIONS_FILE = DEFAULT_QUESTIONS_FILE
     CHAPTER_ALIASES = {
@@ -6999,8 +7004,14 @@ class StudyPlanEngine:
         if not os.path.exists(json_path):
             raise FileNotFoundError(f"File not found: {json_path}")
 
-        with open(json_path, "r", encoding="utf-8") as file:
-            data: Dict[str, Any] = json.load(file)
+        data = cast(
+            Dict[str, Any],
+            self._load_json_file_with_limit(
+                json_path,
+                getattr(self, "MAX_QUESTION_IMPORT_BYTES", 32 * 1024 * 1024),
+                "Question import JSON",
+            ),
+        )
 
         chapter_name: str | None = data.get("chapter")
         questions: List[Dict[str, str]] | None = data.get("questions")
@@ -7317,8 +7328,11 @@ class StudyPlanEngine:
         if json_path.lower().endswith(".csv"):
             return self._import_questions_csv(json_path)
 
-        with open(json_path, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        data = self._load_json_file_with_limit(
+            json_path,
+            getattr(self, "MAX_QUESTION_IMPORT_BYTES", 32 * 1024 * 1024),
+            "Question import JSON",
+        )
 
         total_added = 0
         chapters_touched = set()
@@ -7442,6 +7456,11 @@ class StudyPlanEngine:
 
     def _import_questions_csv(self, csv_path: str) -> dict:
         """Import AI questions from CSV template."""
+        self._enforce_file_size_limit(
+            csv_path,
+            getattr(self, "MAX_CSV_IMPORT_BYTES", 16 * 1024 * 1024),
+            "Question import CSV",
+        )
         total_added = 0
         chapters_touched = set()
         semantic_import = self._build_semantic_import_stats()
@@ -10698,15 +10717,33 @@ class StudyPlanEngine:
         # Final cardinality guard after coercion.
         self.sync_srs_with_questions()
 
+    def _secure_path_permissions(self, path: str, mode: int) -> None:
+        secure_path_permissions(path, mode)
+
+    def _enforce_file_size_limit(self, file_path: str, max_bytes: int, label: str) -> int:
+        return enforce_file_size_limit(
+            file_path,
+            max_bytes,
+            label,
+            human_readable=False,
+            punctuate_simple_errors=False,
+        )
+
+    def _load_json_file_with_limit(self, file_path: str, max_bytes: int, label: str) -> Any:
+        self._enforce_file_size_limit(file_path, max_bytes, label)
+        with open(file_path, "r", newline="", encoding="utf-8") as f:
+            return json.load(f)
+
     def import_data_snapshot(self, file_path: str) -> dict[str, Any]:
         """
         Safely import a data snapshot JSON with normalization.
         Returns a small summary for UI feedback.
         """
-        if not file_path or not os.path.exists(file_path):
-            raise FileNotFoundError("Snapshot file not found")
-        with open(file_path, "r", newline="", encoding="utf-8") as f:
-            payload = json.load(f)
+        payload = self._load_json_file_with_limit(
+            file_path,
+            getattr(self, "MAX_SNAPSHOT_IMPORT_BYTES", 64 * 1024 * 1024),
+            "Snapshot",
+        )
         self._apply_loaded_payload(payload)
         self.save_data()
         return {
@@ -10820,8 +10857,11 @@ class StudyPlanEngine:
             print(f"Error loading data: {load_error} (no backup snapshot found)")
             return False
         try:
-            with open(snapshot_path, "r", newline="", encoding="utf-8") as f:
-                payload = json.load(f)
+            payload = self._load_json_file_with_limit(
+                snapshot_path,
+                getattr(self, "MAX_SNAPSHOT_IMPORT_BYTES", 64 * 1024 * 1024),
+                "Snapshot",
+            )
             self._apply_loaded_payload(payload)
         except Exception as restore_error:
             self.last_load_recovery_error = f"{load_error}; restore failed: {restore_error}"
@@ -10861,8 +10901,11 @@ class StudyPlanEngine:
         self.last_load_recovery_error = ""
         if os.path.exists(self.DATA_FILE):
             try:
-                with open(self.DATA_FILE, 'r', newline='', encoding='utf-8') as f:
-                    data = json.load(f)
+                data = self._load_json_file_with_limit(
+                    self.DATA_FILE,
+                    getattr(self, "MAX_DATA_FILE_BYTES", 64 * 1024 * 1024),
+                    "Data",
+                )
                 self._apply_loaded_payload(data)
             except (OSError, json.JSONDecodeError) as e:
                 self._recover_data_from_latest_snapshot(e)
@@ -10959,7 +11002,8 @@ class StudyPlanEngine:
         data_dir = os.path.dirname(self.DATA_FILE)
         if data_dir:
             try:
-                os.makedirs(data_dir, exist_ok=True)
+                os.makedirs(data_dir, mode=0o700, exist_ok=True)
+                self._secure_path_permissions(data_dir, 0o700)
             except Exception:
                 pass
 
@@ -10980,6 +11024,7 @@ class StudyPlanEngine:
                     payload = src.read()
                 with open(bak_path, "wb") as dst:
                     dst.write(payload)
+                self._secure_path_permissions(bak_path, 0o600)
                 self._write_rolling_backup(path, payload)
                 self.last_backup_ok = True
                 self.last_backup_error = None
@@ -11004,9 +11049,12 @@ class StudyPlanEngine:
             if isinstance(question_index, int):
                 payload["question_index"] = int(question_index)
             path = os.path.join(self.DEFAULT_DATA_DIR, "coach_debug.log")
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+            path_dir = os.path.dirname(path)
+            os.makedirs(path_dir, mode=0o700, exist_ok=True)
+            self._secure_path_permissions(path_dir, 0o700)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(payload) + "\n")
+            self._secure_path_permissions(path, 0o600)
         except Exception:
             pass
 
@@ -11017,7 +11065,8 @@ class StudyPlanEngine:
             return
 
         backups_dir = os.path.join(data_dir, "backups")
-        os.makedirs(backups_dir, exist_ok=True)
+        os.makedirs(backups_dir, mode=0o700, exist_ok=True)
+        self._secure_path_permissions(backups_dir, 0o700)
 
         base = os.path.basename(path)
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
@@ -11031,6 +11080,7 @@ class StudyPlanEngine:
 
         with open(snapshot_path, "wb") as f:
             f.write(payload)
+        self._secure_path_permissions(snapshot_path, 0o600)
 
         prefix = f"{base}."
         suffix = ".bak"
@@ -11068,7 +11118,8 @@ class StudyPlanEngine:
 
         log_dir = os.path.dirname(self.DATA_FILE)
         if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
+            os.makedirs(log_dir, mode=0o700, exist_ok=True)
+            self._secure_path_permissions(log_dir, 0o700)
         log_path = os.path.join(log_dir, "migration.log")
         ts = datetime.datetime.now().isoformat(timespec="seconds")
         line = (
@@ -11082,6 +11133,7 @@ class StudyPlanEngine:
         try:
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
+            self._secure_path_permissions(log_path, 0o600)
         except OSError:
             pass
 
@@ -11104,7 +11156,8 @@ class StudyPlanEngine:
         """Write JSON atomically to avoid partial/corrupt files."""
         data_dir = os.path.dirname(path)
         if data_dir:
-            os.makedirs(data_dir, exist_ok=True)
+            os.makedirs(data_dir, mode=0o700, exist_ok=True)
+            self._secure_path_permissions(data_dir, 0o700)
 
         fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", dir=data_dir or None)
         try:
@@ -11113,6 +11166,7 @@ class StudyPlanEngine:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, path)
+            self._secure_path_permissions(path, 0o600)
         finally:
             try:
                 if os.path.exists(tmp_path):
