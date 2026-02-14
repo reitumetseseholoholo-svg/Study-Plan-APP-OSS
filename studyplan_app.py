@@ -14559,7 +14559,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         delta = max(0, int(live_samples) - trained_samples)
         last_ts = getattr(self, "_last_ml_train_at", None)
         if not isinstance(last_ts, str) or not last_ts:
-            return (f"ML freshness: untrained • +{delta} samples", True)
+            suffix = f" • +{delta} samples" if delta > 0 else ""
+            return (f"ML freshness: untrained{suffix}", True)
         stale_age = False
         try:
             last_dt = datetime.datetime.fromisoformat(last_ts)
@@ -14575,8 +14576,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             detail = "stale (age)"
         elif stale_delta:
             detail = f"stale (+{delta})"
-        else:
+        elif delta > 0:
             detail = f"fresh (+{delta})"
+        else:
+            detail = "fresh"
         return (f"ML freshness: {detail}", stale)
 
     def _get_recall_model_quality_status(self) -> tuple[str, bool]:
