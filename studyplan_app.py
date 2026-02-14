@@ -15123,6 +15123,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         coach_title = Gtk.Label(label="Coach Briefing")
         coach_title.set_halign(Gtk.Align.START)
         coach_title.add_css_class("coach-title")
+        coach_title.set_margin_bottom(4)
         coach_box.append(coach_title)
 
         readiness_score = float(readiness_info.get("score", 0.0) or 0.0)
@@ -15131,6 +15132,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         readiness_bar.set_fraction(max(0.0, min(1.0, readiness_score / 100.0)))
         readiness_bar.set_text(f"{readiness_score:.0f}% • {readiness_tier}")
         readiness_bar.set_show_text(True)
+        readiness_bar.set_height_request(12)
         coach_box.append(readiness_bar)
 
         try:
@@ -15288,34 +15290,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 coach_box.append(ch_line)
             except Exception:
                 pass
-            try:
-                drift = self.engine.get_semantic_drift_kpi(days=7)
-                drift_status = str(drift.get("status", "ok") or "ok")
-                flagged = int(drift.get("chapters_flagged", 0) or 0)
-                avg_gap = float(drift.get("avg_gap_pct", 0.0) or 0.0)
-                drift_text = f"Semantic drift: {drift_status} • flagged {flagged} • avg gap {avg_gap:.0f}%"
-                drift_label = Gtk.Label(label=drift_text)
-                drift_label.set_halign(Gtk.Align.START)
-                drift_label.add_css_class("muted")
-                if drift_status in {"warning", "severe"}:
-                    drift_label.add_css_class("status-warn")
-                    drift_label.add_css_class("nudge-warn")
-                coach_box.append(drift_label)
-                alerts = self.engine.get_semantic_drift_alerts(days=7)
-                if isinstance(alerts, list) and alerts:
-                    top = alerts[0] if isinstance(alerts[0], dict) else {}
-                    top_ch = str(top.get("chapter", "") or "")
-                    if top_ch:
-                        top_gap = float(top.get("gap_pct", 0.0) or 0.0)
-                        top_lag = int(top.get("quiz_lag_days", 0) or 0)
-                        drift_top = Gtk.Label(
-                            label=f"Top drift chapter: {top_ch} • gap {top_gap:.0f}% • lag {top_lag}d"
-                        )
-                        drift_top.set_halign(Gtk.Align.START)
-                        drift_top.add_css_class("muted")
-                        coach_box.append(drift_top)
-            except Exception:
-                pass
+        except Exception:
+            pass
+        coach_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        try:
+            drift = self.engine.get_semantic_drift_kpi(days=7)
+            drift_status = str(drift.get("status", "ok") or "ok")
+            flagged = int(drift.get("chapters_flagged", 0) or 0)
+            avg_gap = float(drift.get("avg_gap_pct", 0.0) or 0.0)
+            drift_text = f"Semantic drift: {drift_status} • flagged {flagged} • avg gap {avg_gap:.0f}%"
+            drift_label = Gtk.Label(label=drift_text)
+            drift_label.set_halign(Gtk.Align.START)
+            drift_label.add_css_class("muted")
+            if drift_status in {"warning", "severe"}:
+                drift_label.add_css_class("status-warn")
+                drift_label.add_css_class("nudge-warn")
+            coach_box.append(drift_label)
+            alerts = self.engine.get_semantic_drift_alerts(days=7)
+            if isinstance(alerts, list) and alerts:
+                top = alerts[0] if isinstance(alerts[0], dict) else {}
+                top_ch = str(top.get("chapter", "") or "")
+                if top_ch:
+                    top_gap = float(top.get("gap_pct", 0.0) or 0.0)
+                    top_lag = int(top.get("quiz_lag_days", 0) or 0)
+                    drift_top = Gtk.Label(
+                        label=f"Top drift chapter: {top_ch} • gap {top_gap:.0f}% • lag {top_lag}d"
+                    )
+                    drift_top.set_halign(Gtk.Align.START)
+                    drift_top.add_css_class("muted")
+                    coach_box.append(drift_top)
         except Exception:
             pass
         try:
@@ -15341,6 +15344,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 retrieval_bar.set_fraction(min(1.0, retrieval_pct / max(1.0, target_pct)))
                 retrieval_bar.set_show_text(True)
                 retrieval_bar.set_text(f"Retrieval {retrieval_pct:.0f}% / {target_pct:.0f}%")
+                retrieval_bar.set_height_request(12)
                 try:
                     thresholds = self._get_auto_thresholds()
                     lag_days = float(thresholds.get("quiz_lag_days", 14.0))
@@ -15379,6 +15383,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             retrieval_pct = None
             target_pct = self._get_retrieval_min_pct()
+        coach_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         try:
             exam_index = float(readiness_score)
             if pace_status == "behind":
@@ -15632,7 +15637,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         mission_bar.set_fraction(mission_done / max(1, len(mission_tasks)))
         mission_bar.set_show_text(True)
         mission_bar.set_text(f"Mission progress: {mission_done}/{len(mission_tasks)}")
+        mission_bar.set_height_request(12)
         coach_box.append(mission_bar)
+        coach_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         pace_label = Gtk.Label()
         pace_label.set_halign(Gtk.Align.START)

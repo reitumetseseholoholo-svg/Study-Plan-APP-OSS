@@ -1137,7 +1137,7 @@ class AITutorDialogController:
             elif rag_sources > 0:
                 status_parts.append("RAG: no relevant snippets")
             elif rag_method == "disabled":
-                status_parts.append("RAG disabled (add syllabus PDF or set STUDYPLAN_AI_TUTOR_RAG_PDFS)")
+                status_parts.append("RAG disabled (toggle in Preferences or set STUDYPLAN_AI_TUTOR_RAG_PDFS)")
             rag_errors = [err for err in rag_meta.get("errors", []) if err]
             if rag_errors:
                 status_parts.append(f"RAG errors: {rag_errors[0][:72]}")
