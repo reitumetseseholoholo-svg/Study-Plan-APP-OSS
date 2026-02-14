@@ -1,6 +1,7 @@
 import datetime
 import json
 import types
+import urllib.error
 import urllib.request
 
 import pytest
@@ -28,6 +29,9 @@ def _make_dummy(host: str = "127.0.0.1:11434"):
     dummy._allow_remote_ollama_hosts = types.MethodType(StudyPlanGUI._allow_remote_ollama_hosts, dummy)
     dummy._is_local_or_private_host = types.MethodType(StudyPlanGUI._is_local_or_private_host, dummy)
     dummy._normalize_ollama_host = types.MethodType(StudyPlanGUI._normalize_ollama_host, dummy)
+    dummy._get_ollama_retry_limit = types.MethodType(StudyPlanGUI._get_ollama_retry_limit, dummy)
+    dummy._get_ollama_retry_backoff_seconds = types.MethodType(StudyPlanGUI._get_ollama_retry_backoff_seconds, dummy)
+    dummy._is_transient_ollama_error = types.MethodType(StudyPlanGUI._is_transient_ollama_error, dummy)
     return dummy
 
 
@@ -576,6 +580,70 @@ def test_ollama_generate_text_stream_honors_cancellation(monkeypatch):
     )
     assert err == "cancelled"
     assert text == "Part 1"
+
+
+def test_ollama_generate_text_retries_transient_error(monkeypatch):
+    dummy = _make_dummy()
+    calls = {"count": 0}
+
+    def _fake_request(_path, payload=None, timeout_seconds=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return None, "HTTP 503: service unavailable"
+        return {"response": "ok"}, None
+
+    monkeypatch.setattr(dummy, "_ollama_request_json", _fake_request, raising=False)
+    monkeypatch.setattr("time.sleep", lambda *_args, **_kwargs: None)
+    text, err = StudyPlanGUI._ollama_generate_text(dummy, model="demo:latest", prompt="ping")
+    assert err is None
+    assert text == "ok"
+    assert calls["count"] == 2
+
+
+def test_ollama_generate_text_stream_retries_transient_error_before_chunks(monkeypatch):
+    dummy = _make_dummy()
+    calls = {"count": 0}
+
+    lines = [
+        json.dumps({"response": "retry ", "done": False}).encode("utf-8") + b"\n",
+        json.dumps({"response": "success", "done": True}).encode("utf-8") + b"\n",
+    ]
+
+    class _FakeResponse:
+        def __init__(self, payload_lines):
+            self._lines = list(payload_lines)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def readline(self):
+            if not self._lines:
+                return b""
+            return self._lines.pop(0)
+
+    def _fake_urlopen(_req, timeout=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise urllib.error.URLError("connection reset by peer")
+        return _FakeResponse(lines)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr("time.sleep", lambda *_args, **_kwargs: None)
+
+    seen = []
+    text, err = StudyPlanGUI._ollama_generate_text_stream(
+        dummy,
+        model="demo:latest",
+        prompt="stream",
+        on_chunk=lambda piece: seen.append(piece),
+    )
+    assert err is None
+    assert text == "retry success"
+    assert seen == ["retry ", "success"]
+    assert calls["count"] == 2
 
 
 def test_extract_first_json_object_handles_markdown_wrappers():

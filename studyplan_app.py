@@ -2,7 +2,7 @@
 import gi  # type: ignore[import-untyped]
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gtk, GLib, Gdk, Gio  # type: ignore[reportAttributeAccessIssue,import-untyped]
+from gi.repository import Gtk, GLib, Gdk, Gio, Pango  # type: ignore[reportAttributeAccessIssue,import-untyped]
 from studyplan_engine import StudyPlanEngine
 from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
 from studyplan_theme import apply_theme
@@ -160,7 +160,9 @@ DEFAULT_MODULE_ID = os.environ.get("STUDYPLAN_MODULE_ID", "acca_f9")
 DEFAULT_MODULE_TITLE = os.environ.get("STUDYPLAN_MODULE_TITLE", "ACCA F9")
 DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 DEFAULT_OLLAMA_MODEL = os.environ.get("STUDYPLAN_OLLAMA_MODEL", "")
-DEFAULT_OLLAMA_TIMEOUT_SECONDS = 90
+DEFAULT_OLLAMA_TIMEOUT_SECONDS = 300
+DEFAULT_OLLAMA_TRANSIENT_RETRIES = 1
+DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS = 0.4
 DEFAULT_OLLAMA_CONTEXT = 4096
 DEFAULT_SAFE_OLLAMA_HOST = "http://127.0.0.1:11434"
 AI_TUTOR_TELEMETRY_MAX_EVENTS = 160
@@ -1257,6 +1259,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_details_label = Gtk.Label()
         self.study_room_details_label.set_halign(Gtk.Align.START)
         self.study_room_details_label.set_wrap(True)
+        self.study_room_details_label.set_max_width_chars(110)
+        self.study_room_details_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         self.study_room_details_label.add_css_class("muted")
         self.study_room_details_label.add_css_class("study-summary")
         self.study_room_details_expander = Gtk.Expander()
@@ -1271,7 +1275,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_blocks_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.study_room_blocks_label = Gtk.Label()
         self.study_room_blocks_label.set_halign(Gtk.Align.START)
-        self.study_room_blocks_label.set_wrap(True)
+        self.study_room_blocks_label.set_wrap(False)
+        self.study_room_blocks_label.set_ellipsize(Pango.EllipsizeMode.END)
         self.study_room_blocks_label.add_css_class("muted")
         self.study_room_blocks_label.add_css_class("study-summary")
         self.study_room_blocks_box.append(self.study_room_blocks_label)
@@ -1324,7 +1329,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         self.study_room_mission_label = Gtk.Label()
         self.study_room_mission_label.set_halign(Gtk.Align.START)
-        self.study_room_mission_label.set_wrap(True)
+        self.study_room_mission_label.set_wrap(False)
+        self.study_room_mission_label.set_ellipsize(Pango.EllipsizeMode.END)
         self.study_room_mission_label.add_css_class("muted")
         study_room_card.append(self.study_room_mission_label)
 
@@ -1337,12 +1343,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         study_room_actions.set_homogeneous(True)
         self.study_room_focus_btn = Gtk.Button(label="Focus 25m")
         self.study_room_focus_btn.add_css_class("suggested-action")
+        self.study_room_focus_btn.set_size_request(-1, 36)
         self.study_room_focus_btn.connect("clicked", self.on_focus_now)
         self.study_room_quiz_btn = Gtk.Button(label="Quiz 8")
+        self.study_room_quiz_btn.set_size_request(-1, 36)
         self.study_room_quiz_btn.connect("clicked", self.on_quick_quiz)
         self.study_room_drill_btn = Gtk.Button(label="Drill weak")
+        self.study_room_drill_btn.set_size_request(-1, 36)
         self.study_room_drill_btn.connect("clicked", self.on_drill_weak)
         self.study_room_interleave_btn = Gtk.Button(label="Interleave")
+        self.study_room_interleave_btn.set_size_request(-1, 36)
         self.study_room_interleave_btn.connect("clicked", self.on_interleave_quiz)
         study_room_actions.append(self.study_room_focus_btn)
         study_room_actions.append(self.study_room_quiz_btn)
@@ -3806,6 +3816,71 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _secure_user_path(self, path: str, mode: int) -> None:
         secure_path_permissions(path, mode)
 
+    def _normalize_user_file_path(self, file_path: str, label: str) -> str:
+        raw = str(file_path or "").strip()
+        if not raw:
+            raise ValueError(f"{label} path is empty.")
+        path = os.path.abspath(os.path.expanduser(raw))
+        if not path:
+            raise ValueError(f"{label} path is invalid.")
+        return path
+
+    def _validate_import_source_path(
+        self,
+        file_path: str,
+        label: str,
+        allowed_extensions: tuple[str, ...] | None = None,
+    ) -> str:
+        path = self._normalize_user_file_path(file_path, label)
+        if allowed_extensions:
+            lower = path.lower()
+            allowed = tuple(str(ext).lower() for ext in allowed_extensions if str(ext).strip())
+            if allowed and not any(lower.endswith(ext) for ext in allowed):
+                pretty = ", ".join(allowed)
+                raise ValueError(f"{label} must use one of: {pretty}.")
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"{label} file not found.")
+        if not os.path.isfile(path):
+            raise ValueError(f"{label} path is not a regular file.")
+        if not os.access(path, os.R_OK):
+            raise ValueError(f"{label} file is not readable.")
+        return path
+
+    def _prepare_export_target_path(
+        self,
+        file_path: str,
+        label: str,
+        *,
+        default_extension: str | None = None,
+        allowed_extensions: tuple[str, ...] | None = None,
+    ) -> str:
+        path = self._normalize_user_file_path(file_path, label)
+        if default_extension:
+            ext = str(default_extension).strip().lower()
+            if ext and not ext.startswith("."):
+                ext = f".{ext}"
+            if ext and not os.path.splitext(path)[1]:
+                path = f"{path}{ext}"
+        if allowed_extensions:
+            lower = path.lower()
+            allowed = tuple(str(ext).lower() for ext in allowed_extensions if str(ext).strip())
+            if allowed and not any(lower.endswith(ext) for ext in allowed):
+                pretty = ", ".join(allowed)
+                raise ValueError(f"{label} must use one of: {pretty}.")
+        parent = os.path.dirname(path) or "."
+        if not os.path.isdir(parent):
+            raise FileNotFoundError(f"{label} directory does not exist.")
+        if not os.access(parent, os.W_OK):
+            raise PermissionError(f"{label} directory is not writable.")
+        if os.path.exists(path):
+            if os.path.islink(path):
+                raise ValueError(f"{label} cannot overwrite a symbolic link.")
+            if not os.path.isfile(path):
+                raise ValueError(f"{label} target is not a regular file.")
+            if not os.access(path, os.W_OK):
+                raise PermissionError(f"{label} target is not writable.")
+        return path
+
     def _validate_selected_file_size(self, file_path: str, max_bytes: int, label: str) -> None:
         enforce_file_size_limit(
             file_path,
@@ -4118,6 +4193,39 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         host_part = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
         return f"{scheme}://{host_part}:{int(port)}"
 
+    def _get_ollama_retry_limit(self) -> int:
+        raw = str(os.environ.get("STUDYPLAN_OLLAMA_TRANSIENT_RETRIES", DEFAULT_OLLAMA_TRANSIENT_RETRIES) or "")
+        try:
+            limit = int(raw)
+        except Exception:
+            limit = int(DEFAULT_OLLAMA_TRANSIENT_RETRIES)
+        return max(0, min(3, limit))
+
+    def _get_ollama_retry_backoff_seconds(self, attempt_index: int) -> float:
+        try:
+            base = float(DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS)
+        except Exception:
+            base = 0.4
+        return max(0.0, min(2.0, base * (2 ** max(0, int(attempt_index)))))
+
+    def _is_transient_ollama_error(self, err: str) -> bool:
+        code, _friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
+        if code in {"busy", "timeout", "host_unreachable"}:
+            return True
+        lower = str(err or "").strip().lower()
+        transient_tokens = (
+            "temporar",
+            "connection reset",
+            "connection aborted",
+            "remote end closed connection",
+            "broken pipe",
+            "http 429",
+            "http 502",
+            "http 503",
+            "http 504",
+        )
+        return any(token in lower for token in transient_tokens)
+
     def _ollama_request_json(
         self,
         path: str,
@@ -4188,20 +4296,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "stream": False,
             "options": {"num_ctx": int(DEFAULT_OLLAMA_CONTEXT), "temperature": 0.2},
         }
-        data, err = self._ollama_request_json(
-            "/api/generate",
-            payload=payload,
-            timeout_seconds=self.local_llm_timeout_seconds,
-        )
-        if err:
-            return "", err
-        if not isinstance(data, dict):
-            return "", "invalid Ollama response"
-        response_text = str(data.get("response", "") or "").strip()
-        if not response_text:
+        retries = int(self._get_ollama_retry_limit())
+        max_attempts = retries + 1
+        last_err = ""
+        for attempt in range(max_attempts):
+            data, err = self._ollama_request_json(
+                "/api/generate",
+                payload=payload,
+                timeout_seconds=self.local_llm_timeout_seconds,
+            )
+            if err:
+                last_err = err
+                if attempt < retries and self._is_transient_ollama_error(err):
+                    time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
+                    continue
+                return "", err
+            if not isinstance(data, dict):
+                return "", "invalid Ollama response"
+            response_text = str(data.get("response", "") or "").strip()
+            if response_text:
+                return response_text, None
             api_err = str(data.get("error", "") or "").strip()
-            return "", (api_err if api_err else "empty response")
-        return response_text, None
+            if api_err:
+                last_err = api_err
+                if attempt < retries and self._is_transient_ollama_error(api_err):
+                    time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
+                    continue
+                return "", api_err
+            return "", "empty response"
+        return "", (last_err or "Ollama request failed")
 
     def _ollama_generate_text_stream(
         self,
@@ -4236,53 +4359,75 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             method="POST",
         )
         chunks: list[str] = []
-        try:
-            with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
-                while True:
-                    if callable(cancel_check) and bool(cancel_check()):
-                        return "".join(chunks), "cancelled"
-                    raw_line = resp.readline()
-                    if not raw_line:
-                        break
-                    line = raw_line.decode("utf-8", "replace").strip()
-                    if not line:
-                        continue
-                    if line.startswith("data:"):
-                        line = line[5:].strip()
-                    try:
-                        item = json.loads(line)
-                    except Exception:
-                        continue
-                    if not isinstance(item, dict):
-                        continue
-                    err = str(item.get("error", "") or "").strip()
-                    if err:
-                        return "".join(chunks), err
-                    piece = str(item.get("response", "") or "")
-                    if piece:
-                        chunks.append(piece)
-                        if callable(on_chunk):
-                            try:
-                                on_chunk(piece)
-                            except Exception:
-                                pass
-                    if bool(item.get("done", False)):
-                        break
-            return "".join(chunks), None
-        except urllib.error.HTTPError as exc:
-            detail = ""
+        retries = int(self._get_ollama_retry_limit())
+        max_attempts = retries + 1
+        last_err = ""
+        for attempt in range(max_attempts):
+            should_retry = False
             try:
-                detail = exc.read().decode("utf-8", "replace").strip()
-            except Exception:
+                with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
+                    while True:
+                        if callable(cancel_check) and bool(cancel_check()):
+                            return "".join(chunks), "cancelled"
+                        raw_line = resp.readline()
+                        if not raw_line:
+                            break
+                        line = raw_line.decode("utf-8", "replace").strip()
+                        if not line:
+                            continue
+                        if line.startswith("data:"):
+                            line = line[5:].strip()
+                        try:
+                            item = json.loads(line)
+                        except Exception:
+                            continue
+                        if not isinstance(item, dict):
+                            continue
+                        err = str(item.get("error", "") or "").strip()
+                        if err:
+                            last_err = err
+                            if attempt < retries and not chunks and self._is_transient_ollama_error(err):
+                                time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
+                                should_retry = True
+                                break
+                            return "".join(chunks), err
+                        piece = str(item.get("response", "") or "")
+                        if piece:
+                            chunks.append(piece)
+                            if callable(on_chunk):
+                                try:
+                                    on_chunk(piece)
+                                except Exception:
+                                    pass
+                        if bool(item.get("done", False)):
+                            return "".join(chunks), None
+                if should_retry:
+                    continue
+                return "".join(chunks), None
+            except urllib.error.HTTPError as exc:
                 detail = ""
-            msg = f"HTTP {exc.code}"
-            if detail:
-                msg = f"{msg}: {detail}"
-            elif exc.reason:
-                msg = f"{msg}: {exc.reason}"
-            return "".join(chunks), msg
-        except Exception as exc:
-            return "".join(chunks), str(exc)
+                try:
+                    detail = exc.read().decode("utf-8", "replace").strip()
+                except Exception:
+                    detail = ""
+                msg = f"HTTP {exc.code}"
+                if detail:
+                    msg = f"{msg}: {detail}"
+                elif exc.reason:
+                    msg = f"{msg}: {exc.reason}"
+                last_err = msg
+                if attempt < retries and not chunks and self._is_transient_ollama_error(msg):
+                    time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
+                    continue
+                return "".join(chunks), msg
+            except Exception as exc:
+                msg = str(exc)
+                last_err = msg
+                if attempt < retries and not chunks and self._is_transient_ollama_error(msg):
+                    time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
+                    continue
+                return "".join(chunks), msg
+        return "".join(chunks), (last_err or "Ollama request failed")
 
     def _get_ai_tutor_rag_source_pdfs(self) -> list[str]:
         candidates: list[str] = []
@@ -12574,6 +12719,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._show_text_dialog("Import Syllabus PDF", "No file selected.", Gtk.MessageType.ERROR)
             return
         try:
+            file_path = self._validate_import_source_path(file_path, "Syllabus PDF", (".pdf",))
             self._validate_selected_file_size(file_path, MAX_IMPORT_PDF_BYTES, "Syllabus PDF")
         except Exception as exc:
             self._show_text_dialog("Import Syllabus PDF", str(exc), Gtk.MessageType.ERROR)
@@ -12966,6 +13112,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 error_dialog.present()
                 return
             try:
+                file_path = self._validate_import_source_path(file_path, "PDF", (".pdf",))
                 self._validate_selected_file_size(file_path, MAX_IMPORT_PDF_BYTES, "PDF")
             except Exception as exc:
                 dialog.destroy()
@@ -13234,6 +13381,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             try:
                 if not file_path:
                     raise ValueError("No file selected.")
+                file_path = self._validate_import_source_path(file_path, "Import", (".json", ".csv"))
                 if str(file_path).lower().endswith(".csv"):
                     self._validate_selected_file_size(file_path, MAX_IMPORT_JSON_BYTES, "CSV")
                 else:
@@ -13395,6 +13543,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         try:
             if not file_path:
                 raise ValueError("No file selected.")
+            file_path = self._validate_import_source_path(file_path, "Snapshot", (".json", ".bak"))
             self._validate_selected_file_size(file_path, MAX_IMPORT_SNAPSHOT_BYTES, "Snapshot")
             result = self.engine.import_data_snapshot(file_path)
             self._apply_snapshot_import_result(result, title_prefix="Snapshot imported safely.")
@@ -13442,6 +13591,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             snapshot_path = self.engine.get_latest_backup_snapshot_path()
             if not snapshot_path:
                 raise FileNotFoundError("No backup snapshot available.")
+            snapshot_path = self._validate_import_source_path(snapshot_path, "Snapshot", (".json", ".bak"))
         except Exception as e:
             err = self._new_message_dialog(
                 transient_for=self,
@@ -13587,6 +13737,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 selected = 0
             path = entries[selected][0]
             try:
+                path = self._validate_import_source_path(path, "Snapshot", (".json", ".bak"))
                 result = self.engine.import_data_snapshot(path)
                 result["snapshot_path"] = path
                 self._apply_snapshot_import_result(result, title_prefix="Snapshot recovered.")
@@ -13638,11 +13789,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             try:
                 if not file_path:
                     raise ValueError("No file selected.")
+                file_path = self._prepare_export_target_path(
+                    file_path,
+                    "Export CSV",
+                    default_extension=".csv",
+                    allowed_extensions=(".csv",),
+                )
                 with open(file_path, 'w', newline='') as csvfile:
                     writer = csv.writer(csvfile)
                     writer.writerow(["Chapter", "Competence (%)"])
                     for chapter, score in self.engine.competence.items():
                         writer.writerow([chapter, score])
+                self._secure_user_path(file_path, 0o600)
                 success_dialog = self._new_message_dialog(
                     transient_for=self,
                     modal=True,
@@ -13719,14 +13877,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
 
         try:
+            file_path = self._prepare_export_target_path(
+                file_path,
+                "Template export",
+                default_extension=".json",
+                allowed_extensions=(".json", ".csv"),
+            )
             if file_path.lower().endswith(".csv"):
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(csv_template)
             else:
-                if not file_path.lower().endswith(".json"):
-                    file_path = file_path + ".json"
                 with open(file_path, "w", encoding="utf-8") as f:
                     json.dump(json_template, f, indent=2, ensure_ascii=False)
+            self._secure_user_path(file_path, 0o600)
 
             success_dialog = self._new_message_dialog(
                 transient_for=self,
@@ -13782,6 +13945,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         try:
             if not file_path:
                 raise ValueError("No file selected.")
+            file_path = self._prepare_export_target_path(
+                file_path,
+                "Question stats export",
+                default_extension=".csv",
+                allowed_extensions=(".csv",),
+            )
             stats = getattr(self.engine, "question_stats", {}) or {}
             questions = getattr(self.engine, "QUESTIONS", {}) or {}
             with open(file_path, "w", newline="", encoding="utf-8") as csvfile:
@@ -13853,6 +14022,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 last_seen,
                             ]
                         )
+            self._secure_user_path(file_path, 0o600)
             success_dialog = self._new_message_dialog(
                 transient_for=self,
                 modal=True,
@@ -15106,10 +15276,37 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         coach_box.add_css_class("card")
         coach_box.add_css_class("hero-card")
         coach_warnings: list[str] = []
+        def _set_bar_height(widget: Gtk.Widget, height: int = 12) -> None:
+            """Cross-version bar sizing (Gtk4 set_height_request vs Gtk3 size_request fallback)."""
+            try:
+                widget.set_height_request(height)
+                return
+            except Exception:
+                pass
+            try:
+                widget.set_size_request(-1, height)
+            except Exception:
+                pass
+        def _mark_single_line(label: Gtk.Label) -> None:
+            """Lock label to one line even after global wrap pass."""
+            try:
+                label.set_wrap(False)
+                label.set_ellipsize(Pango.EllipsizeMode.END)
+                label.add_css_class("single-line-lock")
+            except Exception:
+                pass
         def _enforce_coach_label_wrap(root: Gtk.Widget) -> None:
             """Keep Coach Briefing readable on 1024x768 and other narrow layouts."""
             try:
                 if isinstance(root, Gtk.Label):
+                    try:
+                        if root.has_css_class("single-line-lock"):
+                            root.set_wrap(False)
+                            root.set_ellipsize(Pango.EllipsizeMode.END)
+                            root.set_xalign(0.0)
+                            return
+                    except Exception:
+                        pass
                     root.set_wrap(True)
                     root.set_xalign(0.0)
                     root.set_max_width_chars(96)
@@ -15135,7 +15332,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         readiness_bar.set_fraction(max(0.0, min(1.0, readiness_score / 100.0)))
         readiness_bar.set_text(f"{readiness_score:.0f}% • {readiness_tier}")
         readiness_bar.set_show_text(True)
-        readiness_bar.set_height_request(12)
+        _set_bar_height(readiness_bar, 12)
         coach_box.append(readiness_bar)
 
         try:
@@ -15238,6 +15435,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             )
             ml_label.set_halign(Gtk.Align.START)
+            _mark_single_line(ml_label)
             ml_label.add_css_class("muted")
             if confidence_tier == "low":
                 ml_label.add_css_class("status-warn")
@@ -15246,6 +15444,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             fresh_text, fresh_warn = self._get_ml_freshness_status(sample_count)
             fresh_label = Gtk.Label(label=fresh_text)
             fresh_label.set_halign(Gtk.Align.START)
+            _mark_single_line(fresh_label)
             fresh_label.add_css_class("muted")
             if fresh_warn:
                 fresh_label.add_css_class("status-warn")
@@ -15254,6 +15453,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             quality_text, quality_warn = self._get_recall_model_quality_status()
             quality_label = Gtk.Label(label=quality_text)
             quality_label.set_halign(Gtk.Align.START)
+            _mark_single_line(quality_label)
             quality_label.add_css_class("muted")
             if quality_warn:
                 quality_label.add_css_class("status-warn")
@@ -15347,7 +15547,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 retrieval_bar.set_fraction(min(1.0, retrieval_pct / max(1.0, target_pct)))
                 retrieval_bar.set_show_text(True)
                 retrieval_bar.set_text(f"Retrieval {retrieval_pct:.0f}% / {target_pct:.0f}%")
-                retrieval_bar.set_height_request(12)
+                _set_bar_height(retrieval_bar, 12)
                 try:
                     thresholds = self._get_auto_thresholds()
                     lag_days = float(thresholds.get("quiz_lag_days", 14.0))
@@ -15574,6 +15774,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             note_label = Gtk.Label(label=f"Coach note: {note}")
             note_label.set_halign(Gtk.Align.START)
             note_label.set_wrap(True)
+            note_label.set_max_width_chars(96)
+            note_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
             note_label.add_css_class("muted")
             note_label.add_css_class("nudge-info")
             coach_box.append(note_label)
@@ -15631,7 +15833,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             mission_lines.append(f"⚠ Mandatory focus: {weak_chapter} (until ≥60%)")
         coach_label = Gtk.Label(label="\n".join(mission_lines))
         coach_label.set_halign(Gtk.Align.START)
-        coach_label.set_wrap(True)
+        coach_label.set_wrap(False)
+        coach_label.set_ellipsize(Pango.EllipsizeMode.END)
         coach_label.add_css_class("muted")
         coach_box.append(coach_label)
 
@@ -15640,7 +15843,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         mission_bar.set_fraction(mission_done / max(1, len(mission_tasks)))
         mission_bar.set_show_text(True)
         mission_bar.set_text(f"Mission progress: {mission_done}/{len(mission_tasks)}")
-        mission_bar.set_height_request(12)
+        _set_bar_height(mission_bar, 12)
         coach_box.append(mission_bar)
         coach_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 

@@ -279,10 +279,11 @@ window.tile .coach-title {
     color: @warning_color;
     font-weight: 760;
     font-style: italic;
-    background-color: alpha(@warning_color, 0.16);
-    border: 1px solid alpha(@warning_color, 0.38);
-    border-radius: 8px;
-    padding: 2px 8px;
+    line-height: 1.18;
+    background-color: alpha(@warning_color, 0.12);
+    border: 1px solid alpha(@warning_color, 0.30);
+    border-radius: 9px;
+    padding: 4px 10px;
 }
 .nudge-info {
     color: app_accent;
@@ -322,8 +323,9 @@ window.tile .coach-title {
 label.today-focus-chip {
     font-size: 11px;
     letter-spacing: 0.48px;
-    padding: 2px 8px;
-    border-radius: 7px;
+    padding: 4px 12px;
+    border-radius: 10px;
+    line-height: 1.12;
     margin-top: 2px;
     margin-bottom: 4px;
 }
@@ -452,8 +454,9 @@ scrollbar slider:active {
 }
 /* polish pass */
 .card {
-    border-color: alpha(@theme_fg_color, 0.34);
-    padding: 12px;
+    border-color: alpha(@theme_fg_color, 0.30);
+    padding: 14px;
+    border-radius: 12px;
     box-shadow: 0 1px 0 alpha(@theme_fg_color, 0.10), 0 8px 22px alpha(@theme_fg_color, 0.14);
 }
 .hero-card {
@@ -710,8 +713,9 @@ label.section-title {
 label.today-focus-chip {
     font-size: 11px;
     letter-spacing: 0.48px;
-    padding: 2px 8px;
-    border-radius: 7px;
+    padding: 4px 12px;
+    border-radius: 10px;
+    line-height: 1.12;
     margin-top: 2px;
     margin-bottom: 4px;
 }
@@ -870,7 +874,8 @@ window.compact .panel {
     padding: 8px;
 }
 window.compact .card {
-    padding: 6px;
+    padding: 8px;
+    border-radius: 10px;
 }
 window.compact .title {
     font-size: 17px;
@@ -897,7 +902,8 @@ window.tile .panel-right {
     border-left: 2px solid coach_border_strong;
 }
 window.tile .card {
-    padding: 8px;
+    padding: 10px;
+    border-radius: 11px;
 }
 window.tile .section-title,
 window.tile .coach-title {
@@ -937,10 +943,11 @@ window.tile .coach-title {
     color: #f6c453;
     font-weight: 760;
     font-style: italic;
-    background: rgba(246, 196, 83, 0.16);
-    border: 1px solid rgba(246, 196, 83, 0.42);
-    border-radius: 8px;
-    padding: 2px 8px;
+    line-height: 1.18;
+    background: rgba(246, 196, 83, 0.12);
+    border: 1px solid rgba(246, 196, 83, 0.30);
+    border-radius: 9px;
+    padding: 4px 10px;
 }
 .nudge-info {
     color: #8bafff;
@@ -979,6 +986,7 @@ window.tile .coach-title {
 }
 progressbar {
     min-height: 11px;
+    padding: 2px 0;
 }
 button.flat {
     background: transparent;
@@ -1203,4 +1211,3 @@ def apply_theme(use_system: bool) -> None:
             provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
-

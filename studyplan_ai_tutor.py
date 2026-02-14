@@ -5,14 +5,8 @@ import threading
 import time
 from typing import Any, TYPE_CHECKING
 
-if TYPE_CHECKING:  # pragma: no cover - type-only import
-    try:
-        import gi  # type: ignore
-
-        gi.require_version("Gtk", "4.0")
-        from gi.repository import Gtk as _Gtk  # type: ignore
-    except Exception:  # fallback for editors without gi stubs
-        from typing import Any as _Gtk  # type: ignore
+if TYPE_CHECKING:  # pragma: no cover - reserved for future editor hints
+    pass
 
 
 AI_TUTOR_MAX_RESPONSE_CHARS = 12000
@@ -518,7 +512,7 @@ class AITutorDialogController:
             ("Formula sheet", "List the must-know formulas for '{topic}' and when to use each."),
             ("Exam pitfalls", "Give common exam pitfalls for '{topic}' and how to avoid them."),
         ]
-        quick_prompt_buttons: list[tuple["_Gtk.Button", str]] = []
+        quick_prompt_buttons: list[tuple[Any, str]] = []
         for label, template in quick_prompt_templates:
             btn = Gtk.Button(label=label)
             btn.add_css_class("flat")
@@ -874,7 +868,12 @@ class AITutorDialogController:
                 return ""
             return text_val
 
+        current_models: list[str] = []
+        model_poll_id: int | None = None
+        model_poll_errors = 0
+
         def _set_dropdown_models(model_names: list[str]) -> None:
+            nonlocal current_models
             cleaned = [str(m).strip() for m in model_names if str(m).strip()]
             if not cleaned:
                 cleaned = ["(no local models found)"]
@@ -885,10 +884,12 @@ class AITutorDialogController:
             else:
                 model_dropdown.set_selected(0)
             _set_running(bool(run_state.get("active", False)))
+            current_models = cleaned
 
         def _refresh_models(*_args):
             if bool(run_state.get("active", False)):
                 return
+            nonlocal model_poll_errors
             status_label.set_text("Loading models from Ollama…")
             refresh_btn.set_sensitive(False)
             generate_btn.set_sensitive(False)
@@ -903,6 +904,7 @@ class AITutorDialogController:
                         _set_dropdown_models([])
                         status_label.set_text(friendly)
                         return False
+                    model_poll_errors = 0
                     _set_dropdown_models(models)
                     if models:
                         status_label.set_text(f"Loaded {len(models)} model(s).")
@@ -913,6 +915,35 @@ class AITutorDialogController:
                 GLib.idle_add(_finish)
 
             threading.Thread(target=_worker, daemon=True).start()
+
+        def _auto_poll_models() -> bool:
+            if bool(run_state.get("active", False)):
+                return True
+
+            def _worker():
+                models, err = app._ollama_list_models()
+
+                def _finish():
+                    nonlocal model_poll_errors
+                    if err:
+                        model_poll_errors += 1
+                        _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
+                        if model_poll_errors >= 3:
+                            status_label.set_text("Model refresh paused after repeated errors; use Refresh.")
+                            return False
+                        status_label.set_text(friendly)
+                        return True
+                    model_poll_errors = 0
+                    cleaned = [str(m).strip() for m in models if str(m).strip()]
+                    if cleaned and cleaned != current_models:
+                        _set_dropdown_models(cleaned)
+                        status_label.set_text(f"Models updated ({len(cleaned)}).")
+                    return True
+
+                GLib.idle_add(_finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
+            return True
 
         def _on_model_change(*_args):
             if bool(run_state.get("active", False)):
@@ -1265,6 +1296,11 @@ class AITutorDialogController:
                 if isinstance(cancel_event, threading.Event):
                     cancel_event.set()
                 app._ollama_stop_model(str(run_state.get("model", "") or ""))
+            if model_poll_id:
+                try:
+                    GLib.source_remove(model_poll_id)
+                except Exception:
+                    pass
             _persist_history()
             d.destroy()
 
@@ -1298,3 +1334,4 @@ class AITutorDialogController:
         _update_prompt_meta()
         _render_transcript(force_scroll=True)
         _refresh_models()
+        model_poll_id = GLib.timeout_add_seconds(45, _auto_poll_models)
