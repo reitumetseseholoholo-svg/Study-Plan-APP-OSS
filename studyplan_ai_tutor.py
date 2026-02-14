@@ -1,0 +1,1286 @@
+from __future__ import annotations
+
+import re
+import threading
+import time
+from typing import Any
+
+
+AI_TUTOR_MAX_RESPONSE_CHARS = 12000
+AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS = 90
+AI_TUTOR_MIN_TURN_TIMEOUT_SECONDS = 20
+AI_TUTOR_MAX_TURN_TIMEOUT_SECONDS = 240
+
+
+def normalize_tutor_timeout_seconds(
+    value: Any,
+    default: int = AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS,
+    minimum: int = AI_TUTOR_MIN_TURN_TIMEOUT_SECONDS,
+    maximum: int = AI_TUTOR_MAX_TURN_TIMEOUT_SECONDS,
+) -> int:
+    try:
+        timeout = int(value)
+    except Exception:
+        timeout = int(default)
+    timeout = max(int(minimum), min(int(maximum), int(timeout)))
+    return int(timeout)
+
+
+def classify_ollama_error(err: str, host: str = "") -> tuple[str, str]:
+    raw = str(err or "").strip()
+    if not raw:
+        return "unknown", "Ollama request failed. Try again."
+    lower = raw.lower()
+    host_hint = str(host or "").strip()
+    if (
+        "connection refused" in lower
+        or "failed to establish" in lower
+        or "name or service not known" in lower
+        or "nodename nor servname" in lower
+        or "no route to host" in lower
+        or "network is unreachable" in lower
+    ):
+        suffix = f" ({host_hint})" if host_hint else ""
+        return "host_unreachable", f"Cannot reach Ollama{suffix}. Start `ollama serve` and retry."
+    if "timed out" in lower or "timeout" in lower:
+        return "timeout", "Ollama request timed out. Try a shorter prompt or faster model."
+    if (
+        "model" in lower
+        and ("not found" in lower or "missing" in lower or "no such model" in lower)
+    ):
+        return "model_missing", "Selected model is missing. Pull it first with `ollama pull <model>`."
+    if (
+        "busy" in lower
+        or "try again" in lower
+        or "rate limit" in lower
+        or "too many requests" in lower
+        or "http 429" in lower
+    ):
+        return "busy", "Ollama is busy. Wait for active jobs to finish, then retry."
+    if "http 404" in lower:
+        return "endpoint_missing", "Ollama endpoint unavailable. Verify host/version and retry."
+    clean = raw.replace("\n", " ").strip()
+    if len(clean) > 180:
+        clean = f"{clean[:177].rstrip()}..."
+    return "unknown", f"Ollama error: {clean}"
+
+
+def chunk_text_for_rag(
+    text: str,
+    chunk_chars: int = 900,
+    overlap_chars: int = 120,
+    max_chunks: int = 1200,
+) -> list[str]:
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", raw) if p and p.strip()]
+    if not paragraphs:
+        flat = re.sub(r"\s+", " ", raw).strip()
+        if not flat:
+            return []
+        paragraphs = [flat]
+    try:
+        chunk_cap = max(240, min(2400, int(chunk_chars)))
+    except Exception:
+        chunk_cap = 900
+    try:
+        overlap_cap = max(0, min(chunk_cap // 2, int(overlap_chars)))
+    except Exception:
+        overlap_cap = 120
+    try:
+        max_chunk_count = max(1, min(5000, int(max_chunks)))
+    except Exception:
+        max_chunk_count = 1200
+
+    chunks: list[str] = []
+    current = ""
+    for para in paragraphs:
+        paragraph = re.sub(r"\s+", " ", para).strip()
+        if not paragraph:
+            continue
+        if len(paragraph) > chunk_cap:
+            if current:
+                chunks.append(current.strip())
+                if len(chunks) >= max_chunk_count:
+                    return chunks[:max_chunk_count]
+                current = ""
+            step = max(80, chunk_cap - overlap_cap)
+            start = 0
+            while start < len(paragraph):
+                piece = paragraph[start:start + chunk_cap].strip()
+                if piece:
+                    chunks.append(piece)
+                    if len(chunks) >= max_chunk_count:
+                        return chunks[:max_chunk_count]
+                if start + chunk_cap >= len(paragraph):
+                    break
+                start += step
+            continue
+
+        if not current:
+            current = paragraph
+            continue
+        candidate = f"{current}\n{paragraph}"
+        if len(candidate) <= chunk_cap:
+            current = candidate
+            continue
+        chunks.append(current.strip())
+        if len(chunks) >= max_chunk_count:
+            return chunks[:max_chunk_count]
+        if overlap_cap > 0:
+            overlap_text = current[-overlap_cap:].strip()
+            current = f"{overlap_text} {paragraph}".strip() if overlap_text else paragraph
+        else:
+            current = paragraph
+    if current.strip() and len(chunks) < max_chunk_count:
+        chunks.append(current.strip())
+    return chunks[:max_chunk_count]
+
+
+def _rag_tokens(text: str) -> list[str]:
+    return [tok for tok in re.findall(r"[a-z0-9]{2,}", str(text or "").lower()) if tok]
+
+
+def lexical_rank_rag_chunks(
+    query: str,
+    chunks: list[str],
+    top_n: int = 40,
+) -> list[tuple[int, float]]:
+    if not chunks:
+        return []
+    q_tokens = _rag_tokens(query)
+    q_set = set(q_tokens)
+    q_text = str(query or "").strip().lower()
+    scored: list[tuple[int, float]] = []
+    for idx, chunk in enumerate(chunks):
+        text = str(chunk or "")
+        if not text:
+            continue
+        c_tokens = _rag_tokens(text)
+        if not c_tokens:
+            continue
+        c_set = set(c_tokens)
+        overlap = len(q_set & c_set)
+        precision = float(overlap) / float(max(1, len(q_set)))
+        recall = float(overlap) / float(max(1, len(c_set)))
+        score = (0.78 * precision) + (0.22 * recall)
+        lower = text.lower()
+        if q_text and q_text in lower:
+            score += 0.20
+        elif q_tokens:
+            phrase_hits = 0
+            for i in range(0, max(0, len(q_tokens) - 1)):
+                pair = f"{q_tokens[i]} {q_tokens[i + 1]}"
+                if pair in lower:
+                    phrase_hits += 1
+            if phrase_hits:
+                score += min(0.18, 0.03 * float(phrase_hits))
+        if score <= 0:
+            continue
+        scored.append((idx, float(score)))
+    scored.sort(key=lambda item: (-float(item[1]), int(item[0])))
+    try:
+        cap = max(1, min(200, int(top_n)))
+    except Exception:
+        cap = 40
+    return scored[:cap]
+
+
+def build_rag_context_block(snippets: list[dict[str, Any]]) -> str:
+    rows: list[str] = []
+    for row in list(snippets or []):
+        if not isinstance(row, dict):
+            continue
+        sid = str(row.get("id", "") or "").strip()
+        source = str(row.get("source", "") or "").strip()
+        text = str(row.get("text", "") or "").strip()
+        if not sid or not text:
+            continue
+        if len(text) > 420:
+            text = f"{text[:417].rstrip()}..."
+        source_label = source if source else "PDF source"
+        rows.append(f"[{sid}] {source_label}: {text}")
+    if not rows:
+        return ""
+    return "\n".join(
+        [
+            "Reference snippets (use only when relevant; cite snippet IDs like [S1] in your answer):",
+            *rows,
+        ]
+    ).strip()
+
+
+def should_keep_response_bottom(
+    auto_scroll_enabled: bool,
+    force_scroll: bool,
+    near_bottom: bool,
+) -> bool:
+    return bool(auto_scroll_enabled) and (bool(force_scroll) or bool(near_bottom))
+
+
+def compute_tutor_control_state(
+    *,
+    running: bool,
+    model_ready: bool,
+    llm_ready: bool,
+    prompt_ready: bool,
+    has_history: bool,
+    has_latest_answer: bool,
+    has_active_or_history: bool,
+) -> dict[str, bool]:
+    is_running = bool(running)
+    ready_to_send = bool(model_ready) and bool(llm_ready) and bool(prompt_ready)
+    return {
+        "send_enabled": (not is_running) and ready_to_send,
+        "stop_enabled": is_running,
+        "new_chat_enabled": not is_running,
+        "refresh_models_enabled": not is_running,
+        "model_dropdown_enabled": not is_running,
+        "prompt_editable": not is_running,
+        "quick_prompts_enabled": not is_running,
+        "copy_transcript_enabled": (not is_running) and bool(has_history),
+        "copy_last_enabled": (not is_running) and bool(has_latest_answer),
+        "jump_latest_enabled": bool(has_active_or_history),
+    }
+
+
+def build_ai_tutor_seed_prompt(topic: str, module_title: str = "ACCA") -> str:
+    topic_val = str(topic or "").strip()
+    module_val = str(module_title or "ACCA").strip() or "ACCA"
+    if topic_val:
+        return (
+            f"Explain '{topic_val}' for {module_val} in exam-focused terms. "
+            "Include: key rules/formulas, common mistakes, and 3 practice questions with short answers."
+        )
+    return (
+        "Help me revise ACCA efficiently. Give a concise explanation, key formulas, "
+        "and a short practice drill."
+    )
+
+
+def _summarize_older_tutor_messages(
+    messages: list[dict[str, str]],
+    max_items: int = 6,
+    max_chars: int = 520,
+) -> str:
+    rows: list[str] = []
+    try:
+        item_cap = max(1, min(12, int(max_items)))
+    except Exception:
+        item_cap = 6
+    try:
+        char_cap = max(160, min(2000, int(max_chars)))
+    except Exception:
+        char_cap = 520
+    used_chars = 0
+    for msg in list(messages or [])[-item_cap:]:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        raw_content = str(msg.get("content", "") or "").strip()
+        if not raw_content:
+            continue
+        content = clean_ai_tutor_text(raw_content)
+        content = re.sub(r"\s+", " ", content).strip()
+        if not content:
+            continue
+        if len(content) > 120:
+            content = f"{content[:117].rstrip()}..."
+        prefix = "You" if role == "user" else "Tutor"
+        row = f"- {prefix}: {content}"
+        projected = used_chars + len(row) + (1 if rows else 0)
+        if rows and projected > char_cap:
+            break
+        rows.append(row)
+        used_chars = projected
+    return "\n".join(rows).strip()
+
+
+def build_ai_tutor_context_prompt_details(
+    history: list[dict[str, str]],
+    user_prompt: str,
+    module_title: str,
+    chapter: str,
+    recent_limit: int = 10,
+) -> tuple[str, dict[str, Any]]:
+    cleaned_history: list[dict[str, str]] = []
+    for msg in list(history or []):
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "") or "").strip().lower()
+        content = str(msg.get("content", "") or "").strip()
+        if role not in ("user", "assistant") or not content:
+            continue
+        cleaned_history.append({"role": role, "content": content})
+    try:
+        recent_cap = max(2, min(20, int(recent_limit)))
+    except Exception:
+        recent_cap = 10
+    older_messages = cleaned_history[:-recent_cap] if len(cleaned_history) > recent_cap else []
+    recent_messages = cleaned_history[-recent_cap:]
+    older_summary = _summarize_older_tutor_messages(older_messages)
+    lines = [
+        "You are a concise ACCA study tutor.",
+        f"Module: {module_title or 'ACCA'}",
+        f"Current chapter: {chapter or 'not selected'}",
+        "Use short sections, bullets, formulas when relevant, and exam-focused tips.",
+        "",
+    ]
+    if older_messages:
+        lines.append("Earlier context summary (older turns condensed):")
+        if older_summary:
+            lines.append(older_summary)
+        lines.append("")
+    lines.append("Conversation context (recent turns):")
+    for msg in recent_messages:
+        role = str(msg.get("role", "") or "").strip().lower()
+        content = str(msg.get("content", "") or "").strip()
+        prefix = "USER" if role == "user" else "ASSISTANT"
+        lines.append(f"{prefix}: {content}")
+    lines.append(f"USER: {str(user_prompt or '').strip()}")
+    lines.append("ASSISTANT:")
+    prompt = "\n".join(lines).strip()
+    meta: dict[str, Any] = {
+        "history_total": int(len(cleaned_history)),
+        "recent_used": int(len(recent_messages)),
+        "older_condensed": int(len(older_messages)),
+        "context_condensed": bool(older_messages),
+        "summary_included": bool(older_summary),
+    }
+    return prompt, meta
+
+
+def build_ai_tutor_context_prompt(
+    history: list[dict[str, str]],
+    user_prompt: str,
+    module_title: str,
+    chapter: str,
+) -> str:
+    prompt, _meta = build_ai_tutor_context_prompt_details(
+        history=history,
+        user_prompt=user_prompt,
+        module_title=module_title,
+        chapter=chapter,
+    )
+    return prompt
+
+
+def clean_ai_tutor_text(text: str) -> str:
+    cleaned = str(text or "")
+    if not cleaned:
+        return ""
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Remove fenced code wrappers while preserving inner content.
+    cleaned = re.sub(r"```[A-Za-z0-9_-]*\n?", "", cleaned)
+    cleaned = cleaned.replace("```", "")
+
+    # Common markdown cleanup.
+    cleaned = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", cleaned)
+    cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"__([^_]+)__", r"\1", cleaned)
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+
+    # Convert common LaTeX fragments into readable plain text.
+    cleaned = re.sub(r"\\{2,}", r"\\", cleaned)
+    cleaned = cleaned.replace(r"\{", "{").replace(r"\}", "}")
+    frac_pattern = re.compile(r"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}")
+    for _ in range(8):
+        nxt = frac_pattern.sub(lambda m: f"({m.group(1).strip()}/{m.group(2).strip()})", cleaned)
+        if nxt == cleaned:
+            break
+        cleaned = nxt
+    latex_literals = {
+        r"\times": " x ",
+        r"\cdot": " * ",
+        r"\approx": "~",
+        r"\leq": "<=",
+        r"\geq": ">=",
+        r"\neq": "!=",
+        r"\%": "%",
+        r"\$": "$",
+        r"\_": "_",
+        r"\#": "#",
+        r"\&": "&",
+        r"\{": "{",
+        r"\}": "}",
+        r"\(": "",
+        r"\)": "",
+        r"\[": "",
+        r"\]": "",
+    }
+    for src, dst in latex_literals.items():
+        cleaned = cleaned.replace(src, dst)
+
+    # Remove lightweight math delimiters and normalize spacing.
+    cleaned = cleaned.replace("$", "")
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def format_ai_tutor_transcript(history: list[dict[str, str]]) -> str:
+    blocks: list[str] = []
+    for msg in list(history or []):
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "") or "").strip().lower()
+        content = str(msg.get("content", "") or "").strip()
+        if role == "assistant":
+            content = clean_ai_tutor_text(content)
+        if not content:
+            continue
+        label = "You" if role == "user" else "Tutor"
+        blocks.append(f"{label}:\n{content}")
+    return "\n\n".join(blocks).strip()
+
+
+class AITutorDialogController:
+    def __init__(self, app: Any, Gtk: Any, GLib: Any, Gdk: Any) -> None:
+        self.app = app
+        self.Gtk = Gtk
+        self.GLib = GLib
+        self.Gdk = Gdk
+
+    def open(self) -> None:
+        app = self.app
+        Gtk = self.Gtk
+        GLib = self.GLib
+        Gdk = self.Gdk
+        dialog = app._new_dialog(title="AI Tutor (Ollama)", transient_for=app, modal=True)
+        dialog.set_default_size(760, 620)
+        dialog.add_buttons("_Close", Gtk.ResponseType.CLOSE)
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+
+        intro = Gtk.Label(
+            label="Use local Ollama models for topic explanations, drills, and revision support."
+        )
+        intro.set_halign(Gtk.Align.START)
+        intro.set_wrap(True)
+        intro.add_css_class("muted")
+        content.append(intro)
+
+        host_label = Gtk.Label(label=f"Host: {app._normalize_ollama_host()}")
+        host_label.set_halign(Gtk.Align.START)
+        host_label.add_css_class("muted")
+        content.append(host_label)
+
+        model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        model_label = Gtk.Label(label="Model")
+        model_label.set_halign(Gtk.Align.START)
+        model_label.set_size_request(70, -1)
+        model_dropdown = Gtk.DropDown.new(Gtk.StringList.new(["Loading models…"]), None)
+        model_dropdown.set_hexpand(True)
+        refresh_btn = Gtk.Button(label="Refresh models")
+        model_row.append(model_label)
+        model_row.append(model_dropdown)
+        model_row.append(refresh_btn)
+        content.append(model_row)
+
+        prompt_label = Gtk.Label(label="Prompt")
+        prompt_label.set_halign(Gtk.Align.START)
+        prompt_label.add_css_class("section-title")
+        content.append(prompt_label)
+        prompt_meta_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        prompt_meta_row.add_css_class("inline-toolbar")
+        prompt_hint = Gtk.Label(label="Ctrl+Enter to send.")
+        prompt_hint.set_halign(Gtk.Align.START)
+        prompt_hint.add_css_class("muted")
+        prompt_hint.set_hexpand(True)
+        prompt_count_label = Gtk.Label(label="0 chars")
+        prompt_count_label.set_halign(Gtk.Align.END)
+        prompt_count_label.add_css_class("muted")
+        prompt_meta_row.append(prompt_hint)
+        prompt_meta_row.append(prompt_count_label)
+        content.append(prompt_meta_row)
+        quick_prompts_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        quick_prompts_box.add_css_class("inline-toolbar")
+        quick_prompts_box.set_hexpand(True)
+        quick_prompts_label = Gtk.Label(label="Quick prompts")
+        quick_prompts_label.set_halign(Gtk.Align.START)
+        quick_prompts_label.add_css_class("muted")
+        quick_prompts_box.append(quick_prompts_label)
+        quick_prompt_templates: list[tuple[str, str]] = [
+            ("Explain topic", "Explain '{topic}' for {module} in exam-focused terms."),
+            ("Drill 5", "Write a 5-question drill on '{topic}' with short answers."),
+            ("Formula sheet", "List the must-know formulas for '{topic}' and when to use each."),
+            ("Exam pitfalls", "Give common exam pitfalls for '{topic}' and how to avoid them."),
+        ]
+        quick_prompt_buttons: list[tuple[Gtk.Button, str]] = []
+        for label, template in quick_prompt_templates:
+            btn = Gtk.Button(label=label)
+            btn.add_css_class("flat")
+            btn.set_tooltip_text(template.replace("{topic}", "current topic").replace("{module}", "module"))
+            quick_prompts_box.append(btn)
+            quick_prompt_buttons.append((btn, template))
+        quick_prompts_scroller = Gtk.ScrolledWindow()
+        quick_prompts_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        quick_prompts_scroller.set_min_content_height(44)
+        quick_prompts_scroller.set_child(quick_prompts_box)
+        prompt_scroller = Gtk.ScrolledWindow()
+        prompt_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        prompt_scroller.set_min_content_height(120)
+        prompt_view = Gtk.TextView()
+        prompt_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        prompt_buf = prompt_view.get_buffer()
+        prompt_buf.set_text(
+            build_ai_tutor_seed_prompt(
+                topic=str(getattr(app, "current_topic", "") or "").strip(),
+                module_title=str(getattr(app, "module_title", "ACCA") or "ACCA").strip(),
+            )
+        )
+        prompt_scroller.set_child(prompt_view)
+        content.append(quick_prompts_scroller)
+        content.append(prompt_scroller)
+
+        action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        action_row.add_css_class("inline-toolbar")
+        generate_btn = Gtk.Button(label="Send")
+        generate_btn.add_css_class("suggested-action")
+        stop_btn = Gtk.Button(label="Stop")
+        stop_btn.set_sensitive(False)
+        new_chat_btn = Gtk.Button(label="New chat")
+        clear_prompt_btn = Gtk.Button(label="Clear prompt")
+        copy_btn = Gtk.Button(label="Copy transcript")
+        copy_btn.set_sensitive(False)
+        action_row.append(generate_btn)
+        action_row.append(stop_btn)
+        action_row.append(new_chat_btn)
+        action_row.append(clear_prompt_btn)
+        action_row.append(copy_btn)
+        content.append(action_row)
+
+        status_label = Gtk.Label(label="")
+        status_label.set_halign(Gtk.Align.START)
+        status_label.set_wrap(True)
+        status_label.add_css_class("muted")
+        content.append(status_label)
+
+        response_label = Gtk.Label(label="Response")
+        response_label.set_halign(Gtk.Align.START)
+        response_label.add_css_class("section-title")
+        content.append(response_label)
+        response_toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        response_toolbar.add_css_class("inline-toolbar")
+        auto_scroll_toggle = Gtk.CheckButton(label="Auto-scroll")
+        auto_scroll_toggle.set_active(True)
+        jump_latest_btn = Gtk.Button(label="Jump to latest")
+        copy_last_btn = Gtk.Button(label="Copy last answer")
+        copy_last_btn.set_sensitive(False)
+        response_toolbar.append(auto_scroll_toggle)
+        response_toolbar.append(jump_latest_btn)
+        response_toolbar.append(copy_last_btn)
+        content.append(response_toolbar)
+        response_scroller = Gtk.ScrolledWindow()
+        response_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        response_scroller.set_min_content_height(260)
+        try:
+            response_scroller.set_kinetic_scrolling(False)
+        except Exception:
+            pass
+        response_view = Gtk.TextView()
+        response_view.set_editable(False)
+        response_view.set_cursor_visible(False)
+        response_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        response_buf = response_view.get_buffer()
+        response_scroller.set_child(response_view)
+        content.append(response_scroller)
+
+        history: list[dict[str, str]] = []
+        for item in list(getattr(app, "_ai_tutor_history", []) or [])[-20:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "") or "").strip().lower()
+            text = str(item.get("content", "") or "").strip()
+            if role in ("user", "assistant") and text:
+                history.append({"role": role, "content": text[:8000]})
+        run_state: dict[str, Any] = {
+            "active": False,
+            "job_id": 0,
+            "cancel_event": None,
+            "model": "",
+            "draft_user": "",
+            "draft_assistant": "",
+            "scroll_pending": False,
+            "stream_render_pending": False,
+            "stream_render_force": False,
+            "stream_last_clean_text": "",
+            "stream_label_inserted": False,
+        }
+
+        if not bool(app.local_llm_enabled):
+            status_label.set_text("Local AI tutor is disabled in Preferences.")
+            generate_btn.set_sensitive(False)
+
+        def _persist_history() -> None:
+            compact: list[dict[str, str]] = []
+            for item in list(history)[-20:]:
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role", "") or "").strip().lower()
+                text = str(item.get("content", "") or "").strip()
+                if role not in ("user", "assistant") or not text:
+                    continue
+                compact.append({"role": role, "content": text[:8000]})
+            app._ai_tutor_history = compact
+            app.save_preferences()
+
+        def _turn_count() -> int:
+            return sum(1 for msg in history if isinstance(msg, dict) and str(msg.get("role", "")).strip().lower() == "assistant")
+
+        def _current_prompt_text(strip: bool = False) -> str:
+            try:
+                start, end = prompt_buf.get_bounds()
+                text = prompt_buf.get_text(start, end, True)
+            except Exception:
+                text = ""
+            text = str(text or "")
+            return text.strip() if strip else text
+
+        def _latest_assistant_answer() -> str:
+            for item in reversed(list(history)):
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role", "") or "").strip().lower()
+                if role != "assistant":
+                    continue
+                text = str(item.get("content", "") or "").strip()
+                if not text:
+                    continue
+                return clean_ai_tutor_text(text)
+            draft_assistant = str(run_state.get("draft_assistant", "") or "").strip()
+            if draft_assistant:
+                return clean_ai_tutor_text(draft_assistant)
+            return ""
+
+        def _update_prompt_meta() -> None:
+            prompt_text = _current_prompt_text(strip=False)
+            char_count = len(prompt_text)
+            word_count = len([tok for tok in prompt_text.split() if tok.strip()])
+            prompt_count_label.set_text(f"{char_count} chars · {word_count} words")
+            if char_count > 2200:
+                prompt_count_label.add_css_class("status-warn")
+            else:
+                prompt_count_label.remove_css_class("status-warn")
+
+        def _response_is_near_bottom(padding: float = 36.0) -> bool:
+            try:
+                adj = response_scroller.get_vadjustment()
+                if adj is None:
+                    return True
+                value = float(adj.get_value() or 0.0)
+                upper = float(adj.get_upper() or 0.0)
+                page = float(adj.get_page_size() or 0.0)
+                tail_gap = max(0.0, upper - page - value)
+                return tail_gap <= max(0.0, float(padding))
+            except Exception:
+                return True
+
+        def _scroll_response_end_deferred() -> None:
+            if bool(run_state.get("scroll_pending", False)):
+                return
+            run_state["scroll_pending"] = True
+
+            def _apply_scroll() -> bool:
+                run_state["scroll_pending"] = False
+                try:
+                    adj = response_scroller.get_vadjustment()
+                    if adj is None:
+                        return False
+                    upper = float(adj.get_upper() or 0.0)
+                    page = float(adj.get_page_size() or 0.0)
+                    adj.set_value(max(0.0, upper - page))
+                except Exception:
+                    pass
+                return False
+
+            GLib.idle_add(_apply_scroll, priority=GLib.PRIORITY_LOW)
+
+        def _response_buffer_text() -> str:
+            try:
+                start, end = response_buf.get_bounds()
+                return str(response_buf.get_text(start, end, True) or "")
+            except Exception:
+                return ""
+
+        def _append_response_text(text: str) -> None:
+            piece = str(text or "")
+            if not piece:
+                return
+            try:
+                end_iter = response_buf.get_end_iter()
+                response_buf.insert(end_iter, piece)
+            except Exception:
+                _render_transcript(force_scroll=False)
+
+        def _sync_stream_tracking_from_draft() -> None:
+            if not bool(run_state.get("active", False)):
+                run_state["stream_last_clean_text"] = ""
+                run_state["stream_label_inserted"] = False
+                return
+            draft_assistant = str(run_state.get("draft_assistant", "") or "")
+            cleaned_draft = clean_ai_tutor_text(draft_assistant)
+            run_state["stream_last_clean_text"] = cleaned_draft
+            run_state["stream_label_inserted"] = bool(cleaned_draft)
+
+        def _render_transcript(force_scroll: bool = False) -> None:
+            auto_scroll_enabled = bool(auto_scroll_toggle.get_active())
+            should_keep_bottom = should_keep_response_bottom(
+                auto_scroll_enabled=auto_scroll_enabled,
+                force_scroll=bool(force_scroll),
+                near_bottom=_response_is_near_bottom(56.0 if bool(run_state.get("active", False)) else 28.0),
+            )
+            entries: list[dict[str, str]] = list(history)
+            if bool(run_state.get("active", False)):
+                draft_user = str(run_state.get("draft_user", "") or "").strip()
+                draft_assistant = str(run_state.get("draft_assistant", "") or "")
+                if draft_user:
+                    entries.append({"role": "user", "content": draft_user})
+                if draft_assistant.strip():
+                    entries.append({"role": "assistant", "content": draft_assistant})
+            text = format_ai_tutor_transcript(entries)
+            response_buf.set_text(text if text else "No conversation yet.")
+            _sync_stream_tracking_from_draft()
+            if should_keep_bottom:
+                _scroll_response_end_deferred()
+
+        def _append_stream_delta(force_scroll: bool = False) -> None:
+            if not bool(run_state.get("active", False)):
+                _render_transcript(force_scroll=force_scroll)
+                return
+            auto_scroll_enabled = bool(auto_scroll_toggle.get_active())
+            should_keep_bottom = should_keep_response_bottom(
+                auto_scroll_enabled=auto_scroll_enabled,
+                force_scroll=bool(force_scroll),
+                near_bottom=_response_is_near_bottom(56.0),
+            )
+            draft_assistant = str(run_state.get("draft_assistant", "") or "")
+            cleaned_full = clean_ai_tutor_text(draft_assistant)
+            prev_clean = str(run_state.get("stream_last_clean_text", "") or "")
+            if not cleaned_full:
+                run_state["stream_last_clean_text"] = ""
+                run_state["stream_label_inserted"] = False
+                if should_keep_bottom:
+                    _scroll_response_end_deferred()
+                return
+            if not bool(run_state.get("stream_label_inserted", False)):
+                existing_text = _response_buffer_text()
+                if not existing_text or existing_text.strip() == "No conversation yet.":
+                    response_buf.set_text("Tutor:\n")
+                else:
+                    _append_response_text("\n\nTutor:\n")
+                run_state["stream_label_inserted"] = True
+                prev_clean = ""
+            if cleaned_full.startswith(prev_clean):
+                delta = cleaned_full[len(prev_clean):]
+                if delta:
+                    _append_response_text(delta)
+            else:
+                _render_transcript(force_scroll=False)
+            run_state["stream_last_clean_text"] = cleaned_full
+            if should_keep_bottom:
+                _scroll_response_end_deferred()
+
+        def _schedule_stream_render(force_scroll: bool = False) -> None:
+            run_state["stream_render_force"] = bool(run_state.get("stream_render_force", False)) or bool(force_scroll)
+            if bool(run_state.get("stream_render_pending", False)):
+                return
+            run_state["stream_render_pending"] = True
+
+            def _apply_stream_render() -> bool:
+                run_state["stream_render_pending"] = False
+                force_flag = bool(run_state.get("stream_render_force", False))
+                run_state["stream_render_force"] = False
+                if bool(run_state.get("active", False)):
+                    _append_stream_delta(force_scroll=force_flag)
+                else:
+                    _render_transcript(force_scroll=force_flag)
+                return False
+
+            GLib.idle_add(_apply_stream_render, priority=GLib.PRIORITY_LOW)
+
+        def _jump_latest(*_args) -> None:
+            _scroll_response_end_deferred()
+
+        def _on_auto_scroll_toggled(*_args) -> None:
+            if bool(auto_scroll_toggle.get_active()):
+                _jump_latest()
+
+        def _on_prompt_changed(*_args) -> None:
+            _update_prompt_meta()
+            _set_running(bool(run_state.get("active", False)))
+
+        def _set_running(running: bool) -> None:
+            run_state["active"] = bool(running)
+            if not running:
+                run_state["stream_render_force"] = False
+                run_state["stream_render_pending"] = False
+                run_state["stream_last_clean_text"] = ""
+                run_state["stream_label_inserted"] = False
+            controls = compute_tutor_control_state(
+                running=bool(running),
+                model_ready=bool(_selected_model_name()),
+                llm_ready=bool(app.local_llm_enabled),
+                prompt_ready=bool(_current_prompt_text(strip=True)),
+                has_history=bool(history),
+                has_latest_answer=bool(_latest_assistant_answer()),
+                has_active_or_history=bool(history) or bool(run_state.get("active", False)),
+            )
+            generate_btn.set_sensitive(bool(controls.get("send_enabled", False)))
+            stop_btn.set_sensitive(bool(controls.get("stop_enabled", False)))
+            new_chat_btn.set_sensitive(bool(controls.get("new_chat_enabled", False)))
+            refresh_btn.set_sensitive(bool(controls.get("refresh_models_enabled", False)))
+            model_dropdown.set_sensitive(bool(controls.get("model_dropdown_enabled", False)))
+            prompt_view.set_editable(bool(controls.get("prompt_editable", False)))
+            quick_prompts_enabled = bool(controls.get("quick_prompts_enabled", False))
+            for btn, _template in quick_prompt_buttons:
+                btn.set_sensitive(quick_prompts_enabled)
+            copy_btn.set_sensitive(bool(controls.get("copy_transcript_enabled", False)))
+            copy_last_btn.set_sensitive(bool(controls.get("copy_last_enabled", False)))
+            jump_latest_btn.set_sensitive(bool(controls.get("jump_latest_enabled", False)))
+
+        def _selected_model_name() -> str:
+            try:
+                item = model_dropdown.get_selected_item()
+            except Exception:
+                item = None
+            if item is None:
+                return ""
+            text_val = ""
+            if hasattr(item, "get_string"):
+                try:
+                    text_val = str(item.get_string() or "")
+                except Exception:
+                    text_val = ""
+            if not text_val:
+                try:
+                    text_val = str(item)
+                except Exception:
+                    text_val = ""
+            text_val = text_val.strip()
+            if text_val.startswith("("):
+                return ""
+            return text_val
+
+        def _set_dropdown_models(model_names: list[str]) -> None:
+            cleaned = [str(m).strip() for m in model_names if str(m).strip()]
+            if not cleaned:
+                cleaned = ["(no local models found)"]
+            model_dropdown.set_model(Gtk.StringList.new(cleaned))
+            preferred = str(app.local_llm_model or "").strip()
+            if preferred and preferred in cleaned:
+                model_dropdown.set_selected(cleaned.index(preferred))
+            else:
+                model_dropdown.set_selected(0)
+            _set_running(bool(run_state.get("active", False)))
+
+        def _refresh_models(*_args):
+            if bool(run_state.get("active", False)):
+                return
+            status_label.set_text("Loading models from Ollama…")
+            refresh_btn.set_sensitive(False)
+            generate_btn.set_sensitive(False)
+
+            def _worker():
+                models, err = app._ollama_list_models()
+
+                def _finish():
+                    refresh_btn.set_sensitive(True)
+                    if err:
+                        _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
+                        _set_dropdown_models([])
+                        status_label.set_text(friendly)
+                        return False
+                    _set_dropdown_models(models)
+                    if models:
+                        status_label.set_text(f"Loaded {len(models)} model(s).")
+                    else:
+                        status_label.set_text("No local models found in Ollama.")
+                    return False
+
+                GLib.idle_add(_finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _on_model_change(*_args):
+            if bool(run_state.get("active", False)):
+                return
+            model_name = _selected_model_name()
+            if model_name:
+                app.local_llm_model = model_name
+                app.save_preferences()
+            _set_running(False)
+
+        def _new_chat(*_args):
+            if bool(run_state.get("active", False)):
+                return
+            history.clear()
+            _persist_history()
+            status_label.set_text("New chat started.")
+            _render_transcript(force_scroll=True)
+            _set_running(False)
+
+        def _clear_prompt(*_args):
+            if bool(run_state.get("active", False)):
+                return
+            prompt_buf.set_text("")
+            _update_prompt_meta()
+            _set_running(False)
+
+        def _insert_quick_prompt(template: str) -> None:
+            if bool(run_state.get("active", False)):
+                return
+            topic = str(getattr(app, "current_topic", "") or "").strip() or "the current topic"
+            module = str(getattr(app, "module_title", "ACCA") or "ACCA").strip()
+            try:
+                resolved = str(template or "").format(topic=topic, module=module)
+            except Exception:
+                resolved = str(template or "")
+            prompt_buf.set_text(resolved.strip())
+            _update_prompt_meta()
+            _set_running(False)
+            status_label.set_text("Quick prompt inserted.")
+            try:
+                end_iter = prompt_buf.get_end_iter()
+                prompt_buf.place_cursor(end_iter)
+                prompt_view.grab_focus()
+            except Exception:
+                pass
+
+        def _copy_chat(*_args):
+            text = format_ai_tutor_transcript(history)
+            if not text:
+                status_label.set_text("Nothing to copy.")
+                return
+            try:
+                display = Gdk.Display.get_default()
+                clipboard = display.get_clipboard() if display is not None else None
+                if clipboard is not None:
+                    clipboard.set_text(text)
+                    status_label.set_text("Chat copied to clipboard.")
+                else:
+                    status_label.set_text("Clipboard unavailable.")
+            except Exception:
+                status_label.set_text("Clipboard unavailable.")
+
+        def _copy_last_answer(*_args):
+            text = _latest_assistant_answer().strip()
+            if not text:
+                status_label.set_text("No tutor answer to copy yet.")
+                return
+            try:
+                display = Gdk.Display.get_default()
+                clipboard = display.get_clipboard() if display is not None else None
+                if clipboard is None:
+                    status_label.set_text("Clipboard unavailable.")
+                    return
+                clipboard.set_text(text)
+                status_label.set_text("Last tutor answer copied.")
+            except Exception:
+                status_label.set_text("Clipboard unavailable.")
+
+        def _generate(*_args):
+            if not bool(app.local_llm_enabled):
+                status_label.set_text("Local AI tutor is disabled in Preferences.")
+                return
+            if bool(run_state.get("active", False)):
+                status_label.set_text("Generation already running.")
+                return
+            model_name = _selected_model_name() or str(app.local_llm_model or "").strip()
+            if not model_name:
+                status_label.set_text("Select an Ollama model first.")
+                return
+            user_prompt = _current_prompt_text(strip=True)
+            if not user_prompt:
+                status_label.set_text("Enter a prompt first.")
+                return
+            module_title = str(getattr(app, "module_title", "ACCA") or "ACCA").strip()
+            chapter = str(getattr(app, "current_topic", "") or "").strip()
+            full_prompt, prompt_meta = build_ai_tutor_context_prompt_details(
+                history=history,
+                user_prompt=user_prompt,
+                module_title=module_title,
+                chapter=chapter,
+            )
+            rag_context = ""
+            rag_meta: dict[str, Any] = {"snippet_count": 0, "source_count": 0, "method": "disabled", "errors": []}
+            try:
+                rag_context, rag_meta = app._build_ai_tutor_rag_prompt_context(
+                    user_prompt=user_prompt,
+                    history=history,
+                    top_k=4,
+                )
+            except Exception as exc:
+                rag_context = ""
+                rag_meta = {
+                    "snippet_count": 0,
+                    "source_count": 0,
+                    "method": "error",
+                    "errors": [str(exc)],
+                }
+            if rag_context:
+                full_prompt = "\n\n".join(
+                    [
+                        full_prompt,
+                        rag_context,
+                        "If you use snippet facts, cite IDs like [S1] inline. "
+                        "If snippets are not relevant, answer normally without forced citations.",
+                    ]
+                ).strip()
+            turn_timeout_seconds = normalize_tutor_timeout_seconds(
+                getattr(app, "local_llm_timeout_seconds", AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS),
+                default=AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS,
+            )
+            cancel_event = threading.Event()
+            guard_state: dict[str, Any] = {
+                "timeout_hit": False,
+                "truncated": False,
+                "stop_issued": False,
+            }
+            turn_started_at = float(time.monotonic())
+            prompt_chars = len(str(user_prompt or ""))
+            try:
+                prompt_tokens_est = int(app._estimate_ai_tutor_token_count(str(user_prompt or "")))
+            except Exception:
+                prompt_tokens_est = max(0, int(round(float(prompt_chars) / 4.0)))
+
+            def _request_stream_stop_once() -> None:
+                if bool(guard_state.get("stop_issued", False)):
+                    return
+                guard_state["stop_issued"] = True
+                try:
+                    app._ollama_stop_model(str(model_name or ""))
+                except Exception:
+                    pass
+
+            def _cancel_check() -> bool:
+                if cancel_event.is_set():
+                    return True
+                elapsed = float(time.monotonic() - turn_started_at)
+                if elapsed >= float(turn_timeout_seconds):
+                    guard_state["timeout_hit"] = True
+                    cancel_event.set()
+                    _request_stream_stop_once()
+                    return True
+                return False
+
+            def _record_turn_telemetry(
+                outcome: str,
+                error_class: str,
+                response_text: str,
+            ) -> None:
+                if not hasattr(app, "_record_ai_tutor_telemetry"):
+                    return
+                clean_response = clean_ai_tutor_text(str(response_text or ""))
+                response_chars = len(clean_response)
+                try:
+                    response_tokens_est = int(app._estimate_ai_tutor_token_count(clean_response))
+                except Exception:
+                    response_tokens_est = max(0, int(round(float(response_chars) / 4.0)))
+                try:
+                    latency_ms = int(max(0.0, (float(time.monotonic()) - float(turn_started_at)) * 1000.0))
+                except Exception:
+                    latency_ms = 0
+                payload = {
+                    "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "model": str(model_name or "").strip(),
+                    "outcome": str(outcome or "").strip().lower(),
+                    "error_class": str(error_class or "").strip().lower(),
+                    "latency_ms": int(latency_ms),
+                    "prompt_chars": int(prompt_chars),
+                    "response_chars": int(response_chars),
+                    "prompt_tokens_est": int(max(0, prompt_tokens_est)),
+                    "response_tokens_est": int(max(0, response_tokens_est)),
+                    "timeout_seconds": int(turn_timeout_seconds),
+                    "timeout_hit": bool(guard_state.get("timeout_hit", False)),
+                    "truncated": bool(guard_state.get("truncated", False)),
+                    "rag_snippets": int(rag_count),
+                    "rag_sources": int(rag_sources),
+                    "context_condensed_turns": int(condensed_count),
+                }
+                try:
+                    app._record_ai_tutor_telemetry(payload, persist=True)
+                except Exception:
+                    pass
+
+            run_state["job_id"] = int(run_state.get("job_id", 0) or 0) + 1
+            job_id = int(run_state.get("job_id", 0) or 0)
+            run_state["cancel_event"] = cancel_event
+            run_state["model"] = model_name
+            run_state["draft_user"] = user_prompt
+            run_state["draft_assistant"] = ""
+            run_state["stream_last_clean_text"] = ""
+            run_state["stream_label_inserted"] = False
+            app.local_llm_model = model_name
+            app.save_preferences()
+            condensed_count = int(prompt_meta.get("older_condensed", 0) or 0)
+            rag_count = int(rag_meta.get("snippet_count", 0) or 0)
+            rag_sources = int(rag_meta.get("source_count", 0) or 0)
+            rag_method = str(rag_meta.get("method", "disabled") or "disabled").strip()
+            status_parts = ["Generating…"]
+            if condensed_count > 0:
+                status_parts.append(f"context condensed: {condensed_count} older turn(s)")
+            if rag_count > 0:
+                status_parts.append(f"RAG: {rag_count} snippet(s) from {rag_sources} PDF(s) [{rag_method}]")
+            elif rag_sources > 0:
+                status_parts.append("RAG: no relevant snippets")
+            status_label.set_text(" • ".join(status_parts))
+            _set_running(True)
+            _render_transcript(force_scroll=True)
+
+            def _worker():
+                def _on_chunk(piece: str) -> None:
+                    def _apply_chunk():
+                        if int(run_state.get("job_id", 0) or 0) != job_id:
+                            return False
+                        if not bool(run_state.get("active", False)):
+                            return False
+                        draft = str(run_state.get("draft_assistant", "") or "") + str(piece or "")
+                        if len(draft) > int(AI_TUTOR_MAX_RESPONSE_CHARS):
+                            draft = draft[: int(AI_TUTOR_MAX_RESPONSE_CHARS)]
+                            guard_state["truncated"] = True
+                            cancel_event.set()
+                            _request_stream_stop_once()
+                        run_state["draft_assistant"] = draft
+                        _schedule_stream_render(force_scroll=False)
+                        return False
+
+                    GLib.idle_add(_apply_chunk)
+
+                text, err = app._ollama_generate_text_stream(
+                    model_name,
+                    full_prompt,
+                    on_chunk=_on_chunk,
+                    cancel_check=_cancel_check,
+                )
+
+                def _finish():
+                    if int(run_state.get("job_id", 0) or 0) != job_id:
+                        return False
+                    draft_user = str(run_state.get("draft_user", "") or "").strip()
+                    draft_assistant = str(run_state.get("draft_assistant", "") or "").strip()
+                    run_state["cancel_event"] = None
+                    run_state["draft_user"] = ""
+                    run_state["draft_assistant"] = ""
+                    _set_running(False)
+                    final_text = str(text or "").strip() or draft_assistant
+                    if err == "cancelled":
+                        if bool(guard_state.get("timeout_hit", False)):
+                            telemetry_error = "timeout"
+                        elif bool(guard_state.get("truncated", False)):
+                            telemetry_error = "truncated"
+                        else:
+                            telemetry_error = "cancelled"
+                        _record_turn_telemetry(
+                            outcome="cancelled",
+                            error_class=telemetry_error,
+                            response_text=final_text,
+                        )
+                        suffix = "[Stopped]"
+                        if bool(guard_state.get("timeout_hit", False)):
+                            suffix = f"[Timed out after {int(turn_timeout_seconds)}s]"
+                        elif bool(guard_state.get("truncated", False)):
+                            suffix = f"[Truncated at {int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars]"
+                        if draft_user and final_text:
+                            final_text = clean_ai_tutor_text(final_text) or final_text
+                            history.append({"role": "user", "content": draft_user})
+                            history.append({"role": "assistant", "content": f"{final_text}\n\n{suffix}"})
+                            _persist_history()
+                            if bool(guard_state.get("timeout_hit", False)):
+                                status_label.set_text(f"Turn timed out ({model_name}) • turns: {_turn_count()}")
+                            elif bool(guard_state.get("truncated", False)):
+                                status_label.set_text(
+                                    f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars) • turns: {_turn_count()}"
+                                )
+                            else:
+                                status_label.set_text(f"Stopped ({model_name}) • turns: {_turn_count()}")
+                        else:
+                            if bool(guard_state.get("timeout_hit", False)):
+                                status_label.set_text(f"Turn timed out after {int(turn_timeout_seconds)}s ({model_name}).")
+                            elif bool(guard_state.get("truncated", False)):
+                                status_label.set_text(
+                                    f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars)."
+                                )
+                            else:
+                                status_label.set_text(f"Stopped ({model_name}).")
+                        _render_transcript(force_scroll=True)
+                        return False
+                    if err:
+                        _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
+                        _record_turn_telemetry(
+                            outcome="error",
+                            error_class=_code,
+                            response_text=final_text,
+                        )
+                        status_label.set_text(friendly)
+                        _render_transcript()
+                        return False
+                    if draft_user and final_text:
+                        final_text = clean_ai_tutor_text(final_text) or final_text
+                        history.append({"role": "user", "content": draft_user})
+                        history.append({"role": "assistant", "content": final_text})
+                        _persist_history()
+                    _record_turn_telemetry(
+                        outcome="success",
+                        error_class="",
+                        response_text=final_text,
+                    )
+                    _render_transcript(force_scroll=True)
+                    status_label.set_text(f"Done ({model_name}) • turns: {_turn_count()}")
+                    return False
+
+                GLib.idle_add(_finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _stop_generation(*_args):
+            if not bool(run_state.get("active", False)):
+                return
+            cancel_event = run_state.get("cancel_event")
+            if isinstance(cancel_event, threading.Event):
+                cancel_event.set()
+            app._ollama_stop_model(str(run_state.get("model", "") or ""))
+            status_label.set_text("Stopping…")
+
+        def _on_close(d, _r):
+            if bool(run_state.get("active", False)):
+                cancel_event = run_state.get("cancel_event")
+                if isinstance(cancel_event, threading.Event):
+                    cancel_event.set()
+                app._ollama_stop_model(str(run_state.get("model", "") or ""))
+            _persist_history()
+            d.destroy()
+
+        def _on_prompt_key(_controller, keyval, _keycode, state):
+            ctrl_mask = int(getattr(Gdk.ModifierType, "CONTROL_MASK", 0))
+            return_key = int(getattr(Gdk, "KEY_Return", 65293))
+            kp_enter = int(getattr(Gdk, "KEY_KP_Enter", 65421))
+            if (int(state) & ctrl_mask) and int(keyval) in (return_key, kp_enter):
+                _generate()
+                return True
+            return False
+
+        model_dropdown.connect("notify::selected", _on_model_change)
+        refresh_btn.connect("clicked", _refresh_models)
+        clear_prompt_btn.connect("clicked", _clear_prompt)
+        new_chat_btn.connect("clicked", _new_chat)
+        copy_btn.connect("clicked", _copy_chat)
+        copy_last_btn.connect("clicked", _copy_last_answer)
+        auto_scroll_toggle.connect("toggled", _on_auto_scroll_toggled)
+        jump_latest_btn.connect("clicked", _jump_latest)
+        stop_btn.connect("clicked", _stop_generation)
+        generate_btn.connect("clicked", _generate)
+        prompt_buf.connect("changed", _on_prompt_changed)
+        for btn, template in quick_prompt_buttons:
+            btn.connect("clicked", lambda _b, t=template: _insert_quick_prompt(t))
+        prompt_key = Gtk.EventControllerKey()
+        prompt_key.connect("key-pressed", _on_prompt_key)
+        prompt_view.add_controller(prompt_key)
+        dialog.connect("response", _on_close)
+        dialog.present()
+        _update_prompt_meta()
+        _render_transcript(force_scroll=True)
+        _refresh_models()
