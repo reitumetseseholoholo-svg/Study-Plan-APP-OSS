@@ -165,6 +165,9 @@ DEFAULT_OLLAMA_TIMEOUT_SECONDS = 300
 DEFAULT_OLLAMA_TRANSIENT_RETRIES = 1
 DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS = 0.4
 DEFAULT_OLLAMA_CONTEXT = 4096
+DEFAULT_GPT4ALL_MODELS_DIR = os.path.expanduser("~/.local/share/nomic.ai/GPT4All")
+DEFAULT_GPT4ALL_AUTO_IMPORT = True
+DEFAULT_GPT4ALL_AUTO_IMPORT_MAX_MODELS = 12
 DEFAULT_SAFE_OLLAMA_HOST = "http://127.0.0.1:11434"
 AI_TUTOR_TELEMETRY_MAX_EVENTS = 160
 AI_TUTOR_TELEMETRY_SUMMARY_WINDOW = 40
@@ -899,6 +902,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.local_llm_host = str(DEFAULT_OLLAMA_HOST or "http://127.0.0.1:11434")
         self.local_llm_model = str(DEFAULT_OLLAMA_MODEL or "").strip()
         self.local_llm_timeout_seconds = int(DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+        self._gpt4all_auto_import_started = False
+        self._gpt4all_auto_import_in_progress = False
+        self._gpt4all_auto_import_summary: dict[str, Any] = {}
         self._ai_tutor_history: list[dict[str, str]] = []
         self._ai_tutor_telemetry_events: list[dict[str, Any]] = []
         self._ai_tutor_telemetry_max = int(AI_TUTOR_TELEMETRY_MAX_EVENTS)
@@ -4337,6 +4343,151 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if name and name not in models:
                 models.append(name)
         return models, None
+
+    def _gpt4all_auto_import_enabled(self) -> bool:
+        raw = str(
+            os.environ.get("STUDYPLAN_AUTO_IMPORT_GPT4ALL_MODELS", "1" if DEFAULT_GPT4ALL_AUTO_IMPORT else "0") or ""
+        ).strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _gpt4all_models_dir(self) -> str:
+        raw = str(os.environ.get("STUDYPLAN_GPT4ALL_MODELS_DIR", DEFAULT_GPT4ALL_MODELS_DIR) or "").strip()
+        return os.path.abspath(os.path.expanduser(raw))
+
+    def _normalize_gpt4all_filename_to_ollama_model(self, filename: str) -> str:
+        base = str(filename or "").strip()
+        if base.lower().endswith(".gguf"):
+            base = base[:-5]
+        norm = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
+        norm = re.sub(r"-{2,}", "-", norm)
+        if not norm:
+            norm = "model"
+        return f"gpt4all-{norm}:latest"
+
+    def _sync_gpt4all_models_to_ollama_once(self, max_models: int = DEFAULT_GPT4ALL_AUTO_IMPORT_MAX_MODELS) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "imported": 0,
+            "skipped_existing": 0,
+            "skipped_invalid": 0,
+            "failed": 0,
+            "errors": [],
+        }
+        models_dir = self._gpt4all_models_dir()
+        if not os.path.isdir(models_dir):
+            summary["reason"] = "models_dir_missing"
+            return summary
+        if not shutil.which("ollama"):
+            summary["reason"] = "ollama_not_installed"
+            return summary
+        try:
+            cap = max(1, min(100, int(max_models)))
+        except Exception:
+            cap = int(DEFAULT_GPT4ALL_AUTO_IMPORT_MAX_MODELS)
+        try:
+            models, list_err = self._ollama_list_models()
+        except Exception as exc:
+            models, list_err = [], str(exc)
+        if list_err:
+            summary["reason"] = f"ollama_list_failed: {list_err}"
+            return summary
+        existing = set(str(m).strip() for m in models if str(m).strip())
+        files = sorted(
+            name for name in os.listdir(models_dir)
+            if name.lower().endswith(".gguf")
+        )
+        if not files:
+            summary["reason"] = "no_gguf_found"
+            return summary
+        created = 0
+        for name in files:
+            if created >= cap:
+                break
+            source_path = os.path.join(models_dir, name)
+            try:
+                if not os.path.isfile(source_path):
+                    summary["skipped_invalid"] = int(summary.get("skipped_invalid", 0)) + 1
+                    continue
+                if int(os.path.getsize(source_path)) <= 0:
+                    summary["skipped_invalid"] = int(summary.get("skipped_invalid", 0)) + 1
+                    continue
+            except Exception:
+                summary["skipped_invalid"] = int(summary.get("skipped_invalid", 0)) + 1
+                continue
+            model_name = self._normalize_gpt4all_filename_to_ollama_model(name)
+            if model_name in existing:
+                summary["skipped_existing"] = int(summary.get("skipped_existing", 0)) + 1
+                continue
+            tmp_path = ""
+            try:
+                with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp:
+                    tmp.write(f"FROM {source_path}\n")
+                    tmp_path = tmp.name
+                result = subprocess.run(
+                    ["ollama", "create", model_name, "-f", tmp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=240,
+                )
+                if result.returncode == 0:
+                    summary["imported"] = int(summary.get("imported", 0)) + 1
+                    created += 1
+                    existing.add(model_name)
+                else:
+                    summary["failed"] = int(summary.get("failed", 0)) + 1
+                    err_line = (result.stderr or result.stdout or "create failed").strip()
+                    if err_line:
+                        summary["errors"] = list(summary.get("errors", []) or []) + [f"{model_name}: {err_line[:180]}"]
+            except Exception as exc:
+                summary["failed"] = int(summary.get("failed", 0)) + 1
+                summary["errors"] = list(summary.get("errors", []) or []) + [f"{model_name}: {str(exc)[:180]}"]
+            finally:
+                if tmp_path:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+        return summary
+
+    def _maybe_auto_import_gpt4all_models_async(self) -> None:
+        if getattr(self, "_gpt4all_auto_import_started", False):
+            return
+        self._gpt4all_auto_import_started = True
+        if getattr(self, "_dialog_smoke_mode", False):
+            return
+        if not bool(getattr(self, "local_llm_enabled", False)):
+            return
+        if not self._gpt4all_auto_import_enabled():
+            return
+        if getattr(self, "_gpt4all_auto_import_in_progress", False):
+            return
+        self._gpt4all_auto_import_in_progress = True
+
+        def _worker():
+            try:
+                summary = self._sync_gpt4all_models_to_ollama_once()
+            except Exception as exc:
+                summary = {"imported": 0, "failed": 1, "errors": [str(exc)]}
+
+            def _finish():
+                self._gpt4all_auto_import_in_progress = False
+                self._gpt4all_auto_import_summary = dict(summary or {})
+                imported = int((summary or {}).get("imported", 0) or 0)
+                failed = int((summary or {}).get("failed", 0) or 0)
+                if imported > 0:
+                    self.send_notification(
+                        "Local Models Synced",
+                        f"Imported {imported} GPT4All model(s) into Ollama.",
+                    )
+                elif failed > 0:
+                    self.send_notification(
+                        "Local Model Sync",
+                        "Some GPT4All model imports failed. Check model files and Ollama logs.",
+                    )
+                return False
+
+            GLib.idle_add(_finish)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _ollama_generate_text(self, model: str, prompt: str) -> tuple[str, str | None]:
         model_name = str(model or "").strip()
@@ -8309,6 +8460,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         try:
             self._apply_current_layout_mode()
+        except Exception:
+            pass
+        try:
+            self._maybe_auto_import_gpt4all_models_async()
         except Exception:
             pass
         return False

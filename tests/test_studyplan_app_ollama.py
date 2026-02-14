@@ -25,6 +25,7 @@ def _make_dummy(host: str = "127.0.0.1:11434"):
     dummy = types.SimpleNamespace(
         local_llm_host=host,
         local_llm_timeout_seconds=30,
+        local_llm_enabled=True,
     )
     dummy._allow_remote_ollama_hosts = types.MethodType(StudyPlanGUI._allow_remote_ollama_hosts, dummy)
     dummy._is_local_or_private_host = types.MethodType(StudyPlanGUI._is_local_or_private_host, dummy)
@@ -32,6 +33,11 @@ def _make_dummy(host: str = "127.0.0.1:11434"):
     dummy._get_ollama_retry_limit = types.MethodType(StudyPlanGUI._get_ollama_retry_limit, dummy)
     dummy._get_ollama_retry_backoff_seconds = types.MethodType(StudyPlanGUI._get_ollama_retry_backoff_seconds, dummy)
     dummy._is_transient_ollama_error = types.MethodType(StudyPlanGUI._is_transient_ollama_error, dummy)
+    dummy._gpt4all_auto_import_enabled = types.MethodType(StudyPlanGUI._gpt4all_auto_import_enabled, dummy)
+    dummy._gpt4all_models_dir = types.MethodType(StudyPlanGUI._gpt4all_models_dir, dummy)
+    dummy._normalize_gpt4all_filename_to_ollama_model = types.MethodType(
+        StudyPlanGUI._normalize_gpt4all_filename_to_ollama_model, dummy
+    )
     return dummy
 
 
@@ -74,6 +80,55 @@ def test_normalize_ollama_host_allows_remote_when_env_enabled(monkeypatch):
     dummy = _make_dummy("https://example.com:443")
     got = StudyPlanGUI._normalize_ollama_host(dummy)
     assert got == "https://example.com:443"
+
+
+def test_gpt4all_auto_import_enabled_toggle(monkeypatch):
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_AUTO_IMPORT_GPT4ALL_MODELS", "0")
+    assert StudyPlanGUI._gpt4all_auto_import_enabled(dummy) is False
+    monkeypatch.setenv("STUDYPLAN_AUTO_IMPORT_GPT4ALL_MODELS", "1")
+    assert StudyPlanGUI._gpt4all_auto_import_enabled(dummy) is True
+
+
+def test_normalize_gpt4all_filename_to_ollama_model():
+    dummy = _make_dummy()
+    name = StudyPlanGUI._normalize_gpt4all_filename_to_ollama_model(
+        dummy, "Llama-3.2-3B-Instruct-Q4_0.gguf"
+    )
+    assert name == "gpt4all-llama-3-2-3b-instruct-q4-0:latest"
+
+
+def test_sync_gpt4all_models_to_ollama_once_imports_missing_files(tmp_path, monkeypatch):
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_GPT4ALL_MODELS_DIR", str(tmp_path))
+    (tmp_path / "Existing.gguf").write_bytes(b"ok")
+    (tmp_path / "New Model.Q4_0.gguf").write_bytes(b"ok")
+    (tmp_path / "incomplete.gguf").write_bytes(b"")
+
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/ollama" if cmd == "ollama" else None)
+    monkeypatch.setattr(dummy, "_ollama_list_models", lambda: (["gpt4all-existing:latest"], None), raising=False)
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = "ok"
+            self.stderr = ""
+
+    def _fake_run(cmd, capture_output=False, text=False, timeout=None):
+        calls.append(list(cmd))
+        return _Result()
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+
+    summary = StudyPlanGUI._sync_gpt4all_models_to_ollama_once(dummy, max_models=8)
+    assert summary["imported"] == 1
+    assert summary["skipped_existing"] == 1
+    assert summary["skipped_invalid"] == 1
+    assert summary["failed"] == 0
+    assert len(calls) == 1
+    assert calls[0][2] == "gpt4all-new-model-q4-0:latest"
 
 
 def test_build_ai_tutor_context_prompt_contains_history_and_current_request():
