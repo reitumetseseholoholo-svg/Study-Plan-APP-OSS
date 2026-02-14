@@ -3,6 +3,15 @@ import types
 import urllib.request
 
 import pytest
+from studyplan_ai_tutor import (
+    build_rag_context_block,
+    classify_ollama_error,
+    chunk_text_for_rag,
+    compute_tutor_control_state,
+    lexical_rank_rag_chunks,
+    normalize_tutor_timeout_seconds,
+    should_keep_response_bottom,
+)
 
 try:
     from studyplan_app import StudyPlanGUI
@@ -102,6 +111,342 @@ def test_build_ai_tutor_context_prompt_clamps_to_last_10_messages():
     assert "USER: u11" in lines
 
 
+def test_build_ai_tutor_context_prompt_summarizes_older_messages():
+    dummy = _make_dummy()
+    history = []
+    for i in range(14):
+        history.append({"role": "user", "content": f"user-{i}"})
+    prompt = StudyPlanGUI._build_ai_tutor_context_prompt(
+        dummy,
+        history=history,
+        user_prompt="latest",
+        module_title="ACCA FM",
+        chapter="Cost of Capital",
+    )
+    assert "Earlier context summary (older turns condensed):" in prompt
+    assert "- You:" in prompt
+    assert "USER: user-4" in prompt
+    assert "USER: user-13" in prompt
+    assert "USER: latest" in prompt
+
+
+def test_chunk_text_for_rag_splits_long_text():
+    text = " ".join(["wacc", "discount", "rate", "capital"] * 180)
+    chunks = chunk_text_for_rag(text, chunk_chars=220, overlap_chars=40, max_chunks=12)
+    assert len(chunks) >= 2
+    assert all(isinstance(chunk, str) and chunk.strip() for chunk in chunks)
+
+
+def test_lexical_rank_rag_chunks_prioritizes_relevant_chunk():
+    chunks = [
+        "NPV discounts future cash flows using the discount rate.",
+        "This paragraph is about audit procedures and ethics.",
+        "Working capital policy can impact liquidity and risk.",
+    ]
+    ranked = lexical_rank_rag_chunks("How do I calculate NPV using discount rate?", chunks, top_n=3)
+    assert ranked
+    assert ranked[0][0] == 0
+
+
+def test_build_rag_context_block_formats_snippet_ids():
+    block = build_rag_context_block(
+        [
+            {"id": "S1", "source": "fm_textbook.pdf", "text": "WACC = (E/V)*Ke + (D/V)*Kd*(1-T)"},
+            {"id": "S2", "source": "fm_textbook.pdf", "text": "NPV uses discounting of future cash flows."},
+        ]
+    )
+    assert "Reference snippets" in block
+    assert "[S1]" in block
+    assert "fm_textbook.pdf" in block
+
+
+def test_build_ai_tutor_rag_prompt_context_returns_snippets_for_relevant_query():
+    dummy = types.SimpleNamespace(
+        module_title="ACCA FM",
+        current_topic="Cost of Capital",
+        semantic_enabled=False,
+        engine=types.SimpleNamespace(),
+    )
+    dummy._get_ai_tutor_rag_source_pdfs = lambda: ["/tmp/fm_source.pdf"]
+    dummy._load_ai_tutor_rag_doc = lambda _path: (
+        {
+            "path": "/tmp/fm_source.pdf",
+            "source": "fm_source.pdf",
+            "chunks": [
+                {"chunk_index": 0, "text": "WACC combines equity and debt costs after tax."},
+                {"chunk_index": 1, "text": "NPV discounts future cash flows by cost of capital."},
+                {"chunk_index": 2, "text": "Irrelevant sentence about an unrelated subject."},
+            ],
+        },
+        None,
+    )
+    context, meta = StudyPlanGUI._build_ai_tutor_rag_prompt_context(
+        dummy,
+        user_prompt="Explain how WACC affects NPV decisions",
+        history=[{"role": "user", "content": "Need discount rate guidance"}],
+        top_k=2,
+    )
+    assert meta.get("snippet_count", 0) >= 1
+    assert meta.get("source_count") == 1
+    assert "[S1]" in context
+    assert "WACC" in context or "NPV" in context
+
+
+def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
+    save_calls = {"count": 0}
+    dummy = types.SimpleNamespace(
+        _ai_tutor_telemetry_events=[],
+        _ai_tutor_telemetry_max=3,
+        save_preferences=lambda: save_calls.__setitem__("count", save_calls["count"] + 1),
+    )
+    dummy._sanitize_ai_tutor_telemetry_event = types.MethodType(
+        StudyPlanGUI._sanitize_ai_tutor_telemetry_event, dummy
+    )
+    dummy._record_ai_tutor_telemetry = types.MethodType(StudyPlanGUI._record_ai_tutor_telemetry, dummy)
+
+    cleaned = StudyPlanGUI._record_ai_tutor_telemetry(
+        dummy,
+        {
+            "outcome": "BAD-VALUE",
+            "error_class": "Busy",
+            "latency_ms": -5,
+            "prompt_chars": "120",
+            "response_chars": 240,
+            "timeout_seconds": 9999,
+        },
+        persist=False,
+    )
+    assert cleaned is not None
+    assert cleaned["outcome"] == "error"
+    assert cleaned["error_class"] == "busy"
+    assert cleaned["latency_ms"] == 0
+    assert cleaned["prompt_chars"] == 120
+    assert cleaned["response_chars"] == 240
+    assert cleaned["timeout_seconds"] == 600
+    assert cleaned["ts_utc"]
+
+    for idx in range(4):
+        StudyPlanGUI._record_ai_tutor_telemetry(
+            dummy,
+            {
+                "outcome": "success",
+                "latency_ms": 100 + idx,
+                "prompt_chars": 20 + idx,
+                "response_chars": 40 + idx,
+                "prompt_tokens_est": 5 + idx,
+                "response_tokens_est": 10 + idx,
+                "timeout_seconds": 90,
+            },
+            persist=True,
+        )
+    assert save_calls["count"] == 4
+    assert len(dummy._ai_tutor_telemetry_events) == 3
+    assert [row["latency_ms"] for row in dummy._ai_tutor_telemetry_events] == [101, 102, 103]
+
+
+def test_summarize_ai_tutor_telemetry_computes_rates_and_error_breakdown():
+    dummy = types.SimpleNamespace(
+        _ai_tutor_telemetry_events=[
+            {
+                "outcome": "success",
+                "error_class": "",
+                "latency_ms": 900,
+                "prompt_chars": 120,
+                "response_chars": 300,
+                "prompt_tokens_est": 30,
+                "response_tokens_est": 75,
+            },
+            {
+                "outcome": "cancelled",
+                "error_class": "timeout",
+                "latency_ms": 1200,
+                "prompt_chars": 100,
+                "response_chars": 150,
+                "prompt_tokens_est": 25,
+                "response_tokens_est": 38,
+            },
+            {
+                "outcome": "error",
+                "error_class": "busy",
+                "latency_ms": 600,
+                "prompt_chars": 80,
+                "response_chars": 0,
+                "prompt_tokens_est": 20,
+                "response_tokens_est": 0,
+            },
+            {
+                "outcome": "error",
+                "error_class": "busy",
+                "latency_ms": 400,
+                "prompt_chars": 60,
+                "response_chars": 0,
+                "prompt_tokens_est": 15,
+                "response_tokens_est": 0,
+            },
+        ],
+    )
+    summary = StudyPlanGUI._summarize_ai_tutor_telemetry(dummy, window=4)
+    assert summary["total_turns"] == 4
+    assert summary["success_count"] == 1
+    assert summary["cancelled_count"] == 1
+    assert summary["error_count"] == 2
+    assert summary["cancellation_rate"] == pytest.approx(0.25)
+    assert summary["avg_latency_ms"] == pytest.approx((900 + 1200 + 600 + 400) / 4.0)
+    assert summary["p95_latency_ms"] == pytest.approx(1200.0)
+    assert summary["avg_prompt_chars"] == pytest.approx((120 + 100 + 80 + 60) / 4.0)
+    assert summary["error_classes"] == {"busy": 2, "timeout": 1}
+
+
+def test_build_debug_info_message_includes_ai_tutor_summary_lines():
+    dummy = types.SimpleNamespace(
+        exam_date="2026-06-01",
+        engine=types.SimpleNamespace(CHAPTERS=["A", "B"], competence={"A": 70.0}),
+    )
+    msg = StudyPlanGUI._build_debug_info_message(
+        dummy,
+        hub={"quiz_scores": {"a": 1}, "practice_scores": {}, "detail_scores": {}, "category_totals": {}},
+        graph_status={"concept_nodes": 12, "cluster_count": 3, "cluster_method": "kmeans"},
+        drift={"status": "ok", "chapters_flagged": 1},
+        perf={
+            "route_meta_calls": 20,
+            "route_cache_hits": 7,
+            "tfidf_asset_hits": 5,
+            "tfidf_asset_misses": 2,
+            "max_route_ms": 44.0,
+            "avg_route_ms": 12.5,
+        },
+        tutor_summary={
+            "window": 40,
+            "total_turns": 9,
+            "success_count": 6,
+            "cancelled_count": 2,
+            "error_count": 1,
+            "cancellation_rate": 2 / 9,
+            "avg_latency_ms": 830.0,
+            "p95_latency_ms": 1700.0,
+            "avg_prompt_chars": 150.0,
+            "avg_response_chars": 390.0,
+            "avg_prompt_tokens_est": 38.0,
+            "avg_response_tokens_est": 97.0,
+            "error_classes": {"busy": 1},
+        },
+    )
+    assert "AI Tutor turns (last 40): 9" in msg
+    assert "AI Tutor success/cancel/error: 6/2/1" in msg
+    assert "AI Tutor cancellation rate: 22.2%" in msg
+    assert "AI Tutor latency avg/p95 (ms): 830.0/1700.0" in msg
+    assert "AI Tutor top error classes: busy:1" in msg
+
+
+def test_build_debug_info_message_handles_missing_tutor_summary():
+    dummy = types.SimpleNamespace(
+        exam_date=None,
+        engine=types.SimpleNamespace(CHAPTERS=[], competence={}),
+    )
+    msg = StudyPlanGUI._build_debug_info_message(
+        dummy,
+        hub={},
+        graph_status={},
+        drift={},
+        perf={},
+        tutor_summary=None,
+    )
+    assert "AI Tutor turns (last 40): 0" in msg
+    assert "AI Tutor top error classes: none" in msg
+
+
+def test_compute_tutor_control_state_enables_send_and_copy_last_when_ready():
+    state = compute_tutor_control_state(
+        running=False,
+        model_ready=True,
+        llm_ready=True,
+        prompt_ready=True,
+        has_history=True,
+        has_latest_answer=True,
+        has_active_or_history=True,
+    )
+    assert state["send_enabled"] is True
+    assert state["stop_enabled"] is False
+    assert state["copy_last_enabled"] is True
+    assert state["copy_transcript_enabled"] is True
+    assert state["jump_latest_enabled"] is True
+
+
+def test_compute_tutor_control_state_running_disables_send_and_copy_last():
+    state = compute_tutor_control_state(
+        running=True,
+        model_ready=True,
+        llm_ready=True,
+        prompt_ready=True,
+        has_history=True,
+        has_latest_answer=True,
+        has_active_or_history=True,
+    )
+    assert state["send_enabled"] is False
+    assert state["stop_enabled"] is True
+    assert state["copy_last_enabled"] is False
+    assert state["prompt_editable"] is False
+    assert state["quick_prompts_enabled"] is False
+
+
+def test_compute_tutor_control_state_blocks_send_without_prompt_or_model():
+    no_prompt = compute_tutor_control_state(
+        running=False,
+        model_ready=True,
+        llm_ready=True,
+        prompt_ready=False,
+        has_history=False,
+        has_latest_answer=False,
+        has_active_or_history=False,
+    )
+    no_model = compute_tutor_control_state(
+        running=False,
+        model_ready=False,
+        llm_ready=True,
+        prompt_ready=True,
+        has_history=False,
+        has_latest_answer=False,
+        has_active_or_history=False,
+    )
+    assert no_prompt["send_enabled"] is False
+    assert no_model["send_enabled"] is False
+    assert no_prompt["stop_enabled"] is False
+    assert no_model["stop_enabled"] is False
+
+
+def test_should_keep_response_bottom_respects_auto_scroll_toggle():
+    assert should_keep_response_bottom(auto_scroll_enabled=False, force_scroll=True, near_bottom=True) is False
+    assert should_keep_response_bottom(auto_scroll_enabled=False, force_scroll=False, near_bottom=False) is False
+    assert should_keep_response_bottom(auto_scroll_enabled=True, force_scroll=False, near_bottom=False) is False
+    assert should_keep_response_bottom(auto_scroll_enabled=True, force_scroll=True, near_bottom=False) is True
+    assert should_keep_response_bottom(auto_scroll_enabled=True, force_scroll=False, near_bottom=True) is True
+
+
+def test_normalize_tutor_timeout_seconds_clamps_bounds():
+    assert normalize_tutor_timeout_seconds("bad", default=90, minimum=20, maximum=240) == 90
+    assert normalize_tutor_timeout_seconds(5, default=90, minimum=20, maximum=240) == 20
+    assert normalize_tutor_timeout_seconds(999, default=90, minimum=20, maximum=240) == 240
+    assert normalize_tutor_timeout_seconds(75, default=90, minimum=20, maximum=240) == 75
+
+
+def test_classify_ollama_error_model_missing():
+    code, message = classify_ollama_error("model 'foo' not found")
+    assert code == "model_missing"
+    assert "ollama pull" in message.lower()
+
+
+def test_classify_ollama_error_host_unreachable():
+    code, message = classify_ollama_error("Connection refused", host="http://127.0.0.1:11434")
+    assert code == "host_unreachable"
+    assert "cannot reach ollama" in message.lower()
+
+
+def test_classify_ollama_error_busy():
+    code, message = classify_ollama_error("server busy, try again")
+    assert code == "busy"
+    assert "busy" in message.lower()
+
+
 def test_format_ai_tutor_transcript_labels_roles():
     dummy = _make_dummy()
     transcript = StudyPlanGUI._format_ai_tutor_transcript(
@@ -129,6 +474,14 @@ def test_clean_ai_tutor_text_removes_markdown_and_latex_noise():
     assert "\\frac" not in cleaned
     assert "\\times" not in cleaned
     assert "\\%" not in cleaned
+
+
+def test_clean_ai_tutor_text_handles_escaped_braces_in_latex():
+    dummy = _make_dummy()
+    raw = "Rate = \\\\frac\\{2\\}\\{98\\} \\\\times 100\\\\%"
+    cleaned = StudyPlanGUI._clean_ai_tutor_text(dummy, raw)
+    assert "Rate = (2/98) x 100%" in cleaned
+    assert "\\frac" not in cleaned
 
 
 def test_format_ai_tutor_transcript_cleans_assistant_content():

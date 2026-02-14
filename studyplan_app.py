@@ -6,6 +6,16 @@ from gi.repository import Gtk, GLib, Gdk, Gio  # type: ignore[reportAttributeAcc
 from studyplan_engine import StudyPlanEngine
 from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
 from studyplan_theme import apply_theme
+from studyplan_ai_tutor import (
+    AITutorDialogController,
+    build_rag_context_block,
+    build_ai_tutor_context_prompt,
+    build_ai_tutor_seed_prompt,
+    chunk_text_for_rag,
+    clean_ai_tutor_text,
+    format_ai_tutor_transcript,
+    lexical_rank_rag_chunks,
+)
 
 
 import datetime
@@ -152,6 +162,8 @@ DEFAULT_OLLAMA_MODEL = os.environ.get("STUDYPLAN_OLLAMA_MODEL", "")
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 90
 DEFAULT_OLLAMA_CONTEXT = 4096
 DEFAULT_SAFE_OLLAMA_HOST = "http://127.0.0.1:11434"
+AI_TUTOR_TELEMETRY_MAX_EVENTS = 160
+AI_TUTOR_TELEMETRY_SUMMARY_WINDOW = 40
 MAX_IMPORT_PDF_BYTES = 120 * 1024 * 1024
 MAX_IMPORT_JSON_BYTES = 25 * 1024 * 1024
 MAX_IMPORT_SNAPSHOT_BYTES = 50 * 1024 * 1024
@@ -884,6 +896,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.local_llm_model = str(DEFAULT_OLLAMA_MODEL or "").strip()
         self.local_llm_timeout_seconds = int(DEFAULT_OLLAMA_TIMEOUT_SECONDS)
         self._ai_tutor_history: list[dict[str, str]] = []
+        self._ai_tutor_telemetry_events: list[dict[str, Any]] = []
+        self._ai_tutor_telemetry_max = int(AI_TUTOR_TELEMETRY_MAX_EVENTS)
         self._ai_coach_last_payload: dict[str, Any] = {}
         self._ai_coach_last_recommendation: dict[str, Any] | None = None
         self._ai_coach_last_updated: str | None = None
@@ -893,6 +907,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._pdf_text_cache: dict[str, tuple[str, dict]] = {}
         self._pdf_text_cache_order: list[str] = []
         self._pdf_text_cache_max = 8
+        self._ai_tutor_rag_cache: dict[str, dict[str, Any]] = {}
+        self._ai_tutor_rag_cache_order: list[str] = []
+        self._ai_tutor_rag_cache_max = 4
         self.load_preferences()
         apply_theme(bool(self.use_system_theme))
 
@@ -3329,23 +3346,93 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             perf = self.engine.get_semantic_perf_stats()
         except Exception:
             perf = {}
-        msg = (
+        try:
+            tutor_summary = self._summarize_ai_tutor_telemetry(window=AI_TUTOR_TELEMETRY_SUMMARY_WINDOW)
+        except Exception:
+            tutor_summary = {}
+        msg = self._build_debug_info_message(
+            hub=hub,
+            graph_status=graph_status,
+            drift=drift,
+            perf=perf,
+            tutor_summary=tutor_summary,
+        )
+        self._show_text_dialog("Debug Info", msg, Gtk.MessageType.INFO)
+
+    def _build_debug_info_message(
+        self,
+        hub: dict[str, Any] | None,
+        graph_status: dict[str, Any] | None,
+        drift: dict[str, Any] | None,
+        perf: dict[str, Any] | None,
+        tutor_summary: dict[str, Any] | None = None,
+    ) -> str:
+        hub_map = hub if isinstance(hub, dict) else {}
+        graph_map = graph_status if isinstance(graph_status, dict) else {}
+        drift_map = drift if isinstance(drift, dict) else {}
+        perf_map = perf if isinstance(perf, dict) else {}
+        tutor_map = tutor_summary if isinstance(tutor_summary, dict) else {}
+
+        tutor_window = max(
+            1,
+            int(
+                tutor_map.get(
+                    "window",
+                    AI_TUTOR_TELEMETRY_SUMMARY_WINDOW,
+                )
+                or AI_TUTOR_TELEMETRY_SUMMARY_WINDOW
+            ),
+        )
+        tutor_total = int(tutor_map.get("total_turns", 0) or 0)
+        tutor_success = int(tutor_map.get("success_count", 0) or 0)
+        tutor_cancelled = int(tutor_map.get("cancelled_count", 0) or 0)
+        tutor_error = int(tutor_map.get("error_count", 0) or 0)
+        tutor_cancel_pct = max(0.0, min(100.0, float(tutor_map.get("cancellation_rate", 0.0) or 0.0) * 100.0))
+        tutor_avg_latency = max(0.0, float(tutor_map.get("avg_latency_ms", 0.0) or 0.0))
+        tutor_p95_latency = max(0.0, float(tutor_map.get("p95_latency_ms", 0.0) or 0.0))
+        tutor_avg_prompt_chars = max(0.0, float(tutor_map.get("avg_prompt_chars", 0.0) or 0.0))
+        tutor_avg_response_chars = max(0.0, float(tutor_map.get("avg_response_chars", 0.0) or 0.0))
+        tutor_avg_prompt_tokens = max(0.0, float(tutor_map.get("avg_prompt_tokens_est", 0.0) or 0.0))
+        tutor_avg_response_tokens = max(0.0, float(tutor_map.get("avg_response_tokens_est", 0.0) or 0.0))
+        error_classes_map = tutor_map.get("error_classes", {})
+        error_classes: list[str] = []
+        if isinstance(error_classes_map, dict):
+            for code, count in list(error_classes_map.items())[:4]:
+                label = str(code or "").strip().lower()
+                if not label:
+                    continue
+                try:
+                    count_int = max(0, int(count))
+                except Exception:
+                    count_int = 0
+                if count_int <= 0:
+                    continue
+                error_classes.append(f"{label}:{count_int}")
+        error_classes_text = ", ".join(error_classes) if error_classes else "none"
+
+        return (
             f"Exam date: {self.exam_date}\n"
             f"Chapters: {len(self.engine.CHAPTERS)}\n"
             f"Competence entries: {len(self.engine.competence)}\n"
-            f"Quiz scores parsed: {len(hub.get('quiz_scores', {}))}\n"
-            f"Practice scores parsed: {len(hub.get('practice_scores', {}))}\n"
-            f"Detail scores parsed: {len(hub.get('detail_scores', {}))}\n"
-            f"Categories parsed: {len(hub.get('category_totals', {}))}\n"
-            f"Concept nodes: {int(graph_status.get('concept_nodes', 0) or 0)}\n"
-            f"Outcome clusters: {int(graph_status.get('cluster_count', 0) or 0)} ({graph_status.get('cluster_method', 'fallback')})\n"
-            f"Semantic drift status: {drift.get('status', 'ok')} ({int(drift.get('chapters_flagged', 0) or 0)} flagged)\n"
-            f"Route calls: {int(perf.get('route_meta_calls', 0) or 0)}\n"
-            f"Route cache hits: {int(perf.get('route_cache_hits', 0) or 0)}\n"
-            f"TF-IDF assets hit/miss: {int(perf.get('tfidf_asset_hits', 0) or 0)}/{int(perf.get('tfidf_asset_misses', 0) or 0)}\n"
-            f"Route latency max/avg (ms): {float(perf.get('max_route_ms', 0.0) or 0.0):.2f}/{float(perf.get('avg_route_ms', 0.0) or 0.0):.2f}"
+            f"Quiz scores parsed: {len(hub_map.get('quiz_scores', {}))}\n"
+            f"Practice scores parsed: {len(hub_map.get('practice_scores', {}))}\n"
+            f"Detail scores parsed: {len(hub_map.get('detail_scores', {}))}\n"
+            f"Categories parsed: {len(hub_map.get('category_totals', {}))}\n"
+            f"Concept nodes: {int(graph_map.get('concept_nodes', 0) or 0)}\n"
+            f"Outcome clusters: {int(graph_map.get('cluster_count', 0) or 0)} ({graph_map.get('cluster_method', 'fallback')})\n"
+            f"Semantic drift status: {drift_map.get('status', 'ok')} ({int(drift_map.get('chapters_flagged', 0) or 0)} flagged)\n"
+            f"Route calls: {int(perf_map.get('route_meta_calls', 0) or 0)}\n"
+            f"Route cache hits: {int(perf_map.get('route_cache_hits', 0) or 0)}\n"
+            f"TF-IDF assets hit/miss: {int(perf_map.get('tfidf_asset_hits', 0) or 0)}/{int(perf_map.get('tfidf_asset_misses', 0) or 0)}\n"
+            f"Route latency max/avg (ms): {float(perf_map.get('max_route_ms', 0.0) or 0.0):.2f}/{float(perf_map.get('avg_route_ms', 0.0) or 0.0):.2f}\n"
+            f"AI Tutor turns (last {tutor_window}): {tutor_total}\n"
+            f"AI Tutor success/cancel/error: {tutor_success}/{tutor_cancelled}/{tutor_error}\n"
+            f"AI Tutor cancellation rate: {tutor_cancel_pct:.1f}%\n"
+            f"AI Tutor latency avg/p95 (ms): {tutor_avg_latency:.1f}/{tutor_p95_latency:.1f}\n"
+            f"AI Tutor prompt/response avg chars: {tutor_avg_prompt_chars:.1f}/{tutor_avg_response_chars:.1f}\n"
+            f"AI Tutor prompt/response avg tokens(est): {tutor_avg_prompt_tokens:.1f}/{tutor_avg_response_tokens:.1f}\n"
+            f"AI Tutor top error classes: {error_classes_text}"
         )
-        self._show_text_dialog("Debug Info", msg, Gtk.MessageType.INFO)
 
     def on_view_logs(self, _action, _param):
         log_path = os.path.expanduser("~/.config/studyplan/app.log")
@@ -3771,6 +3858,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 continue
                             cleaned_history.append({"role": role, "content": text[:8000]})
                     self._ai_tutor_history = cleaned_history
+                    telemetry_events = data.get("ai_tutor_telemetry_events", []) or []
+                    cleaned_telemetry: list[dict[str, Any]] = []
+                    if isinstance(telemetry_events, list):
+                        cap = max(
+                            1,
+                            min(
+                                500,
+                                int(
+                                    getattr(
+                                        self,
+                                        "_ai_tutor_telemetry_max",
+                                        AI_TUTOR_TELEMETRY_MAX_EVENTS,
+                                    )
+                                    or AI_TUTOR_TELEMETRY_MAX_EVENTS
+                                ),
+                            ),
+                        )
+                        for item in telemetry_events[-cap:]:
+                            event = self._sanitize_ai_tutor_telemetry_event(item)
+                            if isinstance(event, dict):
+                                cleaned_telemetry.append(event)
+                    self._ai_tutor_telemetry_events = cleaned_telemetry
                     self.last_coach_pick = data.get("last_coach_pick")
                     self.last_coach_pick_date = data.get("last_coach_pick_date")
                     self.onboarding_dismissed = bool(data.get("onboarding_dismissed", False))
@@ -3867,6 +3976,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             prefs_path = os.path.expanduser("~/.config/studyplan/preferences.json")
             prefs_dir = os.path.dirname(prefs_path)
             os.makedirs(prefs_dir, mode=0o700, exist_ok=True)
+            telemetry_cap = max(
+                1,
+                min(
+                    500,
+                    int(
+                        getattr(
+                            self,
+                            "_ai_tutor_telemetry_max",
+                            AI_TUTOR_TELEMETRY_MAX_EVENTS,
+                        )
+                        or AI_TUTOR_TELEMETRY_MAX_EVENTS
+                    ),
+                ),
+            )
+            telemetry_events = list(getattr(self, "_ai_tutor_telemetry_events", []) or [])[-telemetry_cap:]
             data = {
                 "allow_lower_scores": bool(self.allow_lower_scores),
                 "menu_bar_visible": bool(self.menu_bar_visible),
@@ -3885,6 +4009,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "local_llm_model": str(self.local_llm_model),
                 "local_llm_timeout_seconds": int(self.local_llm_timeout_seconds),
                 "ai_tutor_history": list(getattr(self, "_ai_tutor_history", []) or [])[-20:],
+                "ai_tutor_telemetry_events": telemetry_events,
                 "last_coach_pick": self.last_coach_pick,
                 "last_coach_pick_date": self.last_coach_pick_date,
                 "onboarding_dismissed": bool(self.onboarding_dismissed),
@@ -4158,6 +4283,249 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception as exc:
             return "".join(chunks), str(exc)
 
+    def _get_ai_tutor_rag_source_pdfs(self) -> list[str]:
+        candidates: list[str] = []
+        env_raw = str(os.environ.get("STUDYPLAN_AI_TUTOR_RAG_PDFS", "") or "").strip()
+        if env_raw:
+            for token in re.split(r"[,\n;]+", env_raw):
+                path = str(token or "").strip()
+                if path:
+                    candidates.append(path)
+        try:
+            syllabus_meta = getattr(self.engine, "syllabus_meta", {}) or {}
+        except Exception:
+            syllabus_meta = {}
+        if isinstance(syllabus_meta, dict):
+            source_pdf = str(syllabus_meta.get("source_pdf", "") or "").strip()
+            if source_pdf:
+                candidates.append(source_pdf)
+            extra_pdfs = syllabus_meta.get("reference_pdfs", [])
+            if isinstance(extra_pdfs, list):
+                for raw_path in extra_pdfs:
+                    path = str(raw_path or "").strip()
+                    if path:
+                        candidates.append(path)
+        unique_paths: list[str] = []
+        seen_real: set[str] = set()
+        for raw_path in candidates:
+            path = str(raw_path or "").strip()
+            if not path:
+                continue
+            abs_path = os.path.abspath(os.path.expanduser(path))
+            try:
+                real_path = os.path.realpath(abs_path)
+            except Exception:
+                real_path = abs_path
+            if real_path in seen_real:
+                continue
+            if not os.path.isfile(real_path):
+                continue
+            if not str(real_path).lower().endswith(".pdf"):
+                continue
+            try:
+                size_bytes = int(os.path.getsize(real_path))
+            except Exception:
+                size_bytes = 0
+            if size_bytes <= 0 or size_bytes > int(MAX_IMPORT_PDF_BYTES):
+                continue
+            seen_real.add(real_path)
+            unique_paths.append(real_path)
+        return unique_paths[:6]
+
+    def _ai_tutor_rag_doc_cache_key(self, file_path: str) -> str:
+        abs_path = os.path.abspath(os.path.expanduser(str(file_path or "")))
+        try:
+            stat = os.stat(abs_path)
+            return f"{abs_path}|{int(stat.st_size)}|{int(stat.st_mtime_ns)}"
+        except Exception:
+            return abs_path
+
+    def _load_ai_tutor_rag_doc(self, file_path: str) -> tuple[dict[str, Any] | None, str | None]:
+        path = os.path.abspath(os.path.expanduser(str(file_path or "")))
+        if not path or not os.path.isfile(path):
+            return None, "missing file"
+        cache_key = self._ai_tutor_rag_doc_cache_key(path)
+        cached = self._ai_tutor_rag_cache.get(cache_key)
+        if isinstance(cached, dict):
+            if cache_key in self._ai_tutor_rag_cache_order:
+                try:
+                    self._ai_tutor_rag_cache_order.remove(cache_key)
+                except Exception:
+                    pass
+            self._ai_tutor_rag_cache_order.append(cache_key)
+            return dict(cached), None
+        try:
+            text, meta = self._extract_pdf_text_for_syllabus(path)
+        except Exception as exc:
+            return None, str(exc)
+        raw_text = str(text or "").strip()
+        if not raw_text:
+            return None, "empty text"
+        chunks_raw = chunk_text_for_rag(raw_text, chunk_chars=900, overlap_chars=120, max_chunks=1200)
+        chunk_rows: list[dict[str, Any]] = []
+        for idx, chunk in enumerate(chunks_raw):
+            snippet = clean_ai_tutor_text(chunk)
+            snippet = re.sub(r"\s+", " ", snippet).strip()
+            if not snippet:
+                continue
+            chunk_rows.append(
+                {
+                    "chunk_index": int(idx),
+                    "text": snippet,
+                }
+            )
+        if not chunk_rows:
+            return None, "no chunks"
+        payload: dict[str, Any] = {
+            "cache_key": cache_key,
+            "path": path,
+            "source": os.path.basename(path),
+            "chunks": chunk_rows,
+            "meta": dict(meta) if isinstance(meta, dict) else {},
+        }
+        self._ai_tutor_rag_cache[cache_key] = dict(payload)
+        if cache_key in self._ai_tutor_rag_cache_order:
+            try:
+                self._ai_tutor_rag_cache_order.remove(cache_key)
+            except Exception:
+                pass
+        self._ai_tutor_rag_cache_order.append(cache_key)
+        limit = max(1, int(getattr(self, "_ai_tutor_rag_cache_max", 4) or 4))
+        while len(self._ai_tutor_rag_cache_order) > limit:
+            stale_key = self._ai_tutor_rag_cache_order.pop(0)
+            self._ai_tutor_rag_cache.pop(stale_key, None)
+        return payload, None
+
+    def _build_ai_tutor_rag_prompt_context(
+        self,
+        user_prompt: str,
+        history: list[dict[str, str]] | None = None,
+        top_k: int = 4,
+    ) -> tuple[str, dict[str, Any]]:
+        source_pdfs = self._get_ai_tutor_rag_source_pdfs()
+        if not source_pdfs:
+            return "", {"snippet_count": 0, "source_count": 0, "method": "disabled", "errors": []}
+        docs: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for pdf_path in source_pdfs:
+            doc_payload, err = self._load_ai_tutor_rag_doc(pdf_path)
+            if isinstance(doc_payload, dict):
+                docs.append(doc_payload)
+            elif err:
+                errors.append(f"{os.path.basename(pdf_path)}: {err}")
+        if not docs:
+            return "", {"snippet_count": 0, "source_count": 0, "method": "empty", "errors": errors}
+        recent_user_lines: list[str] = []
+        for msg in list(history or [])[-4:]:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role", "") or "").strip().lower()
+            if role != "user":
+                continue
+            content = str(msg.get("content", "") or "").strip()
+            if content:
+                recent_user_lines.append(content)
+        query_parts = [
+            str(getattr(self, "module_title", "ACCA") or "ACCA").strip(),
+            str(getattr(self, "current_topic", "") or "").strip(),
+            str(user_prompt or "").strip(),
+            " ".join(recent_user_lines).strip(),
+        ]
+        query_text = " ".join(part for part in query_parts if part).strip()
+        if not query_text:
+            return "", {"snippet_count": 0, "source_count": len(docs), "method": "empty_query", "errors": errors}
+        candidates: list[dict[str, Any]] = []
+        for doc in docs:
+            rows = doc.get("chunks", [])
+            if not isinstance(rows, list) or not rows:
+                continue
+            chunk_texts = [str(row.get("text", "") or "") for row in rows if isinstance(row, dict)]
+            ranked = lexical_rank_rag_chunks(query_text, chunk_texts, top_n=18)
+            for chunk_idx, lex_score in ranked:
+                if chunk_idx < 0 or chunk_idx >= len(chunk_texts):
+                    continue
+                chunk_text = str(chunk_texts[chunk_idx] or "").strip()
+                if not chunk_text:
+                    continue
+                candidates.append(
+                    {
+                        "source": str(doc.get("source", "") or ""),
+                        "path": str(doc.get("path", "") or ""),
+                        "chunk_index": int(chunk_idx),
+                        "text": chunk_text,
+                        "lex_score": float(lex_score),
+                        "sem_score": 0.0,
+                        "score": float(lex_score),
+                    }
+                )
+        if not candidates:
+            return "", {"snippet_count": 0, "source_count": len(docs), "method": "lexical", "errors": errors}
+        candidates.sort(key=lambda item: (-float(item.get("lex_score", 0.0)), str(item.get("source", "")), int(item.get("chunk_index", 0))))
+        candidate_cap = min(len(candidates), 48)
+        candidates = candidates[:candidate_cap]
+
+        method = "lexical"
+        try:
+            model = self.engine._semantic_get_model(allow_remote=False)
+        except Exception:
+            model = None
+        if model is not None and bool(getattr(self, "semantic_enabled", True)):
+            try:
+                texts = [query_text] + [str(item.get("text", "") or "") for item in candidates]
+                raw_vecs = model.encode(texts, normalize_embeddings=True)
+                if raw_vecs is not None and len(raw_vecs) == len(texts):
+                    query_vec = [float(v) for v in raw_vecs[0]]
+                    for idx, item in enumerate(candidates, start=1):
+                        chunk_vec = [float(v) for v in raw_vecs[idx]]
+                        sem_raw = float(self.engine._cosine_similarity(query_vec, chunk_vec))
+                        sem_score = max(0.0, min(1.0, sem_raw))
+                        lex_score = max(0.0, float(item.get("lex_score", 0.0)))
+                        blended = (0.65 * sem_score) + (0.35 * min(1.0, lex_score))
+                        item["sem_score"] = sem_score
+                        item["score"] = blended
+                    method = "semantic_hybrid"
+            except Exception as exc:
+                errors.append(f"semantic: {exc}")
+
+        candidates.sort(key=lambda item: (-float(item.get("score", item.get("lex_score", 0.0))), -float(item.get("lex_score", 0.0)), str(item.get("source", "")), int(item.get("chunk_index", 0))))
+        try:
+            keep = max(1, min(8, int(top_k)))
+        except Exception:
+            keep = 4
+        selected: list[dict[str, Any]] = []
+        seen_text: set[str] = set()
+        for item in candidates:
+            text = str(item.get("text", "") or "").strip()
+            if not text:
+                continue
+            signature = re.sub(r"\s+", " ", text.lower())[:260]
+            if signature in seen_text:
+                continue
+            seen_text.add(signature)
+            selected.append(item)
+            if len(selected) >= keep:
+                break
+        snippets: list[dict[str, Any]] = []
+        for idx, item in enumerate(selected, start=1):
+            snippets.append(
+                {
+                    "id": f"S{idx}",
+                    "source": str(item.get("source", "") or ""),
+                    "text": str(item.get("text", "") or ""),
+                    "chunk_index": int(item.get("chunk_index", 0)),
+                    "score": float(item.get("score", item.get("lex_score", 0.0)) or 0.0),
+                }
+            )
+        context_block = build_rag_context_block(snippets)
+        meta = {
+            "snippet_count": int(len(snippets)),
+            "source_count": int(len(docs)),
+            "method": str(method),
+            "errors": errors,
+            "sources": sorted({str(item.get("source", "") or "") for item in snippets if str(item.get("source", "") or "")}),
+        }
+        return context_block, meta
+
     def _build_ai_tutor_context_prompt(
         self,
         history: list[dict[str, str]],
@@ -4165,92 +4533,202 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         module_title: str,
         chapter: str,
     ) -> str:
-        lines = [
-            "You are a concise ACCA study tutor.",
-            f"Module: {module_title or 'ACCA'}",
-            f"Current chapter: {chapter or 'not selected'}",
-            "Use short sections, bullets, formulas when relevant, and exam-focused tips.",
-            "",
-            "Conversation context:",
-        ]
-        for msg in list(history or [])[-10:]:
-            if not isinstance(msg, dict):
-                continue
-            role = str(msg.get("role", "") or "").strip().lower()
-            content = str(msg.get("content", "") or "").strip()
-            if not content:
-                continue
-            prefix = "USER" if role == "user" else "ASSISTANT"
-            lines.append(f"{prefix}: {content}")
-        lines.append(f"USER: {str(user_prompt or '').strip()}")
-        lines.append("ASSISTANT:")
-        return "\n".join(lines).strip()
+        return build_ai_tutor_context_prompt(history, user_prompt, module_title, chapter)
 
     def _format_ai_tutor_transcript(self, history: list[dict[str, str]]) -> str:
-        blocks: list[str] = []
-        for msg in list(history or []):
-            if not isinstance(msg, dict):
-                continue
-            role = str(msg.get("role", "") or "").strip().lower()
-            content = str(msg.get("content", "") or "").strip()
-            if role == "assistant":
-                content = StudyPlanGUI._clean_ai_tutor_text(self, content)
-            if not content:
-                continue
-            label = "You" if role == "user" else "Tutor"
-            blocks.append(f"{label}:\n{content}")
-        return "\n\n".join(blocks).strip()
+        return format_ai_tutor_transcript(history)
 
     def _clean_ai_tutor_text(self, text: str) -> str:
-        cleaned = str(text or "")
-        if not cleaned:
-            return ""
-        cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+        return clean_ai_tutor_text(text)
 
-        # Remove fenced code wrappers while preserving inner content.
-        cleaned = re.sub(r"```[A-Za-z0-9_-]*\n?", "", cleaned)
-        cleaned = cleaned.replace("```", "")
+    def _estimate_ai_tutor_token_count(self, text: str) -> int:
+        value = str(text or "")
+        compact = re.sub(r"\s+", " ", value).strip()
+        if not compact:
+            return 0
+        word_est = len([tok for tok in compact.split(" ") if tok])
+        char_est = int(math.ceil(float(len(compact)) / 4.0))
+        estimate = max(1, max(word_est, char_est))
+        return min(200000, int(estimate))
 
-        # Common markdown cleanup.
-        cleaned = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", cleaned)
-        cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
-        cleaned = re.sub(r"__([^_]+)__", r"\1", cleaned)
-        cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    def _sanitize_ai_tutor_telemetry_event(self, event: Any) -> dict[str, Any] | None:
+        if not isinstance(event, dict):
+            return None
 
-        # Convert common LaTeX fragments into readable plain text.
-        cleaned = re.sub(r"\\{2,}", r"\\", cleaned)
-        frac_pattern = re.compile(r"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}")
-        for _ in range(8):
-            nxt = frac_pattern.sub(lambda m: f"({m.group(1).strip()}/{m.group(2).strip()})", cleaned)
-            if nxt == cleaned:
-                break
-            cleaned = nxt
-        latex_literals = {
-            r"\times": " x ",
-            r"\cdot": " * ",
-            r"\approx": "~",
-            r"\leq": "<=",
-            r"\geq": ">=",
-            r"\neq": "!=",
-            r"\%": "%",
-            r"\$": "$",
-            r"\_": "_",
-            r"\#": "#",
-            r"\&": "&",
-            r"\(": "",
-            r"\)": "",
-            r"\[": "",
-            r"\]": "",
+        def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+            try:
+                parsed = int(value)
+            except Exception:
+                parsed = int(default)
+            return max(int(minimum), min(int(maximum), int(parsed)))
+
+        ts_utc = str(event.get("ts_utc", "") or "").strip()
+        if not ts_utc:
+            ts_utc = (
+                datetime.datetime.now(datetime.timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+        outcome = str(event.get("outcome", "error") or "error").strip().lower()
+        if outcome not in {"success", "cancelled", "error"}:
+            outcome = "error"
+        if outcome == "success":
+            error_class = ""
+        else:
+            default_class = "cancelled" if outcome == "cancelled" else "unknown"
+            error_class = str(event.get("error_class", default_class) or default_class).strip().lower()[:40]
+        cleaned = {
+            "ts_utc": ts_utc[:40],
+            "model": str(event.get("model", "") or "").strip()[:120],
+            "outcome": outcome,
+            "error_class": error_class,
+            "latency_ms": _clamp_int(event.get("latency_ms", 0), default=0, minimum=0, maximum=3600000),
+            "prompt_chars": _clamp_int(event.get("prompt_chars", 0), default=0, minimum=0, maximum=500000),
+            "response_chars": _clamp_int(event.get("response_chars", 0), default=0, minimum=0, maximum=500000),
+            "prompt_tokens_est": _clamp_int(event.get("prompt_tokens_est", 0), default=0, minimum=0, maximum=200000),
+            "response_tokens_est": _clamp_int(event.get("response_tokens_est", 0), default=0, minimum=0, maximum=200000),
+            "timeout_seconds": _clamp_int(
+                event.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS),
+                default=DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+                minimum=10,
+                maximum=600,
+            ),
+            "timeout_hit": bool(event.get("timeout_hit", False)),
+            "truncated": bool(event.get("truncated", False)),
+            "rag_snippets": _clamp_int(event.get("rag_snippets", 0), default=0, minimum=0, maximum=100),
+            "rag_sources": _clamp_int(event.get("rag_sources", 0), default=0, minimum=0, maximum=50),
+            "context_condensed_turns": _clamp_int(
+                event.get("context_condensed_turns", 0),
+                default=0,
+                minimum=0,
+                maximum=200,
+            ),
         }
-        for src, dst in latex_literals.items():
-            cleaned = cleaned.replace(src, dst)
+        return cleaned
 
-        # Remove lightweight math delimiters and normalize spacing.
-        cleaned = cleaned.replace("$", "")
-        cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
-        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-        cleaned = re.sub(r" {2,}", " ", cleaned)
-        return cleaned.strip()
+    def _record_ai_tutor_telemetry(
+        self,
+        event: dict[str, Any],
+        persist: bool = True,
+    ) -> dict[str, Any] | None:
+        cleaned = self._sanitize_ai_tutor_telemetry_event(event)
+        if not isinstance(cleaned, dict):
+            return None
+        cap = max(
+            1,
+            min(
+                500,
+                int(
+                    getattr(
+                        self,
+                        "_ai_tutor_telemetry_max",
+                        AI_TUTOR_TELEMETRY_MAX_EVENTS,
+                    )
+                    or AI_TUTOR_TELEMETRY_MAX_EVENTS
+                ),
+            ),
+        )
+        history = [row for row in list(getattr(self, "_ai_tutor_telemetry_events", []) or []) if isinstance(row, dict)]
+        history.append(cleaned)
+        self._ai_tutor_telemetry_events = history[-cap:]
+        if bool(persist):
+            try:
+                self.save_preferences()
+            except Exception:
+                pass
+        return cleaned
+
+    def _summarize_ai_tutor_telemetry(self, window: int = AI_TUTOR_TELEMETRY_SUMMARY_WINDOW) -> dict[str, Any]:
+        events = [row for row in list(getattr(self, "_ai_tutor_telemetry_events", []) or []) if isinstance(row, dict)]
+        limit = max(1, min(500, int(window or AI_TUTOR_TELEMETRY_SUMMARY_WINDOW)))
+        sample = events[-limit:]
+        total = len(sample)
+        if total <= 0:
+            return {
+                "window": int(limit),
+                "total_turns": 0,
+                "success_count": 0,
+                "cancelled_count": 0,
+                "error_count": 0,
+                "cancellation_rate": 0.0,
+                "avg_latency_ms": 0.0,
+                "p95_latency_ms": 0.0,
+                "avg_prompt_chars": 0.0,
+                "avg_response_chars": 0.0,
+                "avg_prompt_tokens_est": 0.0,
+                "avg_response_tokens_est": 0.0,
+                "error_classes": {},
+            }
+
+        success = 0
+        cancelled = 0
+        errors = 0
+        latencies: list[int] = []
+        prompt_chars_total = 0
+        response_chars_total = 0
+        prompt_tokens_total = 0
+        response_tokens_total = 0
+        error_classes: dict[str, int] = {}
+        for row in sample:
+            outcome = str(row.get("outcome", "") or "").strip().lower()
+            if outcome == "success":
+                success += 1
+            elif outcome == "cancelled":
+                cancelled += 1
+            else:
+                errors += 1
+            try:
+                latency = max(0, int(row.get("latency_ms", 0) or 0))
+            except Exception:
+                latency = 0
+            latencies.append(latency)
+            try:
+                prompt_chars_total += max(0, int(row.get("prompt_chars", 0) or 0))
+            except Exception:
+                pass
+            try:
+                response_chars_total += max(0, int(row.get("response_chars", 0) or 0))
+            except Exception:
+                pass
+            try:
+                prompt_tokens_total += max(0, int(row.get("prompt_tokens_est", 0) or 0))
+            except Exception:
+                pass
+            try:
+                response_tokens_total += max(0, int(row.get("response_tokens_est", 0) or 0))
+            except Exception:
+                pass
+            if outcome != "success":
+                code = str(row.get("error_class", "") or "").strip().lower()
+                if code:
+                    error_classes[code] = int(error_classes.get(code, 0) or 0) + 1
+
+        latencies_sorted = sorted(latencies)
+        idx = max(0, min(len(latencies_sorted) - 1, int(math.ceil(0.95 * len(latencies_sorted))) - 1))
+        p95_latency_ms = float(latencies_sorted[idx]) if latencies_sorted else 0.0
+        avg_latency_ms = float(sum(latencies_sorted) / len(latencies_sorted)) if latencies_sorted else 0.0
+        ranked_errors = dict(
+            sorted(
+                error_classes.items(),
+                key=lambda pair: (-int(pair[1]), str(pair[0])),
+            )[:8]
+        )
+        return {
+            "window": int(limit),
+            "total_turns": int(total),
+            "success_count": int(success),
+            "cancelled_count": int(cancelled),
+            "error_count": int(errors),
+            "cancellation_rate": float(cancelled / float(total)),
+            "avg_latency_ms": float(avg_latency_ms),
+            "p95_latency_ms": float(p95_latency_ms),
+            "avg_prompt_chars": float(prompt_chars_total / float(total)),
+            "avg_response_chars": float(response_chars_total / float(total)),
+            "avg_prompt_tokens_est": float(prompt_tokens_total / float(total)),
+            "avg_response_tokens_est": float(response_tokens_total / float(total)),
+            "error_classes": ranked_errors,
+        }
 
     def _coerce_ai_coach_duration(self, value: Any) -> int:
         try:
@@ -4926,439 +5404,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _build_ai_tutor_seed_prompt(self) -> str:
         topic = str(getattr(self, "current_topic", "") or "").strip()
         module_title = str(getattr(self, "module_title", "ACCA") or "ACCA").strip()
-        if topic:
-            return (
-                f"Explain '{topic}' for {module_title} in exam-focused terms. "
-                "Include: key rules/formulas, common mistakes, and 3 practice questions with short answers."
-            )
-        return (
-            "Help me revise ACCA efficiently. Give a concise explanation, key formulas, "
-            "and a short practice drill."
-        )
+        return build_ai_tutor_seed_prompt(topic=topic, module_title=module_title)
 
     def _open_ai_tutor_dialog(self) -> None:
-        dialog = self._new_dialog(title="AI Tutor (Ollama)", transient_for=self, modal=True)
-        dialog.set_default_size(760, 620)
-        dialog.add_buttons("_Close", Gtk.ResponseType.CLOSE)
-        content = dialog.get_content_area()
-        content.set_spacing(8)
-
-        intro = Gtk.Label(
-            label="Use local Ollama models for topic explanations, drills, and revision support."
-        )
-        intro.set_halign(Gtk.Align.START)
-        intro.set_wrap(True)
-        intro.add_css_class("muted")
-        content.append(intro)
-
-        host_label = Gtk.Label(label=f"Host: {self._normalize_ollama_host()}")
-        host_label.set_halign(Gtk.Align.START)
-        host_label.add_css_class("muted")
-        content.append(host_label)
-
-        model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        model_label = Gtk.Label(label="Model")
-        model_label.set_halign(Gtk.Align.START)
-        model_label.set_size_request(70, -1)
-        model_dropdown = Gtk.DropDown.new(Gtk.StringList.new(["Loading models…"]), None)
-        model_dropdown.set_hexpand(True)
-        refresh_btn = Gtk.Button(label="Refresh models")
-        model_row.append(model_label)
-        model_row.append(model_dropdown)
-        model_row.append(refresh_btn)
-        content.append(model_row)
-
-        prompt_label = Gtk.Label(label="Prompt")
-        prompt_label.set_halign(Gtk.Align.START)
-        prompt_label.add_css_class("section-title")
-        content.append(prompt_label)
-        prompt_scroller = Gtk.ScrolledWindow()
-        prompt_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        prompt_scroller.set_min_content_height(120)
-        prompt_view = Gtk.TextView()
-        prompt_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        prompt_buf = prompt_view.get_buffer()
-        prompt_buf.set_text(self._build_ai_tutor_seed_prompt())
-        prompt_scroller.set_child(prompt_view)
-        content.append(prompt_scroller)
-
-        action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        generate_btn = Gtk.Button(label="Generate")
-        generate_btn.add_css_class("suggested-action")
-        stop_btn = Gtk.Button(label="Stop")
-        stop_btn.set_sensitive(False)
-        new_chat_btn = Gtk.Button(label="New chat")
-        clear_prompt_btn = Gtk.Button(label="Clear prompt")
-        copy_btn = Gtk.Button(label="Copy chat")
-        copy_btn.set_sensitive(False)
-        action_row.append(generate_btn)
-        action_row.append(stop_btn)
-        action_row.append(new_chat_btn)
-        action_row.append(clear_prompt_btn)
-        action_row.append(copy_btn)
-        content.append(action_row)
-
-        status_label = Gtk.Label(label="")
-        status_label.set_halign(Gtk.Align.START)
-        status_label.set_wrap(True)
-        status_label.add_css_class("muted")
-        content.append(status_label)
-
-        response_label = Gtk.Label(label="Response")
-        response_label.set_halign(Gtk.Align.START)
-        response_label.add_css_class("section-title")
-        content.append(response_label)
-        response_scroller = Gtk.ScrolledWindow()
-        response_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        response_scroller.set_min_content_height(260)
-        try:
-            response_scroller.set_kinetic_scrolling(False)
-        except Exception:
-            pass
-        response_view = Gtk.TextView()
-        response_view.set_editable(False)
-        response_view.set_cursor_visible(False)
-        response_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        response_buf = response_view.get_buffer()
-        response_scroller.set_child(response_view)
-        content.append(response_scroller)
-
-        history: list[dict[str, str]] = []
-        for item in list(getattr(self, "_ai_tutor_history", []) or [])[-20:]:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role", "") or "").strip().lower()
-            text = str(item.get("content", "") or "").strip()
-            if role in ("user", "assistant") and text:
-                history.append({"role": role, "content": text[:8000]})
-        run_state: dict[str, Any] = {
-            "active": False,
-            "job_id": 0,
-            "cancel_event": None,
-            "model": "",
-            "draft_user": "",
-            "draft_assistant": "",
-            "scroll_pending": False,
-        }
-
-        if not bool(self.local_llm_enabled):
-            status_label.set_text("Local AI tutor is disabled in Preferences.")
-            generate_btn.set_sensitive(False)
-
-        def _persist_history() -> None:
-            compact: list[dict[str, str]] = []
-            for item in list(history)[-20:]:
-                if not isinstance(item, dict):
-                    continue
-                role = str(item.get("role", "") or "").strip().lower()
-                text = str(item.get("content", "") or "").strip()
-                if role not in ("user", "assistant") or not text:
-                    continue
-                compact.append({"role": role, "content": text[:8000]})
-            self._ai_tutor_history = compact
-            self.save_preferences()
-
-        def _turn_count() -> int:
-            return sum(1 for msg in history if isinstance(msg, dict) and str(msg.get("role", "")).strip().lower() == "assistant")
-
-        def _response_is_near_bottom(padding: float = 36.0) -> bool:
-            try:
-                adj = response_scroller.get_vadjustment()
-                if adj is None:
-                    return True
-                value = float(adj.get_value() or 0.0)
-                upper = float(adj.get_upper() or 0.0)
-                page = float(adj.get_page_size() or 0.0)
-                tail_gap = max(0.0, upper - page - value)
-                return tail_gap <= max(0.0, float(padding))
-            except Exception:
-                return True
-
-        def _scroll_response_end_deferred() -> None:
-            if bool(run_state.get("scroll_pending", False)):
-                return
-            run_state["scroll_pending"] = True
-
-            def _apply_scroll() -> bool:
-                run_state["scroll_pending"] = False
-                try:
-                    adj = response_scroller.get_vadjustment()
-                    if adj is None:
-                        return False
-                    upper = float(adj.get_upper() or 0.0)
-                    page = float(adj.get_page_size() or 0.0)
-                    adj.set_value(max(0.0, upper - page))
-                except Exception:
-                    pass
-                return False
-
-            GLib.idle_add(_apply_scroll, priority=GLib.PRIORITY_LOW)
-
-        def _render_transcript(force_scroll: bool = False) -> None:
-            should_keep_bottom = bool(force_scroll) or _response_is_near_bottom(
-                56.0 if bool(run_state.get("active", False)) else 28.0
-            )
-            entries: list[dict[str, str]] = list(history)
-            if bool(run_state.get("active", False)):
-                draft_user = str(run_state.get("draft_user", "") or "").strip()
-                draft_assistant = str(run_state.get("draft_assistant", "") or "")
-                if draft_user:
-                    entries.append({"role": "user", "content": draft_user})
-                if draft_assistant.strip():
-                    entries.append({"role": "assistant", "content": draft_assistant})
-            text = self._format_ai_tutor_transcript(entries)
-            response_buf.set_text(text if text else "No conversation yet.")
-            if should_keep_bottom:
-                _scroll_response_end_deferred()
-
-        def _set_running(running: bool) -> None:
-            run_state["active"] = bool(running)
-            model_ready = bool(_selected_model_name())
-            llm_ready = bool(self.local_llm_enabled)
-            generate_btn.set_sensitive((not running) and model_ready and llm_ready)
-            stop_btn.set_sensitive(bool(running))
-            new_chat_btn.set_sensitive(not running)
-            refresh_btn.set_sensitive(not running)
-            model_dropdown.set_sensitive(not running)
-            prompt_view.set_editable(not running)
-            copy_btn.set_sensitive((not running) and bool(history))
-
-        def _selected_model_name() -> str:
-            try:
-                item = model_dropdown.get_selected_item()
-            except Exception:
-                item = None
-            if item is None:
-                return ""
-            text_val = ""
-            if hasattr(item, "get_string"):
-                try:
-                    text_val = str(item.get_string() or "")
-                except Exception:
-                    text_val = ""
-            if not text_val:
-                try:
-                    text_val = str(item)
-                except Exception:
-                    text_val = ""
-            text_val = text_val.strip()
-            if text_val.startswith("("):
-                return ""
-            return text_val
-
-        def _set_dropdown_models(model_names: list[str]) -> None:
-            cleaned = [str(m).strip() for m in model_names if str(m).strip()]
-            if not cleaned:
-                cleaned = ["(no local models found)"]
-            model_dropdown.set_model(Gtk.StringList.new(cleaned))
-            preferred = str(self.local_llm_model or "").strip()
-            if preferred and preferred in cleaned:
-                model_dropdown.set_selected(cleaned.index(preferred))
-            else:
-                model_dropdown.set_selected(0)
-            _set_running(bool(run_state.get("active", False)))
-
-        def _refresh_models(*_args):
-            if bool(run_state.get("active", False)):
-                return
-            status_label.set_text("Loading models from Ollama…")
-            refresh_btn.set_sensitive(False)
-            generate_btn.set_sensitive(False)
-
-            def _worker():
-                models, err = self._ollama_list_models()
-
-                def _finish():
-                    refresh_btn.set_sensitive(True)
-                    if err:
-                        _set_dropdown_models([])
-                        status_label.set_text(f"Ollama unavailable: {err}")
-                        return False
-                    _set_dropdown_models(models)
-                    if models:
-                        status_label.set_text(f"Loaded {len(models)} model(s).")
-                    else:
-                        status_label.set_text("No local models found in Ollama.")
-                    return False
-
-                GLib.idle_add(_finish)
-
-            threading.Thread(target=_worker, daemon=True).start()
-
-        def _on_model_change(*_args):
-            if bool(run_state.get("active", False)):
-                return
-            model_name = _selected_model_name()
-            if model_name:
-                self.local_llm_model = model_name
-                self.save_preferences()
-            _set_running(False)
-
-        def _new_chat(*_args):
-            if bool(run_state.get("active", False)):
-                return
-            history.clear()
-            _persist_history()
-            status_label.set_text("New chat started.")
-            _render_transcript(force_scroll=True)
-
-        def _clear_prompt(*_args):
-            if bool(run_state.get("active", False)):
-                return
-            prompt_buf.set_text("")
-
-        def _copy_chat(*_args):
-            text = self._format_ai_tutor_transcript(history)
-            if not text:
-                status_label.set_text("Nothing to copy.")
-                return
-            try:
-                display = Gdk.Display.get_default()
-                clipboard = display.get_clipboard() if display is not None else None
-                if clipboard is not None:
-                    clipboard.set_text(text)
-                    status_label.set_text("Chat copied to clipboard.")
-                else:
-                    status_label.set_text("Clipboard unavailable.")
-            except Exception:
-                status_label.set_text("Clipboard unavailable.")
-
-        def _generate(*_args):
-            if not bool(self.local_llm_enabled):
-                status_label.set_text("Local AI tutor is disabled in Preferences.")
-                return
-            if bool(run_state.get("active", False)):
-                status_label.set_text("Generation already running.")
-                return
-            model_name = _selected_model_name() or str(self.local_llm_model or "").strip()
-            if not model_name:
-                status_label.set_text("Select an Ollama model first.")
-                return
-            start, end = prompt_buf.get_bounds()
-            user_prompt = prompt_buf.get_text(start, end, True).strip()
-            if not user_prompt:
-                status_label.set_text("Enter a prompt first.")
-                return
-            module_title = str(getattr(self, "module_title", "ACCA") or "ACCA").strip()
-            chapter = str(getattr(self, "current_topic", "") or "").strip()
-            full_prompt = self._build_ai_tutor_context_prompt(
-                history=history,
-                user_prompt=user_prompt,
-                module_title=module_title,
-                chapter=chapter,
-            )
-            cancel_event = threading.Event()
-            run_state["job_id"] = int(run_state.get("job_id", 0) or 0) + 1
-            job_id = int(run_state.get("job_id", 0) or 0)
-            run_state["cancel_event"] = cancel_event
-            run_state["model"] = model_name
-            run_state["draft_user"] = user_prompt
-            run_state["draft_assistant"] = ""
-            self.local_llm_model = model_name
-            self.save_preferences()
-            status_label.set_text("Generating…")
-            _set_running(True)
-            _render_transcript(force_scroll=True)
-
-            def _worker():
-                def _on_chunk(piece: str) -> None:
-                    def _apply_chunk():
-                        if int(run_state.get("job_id", 0) or 0) != job_id:
-                            return False
-                        if not bool(run_state.get("active", False)):
-                            return False
-                        run_state["draft_assistant"] = str(run_state.get("draft_assistant", "") or "") + str(piece or "")
-                        _render_transcript(force_scroll=True)
-                        return False
-
-                    GLib.idle_add(_apply_chunk)
-
-                text, err = self._ollama_generate_text_stream(
-                    model_name,
-                    full_prompt,
-                    on_chunk=_on_chunk,
-                    cancel_check=cancel_event.is_set,
-                )
-
-                def _finish():
-                    if int(run_state.get("job_id", 0) or 0) != job_id:
-                        return False
-                    draft_user = str(run_state.get("draft_user", "") or "").strip()
-                    draft_assistant = str(run_state.get("draft_assistant", "") or "").strip()
-                    run_state["cancel_event"] = None
-                    run_state["draft_user"] = ""
-                    run_state["draft_assistant"] = ""
-                    _set_running(False)
-                    final_text = str(text or "").strip() or draft_assistant
-                    if err == "cancelled":
-                        if draft_user and final_text:
-                            final_text = self._clean_ai_tutor_text(final_text) or final_text
-                            history.append({"role": "user", "content": draft_user})
-                            history.append({"role": "assistant", "content": f"{final_text}\n\n[Stopped]"})
-                            _persist_history()
-                            status_label.set_text(f"Stopped ({model_name}) • turns: {_turn_count()}")
-                        else:
-                            status_label.set_text(f"Stopped ({model_name}).")
-                        _render_transcript(force_scroll=True)
-                        return False
-                    if err:
-                        status_label.set_text(f"Ollama error: {err}")
-                        _render_transcript()
-                        return False
-                    if draft_user and final_text:
-                        final_text = self._clean_ai_tutor_text(final_text) or final_text
-                        history.append({"role": "user", "content": draft_user})
-                        history.append({"role": "assistant", "content": final_text})
-                        _persist_history()
-                    _render_transcript(force_scroll=True)
-                    status_label.set_text(f"Done ({model_name}) • turns: {_turn_count()}")
-                    return False
-
-                GLib.idle_add(_finish)
-
-            threading.Thread(target=_worker, daemon=True).start()
-
-        def _stop_generation(*_args):
-            if not bool(run_state.get("active", False)):
-                return
-            cancel_event = run_state.get("cancel_event")
-            if isinstance(cancel_event, threading.Event):
-                cancel_event.set()
-            self._ollama_stop_model(str(run_state.get("model", "") or ""))
-            status_label.set_text("Stopping…")
-
-        def _on_close(d, _r):
-            if bool(run_state.get("active", False)):
-                cancel_event = run_state.get("cancel_event")
-                if isinstance(cancel_event, threading.Event):
-                    cancel_event.set()
-                self._ollama_stop_model(str(run_state.get("model", "") or ""))
-            _persist_history()
-            d.destroy()
-
-        def _on_prompt_key(_controller, keyval, _keycode, state):
-            ctrl_mask = int(getattr(Gdk.ModifierType, "CONTROL_MASK", 0))
-            return_key = int(getattr(Gdk, "KEY_Return", 65293))
-            kp_enter = int(getattr(Gdk, "KEY_KP_Enter", 65421))
-            if (int(state) & ctrl_mask) and int(keyval) in (return_key, kp_enter):
-                _generate()
-                return True
-            return False
-
-        model_dropdown.connect("notify::selected", _on_model_change)
-        refresh_btn.connect("clicked", _refresh_models)
-        clear_prompt_btn.connect("clicked", _clear_prompt)
-        new_chat_btn.connect("clicked", _new_chat)
-        copy_btn.connect("clicked", _copy_chat)
-        stop_btn.connect("clicked", _stop_generation)
-        generate_btn.connect("clicked", _generate)
-        prompt_key = Gtk.EventControllerKey()
-        prompt_key.connect("key-pressed", _on_prompt_key)
-        prompt_view.add_controller(prompt_key)
-        dialog.connect("response", _on_close)
-        dialog.present()
-        _render_transcript(force_scroll=True)
-        _refresh_models()
+        AITutorDialogController(self, Gtk=Gtk, GLib=GLib, Gdk=Gdk).open()
 
     def _log_error(self, context: str, exc: Exception) -> None:
         try:
