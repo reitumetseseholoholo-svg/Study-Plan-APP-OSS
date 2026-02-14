@@ -27,6 +27,7 @@ import re
 import random
 import csv
 import io
+import tempfile
 import subprocess
 import shutil
 import math
@@ -3881,6 +3882,60 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 raise PermissionError(f"{label} target is not writable.")
         return path
 
+    def _atomic_write_bytes_file(self, file_path: str, payload: bytes, mode: int = 0o600) -> None:
+        path = self._normalize_user_file_path(file_path, "Write target")
+        parent = os.path.dirname(path) or "."
+        fd = -1
+        tmp_path = ""
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix=".studyplan-tmp-", dir=parent)
+            with os.fdopen(fd, "wb") as tmp:
+                fd = -1
+                tmp.write(bytes(payload))
+                tmp.flush()
+                try:
+                    os.fsync(tmp.fileno())
+                except Exception:
+                    pass
+            os.replace(tmp_path, path)
+            self._secure_user_path(path, mode)
+        except Exception:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            raise
+
+    def _atomic_write_text_file(
+        self,
+        file_path: str,
+        text: str,
+        *,
+        encoding: str = "utf-8",
+        mode: int = 0o600,
+    ) -> None:
+        payload = str(text or "").encode(str(encoding or "utf-8"), "replace")
+        self._atomic_write_bytes_file(file_path, payload, mode=mode)
+
+    def _atomic_write_csv_rows(
+        self,
+        file_path: str,
+        rows: list[list[Any]],
+        *,
+        mode: int = 0o600,
+    ) -> None:
+        stream = io.StringIO(newline="")
+        writer = csv.writer(stream)
+        for row in rows:
+            writer.writerow(row)
+        self._atomic_write_text_file(file_path, stream.getvalue(), mode=mode)
+
     def _validate_selected_file_size(self, file_path: str, max_bytes: int, label: str) -> None:
         enforce_file_size_limit(
             file_path,
@@ -5770,9 +5825,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             current = label.get_text()
         except Exception:
             current = None
+        self._sync_single_line_label_tooltip(label, text)
         if current == text:
             return
         label.set_text(text)
+        self._sync_single_line_label_tooltip(label, text)
+
+    def _sync_single_line_label_tooltip(self, label: Gtk.Label | None, text: str) -> None:
+        if not label:
+            return
+        try:
+            ellipsize_mode = label.get_ellipsize()
+            if int(ellipsize_mode) == int(Pango.EllipsizeMode.NONE):
+                return
+        except Exception:
+            return
+        tip = str(text or "").strip()
+        try:
+            label.set_tooltip_text(tip if tip else None)
+        except Exception:
+            pass
 
     def _log_coach_decision(self, topic: str, plan: list[str], release: bool | None, release_reason: str | None) -> None:
         try:
@@ -13795,12 +13867,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     default_extension=".csv",
                     allowed_extensions=(".csv",),
                 )
-                with open(file_path, 'w', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow(["Chapter", "Competence (%)"])
-                    for chapter, score in self.engine.competence.items():
-                        writer.writerow([chapter, score])
-                self._secure_user_path(file_path, 0o600)
+                rows: list[list[Any]] = [["Chapter", "Competence (%)"]]
+                for chapter, score in self.engine.competence.items():
+                    rows.append([chapter, score])
+                self._atomic_write_csv_rows(file_path, rows)
                 success_dialog = self._new_message_dialog(
                     transient_for=self,
                     modal=True,
@@ -13884,12 +13954,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 allowed_extensions=(".json", ".csv"),
             )
             if file_path.lower().endswith(".csv"):
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(csv_template)
+                self._atomic_write_text_file(file_path, csv_template)
             else:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    json.dump(json_template, f, indent=2, ensure_ascii=False)
-            self._secure_user_path(file_path, 0o600)
+                json_text = json.dumps(json_template, indent=2, ensure_ascii=False) + "\n"
+                self._atomic_write_text_file(file_path, json_text)
 
             success_dialog = self._new_message_dialog(
                 transient_for=self,
@@ -13953,76 +14021,72 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
             stats = getattr(self.engine, "question_stats", {}) or {}
             questions = getattr(self.engine, "QUESTIONS", {}) or {}
-            with open(file_path, "w", newline="", encoding="utf-8") as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerow(
-                    [
-                        "Chapter",
-                        "Question Index",
-                        "Question",
-                        "Attempts",
-                        "Correct",
-                        "Miss Rate",
-                        "Streak",
-                        "Avg Time (sec)",
-                        "Last Time (sec)",
-                        "Last Seen",
-                    ]
-                )
-                for chapter, chapter_stats in stats.items():
-                    if not isinstance(chapter_stats, dict):
+            rows: list[list[Any]] = [[
+                "Chapter",
+                "Question Index",
+                "Question",
+                "Attempts",
+                "Correct",
+                "Miss Rate",
+                "Streak",
+                "Avg Time (sec)",
+                "Last Time (sec)",
+                "Last Seen",
+            ]]
+            for chapter, chapter_stats in stats.items():
+                if not isinstance(chapter_stats, dict):
+                    continue
+                q_list = questions.get(chapter, []) if isinstance(questions, dict) else []
+                for key, entry in chapter_stats.items():
+                    if not isinstance(entry, dict):
                         continue
-                    q_list = questions.get(chapter, []) if isinstance(questions, dict) else []
-                    for key, entry in chapter_stats.items():
-                        if not isinstance(entry, dict):
-                            continue
+                    try:
+                        idx = int(key)
+                    except Exception:
+                        continue
+                    q_text = ""
+                    if isinstance(q_list, list) and 0 <= idx < len(q_list):
                         try:
-                            idx = int(key)
+                            q_text = str(q_list[idx].get("question", ""))
                         except Exception:
-                            continue
-                        q_text = ""
-                        if isinstance(q_list, list) and 0 <= idx < len(q_list):
-                            try:
-                                q_text = str(q_list[idx].get("question", ""))
-                            except Exception:
-                                q_text = ""
-                        try:
-                            attempts = int(entry.get("attempts", 0) or 0)
-                        except Exception:
-                            attempts = 0
-                        try:
-                            correct = int(entry.get("correct", 0) or 0)
-                        except Exception:
-                            correct = 0
-                        miss_rate = 0.0 if attempts <= 0 else 1.0 - (correct / max(1, attempts))
-                        try:
-                            streak = int(entry.get("streak", 0) or 0)
-                        except Exception:
-                            streak = 0
-                        try:
-                            avg_time = float(entry.get("avg_time_sec", 0) or 0.0)
-                        except Exception:
-                            avg_time = 0.0
-                        try:
-                            last_time = float(entry.get("last_time_sec", 0) or 0.0)
-                        except Exception:
-                            last_time = 0.0
-                        last_seen = entry.get("last_seen") or ""
-                        writer.writerow(
-                            [
-                                chapter,
-                                idx,
-                                q_text,
-                                attempts,
-                                correct,
-                                f"{miss_rate:.2f}",
-                                streak,
-                                f"{avg_time:.1f}",
-                                f"{last_time:.1f}",
-                                last_seen,
-                            ]
-                        )
-            self._secure_user_path(file_path, 0o600)
+                            q_text = ""
+                    try:
+                        attempts = int(entry.get("attempts", 0) or 0)
+                    except Exception:
+                        attempts = 0
+                    try:
+                        correct = int(entry.get("correct", 0) or 0)
+                    except Exception:
+                        correct = 0
+                    miss_rate = 0.0 if attempts <= 0 else 1.0 - (correct / max(1, attempts))
+                    try:
+                        streak = int(entry.get("streak", 0) or 0)
+                    except Exception:
+                        streak = 0
+                    try:
+                        avg_time = float(entry.get("avg_time_sec", 0) or 0.0)
+                    except Exception:
+                        avg_time = 0.0
+                    try:
+                        last_time = float(entry.get("last_time_sec", 0) or 0.0)
+                    except Exception:
+                        last_time = 0.0
+                    last_seen = entry.get("last_seen") or ""
+                    rows.append(
+                        [
+                            chapter,
+                            idx,
+                            q_text,
+                            attempts,
+                            correct,
+                            f"{miss_rate:.2f}",
+                            streak,
+                            f"{avg_time:.1f}",
+                            f"{last_time:.1f}",
+                            last_seen,
+                        ]
+                    )
+            self._atomic_write_csv_rows(file_path, rows)
             success_dialog = self._new_message_dialog(
                 transient_for=self,
                 modal=True,
@@ -15218,8 +15282,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     f"Week {week_number} Summary ({today.isoformat()}):",
                     *summary_lines[:2],
                 ])
-                with open(summary_path, "w", encoding="utf-8") as f:
-                    f.write(summary_text + "\n")
+                self._atomic_write_text_file(summary_path, summary_text + "\n")
                 self.last_weekly_summary_week = week_number
                 self.save_preferences()
         except Exception:
@@ -15293,6 +15356,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 label.set_wrap(False)
                 label.set_ellipsize(Pango.EllipsizeMode.END)
                 label.add_css_class("single-line-lock")
+                self._sync_single_line_label_tooltip(label, label.get_text())
             except Exception:
                 pass
         def _enforce_coach_label_wrap(root: Gtk.Widget) -> None:

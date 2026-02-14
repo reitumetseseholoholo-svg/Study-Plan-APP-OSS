@@ -14,6 +14,10 @@ def _make_dummy():
     dummy._normalize_user_file_path = types.MethodType(StudyPlanGUI._normalize_user_file_path, dummy)
     dummy._validate_import_source_path = types.MethodType(StudyPlanGUI._validate_import_source_path, dummy)
     dummy._prepare_export_target_path = types.MethodType(StudyPlanGUI._prepare_export_target_path, dummy)
+    dummy._secure_user_path = types.MethodType(StudyPlanGUI._secure_user_path, dummy)
+    dummy._atomic_write_bytes_file = types.MethodType(StudyPlanGUI._atomic_write_bytes_file, dummy)
+    dummy._atomic_write_text_file = types.MethodType(StudyPlanGUI._atomic_write_text_file, dummy)
+    dummy._atomic_write_csv_rows = types.MethodType(StudyPlanGUI._atomic_write_csv_rows, dummy)
     return dummy
 
 
@@ -93,3 +97,20 @@ def test_prepare_export_target_path_rejects_symlink_target(tmp_path):
             default_extension=".csv",
             allowed_extensions=(".csv",),
         )
+
+
+def test_atomic_write_text_file_replaces_existing_content(tmp_path):
+    dummy = _make_dummy()
+    target = tmp_path / "state.txt"
+    target.write_text("old", encoding="utf-8")
+    StudyPlanGUI._atomic_write_text_file(dummy, str(target), "new-content")
+    assert target.read_text(encoding="utf-8") == "new-content"
+
+
+def test_atomic_write_csv_rows_outputs_expected_csv(tmp_path):
+    dummy = _make_dummy()
+    target = tmp_path / "rows.csv"
+    StudyPlanGUI._atomic_write_csv_rows(dummy, str(target), [["A", "B"], [1, 2]])
+    content = target.read_text(encoding="utf-8")
+    assert "A,B" in content
+    assert "1,2" in content
