@@ -5997,6 +5997,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
+    def _ellipsize_labels(self, root: Gtk.Widget | None, max_chars: int = 96) -> None:
+        """Force single-line ellipsis for labels without explicit newlines."""
+        if root is None:
+            return
+
+        def _walk(node: Gtk.Widget | None):
+            if node is None:
+                return
+            try:
+                if isinstance(node, Gtk.Label):
+                    text = ""
+                    try:
+                        text = node.get_text() or ""
+                    except Exception:
+                        text = ""
+                    if "\n" not in text:
+                        node.set_wrap(False)
+                        node.set_ellipsize(Pango.EllipsizeMode.END)
+                        node.set_max_width_chars(int(max_chars))
+                        self._sync_single_line_label_tooltip(node, text)
+            except Exception:
+                pass
+            try:
+                child = node.get_first_child()
+                while child is not None:
+                    _walk(child)
+                    child = child.get_next_sibling()
+            except Exception:
+                pass
+
+        _walk(root)
+
     def _log_coach_decision(self, topic: str, plan: list[str], release: bool | None, release_reason: str | None) -> None:
         try:
             today_iso = datetime.date.today().isoformat()
@@ -8466,6 +8498,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._maybe_auto_import_gpt4all_models_async()
         except Exception:
             pass
+        try:
+            self._ellipsize_labels(self.dashboard)
+        except Exception:
+            pass
         return False
 
     def _notify_startup_data_recovery(self) -> None:
@@ -10208,6 +10244,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             mission_done = sum(1 for _t, done in mission_tasks if done)
             self.study_room_mission_bar.set_fraction(mission_done / max(1, len(mission_tasks)))
             self.study_room_mission_bar.set_text(f"Mission progress: {mission_done}/{len(mission_tasks)}")
+        try:
+            self._ellipsize_labels(self.study_room_mission_label)
+            self._ellipsize_labels(self.study_room_summary)
+            self._ellipsize_labels(self.study_room_blocks_label)
+        except Exception:
+            pass
 
         quiz_summary = ""
         try:
@@ -16475,12 +16517,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 title.set_halign(Gtk.Align.START)
                 title.add_css_class("section-title")
                 summary_card.append(title)
-                label = Gtk.Label(label="\n".join(summary_lines[:2]))
-                label.set_halign(Gtk.Align.START)
-                label.set_wrap(True)
-                label.add_css_class("muted")
-                label.add_css_class("dashboard-block-body")
-                summary_card.append(label)
+                for line in summary_lines[:3]:
+                    lbl = Gtk.Label(label=line)
+                    lbl.set_halign(Gtk.Align.START)
+                    lbl.set_wrap(False)
+                    lbl.set_ellipsize(Pango.EllipsizeMode.END)
+                    lbl.set_max_width_chars(96)
+                    lbl.add_css_class("muted")
+                    lbl.add_css_class("dashboard-block-body")
+                    self._sync_single_line_label_tooltip(lbl, line)
+                    summary_card.append(lbl)
                 self.dashboard.append(summary_card)
         except Exception:
             pass
@@ -17505,17 +17551,37 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 ws_title.set_halign(Gtk.Align.START)
                 ws_title.add_css_class("section-title")
                 ws_card.append(ws_title)
-                weak_label = Gtk.Label(label="Weakest\n" + "\n".join(weak_lines))
-                weak_label.set_halign(Gtk.Align.START)
-                weak_label.set_wrap(True)
-                weak_label.add_css_class("muted")
-                ws_card.append(weak_label)
+                weak_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                weak_title = Gtk.Label(label="Weakest")
+                weak_title.set_halign(Gtk.Align.START)
+                weak_title.add_css_class("muted")
+                weak_box.append(weak_title)
+                for line in weak_lines:
+                    lbl = Gtk.Label(label=line)
+                    lbl.set_halign(Gtk.Align.START)
+                    lbl.set_wrap(False)
+                    lbl.set_ellipsize(Pango.EllipsizeMode.END)
+                    lbl.set_max_width_chars(64)
+                    lbl.add_css_class("muted")
+                    self._sync_single_line_label_tooltip(lbl, line)
+                    weak_box.append(lbl)
+                ws_card.append(weak_box)
                 if strong_lines:
-                    strong_label = Gtk.Label(label="Strongest\n" + "\n".join(strong_lines))
-                    strong_label.set_halign(Gtk.Align.START)
-                    strong_label.set_wrap(True)
-                    strong_label.add_css_class("muted")
-                    ws_card.append(strong_label)
+                    strong_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                    strong_title = Gtk.Label(label="Strongest")
+                    strong_title.set_halign(Gtk.Align.START)
+                    strong_title.add_css_class("muted")
+                    strong_box.append(strong_title)
+                    for line in strong_lines:
+                        lbl = Gtk.Label(label=line)
+                        lbl.set_halign(Gtk.Align.START)
+                        lbl.set_wrap(False)
+                        lbl.set_ellipsize(Pango.EllipsizeMode.END)
+                        lbl.set_max_width_chars(64)
+                        lbl.add_css_class("muted")
+                        self._sync_single_line_label_tooltip(lbl, line)
+                        strong_box.append(lbl)
+                    ws_card.append(strong_box)
                 self.dashboard.append(ws_card)
             except Exception:
                 pass
