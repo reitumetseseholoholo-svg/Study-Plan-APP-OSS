@@ -258,6 +258,36 @@ def test_select_local_llm_model_manual_mode_uses_configured_model():
     assert picked == "manual-model:latest"
 
 
+def test_select_local_llm_model_auto_mode_avoids_switch_for_small_score_gap():
+    dummy = types.SimpleNamespace(
+        local_llm_model="steady-7b:latest",
+        local_llm_auto_select=True,
+        _ai_tutor_telemetry_events=[],
+        _local_llm_last_switch_at=0.0,
+        save_preferences=lambda: None,
+    )
+    dummy._coerce_local_llm_auto_select = types.MethodType(StudyPlanGUI._coerce_local_llm_auto_select, dummy)
+    dummy._is_local_llm_auto_select_enabled = types.MethodType(StudyPlanGUI._is_local_llm_auto_select_enabled, dummy)
+    dummy._estimate_local_llm_model_size_b = types.MethodType(StudyPlanGUI._estimate_local_llm_model_size_b, dummy)
+    dummy._heuristic_local_llm_model_prior = types.MethodType(StudyPlanGUI._heuristic_local_llm_model_prior, dummy)
+    dummy._score_local_llm_model = types.MethodType(StudyPlanGUI._score_local_llm_model, dummy)
+    dummy._rank_local_llm_models = lambda models, purpose="general": [
+        {"model": "best-7b:latest", "score": 0.81, "perf_score": 0.82, "quality_score": 0.80},
+        {"model": "steady-7b:latest", "score": 0.79, "perf_score": 0.79, "quality_score": 0.79},
+    ]
+    dummy._get_ai_tutor_latency_profile = lambda window=24: {"load_level": "normal"}
+    dummy._get_ai_tutor_latency_slo_status = lambda window=24: {"status": "pass"}
+    picked, err = StudyPlanGUI._select_local_llm_model(
+        dummy,
+        model_override=None,
+        purpose="tutor",
+        available_models=["best-7b:latest", "steady-7b:latest"],
+        persist=False,
+    )
+    assert err is None
+    assert picked == "steady-7b:latest"
+
+
 def test_sync_gpt4all_models_to_ollama_once_imports_missing_files(tmp_path, monkeypatch):
     dummy = _make_dummy()
     monkeypatch.setenv("STUDYPLAN_GPT4ALL_MODELS_DIR", str(tmp_path))
@@ -864,6 +894,27 @@ def test_get_ai_tutor_latency_profile_and_adaptive_limits_under_load():
     assert int(limits["rag_char_budget"]) < 1800
 
 
+def test_get_ai_tutor_latency_slo_status_reports_fail_for_high_tail_latency():
+    dummy = types.SimpleNamespace(
+        _ai_tutor_telemetry_events=[
+            {"latency_ms": 28000},
+            {"latency_ms": 30000},
+            {"latency_ms": 34000},
+            {"latency_ms": 90000},
+            {"latency_ms": 98000},
+            {"latency_ms": 102000},
+            {"latency_ms": 110000},
+            {"latency_ms": 120000},
+        ]
+    )
+    dummy._get_ai_tutor_latency_profile = types.MethodType(StudyPlanGUI._get_ai_tutor_latency_profile, dummy)
+    dummy._get_ai_tutor_latency_slo_status = types.MethodType(StudyPlanGUI._get_ai_tutor_latency_slo_status, dummy)
+    status = StudyPlanGUI._get_ai_tutor_latency_slo_status(dummy, window=8)
+    assert status["samples"] == 8
+    assert status["status"] in {"warn", "fail"}
+    assert float(status["p90_latency_ms"]) >= 90000.0
+
+
 def test_build_debug_info_message_includes_ai_tutor_summary_lines():
     dummy = types.SimpleNamespace(
         exam_date="2026-06-01",
@@ -900,6 +951,7 @@ def test_build_debug_info_message_includes_ai_tutor_summary_lines():
             "avg_generation_ms": 770.0,
             "avg_stream_ms": 620.0,
             "avg_first_token_ms": 140.0,
+            "latency_slo_status": "warn",
             "avg_prompt_chars": 150.0,
             "avg_response_chars": 390.0,
             "avg_prompt_tokens_est": 38.0,
@@ -912,6 +964,7 @@ def test_build_debug_info_message_includes_ai_tutor_summary_lines():
     assert "AI Tutor cancellation rate: 22.2%" in msg
     assert "AI Tutor latency avg/p50/p90/p95 (ms): 830.0/700.0/1500.0/1700.0" in msg
     assert "AI Tutor latency spread p90/p50: 2.14x" in msg
+    assert "AI Tutor latency SLO status: warn" in msg
     assert "AI Tutor top error classes: busy:1" in msg
 
 

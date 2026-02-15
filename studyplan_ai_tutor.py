@@ -1549,6 +1549,8 @@ class AITutorDialogController:
                 "latency_spread_ratio": 1.0,
             }
             latency_load_level = "normal"
+            latency_slo_status = "insufficient"
+            latency_hardening_applied = False
             adaptive_limits: dict[str, Any] = {}
             adaptive_reader = getattr(app, "_compute_ai_tutor_adaptive_limits", None)
             if callable(adaptive_reader):
@@ -1581,6 +1583,8 @@ class AITutorDialogController:
                     if isinstance(profile_candidate, dict):
                         latency_profile = profile_candidate
                     latency_load_level = str(adaptive_limits.get("load_level", "normal") or "normal").strip().lower() or "normal"
+                    latency_slo_status = str(adaptive_limits.get("slo_status", "insufficient") or "insufficient").strip().lower() or "insufficient"
+                    latency_hardening_applied = bool(adaptive_limits.get("hardening_applied", False))
             context_block = ""
             context_chars = 0
             context_budget_chars = 0
@@ -1803,6 +1807,7 @@ class AITutorDialogController:
                     "latency_p90_ms": int(max(0.0, float(latency_profile.get("p90_latency_ms", 0.0) or 0.0))),
                     "latency_spread_ratio": float(max(1.0, float(latency_profile.get("latency_spread_ratio", 1.0) or 1.0))),
                     "latency_load_level": str(latency_load_level or "normal"),
+                    "latency_slo_status": str(latency_slo_status or "insufficient"),
                     "prompt_chars": int(prompt_chars),
                     "response_chars": int(response_chars),
                     "prompt_tokens_est": int(max(0, prompt_tokens_est)),
@@ -1880,6 +1885,8 @@ class AITutorDialogController:
                 status_parts.append(f"Coverage targets: {coverage_target_count}")
             if latency_load_level in {"warn", "critical"}:
                 status_parts.append(f"Adaptive mode: {latency_load_level}")
+            if latency_hardening_applied or latency_slo_status == "fail":
+                status_parts.append("SLO hardening: on")
             if rag_count > 0:
                 budget_text = ""
                 if rag_char_budget > 0:

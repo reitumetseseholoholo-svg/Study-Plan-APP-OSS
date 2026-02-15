@@ -189,6 +189,12 @@ AI_TUTOR_LATENCY_ADAPT_P90_WARN_MS = 45000
 AI_TUTOR_LATENCY_ADAPT_P90_CRITICAL_MS = 80000
 AI_TUTOR_LATENCY_ADAPT_RATIO_WARN = 2.4
 AI_TUTOR_LATENCY_ADAPT_RATIO_CRITICAL = 3.1
+AI_TUTOR_LATENCY_SLO_P50_MS = 25000
+AI_TUTOR_LATENCY_SLO_P90_MS = 60000
+AI_TUTOR_LATENCY_SLO_SPREAD_RATIO = 2.4
+AI_TUTOR_LATENCY_SLO_MIN_SAMPLES = 8
+AI_TUTOR_MODEL_SWITCH_SCORE_MARGIN = 0.05
+AI_TUTOR_MODEL_SWITCH_COOLDOWN_SECONDS = 300
 MAX_IMPORT_PDF_BYTES = 120 * 1024 * 1024
 MAX_IMPORT_JSON_BYTES = 25 * 1024 * 1024
 MAX_IMPORT_SNAPSHOT_BYTES = 50 * 1024 * 1024
@@ -975,6 +981,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.local_llm_host = str(DEFAULT_OLLAMA_HOST or "http://127.0.0.1:11434")
         self.local_llm_model = str(DEFAULT_OLLAMA_MODEL or "").strip()
         self.local_llm_auto_select = bool(DEFAULT_OLLAMA_AUTO_SELECT)
+        self._local_llm_last_switch_at = 0.0
         self.local_llm_timeout_seconds = int(DEFAULT_OLLAMA_TIMEOUT_SECONDS)
         self.ai_tutor_rag_pdfs = ""
         self.ai_tutor_rag_max_sources = int(DEFAULT_AI_TUTOR_RAG_MAX_SOURCES)
@@ -3745,6 +3752,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         tutor_avg_generation_ms = max(0.0, float(tutor_map.get("avg_generation_ms", 0.0) or 0.0))
         tutor_avg_stream_ms = max(0.0, float(tutor_map.get("avg_stream_ms", 0.0) or 0.0))
         tutor_avg_first_token_ms = max(0.0, float(tutor_map.get("avg_first_token_ms", 0.0) or 0.0))
+        tutor_latency_slo_status = str(tutor_map.get("latency_slo_status", "insufficient") or "insufficient").strip().lower()
         tutor_avg_prompt_chars = max(0.0, float(tutor_map.get("avg_prompt_chars", 0.0) or 0.0))
         tutor_avg_response_chars = max(0.0, float(tutor_map.get("avg_response_chars", 0.0) or 0.0))
         tutor_avg_prompt_tokens = max(0.0, float(tutor_map.get("avg_prompt_tokens_est", 0.0) or 0.0))
@@ -3800,6 +3808,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             f"AI Tutor cancellation rate: {tutor_cancel_pct:.1f}%\n"
             f"AI Tutor latency avg/p50/p90/p95 (ms): {tutor_avg_latency:.1f}/{tutor_p50_latency:.1f}/{tutor_p90_latency:.1f}/{tutor_p95_latency:.1f}\n"
             f"AI Tutor latency spread p90/p50: {tutor_latency_spread:.2f}x\n"
+            f"AI Tutor latency SLO status: {tutor_latency_slo_status}\n"
             f"AI Tutor stage avg queue/prompt/rag/gen/stream/first-token (ms): "
             f"{tutor_avg_queue_ms:.1f}/{tutor_avg_prompt_build_ms:.1f}/{tutor_avg_rag_ms:.1f}/"
             f"{tutor_avg_generation_ms:.1f}/{tutor_avg_stream_ms:.1f}/{tutor_avg_first_token_ms:.1f}\n"
@@ -5817,7 +5826,80 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if auto_select:
             ranked = self._rank_local_llm_models(models, purpose=purpose)
             if ranked:
-                selected = str(ranked[0].get("model", "") or "").strip()
+                ranked_pick = list(ranked)
+                latency_profile_get = getattr(self, "_get_ai_tutor_latency_profile", None)
+                slo_get = getattr(self, "_get_ai_tutor_latency_slo_status", None)
+                load_level = "normal"
+                slo_status = "insufficient"
+                if callable(latency_profile_get):
+                    try:
+                        profile = cast(Any, latency_profile_get(window=AI_TUTOR_LATENCY_ADAPT_WINDOW))
+                    except Exception:
+                        profile = {}
+                    if isinstance(profile, dict):
+                        load_level = str(profile.get("load_level", "normal") or "normal").strip().lower() or "normal"
+                if callable(slo_get):
+                    try:
+                        slo = cast(Any, slo_get(window=AI_TUTOR_LATENCY_ADAPT_WINDOW))
+                    except Exception:
+                        slo = {}
+                    if isinstance(slo, dict):
+                        slo_status = str(slo.get("status", "insufficient") or "insufficient").strip().lower() or "insufficient"
+                if load_level in {"warn", "critical"} or slo_status in {"warn", "fail"}:
+                    ranked_pick.sort(
+                        key=lambda row: (
+                            -float(row.get("perf_score", 0.0) or 0.0),
+                            -float(row.get("score", 0.0) or 0.0),
+                            -float(row.get("quality_score", 0.0) or 0.0),
+                            str(row.get("model", "") or ""),
+                        )
+                    )
+                selected = str(ranked_pick[0].get("model", "") or "").strip()
+                if configured and configured in models and selected and selected != configured:
+                    row_map = {
+                        str(row.get("model", "") or ""): row
+                        for row in ranked
+                        if isinstance(row, dict) and str(row.get("model", "") or "")
+                    }
+                    current_row = row_map.get(configured, {})
+                    selected_row = row_map.get(selected, {})
+                    try:
+                        switch_margin = float(
+                            os.environ.get(
+                                "STUDYPLAN_AI_TUTOR_MODEL_SWITCH_SCORE_MARGIN",
+                                AI_TUTOR_MODEL_SWITCH_SCORE_MARGIN,
+                            )
+                            or AI_TUTOR_MODEL_SWITCH_SCORE_MARGIN
+                        )
+                    except Exception:
+                        switch_margin = float(AI_TUTOR_MODEL_SWITCH_SCORE_MARGIN)
+                    switch_margin = max(0.0, min(0.20, float(switch_margin)))
+                    current_score = float(current_row.get("score", 0.0) or 0.0) if isinstance(current_row, dict) else 0.0
+                    selected_score = float(selected_row.get("score", 0.0) or 0.0) if isinstance(selected_row, dict) else 0.0
+                    if (selected_score - current_score) < float(switch_margin):
+                        selected = configured
+                    else:
+                        try:
+                            cooldown_seconds = int(
+                                os.environ.get(
+                                    "STUDYPLAN_AI_TUTOR_MODEL_SWITCH_COOLDOWN_SECONDS",
+                                    AI_TUTOR_MODEL_SWITCH_COOLDOWN_SECONDS,
+                                )
+                                or AI_TUTOR_MODEL_SWITCH_COOLDOWN_SECONDS
+                            )
+                        except Exception:
+                            cooldown_seconds = int(AI_TUTOR_MODEL_SWITCH_COOLDOWN_SECONDS)
+                        cooldown_seconds = max(0, min(3600, int(cooldown_seconds)))
+                        try:
+                            last_switch = float(getattr(self, "_local_llm_last_switch_at", 0.0) or 0.0)
+                        except Exception:
+                            last_switch = 0.0
+                        if cooldown_seconds > 0 and last_switch > 0.0:
+                            elapsed = float(time.monotonic() - last_switch)
+                            if elapsed < float(cooldown_seconds):
+                                # During cooldown only switch if improvement is clearly material.
+                                if (selected_score - current_score) < float(switch_margin * 2.0):
+                                    selected = configured
         if not selected:
             if configured and configured in models:
                 selected = configured
@@ -5825,6 +5907,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 selected = str(models[0]).strip()
         if selected and selected != configured:
             self.local_llm_model = selected
+            self._local_llm_last_switch_at = float(time.monotonic())
             if bool(persist):
                 try:
                     self.save_preferences()
@@ -8551,6 +8634,52 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "load_level": str(load_level),
         }
 
+    def _get_ai_tutor_latency_slo_status(self, window: int = AI_TUTOR_LATENCY_ADAPT_WINDOW) -> dict[str, Any]:
+        profile = self._get_ai_tutor_latency_profile(window=window)
+        samples = int(max(0, profile.get("samples", 0) or 0))
+        p50_latency = float(max(0.0, profile.get("p50_latency_ms", 0.0) or 0.0))
+        p90_latency = float(max(0.0, profile.get("p90_latency_ms", 0.0) or 0.0))
+        spread_ratio = float(max(1.0, profile.get("latency_spread_ratio", 1.0) or 1.0))
+        try:
+            p50_target = max(5000, min(180000, int(os.environ.get("STUDYPLAN_AI_TUTOR_SLO_P50_MS", AI_TUTOR_LATENCY_SLO_P50_MS) or AI_TUTOR_LATENCY_SLO_P50_MS)))
+        except Exception:
+            p50_target = int(AI_TUTOR_LATENCY_SLO_P50_MS)
+        try:
+            p90_target = max(10000, min(240000, int(os.environ.get("STUDYPLAN_AI_TUTOR_SLO_P90_MS", AI_TUTOR_LATENCY_SLO_P90_MS) or AI_TUTOR_LATENCY_SLO_P90_MS)))
+        except Exception:
+            p90_target = int(AI_TUTOR_LATENCY_SLO_P90_MS)
+        try:
+            spread_target = max(1.1, min(10.0, float(os.environ.get("STUDYPLAN_AI_TUTOR_SLO_SPREAD_RATIO", AI_TUTOR_LATENCY_SLO_SPREAD_RATIO) or AI_TUTOR_LATENCY_SLO_SPREAD_RATIO)))
+        except Exception:
+            spread_target = float(AI_TUTOR_LATENCY_SLO_SPREAD_RATIO)
+        try:
+            min_samples = max(3, min(120, int(os.environ.get("STUDYPLAN_AI_TUTOR_SLO_MIN_SAMPLES", AI_TUTOR_LATENCY_SLO_MIN_SAMPLES) or AI_TUTOR_LATENCY_SLO_MIN_SAMPLES)))
+        except Exception:
+            min_samples = int(AI_TUTOR_LATENCY_SLO_MIN_SAMPLES)
+        status = "insufficient"
+        if samples >= min_samples:
+            if (p50_latency <= float(p50_target)) and (p90_latency <= float(p90_target)) and (spread_ratio <= float(spread_target)):
+                status = "pass"
+            elif (
+                (p50_latency <= float(p50_target) * 1.20)
+                and (p90_latency <= float(p90_target) * 1.25)
+                and (spread_ratio <= float(spread_target) * 1.20)
+            ):
+                status = "warn"
+            else:
+                status = "fail"
+        return {
+            "status": str(status),
+            "samples": int(samples),
+            "p50_latency_ms": float(p50_latency),
+            "p90_latency_ms": float(p90_latency),
+            "latency_spread_ratio": float(spread_ratio),
+            "p50_target_ms": int(p50_target),
+            "p90_target_ms": int(p90_target),
+            "spread_target_ratio": float(spread_target),
+            "min_samples": int(min_samples),
+        }
+
     def _compute_ai_tutor_adaptive_limits(
         self,
         *,
@@ -8561,9 +8690,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         rag_char_budget: int,
     ) -> dict[str, Any]:
         profile = self._get_ai_tutor_latency_profile(window=AI_TUTOR_LATENCY_ADAPT_WINDOW)
+        slo_reader = getattr(self, "_get_ai_tutor_latency_slo_status", None)
+        if callable(slo_reader):
+            try:
+                slo_raw = cast(Any, slo_reader(window=AI_TUTOR_LATENCY_ADAPT_WINDOW))
+            except Exception:
+                slo_raw = {}
+        else:
+            slo_raw = {}
+        slo = slo_raw if isinstance(slo_raw, dict) else {}
         load_level = str(profile.get("load_level", "normal") or "normal").strip().lower()
         if load_level not in {"normal", "warn", "critical"}:
             load_level = "normal"
+        slo_status = str(slo.get("status", "insufficient") or "insufficient").strip().lower()
+        hardening_applied = False
         if load_level == "critical":
             ctx_scale = 0.70
             rag_scale = 0.72
@@ -8576,20 +8716,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ctx_scale = 1.0
             rag_scale = 1.0
             top_k_cap = 12
+        if slo_status == "fail":
+            load_level = "critical"
+            ctx_scale = min(ctx_scale, 0.62)
+            rag_scale = min(rag_scale, 0.66)
+            top_k_cap = min(top_k_cap, 5)
+            hardening_applied = True
+        elif slo_status == "warn" and load_level == "normal":
+            load_level = "warn"
+            ctx_scale = min(ctx_scale, 0.84)
+            rag_scale = min(rag_scale, 0.86)
+            top_k_cap = min(top_k_cap, 8)
+            hardening_applied = True
         max_chars = max(120, int(round(float(context_max_chars) * float(ctx_scale))))
         max_tokens = max(80, int(round(float(context_max_tokens) * float(ctx_scale))))
         rag_char = max(800, int(round(float(rag_char_budget) * float(rag_scale))))
         base_top_k = max(4, int(rag_top_k))
         # Preserve multi-concept coverage floor while clamping load spikes.
-        target_floor = 4 + min(4, max(0, int(coverage_target_count) - 1))
+        target_floor = 4 + min(2 if load_level == "critical" else 4, max(0, int(coverage_target_count) - 1))
         rag_top_k_out = max(4, min(int(top_k_cap), max(base_top_k, int(target_floor))))
         return {
             "load_level": str(load_level),
+            "slo_status": str(slo_status),
+            "hardening_applied": bool(hardening_applied),
             "context_max_chars": int(max_chars),
             "context_max_tokens": int(max_tokens),
             "rag_top_k": int(rag_top_k_out),
             "rag_char_budget": int(rag_char),
             "profile": dict(profile),
+            "slo": dict(slo),
         }
 
     def _sanitize_ai_tutor_telemetry_event(self, event: Any) -> dict[str, Any] | None:
@@ -8677,6 +8832,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 maximum=20.0,
             ),
             "latency_load_level": str(event.get("latency_load_level", "normal") or "normal").strip().lower()[:16],
+            "latency_slo_status": str(event.get("latency_slo_status", "insufficient") or "insufficient").strip().lower()[:16],
             "prompt_chars": _clamp_int(event.get("prompt_chars", 0), default=0, minimum=0, maximum=500000),
             "response_chars": _clamp_int(event.get("response_chars", 0), default=0, minimum=0, maximum=500000),
             "prompt_tokens_est": _clamp_int(event.get("prompt_tokens_est", 0), default=0, minimum=0, maximum=200000),
@@ -8800,6 +8956,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "avg_generation_ms": 0.0,
                 "avg_stream_ms": 0.0,
                 "avg_first_token_ms": 0.0,
+                "latency_slo_status": "insufficient",
                 "avg_prompt_chars": 0.0,
                 "avg_response_chars": 0.0,
                 "avg_prompt_tokens_est": 0.0,
@@ -8978,6 +9135,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         p95_latency_ms = float(latencies_sorted[idx]) if latencies_sorted else 0.0
         avg_latency_ms = float(sum(latencies_sorted) / len(latencies_sorted)) if latencies_sorted else 0.0
         latency_spread_ratio = float(p90_latency_ms / max(1.0, p50_latency_ms)) if p90_latency_ms > 0 else 1.0
+        latency_slo_status = "insufficient"
+        slo_reader = getattr(self, "_get_ai_tutor_latency_slo_status", None)
+        if callable(slo_reader):
+            try:
+                slo_map = cast(Any, slo_reader(window=limit))
+            except Exception:
+                slo_map = {}
+            if isinstance(slo_map, dict):
+                latency_slo_status = str(slo_map.get("status", "insufficient") or "insufficient").strip().lower() or "insufficient"
         ranked_errors = dict(
             sorted(
                 error_classes.items(),
@@ -9002,6 +9168,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "avg_generation_ms": float(generation_ms_total / float(total)),
             "avg_stream_ms": float(stream_ms_total / float(total)),
             "avg_first_token_ms": float(first_token_ms_total / float(total)),
+            "latency_slo_status": str(latency_slo_status),
             "avg_prompt_chars": float(prompt_chars_total / float(total)),
             "avg_response_chars": float(response_chars_total / float(total)),
             "avg_prompt_tokens_est": float(prompt_tokens_total / float(total)),
