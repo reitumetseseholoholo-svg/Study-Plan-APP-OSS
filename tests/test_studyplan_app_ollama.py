@@ -12,6 +12,7 @@ from studyplan_ai_tutor import (
     AI_TUTOR_RAG_USAGE_HINT,
     assess_tutor_coverage,
     assemble_ai_tutor_turn_prompt,
+    build_tutor_coverage_checklist_note,
     build_targeted_rag_queries,
     build_rag_context_block,
     classify_ollama_error,
@@ -174,6 +175,87 @@ def test_normalize_gpt4all_filename_to_ollama_model():
         dummy, "Llama-3.2-3B-Instruct-Q4_0.gguf"
     )
     assert name == "gpt4all-llama-3-2-3b-instruct-q4-0:latest"
+
+
+def test_select_local_llm_model_auto_picks_best_quality_performance():
+    dummy = types.SimpleNamespace(
+        local_llm_model="",
+        local_llm_auto_select=True,
+        _ai_tutor_telemetry_events=[
+            {
+                "model": "small-3b:latest",
+                "outcome": "success",
+                "latency_ms": 5200,
+                "response_tokens_est": 120,
+                "coverage_target_count": 4,
+                "coverage_hit_count": 2,
+            },
+            {
+                "model": "small-3b:latest",
+                "outcome": "success",
+                "latency_ms": 5000,
+                "response_tokens_est": 110,
+                "coverage_target_count": 4,
+                "coverage_hit_count": 2,
+            },
+            {
+                "model": "mid-7b-instruct-q4:latest",
+                "outcome": "success",
+                "latency_ms": 1900,
+                "response_tokens_est": 170,
+                "coverage_target_count": 4,
+                "coverage_hit_count": 4,
+            },
+            {
+                "model": "mid-7b-instruct-q4:latest",
+                "outcome": "success",
+                "latency_ms": 1700,
+                "response_tokens_est": 165,
+                "coverage_target_count": 4,
+                "coverage_hit_count": 4,
+            },
+        ],
+        save_preferences=lambda: None,
+    )
+    dummy._coerce_local_llm_auto_select = types.MethodType(StudyPlanGUI._coerce_local_llm_auto_select, dummy)
+    dummy._is_local_llm_auto_select_enabled = types.MethodType(StudyPlanGUI._is_local_llm_auto_select_enabled, dummy)
+    dummy._estimate_local_llm_model_size_b = types.MethodType(StudyPlanGUI._estimate_local_llm_model_size_b, dummy)
+    dummy._heuristic_local_llm_model_prior = types.MethodType(StudyPlanGUI._heuristic_local_llm_model_prior, dummy)
+    dummy._score_local_llm_model = types.MethodType(StudyPlanGUI._score_local_llm_model, dummy)
+    dummy._rank_local_llm_models = types.MethodType(StudyPlanGUI._rank_local_llm_models, dummy)
+    picked, err = StudyPlanGUI._select_local_llm_model(
+        dummy,
+        model_override=None,
+        purpose="tutor",
+        available_models=["small-3b:latest", "mid-7b-instruct-q4:latest"],
+        persist=False,
+    )
+    assert err is None
+    assert picked == "mid-7b-instruct-q4:latest"
+
+
+def test_select_local_llm_model_manual_mode_uses_configured_model():
+    dummy = types.SimpleNamespace(
+        local_llm_model="manual-model:latest",
+        local_llm_auto_select=False,
+        _ai_tutor_telemetry_events=[],
+        save_preferences=lambda: None,
+    )
+    dummy._coerce_local_llm_auto_select = types.MethodType(StudyPlanGUI._coerce_local_llm_auto_select, dummy)
+    dummy._is_local_llm_auto_select_enabled = types.MethodType(StudyPlanGUI._is_local_llm_auto_select_enabled, dummy)
+    dummy._estimate_local_llm_model_size_b = types.MethodType(StudyPlanGUI._estimate_local_llm_model_size_b, dummy)
+    dummy._heuristic_local_llm_model_prior = types.MethodType(StudyPlanGUI._heuristic_local_llm_model_prior, dummy)
+    dummy._score_local_llm_model = types.MethodType(StudyPlanGUI._score_local_llm_model, dummy)
+    dummy._rank_local_llm_models = types.MethodType(StudyPlanGUI._rank_local_llm_models, dummy)
+    picked, err = StudyPlanGUI._select_local_llm_model(
+        dummy,
+        model_override=None,
+        purpose="coach",
+        available_models=["manual-model:latest", "other-model:latest"],
+        persist=False,
+    )
+    assert err is None
+    assert picked == "manual-model:latest"
 
 
 def test_sync_gpt4all_models_to_ollama_once_imports_missing_files(tmp_path, monkeypatch):
@@ -908,6 +990,21 @@ def test_extract_tutor_coverage_targets_and_queries_for_multi_concept_prompt():
     assert any("wacc" in t.lower() for t in targets)
 
 
+def test_extract_tutor_coverage_targets_uses_acronyms_for_long_single_clause_prompt():
+    prompt = "In one integrated explanation discuss CAPM WACC NPV and how they interact in project decisions under risk."
+    targets = extract_tutor_coverage_targets(prompt, max_targets=6)
+    joined = " | ".join(targets).lower()
+    assert "capm" in joined
+    assert "wacc" in joined
+    assert "npv" in joined
+
+
+def test_build_targeted_rag_queries_adds_relationship_blends():
+    prompt = "Compare CAPM and WACC and explain NPV sensitivity."
+    queries = build_targeted_rag_queries(prompt, max_targets=4)
+    assert any("relationship" in q.lower() for q in queries)
+
+
 def test_assess_tutor_coverage_reports_hits_and_misses():
     targets = ["CAPM assumptions", "WACC formula", "NPV sensitivity"]
     text = "CAPM assumptions matter. WACC formula uses weighted costs."
@@ -915,6 +1012,15 @@ def test_assess_tutor_coverage_reports_hits_and_misses():
     assert summary["target_count"] == 3
     assert summary["hit_count"] == 2
     assert "NPV sensitivity" in summary["missed_targets"]
+
+
+def test_build_tutor_coverage_checklist_note_when_targets_are_missed():
+    note = build_tutor_coverage_checklist_note(
+        "CAPM assumptions are important and WACC formula is used for discounting.",
+        ["CAPM assumptions", "WACC formula", "NPV sensitivity"],
+    )
+    assert "Coverage checklist:" in note
+    assert "T3: NPV sensitivity (follow-up needed)" in note
 
 
 def test_can_auto_execute_ai_tutor_action_respects_mode_and_confirmation():

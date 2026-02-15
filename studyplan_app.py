@@ -37,6 +37,8 @@ import warnings
 import wave
 import struct
 import threading
+import sqlite3
+import hashlib
 import ipaddress
 import urllib.error
 import urllib.parse
@@ -165,6 +167,8 @@ DEFAULT_OLLAMA_MODEL = os.environ.get("STUDYPLAN_OLLAMA_MODEL", "")
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 300
 DEFAULT_OLLAMA_TRANSIENT_RETRIES = 1
 DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS = 0.4
+DEFAULT_OLLAMA_AUTO_SELECT = True
+OLLAMA_MODEL_CACHE_TTL_SECONDS = 120
 DEFAULT_OLLAMA_CONTEXT = 2048
 try:
     DEFAULT_OLLAMA_NUM_THREADS = max(
@@ -231,6 +235,18 @@ AI_CONTEXT_DEFAULT_MAX_CHARS_TUTOR = 900
 AI_CONTEXT_DEFAULT_MAX_CHARS_COACH = 700
 AI_CONTEXT_DEFAULT_MAX_TOKENS_TUTOR = 280
 AI_CONTEXT_DEFAULT_MAX_TOKENS_COACH = 220
+AI_CACHE_SCHEMA_VERSION = 1
+AI_CACHE_DB_PATH_DEFAULT = os.path.expanduser("~/.config/studyplan/ai_runtime_cache_v1.sqlite3")
+AI_CACHE_QUERY_TTL_SECONDS_DEFAULT = 1200
+AI_CACHE_PROMPT_TTL_SECONDS_DEFAULT = 1800
+AI_CACHE_RESPONSE_TTL_SECONDS_DEFAULT = 21600
+AI_CACHE_MAX_EMBED_ROWS_DEFAULT = 200000
+AI_CACHE_MAX_QUERY_ROWS_DEFAULT = 50000
+AI_CACHE_MAX_PROMPT_ROWS_DEFAULT = 50000
+AI_CACHE_TOKEN_EST_MIN_CHARS_DEFAULT = 256
+AI_CACHE_PREFILTER_MAX_CANDIDATES_DEFAULT = 240
+AI_CACHE_MIN_TOKEN_LEN = 2
+AI_CACHE_MAX_TOKEN_LEN = 32
 MIN_POMODORO_CREDIT_MINUTES = 10
 MAX_SHORT_POMODOROS_PER_DAY = 2
 SHORT_POMODORO_XP = 2
@@ -953,6 +969,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.local_llm_enabled = True
         self.local_llm_host = str(DEFAULT_OLLAMA_HOST or "http://127.0.0.1:11434")
         self.local_llm_model = str(DEFAULT_OLLAMA_MODEL or "").strip()
+        self.local_llm_auto_select = bool(DEFAULT_OLLAMA_AUTO_SELECT)
         self.local_llm_timeout_seconds = int(DEFAULT_OLLAMA_TIMEOUT_SECONDS)
         self.ai_tutor_rag_pdfs = ""
         self.ai_tutor_rag_max_sources = int(DEFAULT_AI_TUTOR_RAG_MAX_SOURCES)
@@ -1003,6 +1020,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ai_tutor_rag_cache: dict[str, dict[str, Any]] = {}
         self._ai_tutor_rag_cache_order: list[str] = []
         self._ai_tutor_rag_cache_max = 4
+        self._ollama_models_cache: list[str] = []
+        self._ollama_models_cache_at = 0.0
+        self._ai_cache_lock = threading.RLock()
+        self._ai_cache_conn: sqlite3.Connection | None = None
+        self._ai_cache_ready = False
+        self._ai_cache_disabled = False
+        self._ai_cache_db_path = os.path.expanduser(
+            str(os.environ.get("STUDYPLAN_AI_CACHE_DB_PATH", AI_CACHE_DB_PATH_DEFAULT) or AI_CACHE_DB_PATH_DEFAULT)
+        )
+        self._ai_cache_debug_last: dict[str, int] = {
+            "rag_doc_cache_hit": 0,
+            "rag_query_cache_hit": 0,
+            "embedding_cache_hits": 0,
+            "embedding_cache_misses": 0,
+            "prompt_cache_hit": 0,
+            "response_cache_hit": 0,
+            "token_est_cache_hit": 0,
+            "model_stats_persisted": 0,
+        }
         self.load_preferences()
         apply_theme(bool(self.use_system_theme))
 
@@ -3122,6 +3158,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         _configure_text_row(llm_model_row, llm_model_label, llm_model_entry)
         llm_model_row.append(llm_model_label)
         llm_model_row.append(llm_model_entry)
+        llm_auto_select = Gtk.CheckButton(label="Auto-select best model (quality/performance)")
+        llm_auto_select.set_active(bool(getattr(self, "local_llm_auto_select", DEFAULT_OLLAMA_AUTO_SELECT)))
 
         llm_timeout_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         llm_timeout_label = Gtk.Label(label="Request timeout (sec)")
@@ -3136,6 +3174,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         content.append(llm_enabled)
         content.append(llm_host_row)
         content.append(llm_model_row)
+        content.append(llm_auto_select)
         content.append(llm_timeout_row)
 
         cockpit_title = Gtk.Label(label="Tutor Cockpit")
@@ -3550,6 +3589,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             host_val = str(llm_host_entry.get_text() or "").strip()
             self.local_llm_host = host_val if host_val else str(DEFAULT_OLLAMA_HOST)
             self.local_llm_model = str(llm_model_entry.get_text() or "").strip()
+            self.local_llm_auto_select = self._coerce_local_llm_auto_select(llm_auto_select.get_active())
             try:
                 timeout_val = int(llm_timeout_spin.get_value())
                 self.local_llm_timeout_seconds = max(10, min(600, timeout_val))
@@ -4246,6 +4286,867 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             writer.writerow(row)
         self._atomic_write_text_file(file_path, stream.getvalue(), mode=mode)
 
+    def _ai_cache_enabled(self) -> bool:
+        if bool(getattr(self, "_ai_cache_disabled", False)):
+            return False
+        raw = str(os.environ.get("STUDYPLAN_AI_CACHE_ENABLED", "1") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _ai_cache_int_env(self, name: str, default: int, minimum: int, maximum: int) -> int:
+        raw = str(os.environ.get(name, "") or "").strip()
+        if not raw:
+            value = int(default)
+        else:
+            try:
+                value = int(raw)
+            except Exception:
+                value = int(default)
+        return max(int(minimum), min(int(maximum), int(value)))
+
+    def _ai_cache_now_iso(self) -> str:
+        return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    def _ai_cache_db_path_safe(self) -> str:
+        raw = str(getattr(self, "_ai_cache_db_path", "") or "").strip()
+        if not raw:
+            raw = AI_CACHE_DB_PATH_DEFAULT
+        return os.path.abspath(os.path.expanduser(raw))
+
+    def _ai_cache_recover_corrupt_db(self, db_path: str) -> None:
+        try:
+            if not os.path.exists(db_path):
+                return
+            stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            corrupt_path = f"{db_path}.corrupt.{stamp}"
+            os.replace(db_path, corrupt_path)
+        except Exception:
+            pass
+
+    def _ai_cache_open(self) -> sqlite3.Connection | None:
+        if not self._ai_cache_enabled():
+            return None
+        conn_existing = getattr(self, "_ai_cache_conn", None)
+        if bool(getattr(self, "_ai_cache_ready", False)) and isinstance(conn_existing, sqlite3.Connection):
+            return conn_existing
+        with self._ai_cache_lock:
+            conn_existing = getattr(self, "_ai_cache_conn", None)
+            if bool(getattr(self, "_ai_cache_ready", False)) and isinstance(conn_existing, sqlite3.Connection):
+                return conn_existing
+            db_path = self._ai_cache_db_path_safe()
+            try:
+                os.makedirs(os.path.dirname(db_path), mode=0o700, exist_ok=True)
+                self._secure_user_path(os.path.dirname(db_path), 0o700)
+            except Exception:
+                pass
+            conn: sqlite3.Connection | None = None
+            try:
+                conn = sqlite3.connect(db_path, timeout=2.5, check_same_thread=False)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA synchronous=FULL;")
+                conn.execute("PRAGMA busy_timeout=2500;")
+                conn.execute("PRAGMA foreign_keys=ON;")
+                conn.execute("PRAGMA temp_store=MEMORY;")
+                self._ai_cache_init_schema(conn)
+                self._ai_cache_conn = conn
+                self._ai_cache_ready = True
+                self._ai_cache_disabled = False
+                return conn
+            except Exception:
+                try:
+                    if conn is not None:
+                        conn.close()
+                except Exception:
+                    pass
+                self._ai_cache_recover_corrupt_db(db_path)
+                try:
+                    conn = sqlite3.connect(db_path, timeout=2.5, check_same_thread=False)
+                    conn.row_factory = sqlite3.Row
+                    conn.execute("PRAGMA journal_mode=WAL;")
+                    conn.execute("PRAGMA synchronous=FULL;")
+                    conn.execute("PRAGMA busy_timeout=2500;")
+                    conn.execute("PRAGMA foreign_keys=ON;")
+                    conn.execute("PRAGMA temp_store=MEMORY;")
+                    self._ai_cache_init_schema(conn)
+                    self._ai_cache_conn = conn
+                    self._ai_cache_ready = True
+                    self._ai_cache_disabled = False
+                    return conn
+                except Exception:
+                    self._ai_cache_conn = None
+                    self._ai_cache_ready = False
+                    self._ai_cache_disabled = True
+                    return None
+
+    def _ai_cache_init_schema(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS cache_meta(
+              key TEXT PRIMARY KEY,
+              value TEXT,
+              updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS rag_docs(
+              doc_key TEXT PRIMARY KEY,
+              file_path TEXT,
+              mtime_ns INTEGER,
+              size_bytes INTEGER,
+              parser_version TEXT,
+              chunk_params_json TEXT,
+              text_hash TEXT,
+              chunk_count INTEGER,
+              created_at TEXT,
+              updated_at TEXT,
+              checksum TEXT
+            );
+            CREATE TABLE IF NOT EXISTS rag_chunks(
+              doc_key TEXT,
+              chunk_index INTEGER,
+              chunk_hash TEXT,
+              text TEXT,
+              token_count INTEGER,
+              PRIMARY KEY(doc_key, chunk_index)
+            );
+            CREATE TABLE IF NOT EXISTS rag_postings(
+              doc_key TEXT,
+              token TEXT,
+              chunk_ids_json TEXT,
+              idf REAL,
+              PRIMARY KEY(doc_key, token)
+            );
+            CREATE TABLE IF NOT EXISTS rag_query_cache(
+              cache_key TEXT PRIMARY KEY,
+              created_at TEXT,
+              expires_at TEXT,
+              snippet_ids_json TEXT,
+              meta_json TEXT
+            );
+            CREATE TABLE IF NOT EXISTS embeddings(
+              model_name TEXT,
+              chunk_hash TEXT,
+              dim INTEGER,
+              vec_blob BLOB,
+              created_at TEXT,
+              PRIMARY KEY(model_name, chunk_hash)
+            );
+            CREATE TABLE IF NOT EXISTS prompt_cache(
+              cache_key TEXT PRIMARY KEY,
+              kind TEXT,
+              text TEXT,
+              aux_json TEXT,
+              created_at TEXT,
+              expires_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS model_stats(
+              model_name TEXT PRIMARY KEY,
+              samples INTEGER,
+              success INTEGER,
+              cancelled INTEGER,
+              errors INTEGER,
+              latency_ms_sum REAL,
+              response_tokens_sum REAL,
+              coverage_target_sum INTEGER,
+              coverage_hit_sum INTEGER,
+              updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS response_cache(
+              cache_key TEXT PRIMARY KEY,
+              model_name TEXT,
+              response_text TEXT,
+              response_hash TEXT,
+              created_at TEXT,
+              expires_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS gap_q_fingerprints(
+              fingerprint TEXT PRIMARY KEY,
+              status TEXT,
+              reason TEXT,
+              model_name TEXT,
+              created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS token_estimates(
+              text_hash TEXT PRIMARY KEY,
+              char_len INTEGER,
+              tokens_est INTEGER,
+              created_at TEXT,
+              last_used_at TEXT
+            );
+            """
+        )
+        now_iso = self._ai_cache_now_iso()
+        conn.execute(
+            "INSERT OR REPLACE INTO cache_meta(key, value, updated_at) VALUES(?, ?, ?)",
+            ("schema_version", str(AI_CACHE_SCHEMA_VERSION), now_iso),
+        )
+
+    def _ai_cache_execute(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | list[Any] = (),
+        *,
+        write: bool = False,
+    ) -> sqlite3.Cursor | None:
+        conn = self._ai_cache_open()
+        if conn is None:
+            return None
+        try:
+            if write:
+                with self._ai_cache_lock:
+                    return conn.execute(sql, tuple(params))
+            return conn.execute(sql, tuple(params))
+        except Exception:
+            return None
+
+    def _ai_cache_fetchone(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | list[Any] = (),
+    ) -> dict[str, Any] | None:
+        cur = self._ai_cache_execute(sql, params, write=False)
+        if cur is None:
+            return None
+        try:
+            row = cur.fetchone()
+        except Exception:
+            return None
+        if row is None:
+            return None
+        if isinstance(row, sqlite3.Row):
+            return {str(k): row[k] for k in row.keys()}
+        return None
+
+    def _ai_cache_fetchall(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | list[Any] = (),
+    ) -> list[dict[str, Any]]:
+        cur = self._ai_cache_execute(sql, params, write=False)
+        if cur is None:
+            return []
+        try:
+            rows = cur.fetchall()
+        except Exception:
+            return []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if isinstance(row, sqlite3.Row):
+                out.append({str(k): row[k] for k in row.keys()})
+        return out
+
+    def _ai_cache_sha1(self, text: str) -> str:
+        return hashlib.sha1(str(text or "").encode("utf-8", errors="ignore")).hexdigest()
+
+    def _ai_cache_normalize_text(self, text: str) -> str:
+        return re.sub(r"\s+", " ", str(text or "").strip())
+
+    def _ai_cache_tokenize(self, text: str) -> list[str]:
+        norm = str(text or "").lower()
+        tokens = re.findall(r"[a-z0-9]+", norm)
+        out: list[str] = []
+        seen: set[str] = set()
+        for token in tokens:
+            if len(token) < AI_CACHE_MIN_TOKEN_LEN or len(token) > AI_CACHE_MAX_TOKEN_LEN:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            out.append(token)
+        return out
+
+    def _ai_cache_get_rag_chunk_text(self, doc_key: str, chunk_index: int) -> str:
+        row = self._ai_cache_fetchone(
+            "SELECT text FROM rag_chunks WHERE doc_key = ? AND chunk_index = ?",
+            (str(doc_key or ""), int(chunk_index)),
+        )
+        if not isinstance(row, dict):
+            return ""
+        return str(row.get("text", "") or "")
+
+    def _ai_cache_get_rag_doc(self, doc_key: str) -> dict[str, Any] | None:
+        header = self._ai_cache_fetchone(
+            "SELECT doc_key, file_path, chunk_count FROM rag_docs WHERE doc_key = ?",
+            (str(doc_key or ""),),
+        )
+        if not isinstance(header, dict):
+            return None
+        rows = self._ai_cache_fetchall(
+            "SELECT chunk_index, text, chunk_hash FROM rag_chunks WHERE doc_key = ? ORDER BY chunk_index ASC",
+            (str(doc_key or ""),),
+        )
+        if not rows:
+            return None
+        chunks: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                idx = int(row.get("chunk_index", 0) or 0)
+            except Exception:
+                idx = 0
+            text = str(row.get("text", "") or "").strip()
+            if not text:
+                continue
+            chunks.append(
+                {
+                    "chunk_index": int(idx),
+                    "text": text,
+                    "chunk_hash": str(row.get("chunk_hash", "") or ""),
+                }
+            )
+        if not chunks:
+            return None
+        return {
+            "cache_key": str(header.get("doc_key", "") or ""),
+            "path": str(header.get("file_path", "") or ""),
+            "chunks": chunks,
+        }
+
+    def _ai_cache_prune_table(self, table: str, pk_col: str, keep_rows: int) -> None:
+        conn = self._ai_cache_open()
+        if conn is None:
+            return
+        keep = max(1, int(keep_rows))
+        try:
+            with self._ai_cache_lock:
+                conn.execute("BEGIN IMMEDIATE")
+                count_row = conn.execute(f"SELECT COUNT(1) AS n FROM {table}").fetchone()
+                count_val = int(count_row["n"]) if isinstance(count_row, sqlite3.Row) else 0
+                if count_val > keep:
+                    drop_n = count_val - keep
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE {pk_col} IN (SELECT {pk_col} FROM {table} ORDER BY created_at ASC LIMIT ?)",
+                        (int(drop_n),),
+                    )
+                conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+
+    def _ai_cache_put_rag_doc(self, payload: dict[str, Any]) -> None:
+        conn = self._ai_cache_open()
+        if conn is None:
+            return
+        doc_key = str(payload.get("cache_key", "") or "").strip()
+        path = str(payload.get("path", "") or "").strip()
+        if not doc_key or not path:
+            return
+        chunks = payload.get("chunks", [])
+        if not isinstance(chunks, list) or not chunks:
+            return
+        parser_version = "rag_chunker_v1"
+        chunk_params = {"chunk_chars": 900, "overlap_chars": 120, "max_chunks": 1200}
+        normalized_text = "\n".join(self._ai_cache_normalize_text(str(row.get("text", "") or "")) for row in chunks if isinstance(row, dict))
+        text_hash = self._ai_cache_sha1(normalized_text)
+        checksum = self._ai_cache_sha1(f"{doc_key}|{text_hash}|{len(chunks)}")
+        try:
+            stat = os.stat(path)
+            size_bytes = int(stat.st_size)
+            mtime_ns = int(stat.st_mtime_ns)
+        except Exception:
+            size_bytes = 0
+            mtime_ns = 0
+        now_iso = self._ai_cache_now_iso()
+        postings: dict[str, set[int]] = {}
+        try:
+            with self._ai_cache_lock:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO rag_docs(
+                      doc_key, file_path, mtime_ns, size_bytes, parser_version, chunk_params_json,
+                      text_hash, chunk_count, created_at, updated_at, checksum
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM rag_docs WHERE doc_key = ?), ?), ?, ?)
+                    """,
+                    (
+                        doc_key,
+                        path,
+                        int(mtime_ns),
+                        int(size_bytes),
+                        parser_version,
+                        json.dumps(chunk_params, ensure_ascii=True, separators=(",", ":")),
+                        text_hash,
+                        int(len(chunks)),
+                        doc_key,
+                        now_iso,
+                        now_iso,
+                        checksum,
+                    ),
+                )
+                conn.execute("DELETE FROM rag_chunks WHERE doc_key = ?", (doc_key,))
+                conn.execute("DELETE FROM rag_postings WHERE doc_key = ?", (doc_key,))
+                for row in chunks:
+                    if not isinstance(row, dict):
+                        continue
+                    text = self._ai_cache_normalize_text(str(row.get("text", "") or ""))
+                    if not text:
+                        continue
+                    try:
+                        idx = int(row.get("chunk_index", 0) or 0)
+                    except Exception:
+                        idx = 0
+                    chunk_hash = str(row.get("chunk_hash", "") or "").strip() or self._ai_cache_sha1(text)
+                    token_count = max(0, int(math.ceil(float(len(text)) / 4.0)))
+                    conn.execute(
+                        "INSERT OR REPLACE INTO rag_chunks(doc_key, chunk_index, chunk_hash, text, token_count) VALUES(?, ?, ?, ?, ?)",
+                        (doc_key, int(idx), chunk_hash, text, token_count),
+                    )
+                    for token in self._ai_cache_tokenize(text):
+                        postings.setdefault(token, set()).add(int(idx))
+                if postings:
+                    total_docs = max(1, len(chunks))
+                    for token, chunk_ids in postings.items():
+                        ids_sorted = sorted(int(i) for i in chunk_ids)
+                        if not ids_sorted:
+                            continue
+                        df = len(ids_sorted)
+                        idf = float(math.log((1.0 + float(total_docs)) / (1.0 + float(df))) + 1.0)
+                        conn.execute(
+                            "INSERT OR REPLACE INTO rag_postings(doc_key, token, chunk_ids_json, idf) VALUES(?, ?, ?, ?)",
+                            (doc_key, token, json.dumps(ids_sorted, ensure_ascii=True, separators=(",", ":")), float(idf)),
+                        )
+                conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+
+    def _ai_cache_get_rag_postings_candidates(self, doc_key: str, query_text: str, max_candidates: int) -> list[int]:
+        key = str(doc_key or "").strip()
+        if not key:
+            return []
+        cap = max(24, min(1000, int(max_candidates)))
+        tokens = self._ai_cache_tokenize(query_text)
+        if not tokens:
+            return []
+        placeholders = ",".join("?" for _ in tokens)
+        params: list[Any] = [key] + list(tokens)
+        rows = self._ai_cache_fetchall(
+            f"SELECT token, chunk_ids_json, idf FROM rag_postings WHERE doc_key = ? AND token IN ({placeholders})",
+            params,
+        )
+        if not rows:
+            return []
+        scores: dict[int, float] = {}
+        for row in rows:
+            try:
+                idf = float(row.get("idf", 1.0) or 1.0)
+            except Exception:
+                idf = 1.0
+            raw_ids = str(row.get("chunk_ids_json", "") or "").strip()
+            if not raw_ids:
+                continue
+            try:
+                chunk_ids = json.loads(raw_ids)
+            except Exception:
+                chunk_ids = []
+            if not isinstance(chunk_ids, list):
+                continue
+            for val in chunk_ids:
+                try:
+                    idx = int(val)
+                except Exception:
+                    continue
+                scores[idx] = float(scores.get(idx, 0.0) + idf)
+        if not scores:
+            return []
+        ranked = sorted(scores.items(), key=lambda item: (-float(item[1]), int(item[0])))
+        return [int(idx) for idx, _ in ranked[:cap]]
+
+    def _ai_cache_get_rag_query(self, cache_key: str) -> dict[str, Any] | None:
+        row = self._ai_cache_fetchone(
+            "SELECT created_at, expires_at, snippet_ids_json, meta_json FROM rag_query_cache WHERE cache_key = ?",
+            (str(cache_key or ""),),
+        )
+        if not isinstance(row, dict):
+            return None
+        expires_at = str(row.get("expires_at", "") or "").strip()
+        if expires_at:
+            try:
+                exp = datetime.datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                if exp <= datetime.datetime.now(datetime.timezone.utc):
+                    return None
+            except Exception:
+                pass
+        try:
+            refs = json.loads(str(row.get("snippet_ids_json", "[]") or "[]"))
+        except Exception:
+            refs = []
+        try:
+            meta = json.loads(str(row.get("meta_json", "{}") or "{}"))
+        except Exception:
+            meta = {}
+        if not isinstance(refs, list):
+            refs = []
+        if not isinstance(meta, dict):
+            meta = {}
+        return {"snippet_refs": refs, "meta": meta}
+
+    def _ai_cache_put_rag_query(
+        self,
+        cache_key: str,
+        snippet_refs: list[dict[str, Any]],
+        meta: dict[str, Any],
+    ) -> None:
+        conn = self._ai_cache_open()
+        if conn is None:
+            return
+        ttl = self._ai_cache_int_env("STUDYPLAN_AI_CACHE_QUERY_TTL_SECONDS", AI_CACHE_QUERY_TTL_SECONDS_DEFAULT, 60, 86400)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expires = now + datetime.timedelta(seconds=int(ttl))
+        now_iso = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        exp_iso = expires.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        try:
+            with self._ai_cache_lock:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "INSERT OR REPLACE INTO rag_query_cache(cache_key, created_at, expires_at, snippet_ids_json, meta_json) VALUES(?, ?, ?, ?, ?)",
+                    (
+                        str(cache_key or ""),
+                        now_iso,
+                        exp_iso,
+                        json.dumps(list(snippet_refs or []), ensure_ascii=True, separators=(",", ":")),
+                        json.dumps(dict(meta or {}), ensure_ascii=True, separators=(",", ":")),
+                    ),
+                )
+                conn.execute("COMMIT")
+            self._ai_cache_prune_table(
+                "rag_query_cache",
+                "cache_key",
+                self._ai_cache_int_env("STUDYPLAN_AI_CACHE_MAX_QUERY_ROWS", AI_CACHE_MAX_QUERY_ROWS_DEFAULT, 100, 500000),
+            )
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+
+    def _ai_cache_get_embeddings(self, model_name: str, chunk_hashes: list[str]) -> dict[str, list[float]]:
+        key_model = str(model_name or "").strip()
+        wanted = [str(item or "").strip() for item in list(chunk_hashes or []) if str(item or "").strip()]
+        if not key_model or not wanted:
+            return {}
+        placeholders = ",".join("?" for _ in wanted)
+        params: list[Any] = [key_model] + wanted
+        rows = self._ai_cache_fetchall(
+            f"SELECT chunk_hash, vec_blob FROM embeddings WHERE model_name = ? AND chunk_hash IN ({placeholders})",
+            params,
+        )
+        out: dict[str, list[float]] = {}
+        for row in rows:
+            chunk_hash = str(row.get("chunk_hash", "") or "").strip()
+            raw = row.get("vec_blob", b"")
+            if not chunk_hash:
+                continue
+            if isinstance(raw, memoryview):
+                raw = raw.tobytes()
+            if not isinstance(raw, (bytes, bytearray)):
+                continue
+            try:
+                vec = json.loads(bytes(raw).decode("utf-8", "replace"))
+            except Exception:
+                vec = []
+            if isinstance(vec, list):
+                parsed: list[float] = []
+                for value in vec:
+                    try:
+                        parsed.append(float(value))
+                    except Exception:
+                        parsed.append(0.0)
+                if parsed:
+                    out[chunk_hash] = parsed
+        return out
+
+    def _ai_cache_put_embeddings(self, model_name: str, rows: list[dict[str, Any]]) -> None:
+        conn = self._ai_cache_open()
+        if conn is None:
+            return
+        key_model = str(model_name or "").strip()
+        if not key_model:
+            return
+        now_iso = self._ai_cache_now_iso()
+        try:
+            with self._ai_cache_lock:
+                conn.execute("BEGIN IMMEDIATE")
+                for row in list(rows or []):
+                    if not isinstance(row, dict):
+                        continue
+                    chunk_hash = str(row.get("chunk_hash", "") or "").strip()
+                    vec = row.get("vec")
+                    if not chunk_hash or not isinstance(vec, list) or not vec:
+                        continue
+                    vec_json = json.dumps([float(v) for v in vec], ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+                    conn.execute(
+                        "INSERT OR REPLACE INTO embeddings(model_name, chunk_hash, dim, vec_blob, created_at) VALUES(?, ?, ?, ?, ?)",
+                        (key_model, chunk_hash, int(len(vec)), sqlite3.Binary(vec_json), now_iso),
+                    )
+                conn.execute("COMMIT")
+            self._ai_cache_prune_table(
+                "embeddings",
+                "rowid",
+                self._ai_cache_int_env("STUDYPLAN_AI_CACHE_MAX_EMBED_ROWS", AI_CACHE_MAX_EMBED_ROWS_DEFAULT, 1000, 1000000),
+            )
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+
+    def _ai_cache_get_prompt(self, cache_key: str, kind: str) -> tuple[str, dict[str, Any]] | None:
+        row = self._ai_cache_fetchone(
+            "SELECT text, aux_json, expires_at FROM prompt_cache WHERE cache_key = ? AND kind = ?",
+            (str(cache_key or ""), str(kind or "")),
+        )
+        if not isinstance(row, dict):
+            return None
+        expires_at = str(row.get("expires_at", "") or "").strip()
+        if expires_at:
+            try:
+                exp = datetime.datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                if exp <= datetime.datetime.now(datetime.timezone.utc):
+                    return None
+            except Exception:
+                pass
+        text = str(row.get("text", "") or "")
+        try:
+            aux = json.loads(str(row.get("aux_json", "{}") or "{}"))
+        except Exception:
+            aux = {}
+        if not isinstance(aux, dict):
+            aux = {}
+        return text, aux
+
+    def _ai_cache_put_prompt(self, cache_key: str, kind: str, text: str, aux: dict[str, Any]) -> None:
+        conn = self._ai_cache_open()
+        if conn is None:
+            return
+        ttl = self._ai_cache_int_env("STUDYPLAN_AI_CACHE_PROMPT_TTL_SECONDS", AI_CACHE_PROMPT_TTL_SECONDS_DEFAULT, 60, 86400)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expires = now + datetime.timedelta(seconds=int(ttl))
+        now_iso = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        exp_iso = expires.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        try:
+            with self._ai_cache_lock:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "INSERT OR REPLACE INTO prompt_cache(cache_key, kind, text, aux_json, created_at, expires_at) VALUES(?, ?, ?, ?, ?, ?)",
+                    (
+                        str(cache_key or ""),
+                        str(kind or ""),
+                        str(text or ""),
+                        json.dumps(dict(aux or {}), ensure_ascii=True, separators=(",", ":")),
+                        now_iso,
+                        exp_iso,
+                    ),
+                )
+                conn.execute("COMMIT")
+            self._ai_cache_prune_table(
+                "prompt_cache",
+                "cache_key",
+                self._ai_cache_int_env("STUDYPLAN_AI_CACHE_MAX_PROMPT_ROWS", AI_CACHE_MAX_PROMPT_ROWS_DEFAULT, 100, 500000),
+            )
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+
+    def _ai_cache_get_model_stats(self, model_names: list[str]) -> dict[str, dict[str, Any]]:
+        names = [str(name or "").strip() for name in list(model_names or []) if str(name or "").strip()]
+        if not names:
+            return {}
+        placeholders = ",".join("?" for _ in names)
+        rows = self._ai_cache_fetchall(
+            f"""
+            SELECT model_name, samples, success, cancelled, errors, latency_ms_sum, response_tokens_sum,
+                   coverage_target_sum, coverage_hit_sum, updated_at
+            FROM model_stats
+            WHERE model_name IN ({placeholders})
+            """,
+            names,
+        )
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            name = str(row.get("model_name", "") or "").strip()
+            if name:
+                out[name] = dict(row)
+        return out
+
+    def _ai_cache_update_model_stats(self, event: dict[str, Any]) -> bool:
+        conn = self._ai_cache_open()
+        if conn is None:
+            return False
+        model = str(event.get("model", "") or "").strip()
+        if not model:
+            return False
+        outcome = str(event.get("outcome", "") or "").strip().lower()
+        success = 1 if outcome == "success" else 0
+        cancelled = 1 if outcome == "cancelled" else 0
+        errors = 1 if outcome not in {"success", "cancelled"} else 0
+        latency_ms = max(0, int(event.get("latency_ms", 0) or 0))
+        response_tokens_est = max(0, int(event.get("response_tokens_est", 0) or 0))
+        coverage_target = max(0, int(event.get("coverage_target_count", 0) or 0))
+        coverage_hit = max(0, int(event.get("coverage_hit_count", 0) or 0))
+        now_iso = self._ai_cache_now_iso()
+        try:
+            with self._ai_cache_lock:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """
+                    INSERT INTO model_stats(
+                      model_name, samples, success, cancelled, errors, latency_ms_sum,
+                      response_tokens_sum, coverage_target_sum, coverage_hit_sum, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(model_name) DO UPDATE SET
+                      samples = samples + excluded.samples,
+                      success = success + excluded.success,
+                      cancelled = cancelled + excluded.cancelled,
+                      errors = errors + excluded.errors,
+                      latency_ms_sum = latency_ms_sum + excluded.latency_ms_sum,
+                      response_tokens_sum = response_tokens_sum + excluded.response_tokens_sum,
+                      coverage_target_sum = coverage_target_sum + excluded.coverage_target_sum,
+                      coverage_hit_sum = coverage_hit_sum + excluded.coverage_hit_sum,
+                      updated_at = excluded.updated_at
+                    """,
+                    (
+                        model,
+                        1,
+                        success,
+                        cancelled,
+                        errors,
+                        float(latency_ms),
+                        float(response_tokens_est),
+                        int(coverage_target),
+                        int(coverage_hit),
+                        now_iso,
+                    ),
+                )
+                conn.execute("COMMIT")
+            return True
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            return False
+
+    def _ai_cache_get_response(self, cache_key: str) -> str:
+        row = self._ai_cache_fetchone(
+            "SELECT response_text, expires_at FROM response_cache WHERE cache_key = ?",
+            (str(cache_key or ""),),
+        )
+        if not isinstance(row, dict):
+            return ""
+        expires_at = str(row.get("expires_at", "") or "").strip()
+        if expires_at:
+            try:
+                exp = datetime.datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                if exp <= datetime.datetime.now(datetime.timezone.utc):
+                    return ""
+            except Exception:
+                pass
+        return str(row.get("response_text", "") or "")
+
+    def _ai_cache_put_response(self, cache_key: str, model_name: str, response_text: str) -> None:
+        ttl = self._ai_cache_int_env(
+            "STUDYPLAN_AI_CACHE_RESPONSE_TTL_SECONDS",
+            AI_CACHE_RESPONSE_TTL_SECONDS_DEFAULT,
+            0,
+            86400,
+        )
+        if ttl <= 0:
+            return
+        conn = self._ai_cache_open()
+        if conn is None:
+            return
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expires = now + datetime.timedelta(seconds=int(ttl))
+        now_iso = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        exp_iso = expires.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        text_val = str(response_text or "")
+        response_hash = self._ai_cache_sha1(text_val)
+        try:
+            with self._ai_cache_lock:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "INSERT OR REPLACE INTO response_cache(cache_key, model_name, response_text, response_hash, created_at, expires_at) VALUES(?, ?, ?, ?, ?, ?)",
+                    (str(cache_key or ""), str(model_name or ""), text_val, response_hash, now_iso, exp_iso),
+                )
+                conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+
+    def _ai_cache_get_gap_q_fingerprint(self, fingerprint: str) -> tuple[str, str]:
+        row = self._ai_cache_fetchone(
+            "SELECT status, reason FROM gap_q_fingerprints WHERE fingerprint = ?",
+            (str(fingerprint or ""),),
+        )
+        if not isinstance(row, dict):
+            return "", ""
+        return str(row.get("status", "") or ""), str(row.get("reason", "") or "")
+
+    def _ai_cache_put_gap_q_fingerprint(self, fingerprint: str, status: str, reason: str, model_name: str = "") -> None:
+        conn = self._ai_cache_open()
+        if conn is None:
+            return
+        fp = str(fingerprint or "").strip()
+        if not fp:
+            return
+        try:
+            with self._ai_cache_lock:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "INSERT OR REPLACE INTO gap_q_fingerprints(fingerprint, status, reason, model_name, created_at) VALUES(?, ?, ?, ?, ?)",
+                    (fp, str(status or ""), str(reason or ""), str(model_name or ""), self._ai_cache_now_iso()),
+                )
+                conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+
+    def _ai_cache_get_token_estimate(self, text_hash: str) -> int | None:
+        row = self._ai_cache_fetchone(
+            "SELECT tokens_est FROM token_estimates WHERE text_hash = ?",
+            (str(text_hash or ""),),
+        )
+        if not isinstance(row, dict):
+            return None
+        try:
+            return max(0, int(row.get("tokens_est", 0) or 0))
+        except Exception:
+            return None
+
+    def _ai_cache_put_token_estimate(self, text_hash: str, char_len: int, tokens_est: int) -> None:
+        conn = self._ai_cache_open()
+        if conn is None:
+            return
+        now_iso = self._ai_cache_now_iso()
+        try:
+            with self._ai_cache_lock:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """
+                    INSERT INTO token_estimates(text_hash, char_len, tokens_est, created_at, last_used_at)
+                    VALUES(?, ?, ?, ?, ?)
+                    ON CONFLICT(text_hash) DO UPDATE SET
+                      char_len = excluded.char_len,
+                      tokens_est = excluded.tokens_est,
+                      last_used_at = excluded.last_used_at
+                    """,
+                    (str(text_hash or ""), int(max(0, char_len)), int(max(0, tokens_est)), now_iso, now_iso),
+                )
+                conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+
     def _validate_selected_file_size(self, file_path: str, max_bytes: int, label: str) -> None:
         enforce_file_size_limit(
             file_path,
@@ -4282,6 +5183,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     model_val = data.get("local_llm_model", self.local_llm_model)
                     if isinstance(model_val, str):
                         self.local_llm_model = model_val.strip()
+                    self.local_llm_auto_select = self._coerce_local_llm_auto_select(
+                        data.get("local_llm_auto_select", DEFAULT_OLLAMA_AUTO_SELECT)
+                    )
                     timeout_val = data.get("local_llm_timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS)
                     try:
                         self.local_llm_timeout_seconds = max(10, min(600, int(timeout_val)))
@@ -4476,6 +5380,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "local_llm_enabled": bool(self.local_llm_enabled),
                 "local_llm_host": str(self.local_llm_host),
                 "local_llm_model": str(self.local_llm_model),
+                "local_llm_auto_select": bool(self._coerce_local_llm_auto_select(getattr(self, "local_llm_auto_select", DEFAULT_OLLAMA_AUTO_SELECT))),
                 "local_llm_timeout_seconds": int(self.local_llm_timeout_seconds),
                 "ai_tutor_autopilot_enabled": bool(getattr(self, "ai_tutor_autopilot_enabled", True)),
                 "ai_tutor_autonomy_mode": str(self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))),
@@ -4597,6 +5502,318 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         host_part = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
         return f"{scheme}://{host_part}:{int(port)}"
 
+    def _coerce_local_llm_auto_select(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return bool(value)
+        raw = str(value or "").strip().lower()
+        if not raw:
+            return bool(DEFAULT_OLLAMA_AUTO_SELECT)
+        return raw in {"1", "true", "yes", "on", "auto", "enabled"}
+
+    def _is_local_llm_auto_select_enabled(self) -> bool:
+        env_raw = str(os.environ.get("STUDYPLAN_LLM_AUTO_SELECT", "") or "").strip()
+        if env_raw:
+            return bool(self._coerce_local_llm_auto_select(env_raw))
+        return bool(
+            self._coerce_local_llm_auto_select(
+                getattr(self, "local_llm_auto_select", DEFAULT_OLLAMA_AUTO_SELECT)
+            )
+        )
+
+    def _estimate_local_llm_model_size_b(self, model_name: str) -> float | None:
+        raw = str(model_name or "").strip().lower()
+        if not raw:
+            return None
+        match = re.search(r"(?<![a-z0-9])(\d+(?:\.\d+)?)\s*(?:b|bn)(?![a-z0-9])", raw)
+        if not match:
+            return None
+        try:
+            value = float(match.group(1))
+        except Exception:
+            return None
+        if value <= 0.0:
+            return None
+        return float(value)
+
+    def _heuristic_local_llm_model_prior(self, model_name: str, purpose: str = "general") -> float:
+        name = str(model_name or "").strip().lower()
+        size_b = self._estimate_local_llm_model_size_b(name)
+        if size_b is None:
+            score = 0.56
+        else:
+            center = 8.0 if str(purpose or "").strip().lower() == "tutor" else 7.0
+            try:
+                dist = abs(math.log(max(size_b, 0.35), 2.0) - math.log(center, 2.0))
+            except Exception:
+                dist = 1.0
+            score = max(0.25, 1.0 - min(1.0, dist / 2.7))
+        quant_adjust = 0.0
+        if "q2" in name:
+            quant_adjust = -0.12
+        elif "q3" in name:
+            quant_adjust = -0.08
+        elif "q4" in name:
+            quant_adjust = 0.06
+        elif "q5" in name:
+            quant_adjust = 0.04
+        elif "q6" in name:
+            quant_adjust = 0.01
+        elif "q8" in name:
+            quant_adjust = -0.05
+        if "instruct" in name:
+            quant_adjust += 0.03
+        score += quant_adjust
+        return max(0.05, min(1.0, float(score)))
+
+    def _score_local_llm_model(
+        self,
+        model_name: str,
+        events: list[dict[str, Any]],
+        purpose: str = "general",
+    ) -> dict[str, Any]:
+        model = str(model_name or "").strip()
+        model_events: list[dict[str, Any]] = []
+        for row in list(events or []):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("model", "") or "").strip() == model:
+                model_events.append(row)
+        total = len(model_events)
+        success = 0
+        cancelled = 0
+        errors = 0
+        latencies: list[float] = []
+        tokens_per_sec: list[float] = []
+        coverage_scores: list[float] = []
+        for row in model_events:
+            outcome = str(row.get("outcome", "") or "").strip().lower()
+            if outcome == "success":
+                success += 1
+            elif outcome == "cancelled":
+                cancelled += 1
+            else:
+                errors += 1
+            try:
+                latency_ms = float(max(0, int(row.get("latency_ms", 0) or 0)))
+            except Exception:
+                latency_ms = 0.0
+            if latency_ms > 0.0:
+                latencies.append(latency_ms)
+                try:
+                    tokens = float(max(0, int(row.get("response_tokens_est", 0) or 0)))
+                except Exception:
+                    tokens = 0.0
+                if tokens > 0.0:
+                    tokens_per_sec.append(tokens / max(0.001, (latency_ms / 1000.0)))
+            try:
+                target_count = int(row.get("coverage_target_count", 0) or 0)
+            except Exception:
+                target_count = 0
+            if target_count > 0:
+                try:
+                    hit_count = int(row.get("coverage_hit_count", 0) or 0)
+                except Exception:
+                    hit_count = 0
+                coverage_scores.append(max(0.0, min(1.0, float(hit_count) / float(max(1, target_count)))))
+        success_rate = float(success / float(total)) if total > 0 else 0.0
+        error_rate = float(errors / float(total)) if total > 0 else 0.0
+        cancel_rate = float(cancelled / float(total)) if total > 0 else 0.0
+        coverage_score = (
+            float(sum(coverage_scores) / float(len(coverage_scores)))
+            if coverage_scores
+            else 0.62
+        )
+        if latencies:
+            latency_avg = float(sum(latencies) / float(len(latencies)))
+            latency_score = 1.0 / (1.0 + (latency_avg / 2200.0))
+        else:
+            latency_avg = 0.0
+            latency_score = 0.50
+        if tokens_per_sec:
+            tps_avg = float(sum(tokens_per_sec) / float(len(tokens_per_sec)))
+            tps_score = min(1.0, max(0.0, tps_avg / 20.0))
+        else:
+            tps_avg = 0.0
+            tps_score = 0.48
+        perf_score = (0.60 * tps_score) + (0.40 * latency_score)
+        quality_score = (
+            (0.55 * success_rate)
+            + (0.20 * (1.0 - error_rate))
+            + (0.15 * (1.0 - cancel_rate))
+            + (0.10 * coverage_score)
+        )
+        sample_weight = min(1.0, float(total) / 8.0)
+        prior_score = float(self._heuristic_local_llm_model_prior(model, purpose=purpose))
+        combined = (sample_weight * ((0.62 * quality_score) + (0.38 * perf_score))) + (
+            (1.0 - sample_weight) * ((0.55 * prior_score) + (0.45 * perf_score))
+        )
+        purpose_key = str(purpose or "").strip().lower()
+        if purpose_key in {"coach", "autopilot", "gap_generation"}:
+            combined = (0.55 * combined) + (0.45 * perf_score)
+        return {
+            "model": model,
+            "score": max(0.0, min(1.0, float(combined))),
+            "quality_score": max(0.0, min(1.0, float(quality_score))),
+            "perf_score": max(0.0, min(1.0, float(perf_score))),
+            "prior_score": max(0.0, min(1.0, float(prior_score))),
+            "sample_count": int(total),
+            "success_rate": float(success_rate),
+            "latency_ms_avg": float(latency_avg),
+            "tokens_per_sec_avg": float(tps_avg),
+        }
+
+    def _rank_local_llm_models(
+        self,
+        model_names: list[str],
+        purpose: str = "general",
+    ) -> list[dict[str, Any]]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for raw in list(model_names or []):
+            name = str(raw or "").strip()
+            if not name or name.startswith("(") or name in seen:
+                continue
+            seen.add(name)
+            cleaned.append(name)
+        if not cleaned:
+            return []
+        events = [
+            row
+            for row in list(getattr(self, "_ai_tutor_telemetry_events", []) or [])[-240:]
+            if isinstance(row, dict)
+        ]
+        cache_stats_get = getattr(self, "_ai_cache_get_model_stats", None)
+        disk_stats_raw = cache_stats_get(cleaned) if callable(cache_stats_get) else {}
+        disk_stats = disk_stats_raw if isinstance(disk_stats_raw, dict) else {}
+        ranked: list[dict[str, Any]] = []
+        for name in cleaned:
+            row = self._score_local_llm_model(name, events, purpose=purpose)
+            stats = disk_stats.get(name, {})
+            if isinstance(stats, dict) and stats:
+                try:
+                    samples_disk = max(0, int(stats.get("samples", 0) or 0))
+                    success_disk = max(0, int(stats.get("success", 0) or 0))
+                    cancelled_disk = max(0, int(stats.get("cancelled", 0) or 0))
+                    errors_disk = max(0, int(stats.get("errors", 0) or 0))
+                    latency_sum = max(0.0, float(stats.get("latency_ms_sum", 0.0) or 0.0))
+                    tokens_sum = max(0.0, float(stats.get("response_tokens_sum", 0.0) or 0.0))
+                    coverage_target_sum = max(0, int(stats.get("coverage_target_sum", 0) or 0))
+                    coverage_hit_sum = max(0, int(stats.get("coverage_hit_sum", 0) or 0))
+                    success_rate = float(success_disk / float(samples_disk)) if samples_disk > 0 else 0.0
+                    cancel_rate = float(cancelled_disk / float(samples_disk)) if samples_disk > 0 else 0.0
+                    error_rate = float(errors_disk / float(samples_disk)) if samples_disk > 0 else 0.0
+                    coverage_score = (
+                        float(coverage_hit_sum / float(coverage_target_sum))
+                        if coverage_target_sum > 0
+                        else 0.62
+                    )
+                    latency_avg = float(latency_sum / float(samples_disk)) if samples_disk > 0 else 0.0
+                    tps_avg = float(tokens_sum / max(1.0, latency_sum / 1000.0)) if latency_sum > 0 else 0.0
+                    latency_score = 1.0 / (1.0 + (latency_avg / 2200.0)) if latency_avg > 0 else 0.50
+                    tps_score = min(1.0, max(0.0, tps_avg / 20.0))
+                    perf_score = (0.60 * tps_score) + (0.40 * latency_score)
+                    quality_score = (
+                        (0.55 * success_rate)
+                        + (0.20 * (1.0 - error_rate))
+                        + (0.15 * (1.0 - cancel_rate))
+                        + (0.10 * coverage_score)
+                    )
+                    combined_disk = (0.62 * quality_score) + (0.38 * perf_score)
+                    blend = min(0.45, float(samples_disk) / 40.0)
+                    row["score"] = max(
+                        0.0,
+                        min(
+                            1.0,
+                            ((1.0 - blend) * float(row.get("score", 0.0) or 0.0)) + (blend * combined_disk),
+                        ),
+                    )
+                    row["sample_count"] = int(max(int(row.get("sample_count", 0) or 0), samples_disk))
+                except Exception:
+                    pass
+            ranked.append(row)
+        ranked.sort(
+            key=lambda row: (
+                -float(row.get("score", 0.0) or 0.0),
+                -int(row.get("sample_count", 0) or 0),
+                -float(row.get("prior_score", 0.0) or 0.0),
+                str(row.get("model", "") or ""),
+            )
+        )
+        return ranked
+
+    def _get_ollama_models_cached(
+        self,
+        force_refresh: bool = False,
+        max_age_seconds: int = OLLAMA_MODEL_CACHE_TTL_SECONDS,
+    ) -> tuple[list[str], str | None]:
+        try:
+            age_cap = max(5, min(1800, int(max_age_seconds)))
+        except Exception:
+            age_cap = int(OLLAMA_MODEL_CACHE_TTL_SECONDS)
+        now_ts = float(time.monotonic())
+        cached = [str(item).strip() for item in list(getattr(self, "_ollama_models_cache", []) or []) if str(item).strip()]
+        try:
+            cached_at = float(getattr(self, "_ollama_models_cache_at", 0.0) or 0.0)
+        except Exception:
+            cached_at = 0.0
+        if (not force_refresh) and cached and (now_ts - cached_at) <= float(age_cap):
+            return cached, None
+        models, err = self._ollama_list_models()
+        if err:
+            if cached and not force_refresh:
+                return cached, None
+            return [], err
+        self._ollama_models_cache = [str(item).strip() for item in list(models or []) if str(item).strip()]
+        self._ollama_models_cache_at = now_ts
+        return list(self._ollama_models_cache), None
+
+    def _select_local_llm_model(
+        self,
+        model_override: str | None = None,
+        purpose: str = "general",
+        available_models: list[str] | None = None,
+        persist: bool = True,
+    ) -> tuple[str, str | None]:
+        override = str(model_override or "").strip()
+        if override:
+            return override, None
+        if isinstance(available_models, list):
+            models = [
+                str(item).strip()
+                for item in list(available_models or [])
+                if str(item or "").strip() and not str(item or "").strip().startswith("(")
+            ]
+            list_err = None
+        else:
+            models, list_err = self._get_ollama_models_cached(force_refresh=False)
+        if list_err:
+            fallback = str(getattr(self, "local_llm_model", "") or "").strip()
+            if fallback:
+                return fallback, f"Ollama model lookup failed: {list_err}"
+            return "", f"Ollama model lookup failed: {list_err}"
+        if not models:
+            return "", "No local Ollama models found."
+        configured = str(getattr(self, "local_llm_model", "") or "").strip()
+        auto_select = bool(self._is_local_llm_auto_select_enabled())
+        selected = ""
+        if auto_select:
+            ranked = self._rank_local_llm_models(models, purpose=purpose)
+            if ranked:
+                selected = str(ranked[0].get("model", "") or "").strip()
+        if not selected:
+            if configured and configured in models:
+                selected = configured
+            else:
+                selected = str(models[0]).strip()
+        if selected and selected != configured:
+            self.local_llm_model = selected
+            if bool(persist):
+                try:
+                    self.save_preferences()
+                except Exception:
+                    pass
+        return selected, None
+
     def _get_ollama_retry_limit(self) -> int:
         raw = str(os.environ.get("STUDYPLAN_OLLAMA_TRANSIENT_RETRIES", DEFAULT_OLLAMA_TRANSIENT_RETRIES) or "")
         try:
@@ -4685,6 +5902,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             name = str(item.get("name", "") or "").strip()
             if name and name not in models:
                 models.append(name)
+        self._ollama_models_cache = list(models)
+        self._ollama_models_cache_at = float(time.monotonic())
         return models, None
 
     def _gpt4all_auto_import_enabled(self) -> bool:
@@ -4832,6 +6051,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _can_use_response_cache(self, prompt_text: str) -> bool:
+        text = str(prompt_text or "")
+        if not text:
+            return False
+        lower = text.lower()
+        if "return exactly one json object" in lower:
+            return False
+        if "json only (no prose)" in lower:
+            return False
+        return True
+
     def _ollama_generate_text(self, model: str, prompt: str) -> tuple[str, str | None]:
         model_name = str(model or "").strip()
         prompt_text = str(prompt or "").strip()
@@ -4839,6 +6069,34 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return "", "model is required"
         if not prompt_text:
             return "", "prompt is empty"
+        cache_allowed_fn = getattr(self, "_can_use_response_cache", None)
+        use_response_cache = bool(cache_allowed_fn(prompt_text)) if callable(cache_allowed_fn) else False
+        cache_hash = getattr(self, "_ai_cache_sha1", None)
+        cache_get_response = getattr(self, "_ai_cache_get_response", None)
+        cache_put_response = getattr(self, "_ai_cache_put_response", None)
+        response_cache_key = ""
+        if use_response_cache and callable(cache_hash):
+            response_cache_key = cache_hash(
+                json.dumps(
+                    {
+                        "model": model_name,
+                        "prompt": prompt_text,
+                        "num_ctx": int(DEFAULT_OLLAMA_CONTEXT),
+                        "num_thread": int(DEFAULT_OLLAMA_NUM_THREADS),
+                        "temperature": 0.2,
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+            cached_response = cache_get_response(response_cache_key) if callable(cache_get_response) else ""
+            if cached_response:
+                cached_text = str(cached_response)
+                cache_debug = getattr(self, "_ai_cache_debug_last", None)
+                if isinstance(cache_debug, dict):
+                    cache_debug["response_cache_hit"] = int(cache_debug.get("response_cache_hit", 0) or 0) + 1
+                return cached_text, None
         payload = {
             "model": model_name,
             "prompt": prompt_text,
@@ -4868,6 +6126,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return "", "invalid Ollama response"
             response_text = str(data.get("response", "") or "").strip()
             if response_text:
+                if use_response_cache and response_cache_key and callable(cache_put_response):
+                    cache_put_response(response_cache_key, model_name, response_text)
                 return response_text, None
             api_err = str(data.get("error", "") or "").strip()
             if api_err:
@@ -5059,11 +6319,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _ai_tutor_rag_doc_cache_key(self, file_path: str) -> str:
         abs_path = os.path.abspath(os.path.expanduser(str(file_path or "")))
+        parser_version = "rag_chunker_v1"
+        chunk_params = "900:120:1200"
         try:
             stat = os.stat(abs_path)
-            return f"{abs_path}|{int(stat.st_size)}|{int(stat.st_mtime_ns)}"
+            return f"{abs_path}|{int(stat.st_size)}|{int(stat.st_mtime_ns)}|{parser_version}|{chunk_params}"
         except Exception:
-            return abs_path
+            return f"{abs_path}|{parser_version}|{chunk_params}"
 
     def _load_ai_tutor_rag_doc(self, file_path: str) -> tuple[dict[str, Any] | None, str | None]:
         path = os.path.abspath(os.path.expanduser(str(file_path or "")))
@@ -5079,6 +6341,33 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     pass
             self._ai_tutor_rag_cache_order.append(cache_key)
             return dict(cached), None
+        cache_get_doc = getattr(self, "_ai_cache_get_rag_doc", None)
+        cache_put_doc = getattr(self, "_ai_cache_put_rag_doc", None)
+        cache_hash = getattr(self, "_ai_cache_sha1", None)
+        if not callable(cache_hash):
+            cache_hash = lambda text: hashlib.sha1(str(text or "").encode("utf-8", errors="ignore")).hexdigest()
+        disk_cached = cache_get_doc(cache_key) if callable(cache_get_doc) else None
+        if isinstance(disk_cached, dict):
+            disk_rows = disk_cached.get("chunks", [])
+            if isinstance(disk_rows, list) and disk_rows:
+                payload_disk: dict[str, Any] = {
+                    "cache_key": cache_key,
+                    "path": path,
+                    "source": os.path.basename(path),
+                    "chunks": list(disk_rows),
+                    "meta": {"disk_cache_hit": True},
+                }
+                self._ai_tutor_rag_cache[cache_key] = dict(payload_disk)
+                if cache_key in self._ai_tutor_rag_cache_order:
+                    try:
+                        self._ai_tutor_rag_cache_order.remove(cache_key)
+                    except Exception:
+                        pass
+                self._ai_tutor_rag_cache_order.append(cache_key)
+                cache_debug = getattr(self, "_ai_cache_debug_last", None)
+                if isinstance(cache_debug, dict):
+                    cache_debug["rag_doc_cache_hit"] = int(cache_debug.get("rag_doc_cache_hit", 0) or 0) + 1
+                return payload_disk, None
         try:
             text, meta = self._extract_pdf_text_for_syllabus(path)
         except Exception as exc:
@@ -5097,6 +6386,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 {
                     "chunk_index": int(idx),
                     "text": snippet,
+                    "chunk_hash": cache_hash(snippet.lower()),
                 }
             )
         if not chunk_rows:
@@ -5119,6 +6409,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         while len(self._ai_tutor_rag_cache_order) > limit:
             stale_key = self._ai_tutor_rag_cache_order.pop(0)
             self._ai_tutor_rag_cache.pop(stale_key, None)
+        if callable(cache_put_doc):
+            cache_put_doc(payload)
         return payload, None
 
     def _build_ai_tutor_rag_prompt_context(
@@ -5167,6 +6459,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             neighbor_window: int = 0,
             target_query_count: int = 0,
             target_hit_snippets: int = 0,
+            rag_doc_cache_hit: int = 0,
+            rag_query_cache_hit: int = 0,
+            embedding_cache_hits: int = 0,
+            embedding_cache_misses: int = 0,
+            query_cache_key: str = "",
+            prefilter_kept: int = 0,
         ) -> dict[str, Any]:
             snippet_rows = [row for row in list(snippets or []) if isinstance(row, dict)]
             return {
@@ -5190,7 +6488,34 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "neighbor_window": int(max(0, neighbor_window)),
                 "target_query_count": int(max(0, target_query_count)),
                 "target_hit_snippets": int(max(0, target_hit_snippets)),
+                "rag_doc_cache_hit": int(max(0, rag_doc_cache_hit)),
+                "rag_query_cache_hit": int(max(0, rag_query_cache_hit)),
+                "embedding_cache_hits": int(max(0, embedding_cache_hits)),
+                "embedding_cache_misses": int(max(0, embedding_cache_misses)),
+                "query_cache_key": str(query_cache_key or ""),
+                "prefilter_kept": int(max(0, prefilter_kept)),
             }
+
+        def _fallback_sha1(text: str) -> str:
+            return hashlib.sha1(str(text or "").encode("utf-8", errors="ignore")).hexdigest()
+
+        cache_sha1_raw = getattr(self, "_ai_cache_sha1", None)
+
+        def cache_sha1(text: str) -> str:
+            if callable(cache_sha1_raw):
+                try:
+                    return str(cache_sha1_raw(text))
+                except Exception:
+                    pass
+            return _fallback_sha1(text)
+        cache_get_prompt = getattr(self, "_ai_cache_get_prompt", None)
+        cache_put_prompt = getattr(self, "_ai_cache_put_prompt", None)
+        cache_get_query = getattr(self, "_ai_cache_get_rag_query", None)
+        cache_put_query = getattr(self, "_ai_cache_put_rag_query", None)
+        cache_get_chunk_text = getattr(self, "_ai_cache_get_rag_chunk_text", None)
+        cache_get_postings = getattr(self, "_ai_cache_get_rag_postings_candidates", None)
+        cache_get_embeddings = getattr(self, "_ai_cache_get_embeddings", None)
+        cache_put_embeddings = getattr(self, "_ai_cache_put_embeddings", None)
 
         lexical_top_n = _env_int("STUDYPLAN_AI_TUTOR_RAG_LEXICAL_TOP_N", 24, 12, 60)
         candidate_cap = _env_int("STUDYPLAN_AI_TUTOR_RAG_CANDIDATE_CAP", 72, 24, 160)
@@ -5211,10 +6536,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
         docs: list[dict[str, Any]] = []
         errors: list[str] = []
+        rag_doc_cache_hit_count = 0
         for pdf_path in source_pdfs:
             doc_payload, err = self._load_ai_tutor_rag_doc(pdf_path)
             if isinstance(doc_payload, dict):
                 docs.append(doc_payload)
+                meta = doc_payload.get("meta", {})
+                if isinstance(meta, dict) and bool(meta.get("disk_cache_hit", False)):
+                    rag_doc_cache_hit_count += 1
             elif err:
                 errors.append(f"{os.path.basename(pdf_path)}: {err}")
         if not docs:
@@ -5243,7 +6572,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             " ".join(recent_user_lines).strip(),
         ]
         query_text = " ".join(part for part in query_parts if part).strip()
-        target_queries = build_targeted_rag_queries(str(user_prompt or ""), max_targets=4)
+        target_query_key = cache_sha1(
+            json.dumps(
+                {
+                    "kind": "target_queries",
+                    "prompt": str(user_prompt or ""),
+                    "module": str(getattr(self, "module_title", "") or ""),
+                    "topic": str(getattr(self, "current_topic", "") or ""),
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        target_queries: list[str] = []
+        cached_target = cache_get_prompt(target_query_key, "target_queries") if callable(cache_get_prompt) else None
+        if isinstance(cached_target, tuple):
+            text_cached, _aux_cached = cached_target
+            try:
+                parsed = json.loads(str(text_cached or "[]"))
+            except Exception:
+                parsed = []
+            if isinstance(parsed, list):
+                target_queries = [str(item or "").strip() for item in parsed if str(item or "").strip()]
+        if not target_queries:
+            target_queries = build_targeted_rag_queries(str(user_prompt or ""), max_targets=4)
+            if callable(cache_put_prompt):
+                cache_put_prompt(
+                    target_query_key,
+                    "target_queries",
+                    json.dumps(target_queries, ensure_ascii=True, separators=(",", ":")),
+                    {"count": len(target_queries)},
+                )
         query_variants: list[tuple[str, float]] = [(query_text, 1.0)]
         for target_query in target_queries:
             tq = str(target_query or "").strip()
@@ -5266,6 +6626,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             prompt_tokens_est = max(0, int(math.ceil(float(len(query_text)) / 4.0)))
         dynamic_target = 4 + max(0, int(prompt_tokens_est // 120))
         top_k_target = _clamp_int(max(dynamic_target, requested_top_k), 4, 4, top_k_max)
+        doc_keys = sorted(
+            {
+                str(doc.get("cache_key", "") or "")
+                for doc in docs
+                if isinstance(doc, dict) and str(doc.get("cache_key", "") or "")
+            }
+        )
+        rag_query_cache_key = cache_sha1(
+            json.dumps(
+                {
+                    "prompt_hash": cache_sha1(query_text),
+                    "topic": str(getattr(self, "current_topic", "") or ""),
+                    "rag_config": {
+                        "lexical_top_n": lexical_top_n,
+                        "candidate_cap": candidate_cap,
+                        "top_k_target": top_k_target,
+                        "neighbor_window": neighbor_window,
+                        "char_budget": char_budget,
+                        "rag_min_score": rag_min_score,
+                    },
+                    "semantic_enabled": bool(getattr(self, "semantic_enabled", True)),
+                    "doc_keys": doc_keys,
+                    "target_queries": target_queries,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
         if not query_text:
             return "", _make_meta(
                 len(docs),
@@ -5275,18 +6664,108 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 neighbor_window=neighbor_window,
                 char_budget=char_budget,
                 target_query_count=len(target_queries),
+                rag_doc_cache_hit=rag_doc_cache_hit_count,
+                query_cache_key=rag_query_cache_key,
             )
+        cached_query = cache_get_query(rag_query_cache_key) if callable(cache_get_query) else None
+        if isinstance(cached_query, dict):
+            snippet_refs = cached_query.get("snippet_refs", [])
+            if isinstance(snippet_refs, list) and snippet_refs:
+                cached_snippets: list[dict[str, Any]] = []
+                char_used_cached = 0
+                for ref in snippet_refs:
+                    if not isinstance(ref, dict):
+                        continue
+                    doc_key = str(ref.get("doc_key", "") or "")
+                    try:
+                        chunk_idx = int(ref.get("chunk_index", 0) or 0)
+                    except Exception:
+                        chunk_idx = 0
+                    text = (
+                        str(cache_get_chunk_text(doc_key, chunk_idx) or "")
+                        if callable(cache_get_chunk_text)
+                        else ""
+                    )
+                    if not text:
+                        continue
+                    if char_used_cached >= int(char_budget):
+                        break
+                    remaining = int(char_budget) - int(char_used_cached)
+                    snippet_text = text if len(text) <= remaining else f"{text[: max(80, remaining - 3)].rstrip()}..."
+                    if not snippet_text:
+                        continue
+                    cached_snippets.append(
+                        {
+                            "id": f"S{len(cached_snippets) + 1}",
+                            "source": str(ref.get("source", "") or ""),
+                            "text": snippet_text,
+                            "chunk_index": int(chunk_idx),
+                            "score": float(ref.get("score", 0.0) or 0.0),
+                            "target_hits": int(ref.get("target_hits", 0) or 0),
+                            "doc_key": doc_key,
+                        }
+                    )
+                    char_used_cached += len(snippet_text)
+                    if len(cached_snippets) >= int(top_k_target):
+                        break
+                if cached_snippets:
+                    context_cached = build_rag_context_block(cached_snippets)
+                    target_hit_snippets = sum(
+                        1 for row in cached_snippets if int(row.get("target_hits", 0) or 0) > 0
+                    )
+                    meta = _make_meta(
+                        len(docs),
+                        "cache_query_hit",
+                        errors,
+                        cached_snippets,
+                        candidate_count=int(cached_query.get("meta", {}).get("candidate_count", 0) if isinstance(cached_query.get("meta", {}), dict) else 0),
+                        selected_primary_count=int(cached_query.get("meta", {}).get("selected_primary_count", 0) if isinstance(cached_query.get("meta", {}), dict) else 0),
+                        selected_total_count=int(cached_query.get("meta", {}).get("selected_total_count", 0) if isinstance(cached_query.get("meta", {}), dict) else len(cached_snippets)),
+                        char_budget=char_budget,
+                        char_used=char_used_cached,
+                        top_k_target=top_k_target,
+                        neighbor_window=neighbor_window,
+                        target_query_count=len(target_queries),
+                        target_hit_snippets=target_hit_snippets,
+                        rag_doc_cache_hit=rag_doc_cache_hit_count,
+                        rag_query_cache_hit=1,
+                        query_cache_key=rag_query_cache_key,
+                    )
+                    cache_debug = getattr(self, "_ai_cache_debug_last", None)
+                    if isinstance(cache_debug, dict):
+                        cache_debug["rag_query_cache_hit"] = int(cache_debug.get("rag_query_cache_hit", 0) or 0) + 1
+                    return context_cached, meta
         candidates: list[dict[str, Any]] = []
         chunk_lookup: dict[tuple[str, int], dict[str, Any]] = {}
         lex_lookup: dict[tuple[str, int], float] = {}
+        prefilter_kept_total = 0
+        int_env = getattr(self, "_ai_cache_int_env", None)
+        if callable(int_env):
+            try:
+                prefilter_raw = cast(
+                    Any,
+                    int_env(
+                        "STUDYPLAN_AI_CACHE_PREFILTER_MAX_CANDIDATES",
+                        AI_CACHE_PREFILTER_MAX_CANDIDATES_DEFAULT,
+                        24,
+                        1000,
+                    ),
+                )
+                prefilter_cap = int(prefilter_raw)
+            except Exception:
+                prefilter_cap = AI_CACHE_PREFILTER_MAX_CANDIDATES_DEFAULT
+        else:
+            prefilter_cap = AI_CACHE_PREFILTER_MAX_CANDIDATES_DEFAULT
         for doc in docs:
             rows = doc.get("chunks", [])
             if not isinstance(rows, list) or not rows:
                 continue
             source_name = str(doc.get("source", "") or "").strip() or "PDF source"
             doc_path = str(doc.get("path", "") or "").strip() or source_name
+            doc_key = str(doc.get("cache_key", "") or "").strip()
             chunk_texts: list[str] = []
             chunk_indices: list[int] = []
+            chunk_hashes: list[str] = []
             for fallback_idx, row in enumerate(rows):
                 if not isinstance(row, dict):
                     continue
@@ -5297,16 +6776,49 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     chunk_idx = int(row.get("chunk_index", fallback_idx))
                 except Exception:
                     chunk_idx = int(fallback_idx)
+                chunk_hash = str(row.get("chunk_hash", "") or "").strip() or cache_sha1(text.lower())
                 chunk_lookup[(doc_path, int(chunk_idx))] = {
                     "source": source_name,
                     "path": doc_path,
+                    "doc_key": doc_key,
                     "chunk_index": int(chunk_idx),
                     "text": text,
+                    "chunk_hash": chunk_hash,
                 }
                 chunk_texts.append(text)
                 chunk_indices.append(int(chunk_idx))
+                chunk_hashes.append(chunk_hash)
             if not chunk_texts:
                 continue
+            prefiltered_indices: list[int] = []
+            if doc_key:
+                prefiltered_raw = (
+                    cache_get_postings(
+                        doc_key,
+                        query_text,
+                        max_candidates=min(int(prefilter_cap), max(int(lexical_top_n * 3), int(top_k_target * 4))),
+                    )
+                    if callable(cache_get_postings)
+                    else []
+                )
+                prefiltered_real_indices = (
+                    list(prefiltered_raw)
+                    if isinstance(prefiltered_raw, (list, tuple, set))
+                    else []
+                )
+                if prefiltered_real_indices:
+                    real_to_local = {int(real_idx): idx for idx, real_idx in enumerate(chunk_indices)}
+                    for real_idx in prefiltered_real_indices:
+                        if int(real_idx) in real_to_local:
+                            prefiltered_indices.append(int(real_to_local[int(real_idx)]))
+            if prefiltered_indices:
+                prefilter_kept_total += len(prefiltered_indices)
+                local_keep = set(prefiltered_indices)
+                chunk_texts = [text for idx, text in enumerate(chunk_texts) if idx in local_keep]
+                chunk_hashes = [val for idx, val in enumerate(chunk_hashes) if idx in local_keep]
+                chunk_indices = [val for idx, val in enumerate(chunk_indices) if idx in local_keep]
+                if not chunk_texts:
+                    continue
             doc_scores: dict[int, dict[str, Any]] = {}
             for query_idx, (query_variant, weight) in enumerate(query_variants):
                 ranked = lexical_rank_rag_chunks(query_variant, chunk_texts, top_n=lexical_top_n)
@@ -5353,8 +6865,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     {
                         "source": source_name,
                         "path": doc_path,
+                        "doc_key": doc_key,
                         "chunk_index": real_idx,
                         "text": chunk_text,
+                        "chunk_hash": str(chunk_hashes[chunk_idx] if chunk_idx < len(chunk_hashes) else ""),
                         "lex_score": float(blended_lex),
                         "sem_score": 0.0,
                         "score": float(blended_lex),
@@ -5371,6 +6885,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 neighbor_window=neighbor_window,
                 char_budget=char_budget,
                 target_query_count=len(target_queries),
+                rag_doc_cache_hit=rag_doc_cache_hit_count,
+                rag_query_cache_hit=0,
+                query_cache_key=rag_query_cache_key,
+                prefilter_kept=prefilter_kept_total,
             )
         candidates.sort(
             key=lambda item: (
@@ -5382,24 +6900,50 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         candidates = candidates[: min(len(candidates), int(candidate_cap))]
 
         method = "lexical"
+        embedding_cache_hits = 0
+        embedding_cache_misses = 0
         try:
             model = self.engine._semantic_get_model(allow_remote=False)
         except Exception:
             model = None
         if model is not None and bool(getattr(self, "semantic_enabled", True)):
             try:
-                texts = [query_text] + [str(item.get("text", "") or "") for item in candidates]
-                raw_vecs = model.encode(texts, normalize_embeddings=True)
-                if raw_vecs is not None and len(raw_vecs) == len(texts):
-                    query_vec = [float(v) for v in raw_vecs[0]]
-                    for idx, item in enumerate(candidates, start=1):
-                        chunk_vec = [float(v) for v in raw_vecs[idx]]
+                query_raw = model.encode([query_text], normalize_embeddings=True)
+                if query_raw is not None and len(query_raw) == 1:
+                    query_vec = [float(v) for v in query_raw[0]]
+                    model_name = str(getattr(self.engine, "SEMANTIC_MODEL_NAME", "semantic-model") or "semantic-model")
+                    chunk_hashes = [str(item.get("chunk_hash", "") or "") for item in candidates]
+                    cached_vecs_raw = (
+                        cache_get_embeddings(model_name, chunk_hashes) if callable(cache_get_embeddings) else {}
+                    )
+                    cached_vecs = cached_vecs_raw if isinstance(cached_vecs_raw, dict) else {}
+                    embed_rows_to_store: list[dict[str, Any]] = []
+                    for idx, item in enumerate(candidates):
+                        chunk_hash = str(item.get("chunk_hash", "") or "").strip()
+                        chunk_vec = cached_vecs.get(chunk_hash)
+                        if isinstance(chunk_vec, list) and chunk_vec:
+                            embedding_cache_hits += 1
+                        else:
+                            text_val = str(item.get("text", "") or "").strip()
+                            if not text_val:
+                                continue
+                            raw_vec = model.encode([text_val], normalize_embeddings=True)
+                            if raw_vec is None or len(raw_vec) != 1:
+                                continue
+                            chunk_vec = [float(v) for v in raw_vec[0]]
+                            if chunk_hash and chunk_vec:
+                                embed_rows_to_store.append({"chunk_hash": chunk_hash, "vec": chunk_vec})
+                            embedding_cache_misses += 1
+                        if not isinstance(chunk_vec, list) or not chunk_vec:
+                            continue
                         sem_raw = float(self.engine._cosine_similarity(query_vec, chunk_vec))
                         sem_score = max(0.0, min(1.0, sem_raw))
                         lex_score = max(0.0, float(item.get("lex_score", 0.0)))
                         blended = (0.65 * sem_score) + (0.35 * min(1.0, lex_score))
                         item["sem_score"] = sem_score
                         item["score"] = blended + (0.02 * float(item.get("target_hits", 0) or 0))
+                    if embed_rows_to_store and callable(cache_put_embeddings):
+                        cache_put_embeddings(model_name, embed_rows_to_store)
                     method = "semantic_hybrid"
             except Exception as exc:
                 errors.append(f"semantic: {exc}")
@@ -5503,8 +7047,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         {
                             "source": source or str(payload.get("source", "") or ""),
                             "path": path,
+                            "doc_key": str(payload.get("doc_key", "") or ""),
                             "chunk_index": int(neighbor_idx),
                             "text": neighbor_text,
+                            "chunk_hash": str(payload.get("chunk_hash", "") or ""),
                             "lex_score": neighbor_lex,
                             "sem_score": 0.0,
                             "score": neighbor_score,
@@ -5556,6 +7102,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 {
                     "id": f"S{len(snippets) + 1}",
                     "source": str(item.get("source", "") or ""),
+                    "doc_key": str(item.get("doc_key", "") or ""),
                     "text": text,
                     "chunk_index": int(item.get("chunk_index", 0)),
                     "score": float(item.get("score", item.get("lex_score", 0.0)) or 0.0),
@@ -5568,7 +7115,33 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             for row in snippets
             if int(row.get("target_hits", 0) or 0) > 0
         )
+        if embedding_cache_hits > 0 or embedding_cache_misses > 0:
+            cache_debug = getattr(self, "_ai_cache_debug_last", None)
+            if isinstance(cache_debug, dict):
+                cache_debug["embedding_cache_hits"] = int(cache_debug.get("embedding_cache_hits", 0) or 0) + int(embedding_cache_hits)
+                cache_debug["embedding_cache_misses"] = int(cache_debug.get("embedding_cache_misses", 0) or 0) + int(embedding_cache_misses)
         context_block = build_rag_context_block(snippets)
+        snippet_refs = [
+            {
+                "doc_key": str(row.get("doc_key", "") or ""),
+                "chunk_index": int(row.get("chunk_index", 0) or 0),
+                "source": str(row.get("source", "") or ""),
+                "score": float(row.get("score", 0.0) or 0.0),
+                "target_hits": int(row.get("target_hits", 0) or 0),
+            }
+            for row in snippets
+            if isinstance(row, dict) and str(row.get("doc_key", "") or "")
+        ]
+        if callable(cache_put_query):
+            cache_put_query(
+                rag_query_cache_key,
+                snippet_refs,
+                {
+                    "candidate_count": int(len(candidates)),
+                    "selected_primary_count": int(len(selected_primary)),
+                    "selected_total_count": int(len(expanded)),
+                },
+            )
         meta = _make_meta(
             len(docs),
             str(method),
@@ -5583,6 +7156,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             neighbor_window=neighbor_window,
             target_query_count=len(target_queries),
             target_hit_snippets=target_hit_snippets,
+            rag_doc_cache_hit=rag_doc_cache_hit_count,
+            rag_query_cache_hit=0,
+            embedding_cache_hits=embedding_cache_hits,
+            embedding_cache_misses=embedding_cache_misses,
+            query_cache_key=rag_query_cache_key,
+            prefilter_kept=prefilter_kept_total,
         )
         return context_block, meta
 
@@ -5593,7 +7172,31 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         module_title: str,
         chapter: str,
     ) -> str:
-        return build_ai_tutor_context_prompt(history, user_prompt, module_title, chapter)
+        prompt = build_ai_tutor_context_prompt(history, user_prompt, module_title, chapter)
+        cache_hash = getattr(self, "_ai_cache_sha1", None)
+        cache_get = getattr(self, "_ai_cache_get_prompt", None)
+        cache_put = getattr(self, "_ai_cache_put_prompt", None)
+        if callable(cache_hash) and callable(cache_get) and callable(cache_put):
+            key_payload = {
+                "kind": "tutor_context_prompt",
+                "history": list(history or []),
+                "user_prompt": str(user_prompt or ""),
+                "module_title": str(module_title or ""),
+                "chapter": str(chapter or ""),
+            }
+            cache_key = cache_hash(
+                json.dumps(key_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
+            )
+            cached = cache_get(cache_key, "tutor_context_prompt")
+            if isinstance(cached, tuple):
+                text_cached, _aux_cached = cached
+                if str(text_cached or "").strip():
+                    cache_debug = getattr(self, "_ai_cache_debug_last", None)
+                    if isinstance(cache_debug, dict):
+                        cache_debug["prompt_cache_hit"] = int(cache_debug.get("prompt_cache_hit", 0) or 0) + 1
+                    return str(text_cached)
+            cache_put(cache_key, "tutor_context_prompt", prompt, {"history_len": len(history or [])})
+        return prompt
 
     def _format_ai_tutor_transcript(self, history: list[dict[str, str]]) -> str:
         return format_ai_tutor_transcript(history)
@@ -5606,10 +7209,43 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         compact = re.sub(r"\s+", " ", value).strip()
         if not compact:
             return 0
+        int_env = getattr(self, "_ai_cache_int_env", None)
+        if callable(int_env):
+            try:
+                min_chars_raw = cast(
+                    Any,
+                    int_env(
+                        "STUDYPLAN_AI_CACHE_TOKEN_EST_MIN_CHARS",
+                        AI_CACHE_TOKEN_EST_MIN_CHARS_DEFAULT,
+                        64,
+                        4096,
+                    ),
+                )
+                min_chars = int(min_chars_raw)
+            except Exception:
+                min_chars = AI_CACHE_TOKEN_EST_MIN_CHARS_DEFAULT
+        else:
+            min_chars = AI_CACHE_TOKEN_EST_MIN_CHARS_DEFAULT
+        text_hash = ""
+        if len(compact) >= int(min_chars):
+            hasher = getattr(self, "_ai_cache_sha1", None)
+            text_hash = hasher(compact) if callable(hasher) else hashlib.sha1(compact.encode("utf-8", errors="ignore")).hexdigest()
+            cache_get = getattr(self, "_ai_cache_get_token_estimate", None)
+            cached_est = cache_get(text_hash) if callable(cache_get) else None
+            if isinstance(cached_est, int):
+                cache_debug = getattr(self, "_ai_cache_debug_last", None)
+                if isinstance(cache_debug, dict):
+                    cache_debug["token_est_cache_hit"] = int(cache_debug.get("token_est_cache_hit", 0) or 0) + 1
+                return int(max(0, cached_est))
         word_est = len([tok for tok in compact.split(" ") if tok])
         char_est = int(math.ceil(float(len(compact)) / 4.0))
         estimate = max(1, max(word_est, char_est))
-        return min(200000, int(estimate))
+        final_est = min(200000, int(estimate))
+        if text_hash:
+            cache_put = getattr(self, "_ai_cache_put_token_estimate", None)
+            if callable(cache_put):
+                cache_put(text_hash, len(compact), final_est)
+        return final_est
 
     def _estimate_context_tokens(self, text: str) -> int:
         estimator = getattr(self, "_estimate_ai_tutor_token_count", None)
@@ -5955,6 +7591,37 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             budget = max(120, min(6000, int(max_chars)))
         except Exception:
             budget = 900
+        cache_hash = getattr(self, "_ai_cache_sha1", None)
+        cache_get = getattr(self, "_ai_cache_get_prompt", None)
+        cache_put = getattr(self, "_ai_cache_put_prompt", None)
+        cache_key = ""
+        if callable(cache_hash) and callable(cache_get):
+            packet_copy = dict(packet)
+            packet_copy.pop("_format_meta", None)
+            cache_key = cache_hash(
+                json.dumps(
+                    {
+                        "kind": "local_context_block",
+                        "budget": int(budget),
+                        "packet": packet_copy,
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                )
+            )
+            cached = cache_get(cache_key, "local_context_block")
+            if isinstance(cached, tuple):
+                text_cached, aux_cached = cached
+                text_val = str(text_cached or "").strip()
+                if text_val:
+                    if isinstance(aux_cached, dict):
+                        packet["_format_meta"] = dict(aux_cached)
+                    cache_debug = getattr(self, "_ai_cache_debug_last", None)
+                    if isinstance(cache_debug, dict):
+                        cache_debug["prompt_cache_hit"] = int(cache_debug.get("prompt_cache_hit", 0) or 0) + 1
+                    return text_val
 
         module = str(packet.get("module", "") or "").strip()
         current_topic = str(packet.get("current_topic", "") or "").strip()
@@ -6152,6 +7819,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "dropped_sections_count": int(len(dropped_sections)),
             "dropped_sections": dropped_sections,
         }
+        if cache_key and callable(cache_put):
+            cache_put(
+                cache_key,
+                "local_context_block",
+                context_text,
+                dict(packet["_format_meta"]) if isinstance(packet.get("_format_meta"), dict) else {},
+            )
         return context_text
 
     def _coerce_ai_tutor_autonomy_mode(self, value: Any) -> str:
@@ -6366,25 +8040,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         snapshot: dict[str, Any],
         model_override: str | None = None,
     ) -> tuple[dict[str, Any], str | None]:
-        model_name = str(model_override or self.local_llm_model or "").strip()
+        model_name, model_err = self._select_local_llm_model(
+            model_override=model_override,
+            purpose="autopilot",
+            available_models=None,
+            persist=True,
+        )
         if not bool(self.local_llm_enabled):
             fallback = self._build_ai_tutor_fallback_action(snapshot, "local LLM disabled")
             fallback["model"] = model_name
             fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
             return fallback, "Local LLM is disabled."
         if not model_name:
-            models, list_err = self._ollama_list_models()
-            if list_err:
-                fallback = self._build_ai_tutor_fallback_action(snapshot, "model lookup failed")
-                fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-                return fallback, f"Ollama model lookup failed: {list_err}"
-            if not models:
-                fallback = self._build_ai_tutor_fallback_action(snapshot, "no local models found")
-                fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-                return fallback, "No local Ollama models found."
-            model_name = str(models[0]).strip()
-            self.local_llm_model = model_name
-            self.save_preferences()
+            fallback_issue = "no local models found"
+            if model_err and "lookup failed" in str(model_err or "").lower():
+                fallback_issue = "model lookup failed"
+            fallback = self._build_ai_tutor_fallback_action(snapshot, fallback_issue)
+            fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            return fallback, str(model_err or "No local Ollama models found.")
         prompt = self._build_ai_tutor_autopilot_prompt(snapshot)
         text, err = self._ollama_generate_text(model_name, prompt)
         if err:
@@ -6482,7 +8155,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self,
         chapter: str,
         questions: list[dict[str, Any]],
+        model_name: str = "",
     ) -> tuple[list[dict[str, Any]], list[str]]:
+        cache_sha1_fn = getattr(self, "_ai_cache_sha1", None)
+        cache_get_fp_fn = getattr(self, "_ai_cache_get_gap_q_fingerprint", None)
+        cache_put_fp_fn = getattr(self, "_ai_cache_put_gap_q_fingerprint", None)
+
+        def _cache_sha1(text: str) -> str:
+            if callable(cache_sha1_fn):
+                try:
+                    return str(cache_sha1_fn(text))
+                except Exception:
+                    pass
+            return hashlib.sha1(str(text).encode("utf-8", "replace")).hexdigest()
+
+        def _cache_get_fp(fingerprint: str) -> tuple[str, str]:
+            if callable(cache_get_fp_fn):
+                try:
+                    raw = cache_get_fp_fn(fingerprint)
+                    if isinstance(raw, tuple) and len(raw) == 2:
+                        return str(raw[0] or ""), str(raw[1] or "")
+                    return "", ""
+                except Exception:
+                    return "", ""
+            return "", ""
+
+        def _cache_put_fp(fingerprint: str, status: str, reason: str) -> None:
+            if callable(cache_put_fp_fn):
+                try:
+                    cache_put_fp_fn(fingerprint, status, reason, model_name)
+                except Exception:
+                    pass
+
         reasons: list[str] = []
         validated: list[dict[str, Any]] = []
         if chapter not in getattr(self.engine, "CHAPTERS", []):
@@ -6530,15 +8234,41 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "correct": correct,
                 "explanation": explanation,
             }
+            fingerprint = _cache_sha1(
+                json.dumps(
+                    {
+                        "chapter": chapter,
+                        "question": question.strip().lower(),
+                        "options": [opt.strip().lower() for opt in norm_options],
+                        "correct": correct.strip().lower(),
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+            status_cached, reason_cached = _cache_get_fp(fingerprint)
+            if status_cached in {"fail", "duplicate"}:
+                reasons.append(reason_cached or "cached_reject")
+                continue
             try:
                 key = self.engine._question_dedupe_key(clean_row)
             except Exception:
                 key = (question.strip().lower(), tuple(opt.strip().lower() for opt in norm_options), correct.strip().lower())
             if key in existing_keys or key in seen_new:
                 reasons.append("duplicate_or_near_duplicate")
+                _cache_put_fp(fingerprint, "duplicate", "duplicate_or_near_duplicate")
                 continue
             seen_new.add(key)
             validated.append(clean_row)
+            _cache_put_fp(fingerprint, "pass", "validated")
+        for reason in sorted(set(reasons)):
+            if reason:
+                _cache_put_fp(
+                    _cache_sha1(f"{chapter}|{reason}|{len(questions or [])}"),
+                    "fail",
+                    reason,
+                )
         return validated, sorted(set(reasons))
 
     def _append_gap_question_quarantine(
@@ -6557,7 +8287,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         }
         path = os.path.expanduser("~/.config/studyplan/ai_gap_question_quarantine.jsonl")
         line = json.dumps(payload, ensure_ascii=True) + "\n"
-        self._atomic_write_text_file(path, (self._read_text_file(path) + line) if os.path.exists(path) else line)
+        parent = os.path.dirname(path) or "."
+        try:
+            os.makedirs(parent, mode=0o700, exist_ok=True)
+            self._secure_user_path(parent, 0o700)
+        except Exception:
+            pass
+        try:
+            fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, line.encode("utf-8", "replace"))
+                try:
+                    os.fsync(fd)
+                except Exception:
+                    pass
+            finally:
+                os.close(fd)
+            self._secure_user_path(path, 0o600)
+        except Exception:
+            # Fallback to atomic full-write if append path fails.
+            self._atomic_write_text_file(path, (self._read_text_file(path) + line) if os.path.exists(path) else line)
 
     def _read_text_file(self, file_path: str) -> str:
         try:
@@ -6602,13 +8351,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             count = int(AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS)
         count = max(AI_TUTOR_GAP_GENERATION_MIN_QUESTIONS, min(AI_TUTOR_GAP_GENERATION_MAX_QUESTIONS, count))
-        model_name = str(self.local_llm_model or "").strip()
+        model_name, model_err = self._select_local_llm_model(
+            model_override=None,
+            purpose="gap_generation",
+            available_models=None,
+            persist=True,
+        )
         if not model_name:
-            models, err = self._ollama_list_models()
-            if err or not models:
-                return False, "No local model available for gap-question generation."
-            model_name = str(models[0]).strip()
-            self.local_llm_model = model_name
+            return False, str(model_err or "No local model available for gap-question generation.")
         prompt = self._build_gap_generation_prompt(chapter, count, snapshot)
         text, err = self._ollama_generate_text(model_name, prompt)
         if err:
@@ -6625,7 +8375,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
             return False, f"Gap-question output rejected: {parse_err}"
         final_chapter = parsed_chapter if parsed_chapter in getattr(self.engine, "CHAPTERS", []) else chapter
-        valid_rows, reasons = self._validate_generated_gap_questions(final_chapter, questions)
+        valid_rows, reasons = self._validate_generated_gap_questions(final_chapter, questions, model_name=model_name)
         generated_count = int(len(questions))
         stats = getattr(self, "_ai_tutor_autopilot_stats", {}) or {}
         self._record_ai_tutor_autopilot_metrics(
@@ -6808,6 +8558,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "rag_char_budget": _clamp_int(event.get("rag_char_budget", 0), default=0, minimum=0, maximum=10000),
             "rag_top_k_target": _clamp_int(event.get("rag_top_k_target", 0), default=0, minimum=0, maximum=64),
             "rag_neighbor_window": _clamp_int(event.get("rag_neighbor_window", 0), default=0, minimum=0, maximum=8),
+            "rag_doc_cache_hit": _clamp_int(event.get("rag_doc_cache_hit", 0), default=0, minimum=0, maximum=1000),
+            "rag_query_cache_hit": _clamp_int(event.get("rag_query_cache_hit", 0), default=0, minimum=0, maximum=1000),
+            "embedding_cache_hits": _clamp_int(event.get("embedding_cache_hits", 0), default=0, minimum=0, maximum=10000),
+            "embedding_cache_misses": _clamp_int(event.get("embedding_cache_misses", 0), default=0, minimum=0, maximum=10000),
+            "prompt_cache_hit": _clamp_int(event.get("prompt_cache_hit", 0), default=0, minimum=0, maximum=10000),
+            "response_cache_hit": _clamp_int(event.get("response_cache_hit", 0), default=0, minimum=0, maximum=10000),
+            "token_est_cache_hit": _clamp_int(event.get("token_est_cache_hit", 0), default=0, minimum=0, maximum=10000),
+            "model_stats_persisted": _clamp_int(event.get("model_stats_persisted", 0), default=0, minimum=0, maximum=10000),
+            "prefilter_kept": _clamp_int(event.get("prefilter_kept", 0), default=0, minimum=0, maximum=20000),
             "ctx_chars": _clamp_int(event.get("ctx_chars", 0), default=0, minimum=0, maximum=10000),
             "ctx_budget_chars": _clamp_int(event.get("ctx_budget_chars", 0), default=0, minimum=0, maximum=10000),
             "ctx_tokens_est": _clamp_int(event.get("ctx_tokens_est", 0), default=0, minimum=0, maximum=5000),
@@ -6850,8 +8609,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ),
         )
         history = [row for row in list(getattr(self, "_ai_tutor_telemetry_events", []) or []) if isinstance(row, dict)]
+        update_stats = getattr(self, "_ai_cache_update_model_stats", None)
+        stats_persisted = bool(update_stats(cleaned)) if callable(update_stats) else False
+        if bool(stats_persisted):
+            cleaned["model_stats_persisted"] = 1
         history.append(cleaned)
         self._ai_tutor_telemetry_events = history[-cap:]
+        cache_debug = getattr(self, "_ai_cache_debug_last", None)
+        if isinstance(cache_debug, dict):
+            cache_debug["model_stats_persisted"] = 1 if stats_persisted else 0
         if bool(persist):
             try:
                 self.save_preferences()
@@ -6904,6 +8670,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "gap_q_generated_count": 0,
                 "gap_q_saved_count": 0,
                 "gap_q_quarantined_count": 0,
+                "rag_doc_cache_hit": 0,
+                "rag_query_cache_hit": 0,
+                "embedding_cache_hits": 0,
+                "embedding_cache_misses": 0,
+                "prompt_cache_hit": 0,
+                "response_cache_hit": 0,
+                "token_est_cache_hit": 0,
+                "model_stats_persisted": 0,
+                "prefilter_kept": 0,
             }
 
         success = 0
@@ -6928,6 +8703,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         gap_q_generated_count = 0
         gap_q_saved_count = 0
         gap_q_quarantined_count = 0
+        rag_doc_cache_hit = 0
+        rag_query_cache_hit = 0
+        embedding_cache_hits = 0
+        embedding_cache_misses = 0
+        prompt_cache_hit = 0
+        response_cache_hit = 0
+        token_est_cache_hit = 0
+        model_stats_persisted = 0
+        prefilter_kept = 0
         for row in sample:
             outcome = str(row.get("outcome", "") or "").strip().lower()
             if outcome == "success":
@@ -6994,6 +8778,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 gap_q_quarantined_count,
                 max(0, int(row.get("gap_q_quarantined_count", 0) or 0)),
             )
+            rag_doc_cache_hit = max(rag_doc_cache_hit, max(0, int(row.get("rag_doc_cache_hit", 0) or 0)))
+            rag_query_cache_hit = max(rag_query_cache_hit, max(0, int(row.get("rag_query_cache_hit", 0) or 0)))
+            embedding_cache_hits = max(embedding_cache_hits, max(0, int(row.get("embedding_cache_hits", 0) or 0)))
+            embedding_cache_misses = max(embedding_cache_misses, max(0, int(row.get("embedding_cache_misses", 0) or 0)))
+            prompt_cache_hit = max(prompt_cache_hit, max(0, int(row.get("prompt_cache_hit", 0) or 0)))
+            response_cache_hit = max(response_cache_hit, max(0, int(row.get("response_cache_hit", 0) or 0)))
+            token_est_cache_hit = max(token_est_cache_hit, max(0, int(row.get("token_est_cache_hit", 0) or 0)))
+            model_stats_persisted = max(model_stats_persisted, max(0, int(row.get("model_stats_persisted", 0) or 0)))
+            prefilter_kept = max(prefilter_kept, max(0, int(row.get("prefilter_kept", 0) or 0)))
             block_reason = str(row.get("autopilot_last_block_reason", "") or "").strip()
             if block_reason:
                 autopilot_last_block_reason = block_reason[:200]
@@ -7035,6 +8828,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "gap_q_generated_count": int(gap_q_generated_count),
             "gap_q_saved_count": int(gap_q_saved_count),
             "gap_q_quarantined_count": int(gap_q_quarantined_count),
+            "rag_doc_cache_hit": int(rag_doc_cache_hit),
+            "rag_query_cache_hit": int(rag_query_cache_hit),
+            "embedding_cache_hits": int(embedding_cache_hits),
+            "embedding_cache_misses": int(embedding_cache_misses),
+            "prompt_cache_hit": int(prompt_cache_hit),
+            "response_cache_hit": int(response_cache_hit),
+            "token_est_cache_hit": int(token_est_cache_hit),
+            "model_stats_persisted": int(model_stats_persisted),
+            "prefilter_kept": int(prefilter_kept),
         }
 
     def _coerce_ai_coach_duration(self, value: Any) -> int:
@@ -7256,6 +9058,31 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             learning_context = ""
         payload_json = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        cache_key = ""
+        cache_hash = getattr(self, "_ai_cache_sha1", None)
+        cache_get = getattr(self, "_ai_cache_get_prompt", None)
+        cache_put = getattr(self, "_ai_cache_put_prompt", None)
+        if callable(cache_hash) and callable(cache_get):
+            cache_key = cache_hash(
+                json.dumps(
+                    {
+                        "kind": "coach_prompt",
+                        "payload_json": payload_json,
+                        "learning_context": learning_context,
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+            cached = cache_get(cache_key, "coach_prompt")
+            if isinstance(cached, tuple):
+                text_cached, _aux_cached = cached
+                if str(text_cached or "").strip():
+                    cache_debug = getattr(self, "_ai_cache_debug_last", None)
+                    if isinstance(cache_debug, dict):
+                        cache_debug["prompt_cache_hit"] = int(cache_debug.get("prompt_cache_hit", 0) or 0) + 1
+                    return str(text_cached)
         lines = [
             "You are an ACCA AI study coach.",
             "Return exactly one JSON object and nothing else.",
@@ -7275,7 +9102,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 payload_json,
             ]
         )
-        return "\n".join(lines).strip()
+        prompt = "\n".join(lines).strip()
+        if cache_key and callable(cache_put):
+            cache_put(cache_key, "coach_prompt", prompt, {"learning_context_chars": len(learning_context)})
+        return prompt
 
     def _normalize_ai_coach_recommendation(
         self,
@@ -7380,25 +9210,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     ) -> tuple[dict[str, Any], str | None]:
         payload = self._build_ai_coach_payload()
         self._ai_coach_last_payload = payload
-        model_name = str(model_override or self.local_llm_model or "").strip()
+        model_name, model_err = self._select_local_llm_model(
+            model_override=model_override,
+            purpose="coach",
+            available_models=None,
+            persist=True,
+        )
         if not bool(self.local_llm_enabled):
             rec = self._build_ai_coach_fallback_recommendation(payload, "local LLM disabled")
             rec["model"] = model_name
             rec["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
             return rec, "Local LLM is disabled in Preferences."
         if not model_name:
-            models, list_err = self._ollama_list_models()
-            if list_err:
-                rec = self._build_ai_coach_fallback_recommendation(payload, "Ollama model lookup failed")
-                rec["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-                return rec, f"Ollama model lookup failed: {list_err}"
-            if not models:
-                rec = self._build_ai_coach_fallback_recommendation(payload, "no local models found")
-                rec["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-                return rec, "No local Ollama models found."
-            model_name = str(models[0]).strip()
-            self.local_llm_model = model_name
-            self.save_preferences()
+            issue = "no local models found"
+            if model_err and "lookup failed" in str(model_err or "").lower():
+                issue = "Ollama model lookup failed"
+            rec = self._build_ai_coach_fallback_recommendation(payload, issue)
+            rec["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            return rec, str(model_err or "No local Ollama models found.")
         payload["model"] = model_name
         prompt = self._build_ai_coach_prompt(payload)
         text, err = self._ollama_generate_text(model_name, prompt)
@@ -7458,6 +9287,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         generated_at = str(recommendation.get("generated_at", "") or "")
         if generated_at:
             lines.append(f"Generated: {generated_at}")
+        try:
+            cache_debug = getattr(self, "_ai_cache_debug_last", {}) or {}
+            if isinstance(cache_debug, dict):
+                prompt_hit = int(cache_debug.get("prompt_cache_hit", 0) or 0)
+                response_hit = int(cache_debug.get("response_cache_hit", 0) or 0)
+                token_hit = int(cache_debug.get("token_est_cache_hit", 0) or 0)
+                if prompt_hit > 0 or response_hit > 0 or token_hit > 0:
+                    lines.append(f"Cache: prompt {prompt_hit} | response {response_hit} | token {token_hit}")
+        except Exception:
+            pass
         if err:
             lines.append("")
             lines.append(f"Note: {err}")

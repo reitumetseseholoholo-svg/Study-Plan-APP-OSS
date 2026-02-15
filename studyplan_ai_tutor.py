@@ -49,6 +49,28 @@ def extract_tutor_coverage_targets(user_prompt: str, max_targets: int = 6) -> li
     }
     cleaned: list[str] = []
     seen: set[str] = set()
+
+    def _push_target(label: str) -> None:
+        if len(cleaned) >= cap:
+            return
+        item = re.sub(r"[\(\)\[\]\{\}:]+", " ", str(label or "")).strip()
+        item = re.sub(r"\s+", " ", item)
+        if not item:
+            return
+        lowered = item.lower()
+        if lowered in stop_words:
+            return
+        if len(lowered) < 2:
+            return
+        tokens = [tok for tok in re.findall(r"[a-z0-9]{2,}", lowered) if tok not in stop_words]
+        if not tokens:
+            return
+        normalized = " ".join(tokens[:8]).strip()
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        cleaned.append(item[:80])
+
     for part in parts:
         item = re.sub(r"[\(\)\[\]\{\}:]+", " ", str(part or "")).strip()
         item = re.sub(r"\s+", " ", item)
@@ -62,13 +84,13 @@ def extract_tutor_coverage_targets(user_prompt: str, max_targets: int = 6) -> li
         tokens = [tok for tok in re.findall(r"[a-z0-9]{2,}", lowered) if tok not in stop_words]
         if not tokens:
             continue
-        normalized = " ".join(tokens[:8]).strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        cleaned.append(item[:80])
-        if len(cleaned) >= cap:
-            break
+        _push_target(item)
+    # If the prompt is one long clause, keep high-signal acronyms as explicit targets.
+    if len(cleaned) <= 1 and len(raw) >= 24:
+        for token in re.findall(r"\b[A-Z][A-Z0-9]{1,}\b", raw):
+            _push_target(token)
+            if len(cleaned) >= cap:
+                break
     if len(cleaned) <= 1:
         return cleaned
     # Filter broad fragments when more specific targets exist.
@@ -83,7 +105,36 @@ def extract_tutor_coverage_targets(user_prompt: str, max_targets: int = 6) -> li
 
 def build_targeted_rag_queries(user_prompt: str, max_targets: int = 4) -> list[str]:
     targets = extract_tutor_coverage_targets(user_prompt, max_targets=max_targets)
-    return [str(target).strip() for target in targets if str(target).strip()]
+    if not targets:
+        return []
+    try:
+        query_cap = max(2, min(12, int(max_targets) * 2))
+    except Exception:
+        query_cap = 8
+    queries: list[str] = []
+    seen: set[str] = set()
+    for target in targets:
+        text = str(target or "").strip()
+        key = text.lower()
+        if not text or key in seen:
+            continue
+        queries.append(text)
+        seen.add(key)
+        if len(queries) >= query_cap:
+            return queries[:query_cap]
+    # Add relation-focused blends so retrieval catches cross-topic prompts.
+    head = [str(t or "").strip() for t in targets[:4] if str(t or "").strip()]
+    for i, left in enumerate(head):
+        for right in head[i + 1:]:
+            blend = f"{left} {right} relationship".strip()
+            key = blend.lower()
+            if key in seen:
+                continue
+            queries.append(blend)
+            seen.add(key)
+            if len(queries) >= query_cap:
+                return queries[:query_cap]
+    return queries[:query_cap]
 
 
 def assess_tutor_coverage(response_text: str, targets: list[str]) -> dict[str, Any]:
@@ -118,6 +169,36 @@ def assess_tutor_coverage(response_text: str, targets: list[str]) -> dict[str, A
         "missed_targets": missed[:8],
         "coverage_ratio": float(hit_count / float(total)),
     }
+
+
+def build_tutor_coverage_checklist_note(
+    response_text: str,
+    targets: list[str],
+    max_items: int = 6,
+) -> str:
+    target_rows = [str(target or "").strip() for target in list(targets or []) if str(target or "").strip()]
+    if len(target_rows) < 2:
+        return ""
+    try:
+        item_cap = max(2, min(10, int(max_items)))
+    except Exception:
+        item_cap = 6
+    summary = assess_tutor_coverage(response_text, target_rows)
+    missed_set = {
+        str(item or "").strip().lower()
+        for item in list(summary.get("missed_targets", []) or [])
+        if str(item or "").strip()
+    }
+    lower = str(response_text or "").lower()
+    has_checklist = ("coverage checklist" in lower) or bool(re.search(r"\bt\d+\b", lower))
+    # Add a deterministic checklist when the model skipped it or missed targets.
+    if has_checklist and not missed_set:
+        return ""
+    lines = ["Coverage checklist:"]
+    for idx, target in enumerate(target_rows[:item_cap], start=1):
+        state = "follow-up needed" if str(target).strip().lower() in missed_set else "covered"
+        lines.append(f"- T{idx}: {target} ({state})")
+    return "\n".join(lines).strip()
 
 
 def normalize_tutor_timeout_seconds(
@@ -597,6 +678,13 @@ class AITutorDialogController:
         dialog.add_buttons("_Close", Gtk.ResponseType.CLOSE)
         content = dialog.get_content_area()
         content.set_spacing(8)
+        try:
+            content.set_margin_top(10)
+            content.set_margin_bottom(10)
+            content.set_margin_start(10)
+            content.set_margin_end(10)
+        except Exception:
+            pass
 
         intro = Gtk.Label(
             label="Use local Ollama models for topic explanations, drills, and revision support."
@@ -694,7 +782,11 @@ class AITutorDialogController:
         action_row.append(new_chat_btn)
         action_row.append(clear_prompt_btn)
         action_row.append(copy_btn)
-        content.append(action_row)
+        action_scroller = Gtk.ScrolledWindow()
+        action_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        action_scroller.set_min_content_height(42)
+        action_scroller.set_child(action_row)
+        content.append(action_scroller)
 
         status_label = Gtk.Label(label="")
         status_label.set_halign(Gtk.Align.START)
@@ -732,6 +824,7 @@ class AITutorDialogController:
         response_scroller = Gtk.ScrolledWindow()
         response_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         response_scroller.set_min_content_height(260)
+        response_scroller.set_vexpand(True)
         try:
             response_scroller.set_kinetic_scrolling(False)
         except Exception:
@@ -776,6 +869,19 @@ class AITutorDialogController:
         if not bool(app.local_llm_enabled):
             status_label.set_text("Local AI tutor is disabled in Preferences.")
             generate_btn.set_sensitive(False)
+        else:
+            status_label.set_text("Ready. Press Ctrl+Enter to send.")
+
+        refresh_btn.set_tooltip_text("Reload local models from Ollama.")
+        generate_btn.set_tooltip_text("Send prompt to the selected model (Ctrl+Enter).")
+        stop_btn.set_tooltip_text("Stop the current generation.")
+        new_chat_btn.set_tooltip_text("Clear this tutor conversation.")
+        clear_prompt_btn.set_tooltip_text("Clear the current prompt.")
+        copy_btn.set_tooltip_text("Copy full tutor transcript.")
+        copy_last_btn.set_tooltip_text("Copy only the latest tutor answer.")
+        jump_latest_btn.set_tooltip_text("Jump to the newest response line.")
+        auto_scroll_toggle.set_tooltip_text("Keep response view pinned to newest text.")
+        cockpit_pause_btn.set_tooltip_text("Pause or resume Tutor cockpit automation for this dialog.")
 
         def _persist_history() -> None:
             compact: list[dict[str, str]] = []
@@ -962,7 +1068,17 @@ class AITutorDialogController:
                     _render_transcript(force_scroll=force_flag)
                 return False
 
-            GLib.idle_add(_apply_stream_render, priority=GLib.PRIORITY_LOW)
+            GLib.idle_add(_apply_stream_render, priority=GLib.PRIORITY_DEFAULT_IDLE)
+
+        def _sync_cockpit_controls() -> None:
+            autopilot_enabled = bool(getattr(app, "ai_tutor_autopilot_enabled", True))
+            paused = bool(run_state.get("autopilot_paused", False))
+            if not autopilot_enabled:
+                cockpit_pause_btn.set_label("Pause Autopilot")
+                cockpit_pause_btn.set_sensitive(False)
+                return
+            cockpit_pause_btn.set_sensitive(True)
+            cockpit_pause_btn.set_label("Resume Autopilot" if paused else "Pause Autopilot")
 
         def _jump_latest(*_args) -> None:
             _scroll_response_end_deferred()
@@ -1003,6 +1119,7 @@ class AITutorDialogController:
             copy_btn.set_sensitive(bool(controls.get("copy_transcript_enabled", False)))
             copy_last_btn.set_sensitive(bool(controls.get("copy_last_enabled", False)))
             jump_latest_btn.set_sensitive(bool(controls.get("jump_latest_enabled", False)))
+            _sync_cockpit_controls()
 
         def _autopilot_mode() -> str:
             try:
@@ -1175,6 +1292,9 @@ class AITutorDialogController:
             return True
 
         def _toggle_autopilot_pause(*_args) -> None:
+            if not bool(getattr(app, "ai_tutor_autopilot_enabled", True)):
+                _set_cockpit_status("disabled in Preferences")
+                return
             paused = not bool(run_state.get("autopilot_paused", False))
             run_state["autopilot_paused"] = paused
             cockpit_pause_btn.set_label("Resume Autopilot" if paused else "Pause Autopilot")
@@ -1237,6 +1357,7 @@ class AITutorDialogController:
                 models, err = app._ollama_list_models()
 
                 def _finish():
+                    nonlocal model_poll_errors
                     refresh_btn.set_sensitive(True)
                     if err:
                         _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
@@ -1369,6 +1490,34 @@ class AITutorDialogController:
                 status_label.set_text("Generation already running.")
                 return
             model_name = _selected_model_name() or str(app.local_llm_model or "").strip()
+            auto_model_note = ""
+            selector = getattr(app, "_select_local_llm_model", None)
+            if callable(selector):
+                available_models = [
+                    str(item).strip()
+                    for item in list(current_models or [])
+                    if str(item or "").strip() and not str(item or "").strip().startswith("(")
+                ]
+                try:
+                    selected_name, selected_err = cast(
+                        Any,
+                        selector(
+                            model_override=None,
+                            purpose="tutor",
+                            available_models=available_models or None,
+                            persist=True,
+                        ),
+                    )
+                except Exception:
+                    selected_name, selected_err = "", None
+                selected_text = str(selected_name or "").strip()
+                if selected_text:
+                    if model_name and model_name != selected_text:
+                        auto_model_note = f"Auto model: {selected_text}"
+                    model_name = selected_text
+                elif not model_name and selected_err:
+                    status_label.set_text(str(selected_err))
+                    return
             if not model_name:
                 status_label.set_text("Select an Ollama model first.")
                 return
@@ -1459,6 +1608,22 @@ class AITutorDialogController:
                 context_chars = 0
                 context_tokens_est = 0
                 context_dropped_sections = 0
+            try:
+                cache_debug = getattr(app, "_ai_cache_debug_last", {})
+                if isinstance(cache_debug, dict):
+                    for key in (
+                        "rag_doc_cache_hit",
+                        "rag_query_cache_hit",
+                        "embedding_cache_hits",
+                        "embedding_cache_misses",
+                        "prompt_cache_hit",
+                        "response_cache_hit",
+                        "token_est_cache_hit",
+                        "model_stats_persisted",
+                    ):
+                        cache_debug[key] = 0
+            except Exception:
+                pass
             rag_context = ""
             rag_meta: dict[str, Any] = {"snippet_count": 0, "source_count": 0, "method": "disabled", "errors": []}
             try:
@@ -1569,6 +1734,15 @@ class AITutorDialogController:
                     "rag_char_budget": int(rag_char_budget),
                     "rag_top_k_target": int(rag_top_k_target),
                     "rag_neighbor_window": int(rag_neighbor_window),
+                    "rag_doc_cache_hit": int(rag_doc_cache_hit),
+                    "rag_query_cache_hit": int(rag_query_cache_hit),
+                    "embedding_cache_hits": int(embedding_cache_hits),
+                    "embedding_cache_misses": int(embedding_cache_misses),
+                    "prefilter_kept": int(prefilter_kept),
+                    "prompt_cache_hit": int(getattr(app, "_ai_cache_debug_last", {}).get("prompt_cache_hit", 0) or 0),
+                    "response_cache_hit": int(getattr(app, "_ai_cache_debug_last", {}).get("response_cache_hit", 0) or 0),
+                    "token_est_cache_hit": int(getattr(app, "_ai_cache_debug_last", {}).get("token_est_cache_hit", 0) or 0),
+                    "model_stats_persisted": int(getattr(app, "_ai_cache_debug_last", {}).get("model_stats_persisted", 0) or 0),
                     "coverage_target_count": int(max(0, coverage_state.get("target_count", 0) or 0)),
                     "coverage_hit_count": int(max(0, coverage_state.get("hit_count", 0) or 0)),
                     "gap_q_generated_count": int(autopilot_stats.get("gap_q_generated_count", 0) or 0),
@@ -1608,6 +1782,11 @@ class AITutorDialogController:
             rag_neighbor_window = int(rag_meta.get("neighbor_window", 0) or 0)
             rag_target_query_count = int(rag_meta.get("target_query_count", 0) or 0)
             rag_target_hit_snippets = int(rag_meta.get("target_hit_snippets", 0) or 0)
+            rag_doc_cache_hit = int(rag_meta.get("rag_doc_cache_hit", 0) or 0)
+            rag_query_cache_hit = int(rag_meta.get("rag_query_cache_hit", 0) or 0)
+            embedding_cache_hits = int(rag_meta.get("embedding_cache_hits", 0) or 0)
+            embedding_cache_misses = int(rag_meta.get("embedding_cache_misses", 0) or 0)
+            prefilter_kept = int(rag_meta.get("prefilter_kept", 0) or 0)
             status_parts = ["Generating…"]
             if condensed_count > 0:
                 status_parts.append(f"context condensed: {condensed_count} older turn(s)")
@@ -1634,9 +1813,21 @@ class AITutorDialogController:
                 target_hit_text = ""
                 if rag_target_hit_snippets > 0:
                     target_hit_text = f", target-hit {rag_target_hit_snippets}"
+                cache_text = ""
+                cache_parts: list[str] = []
+                if rag_doc_cache_hit > 0:
+                    cache_parts.append(f"doc-hit {rag_doc_cache_hit}")
+                if rag_query_cache_hit > 0:
+                    cache_parts.append("query-hit")
+                if embedding_cache_hits > 0 or embedding_cache_misses > 0:
+                    cache_parts.append(f"emb {embedding_cache_hits}/{embedding_cache_misses}")
+                if prefilter_kept > 0:
+                    cache_parts.append(f"pref {prefilter_kept}")
+                if cache_parts:
+                    cache_text = ", " + " ".join(cache_parts)
                 status_parts.append(
                     f"RAG: {rag_count} snippet(s) from {rag_sources} PDF(s) "
-                    f"[{rag_method}{budget_text}{target_text}{neighbor_text}{candidate_text}{target_query_text}{target_hit_text}]"
+                    f"[{rag_method}{budget_text}{target_text}{neighbor_text}{candidate_text}{target_query_text}{target_hit_text}{cache_text}]"
                 )
             elif rag_sources > 0:
                 status_parts.append("RAG: no relevant snippets")
@@ -1645,6 +1836,8 @@ class AITutorDialogController:
             rag_errors = [err for err in rag_meta.get("errors", []) if err]
             if rag_errors:
                 status_parts.append(f"RAG errors: {rag_errors[0][:72]}")
+            if auto_model_note:
+                status_parts.append(auto_model_note)
             status_label.set_text(" • ".join(status_parts))
             _set_running(True)
             _render_transcript(force_scroll=True)
@@ -1689,6 +1882,17 @@ class AITutorDialogController:
                     coverage_eval = assess_tutor_coverage(final_text, coverage_targets)
                     coverage_state["target_count"] = int(coverage_eval.get("target_count", coverage_target_count) or coverage_target_count)
                     coverage_state["hit_count"] = int(coverage_eval.get("hit_count", 0) or 0)
+                    if not err:
+                        coverage_note = build_tutor_coverage_checklist_note(
+                            final_text,
+                            coverage_targets,
+                            max_items=6,
+                        )
+                        if coverage_note:
+                            merged = f"{str(final_text or '').rstrip()}\n\n{coverage_note}".strip()
+                            if len(merged) > int(AI_TUTOR_MAX_RESPONSE_CHARS):
+                                merged = merged[: int(AI_TUTOR_MAX_RESPONSE_CHARS)].rstrip()
+                            final_text = merged
                     try:
                         app_stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
                         app._record_ai_tutor_autopilot_metrics(
@@ -1812,8 +2016,20 @@ class AITutorDialogController:
             ctrl_mask = int(getattr(Gdk.ModifierType, "CONTROL_MASK", 0))
             return_key = int(getattr(Gdk, "KEY_Return", 65293))
             kp_enter = int(getattr(Gdk, "KEY_KP_Enter", 65421))
+            key_l = int(getattr(Gdk, "KEY_l", 108))
+            key_L = int(getattr(Gdk, "KEY_L", 76))
             if (int(state) & ctrl_mask) and int(keyval) in (return_key, kp_enter):
                 _generate()
+                return True
+            if (int(state) & ctrl_mask) and int(keyval) in (key_l, key_L):
+                _clear_prompt()
+                return True
+            return False
+
+        def _on_dialog_key(_controller, keyval, _keycode, _state):
+            esc_key = int(getattr(Gdk, "KEY_Escape", 65307))
+            if int(keyval) == esc_key and not bool(run_state.get("active", False)):
+                dialog.response(Gtk.ResponseType.CLOSE)
                 return True
             return False
 
@@ -1834,6 +2050,9 @@ class AITutorDialogController:
         prompt_key = Gtk.EventControllerKey()
         prompt_key.connect("key-pressed", _on_prompt_key)
         prompt_view.add_controller(prompt_key)
+        dialog_key = Gtk.EventControllerKey()
+        dialog_key.connect("key-pressed", _on_dialog_key)
+        dialog.add_controller(dialog_key)
         dialog.connect("response", _on_close)
         dialog.present()
         _update_prompt_meta()
