@@ -11,6 +11,7 @@ from studyplan_ai_tutor import (
     build_rag_context_block,
     build_ai_tutor_context_prompt,
     build_ai_tutor_seed_prompt,
+    build_targeted_rag_queries,
     chunk_text_for_rag,
     clean_ai_tutor_text,
     format_ai_tutor_transcript,
@@ -187,6 +188,42 @@ AI_COACH_DEFAULT_DURATION_MINUTES = 25
 AI_COACH_MIN_DURATION_MINUTES = 5
 AI_COACH_MAX_DURATION_MINUTES = 60
 AI_COACH_REASON_MAX_CHARS = 220
+AI_TUTOR_AUTONOMY_MODES = ("suggest", "assist", "cockpit")
+AI_TUTOR_DEFAULT_AUTONOMY_MODE = "assist"
+AI_TUTOR_NUDGE_POLICIES = ("minimal", "moderate", "aggressive")
+AI_TUTOR_DEFAULT_NUDGE_POLICY = "moderate"
+AI_TUTOR_AUTOPILOT_TICK_DEFAULT_SECONDS = 45
+AI_TUTOR_AUTOPILOT_TICK_MIN_SECONDS = 15
+AI_TUTOR_AUTOPILOT_TICK_MAX_SECONDS = 180
+AI_TUTOR_AUTOPILOT_ACTION_COOLDOWN_SECONDS = 20
+AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW = 6
+AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS = 600
+AI_TUTOR_NUDGE_COOLDOWN_SECONDS = {
+    "minimal": 240,
+    "moderate": 120,
+    "aggressive": 60,
+}
+AI_TUTOR_ALLOWED_ACTIONS = (
+    "focus_start",
+    "timer_pause",
+    "timer_resume",
+    "timer_stop",
+    "quiz_start",
+    "drill_start",
+    "review_start",
+    "interleave_start",
+    "coach_next",
+    "gap_drill_generate",
+)
+AI_TUTOR_SAFE_AUTONOMOUS_ACTIONS = {
+    "focus_start",
+    "timer_pause",
+    "timer_resume",
+    "coach_next",
+}
+AI_TUTOR_GAP_GENERATION_MIN_QUESTIONS = 1
+AI_TUTOR_GAP_GENERATION_MAX_QUESTIONS = 6
+AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS = 3
 AI_CONTEXT_DEFAULT_HORIZON_DAYS = 14
 AI_CONTEXT_MIN_HORIZON_DAYS = 7
 AI_CONTEXT_MAX_HORIZON_DAYS = 30
@@ -925,6 +962,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ai_tutor_history: list[dict[str, str]] = []
         self._ai_tutor_telemetry_events: list[dict[str, Any]] = []
         self._ai_tutor_telemetry_max = int(AI_TUTOR_TELEMETRY_MAX_EVENTS)
+        self.ai_tutor_autopilot_enabled = True
+        self.ai_tutor_autonomy_mode = str(AI_TUTOR_DEFAULT_AUTONOMY_MODE)
+        self.ai_tutor_nudges_enabled = True
+        self.ai_tutor_nudge_policy = str(AI_TUTOR_DEFAULT_NUDGE_POLICY)
+        self.ai_tutor_gap_generation_enabled = True
+        self.ai_tutor_gap_autosave_enabled = True
+        self.ai_tutor_gap_autosave_strict_gate = True
+        self.ai_tutor_autopilot_tick_seconds = int(AI_TUTOR_AUTOPILOT_TICK_DEFAULT_SECONDS)
+        self._ai_tutor_autopilot_stats: dict[str, Any] = {
+            "autopilot_mode": str(AI_TUTOR_DEFAULT_AUTONOMY_MODE),
+            "autopilot_decision_count": 0,
+            "autopilot_action_executed_count": 0,
+            "autopilot_action_blocked_count": 0,
+            "autopilot_last_block_reason": "",
+            "nudge_info_count": 0,
+            "nudge_warning_count": 0,
+            "nudge_intervention_count": 0,
+            "coverage_target_count": 0,
+            "coverage_hit_count": 0,
+            "gap_q_generated_count": 0,
+            "gap_q_saved_count": 0,
+            "gap_q_quarantined_count": 0,
+            "ctx_chars": 0,
+            "ctx_budget_chars": 0,
+            "ctx_tokens_est": 0,
+            "ctx_dropped_sections_count": 0,
+            "ctx_horizon_days": AI_CONTEXT_DEFAULT_HORIZON_DAYS,
+            "updated_at": "",
+        }
         self._ai_coach_last_payload: dict[str, Any] = {}
         self._ai_coach_last_recommendation: dict[str, Any] | None = None
         self._ai_coach_last_updated: str | None = None
@@ -3072,6 +3138,88 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         content.append(llm_model_row)
         content.append(llm_timeout_row)
 
+        cockpit_title = Gtk.Label(label="Tutor Cockpit")
+        cockpit_title.set_halign(Gtk.Align.START)
+        cockpit_title.add_css_class("section-title")
+        content.append(cockpit_title)
+        cockpit_note = Gtk.Label(
+            label="Autopilot runs only while Tutor dialog is open."
+        )
+        cockpit_note.set_halign(Gtk.Align.START)
+        cockpit_note.set_wrap(True)
+        cockpit_note.add_css_class("muted")
+        content.append(cockpit_note)
+
+        cockpit_enabled = Gtk.CheckButton(label="Enable Tutor autopilot")
+        cockpit_enabled.set_active(bool(getattr(self, "ai_tutor_autopilot_enabled", True)))
+        cockpit_nudges = Gtk.CheckButton(label="Enable Sensei nudges")
+        cockpit_nudges.set_active(bool(getattr(self, "ai_tutor_nudges_enabled", True)))
+        cockpit_gap_generation = Gtk.CheckButton(label="Enable AI gap-question generation")
+        cockpit_gap_generation.set_active(bool(getattr(self, "ai_tutor_gap_generation_enabled", True)))
+        cockpit_gap_autosave = Gtk.CheckButton(label="Auto-save generated questions")
+        cockpit_gap_autosave.set_active(bool(getattr(self, "ai_tutor_gap_autosave_enabled", True)))
+        cockpit_gap_strict = Gtk.CheckButton(label="Strict validation gate (required for auto-save)")
+        cockpit_gap_strict.set_active(bool(getattr(self, "ai_tutor_gap_autosave_strict_gate", True)))
+        cockpit_gap_strict.set_sensitive(False)
+        content.append(cockpit_enabled)
+
+        autonomy_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        autonomy_label = Gtk.Label(label="Tutor autonomy mode")
+        autonomy_label.set_halign(Gtk.Align.START)
+        autonomy_model = Gtk.StringList.new(["suggest", "assist", "cockpit"])
+        autonomy_dropdown = Gtk.DropDown.new(autonomy_model, None)
+        selected_mode = self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))
+        mode_to_index = {"suggest": 0, "assist": 1, "cockpit": 2}
+        autonomy_dropdown.set_selected(int(mode_to_index.get(selected_mode, 1)))
+        autonomy_row.set_spacing(10)
+        autonomy_row.set_hexpand(True)
+        autonomy_label.set_xalign(0.0)
+        autonomy_label.set_hexpand(True)
+        autonomy_dropdown.set_hexpand(False)
+        autonomy_dropdown.set_halign(Gtk.Align.END)
+        autonomy_dropdown.set_size_request(150, -1)
+        autonomy_row.append(autonomy_label)
+        autonomy_row.append(autonomy_dropdown)
+        content.append(autonomy_row)
+        content.append(cockpit_nudges)
+
+        nudge_policy_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        nudge_policy_label = Gtk.Label(label="Nudge intensity")
+        nudge_policy_label.set_halign(Gtk.Align.START)
+        nudge_policy_model = Gtk.StringList.new(["minimal", "moderate", "aggressive"])
+        nudge_policy_dropdown = Gtk.DropDown.new(nudge_policy_model, None)
+        selected_nudge = self._coerce_ai_tutor_nudge_policy(getattr(self, "ai_tutor_nudge_policy", AI_TUTOR_DEFAULT_NUDGE_POLICY))
+        nudge_to_index = {"minimal": 0, "moderate": 1, "aggressive": 2}
+        nudge_policy_dropdown.set_selected(int(nudge_to_index.get(selected_nudge, 1)))
+        nudge_policy_row.set_spacing(10)
+        nudge_policy_row.set_hexpand(True)
+        nudge_policy_label.set_xalign(0.0)
+        nudge_policy_label.set_hexpand(True)
+        nudge_policy_dropdown.set_hexpand(False)
+        nudge_policy_dropdown.set_halign(Gtk.Align.END)
+        nudge_policy_dropdown.set_size_request(150, -1)
+        nudge_policy_row.append(nudge_policy_label)
+        nudge_policy_row.append(nudge_policy_dropdown)
+        content.append(nudge_policy_row)
+
+        autopilot_tick_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        autopilot_tick_label = Gtk.Label(label="Autopilot tick (sec)")
+        autopilot_tick_label.set_halign(Gtk.Align.START)
+        autopilot_tick_spin = Gtk.SpinButton.new_with_range(
+            AI_TUTOR_AUTOPILOT_TICK_MIN_SECONDS,
+            AI_TUTOR_AUTOPILOT_TICK_MAX_SECONDS,
+            1,
+        )
+        autopilot_tick_spin.set_value(float(self._coerce_ai_tutor_autopilot_tick_seconds(getattr(self, "ai_tutor_autopilot_tick_seconds", AI_TUTOR_AUTOPILOT_TICK_DEFAULT_SECONDS))))
+        autopilot_tick_spin.set_numeric(True)
+        _configure_numeric_row(autopilot_tick_row, autopilot_tick_label, autopilot_tick_spin)
+        autopilot_tick_row.append(autopilot_tick_label)
+        autopilot_tick_row.append(autopilot_tick_spin)
+        content.append(autopilot_tick_row)
+        content.append(cockpit_gap_generation)
+        content.append(cockpit_gap_autosave)
+        content.append(cockpit_gap_strict)
+
         rag_title = Gtk.Label(label="Tutor RAG")
         rag_title.set_halign(Gtk.Align.START)
         rag_title.add_css_class("section-title")
@@ -3351,6 +3499,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         add_active_class_btn.connect("clicked", _add_active_class)
 
+        def _dropdown_selected_value(dropdown: Any, fallback: str) -> str:
+            try:
+                idx = int(dropdown.get_selected())
+                model = dropdown.get_model()
+                if model is not None and hasattr(model, "get_string"):
+                    value = str(model.get_string(idx) or "").strip()
+                    if value:
+                        return value
+            except Exception:
+                pass
+            return str(fallback or "")
+
         def _on_close(_d, _r):
             prev_rag_paths = str(getattr(self, "ai_tutor_rag_pdfs", "") or "").strip()
             try:
@@ -3395,6 +3555,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.local_llm_timeout_seconds = max(10, min(600, timeout_val))
             except Exception:
                 self.local_llm_timeout_seconds = int(DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+            self.ai_tutor_autopilot_enabled = bool(cockpit_enabled.get_active())
+            self.ai_tutor_autonomy_mode = self._coerce_ai_tutor_autonomy_mode(
+                _dropdown_selected_value(autonomy_dropdown, AI_TUTOR_DEFAULT_AUTONOMY_MODE)
+            )
+            self.ai_tutor_nudges_enabled = bool(cockpit_nudges.get_active())
+            self.ai_tutor_nudge_policy = self._coerce_ai_tutor_nudge_policy(
+                _dropdown_selected_value(nudge_policy_dropdown, AI_TUTOR_DEFAULT_NUDGE_POLICY)
+            )
+            self.ai_tutor_gap_generation_enabled = bool(cockpit_gap_generation.get_active())
+            self.ai_tutor_gap_autosave_enabled = bool(cockpit_gap_autosave.get_active())
+            strict_requested = bool(cockpit_gap_strict.get_active())
+            if self.ai_tutor_gap_autosave_enabled:
+                self.ai_tutor_gap_autosave_strict_gate = True
+            else:
+                self.ai_tutor_gap_autosave_strict_gate = bool(strict_requested)
+            self.ai_tutor_autopilot_tick_seconds = self._coerce_ai_tutor_autopilot_tick_seconds(
+                autopilot_tick_spin.get_value_as_int()
+            )
             try:
                 rag_max_val = int(rag_max_spin.get_value())
                 self.ai_tutor_rag_max_sources = max(1, min(24, rag_max_val))
@@ -3435,6 +3613,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self._ai_tutor_rag_cache_order.clear()
                 except Exception:
                     pass
+            self._record_ai_tutor_autopilot_metrics(
+                {
+                    "autopilot_mode": str(self.ai_tutor_autonomy_mode),
+                },
+                persist=False,
+            )
             self._sync_semantic_action_state()
             self.save_preferences()
             dialog.destroy()
@@ -3472,6 +3656,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         perf: dict[str, Any] | None,
         tutor_summary: dict[str, Any] | None = None,
     ) -> str:
+        def _normalize_mode(value: Any) -> str:
+            normalizer = getattr(self, "_coerce_ai_tutor_autonomy_mode", None)
+            if callable(normalizer):
+                try:
+                    return str(normalizer(value) or AI_TUTOR_DEFAULT_AUTONOMY_MODE)
+                except Exception:
+                    pass
+            mode = str(value or AI_TUTOR_DEFAULT_AUTONOMY_MODE).strip().lower()
+            if mode not in AI_TUTOR_AUTONOMY_MODES:
+                mode = AI_TUTOR_DEFAULT_AUTONOMY_MODE
+            return mode
+
         hub_map = hub if isinstance(hub, dict) else {}
         graph_map = graph_status if isinstance(graph_status, dict) else {}
         drift_map = drift if isinstance(drift, dict) else {}
@@ -3499,6 +3695,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         tutor_avg_response_chars = max(0.0, float(tutor_map.get("avg_response_chars", 0.0) or 0.0))
         tutor_avg_prompt_tokens = max(0.0, float(tutor_map.get("avg_prompt_tokens_est", 0.0) or 0.0))
         tutor_avg_response_tokens = max(0.0, float(tutor_map.get("avg_response_tokens_est", 0.0) or 0.0))
+        tutor_autopilot_mode = _normalize_mode(
+            tutor_map.get("autopilot_mode", getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))
+        )
+        tutor_autopilot_decisions = int(tutor_map.get("autopilot_decision_count", 0) or 0)
+        tutor_autopilot_exec = int(tutor_map.get("autopilot_action_executed_count", 0) or 0)
+        tutor_autopilot_blocked = int(tutor_map.get("autopilot_action_blocked_count", 0) or 0)
+        tutor_last_block = str(tutor_map.get("autopilot_last_block_reason", "") or "").strip()
+        tutor_nudge_info = int(tutor_map.get("nudge_info_count", 0) or 0)
+        tutor_nudge_warning = int(tutor_map.get("nudge_warning_count", 0) or 0)
+        tutor_nudge_intervention = int(tutor_map.get("nudge_intervention_count", 0) or 0)
+        tutor_cov_targets = int(tutor_map.get("coverage_target_count", 0) or 0)
+        tutor_cov_hits = int(tutor_map.get("coverage_hit_count", 0) or 0)
+        tutor_gap_generated = int(tutor_map.get("gap_q_generated_count", 0) or 0)
+        tutor_gap_saved = int(tutor_map.get("gap_q_saved_count", 0) or 0)
+        tutor_gap_quarantined = int(tutor_map.get("gap_q_quarantined_count", 0) or 0)
         error_classes_map = tutor_map.get("error_classes", {})
         error_classes: list[str] = []
         if isinstance(error_classes_map, dict):
@@ -3536,7 +3747,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             f"AI Tutor latency avg/p95 (ms): {tutor_avg_latency:.1f}/{tutor_p95_latency:.1f}\n"
             f"AI Tutor prompt/response avg chars: {tutor_avg_prompt_chars:.1f}/{tutor_avg_response_chars:.1f}\n"
             f"AI Tutor prompt/response avg tokens(est): {tutor_avg_prompt_tokens:.1f}/{tutor_avg_response_tokens:.1f}\n"
-            f"AI Tutor top error classes: {error_classes_text}"
+            f"AI Tutor top error classes: {error_classes_text}\n"
+            f"Tutor cockpit mode: {tutor_autopilot_mode}\n"
+            f"Tutor cockpit decisions/executed/blocked: {tutor_autopilot_decisions}/{tutor_autopilot_exec}/{tutor_autopilot_blocked}\n"
+            f"Tutor nudges info/warn/intervene: {tutor_nudge_info}/{tutor_nudge_warning}/{tutor_nudge_intervention}\n"
+            f"Tutor coverage hits/targets: {tutor_cov_hits}/{tutor_cov_targets}\n"
+            f"Tutor gap questions generated/saved/quarantined: {tutor_gap_generated}/{tutor_gap_saved}/{tutor_gap_quarantined}\n"
+            f"Tutor cockpit last block reason: {tutor_last_block or 'none'}"
         )
 
     def on_view_logs(self, _action, _param):
@@ -4070,6 +4287,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         self.local_llm_timeout_seconds = max(10, min(600, int(timeout_val)))
                     except Exception:
                         self.local_llm_timeout_seconds = int(DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+                    self.ai_tutor_autopilot_enabled = bool(data.get("ai_tutor_autopilot_enabled", True))
+                    self.ai_tutor_autonomy_mode = self._coerce_ai_tutor_autonomy_mode(
+                        data.get("ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE)
+                    )
+                    self.ai_tutor_nudges_enabled = bool(data.get("ai_tutor_nudges_enabled", True))
+                    self.ai_tutor_nudge_policy = self._coerce_ai_tutor_nudge_policy(
+                        data.get("ai_tutor_nudge_policy", AI_TUTOR_DEFAULT_NUDGE_POLICY)
+                    )
+                    self.ai_tutor_gap_generation_enabled = bool(data.get("ai_tutor_gap_generation_enabled", True))
+                    self.ai_tutor_gap_autosave_enabled = bool(data.get("ai_tutor_gap_autosave_enabled", True))
+                    self.ai_tutor_gap_autosave_strict_gate = bool(data.get("ai_tutor_gap_autosave_strict_gate", True))
+                    self.ai_tutor_autopilot_tick_seconds = self._coerce_ai_tutor_autopilot_tick_seconds(
+                        data.get("ai_tutor_autopilot_tick_seconds", AI_TUTOR_AUTOPILOT_TICK_DEFAULT_SECONDS)
+                    )
                     rag_paths_val = data.get("ai_tutor_rag_pdfs", "")
                     if isinstance(rag_paths_val, list):
                         rag_paths_val = "\n".join(str(item or "").strip() for item in rag_paths_val if str(item or "").strip())
@@ -4113,6 +4344,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             if isinstance(event, dict):
                                 cleaned_telemetry.append(event)
                     self._ai_tutor_telemetry_events = cleaned_telemetry
+                    autopilot_stats = data.get("ai_tutor_autopilot_stats", {}) or {}
+                    if isinstance(autopilot_stats, dict):
+                        self._record_ai_tutor_autopilot_metrics(dict(autopilot_stats), persist=False)
+                    else:
+                        self._record_ai_tutor_autopilot_metrics({}, persist=False)
                     self.last_coach_pick = data.get("last_coach_pick")
                     self.last_coach_pick_date = data.get("last_coach_pick_date")
                     self.onboarding_dismissed = bool(data.get("onboarding_dismissed", False))
@@ -4241,10 +4477,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "local_llm_host": str(self.local_llm_host),
                 "local_llm_model": str(self.local_llm_model),
                 "local_llm_timeout_seconds": int(self.local_llm_timeout_seconds),
+                "ai_tutor_autopilot_enabled": bool(getattr(self, "ai_tutor_autopilot_enabled", True)),
+                "ai_tutor_autonomy_mode": str(self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))),
+                "ai_tutor_nudges_enabled": bool(getattr(self, "ai_tutor_nudges_enabled", True)),
+                "ai_tutor_nudge_policy": str(self._coerce_ai_tutor_nudge_policy(getattr(self, "ai_tutor_nudge_policy", AI_TUTOR_DEFAULT_NUDGE_POLICY))),
+                "ai_tutor_gap_generation_enabled": bool(getattr(self, "ai_tutor_gap_generation_enabled", True)),
+                "ai_tutor_gap_autosave_enabled": bool(getattr(self, "ai_tutor_gap_autosave_enabled", True)),
+                "ai_tutor_gap_autosave_strict_gate": bool(getattr(self, "ai_tutor_gap_autosave_strict_gate", True)),
+                "ai_tutor_autopilot_tick_seconds": int(self._coerce_ai_tutor_autopilot_tick_seconds(getattr(self, "ai_tutor_autopilot_tick_seconds", AI_TUTOR_AUTOPILOT_TICK_DEFAULT_SECONDS))),
                 "ai_tutor_rag_pdfs": str(getattr(self, "ai_tutor_rag_pdfs", "") or ""),
                 "ai_tutor_rag_max_sources": int(getattr(self, "ai_tutor_rag_max_sources", DEFAULT_AI_TUTOR_RAG_MAX_SOURCES) or DEFAULT_AI_TUTOR_RAG_MAX_SOURCES),
                 "ai_tutor_history": list(getattr(self, "_ai_tutor_history", []) or [])[-20:],
                 "ai_tutor_telemetry_events": telemetry_events,
+                "ai_tutor_autopilot_stats": dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {}),
                 "last_coach_pick": self.last_coach_pick,
                 "last_coach_pick_date": self.last_coach_pick_date,
                 "onboarding_dismissed": bool(self.onboarding_dismissed),
@@ -4920,6 +5165,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             char_used: int = 0,
             top_k_target: int = 0,
             neighbor_window: int = 0,
+            target_query_count: int = 0,
+            target_hit_snippets: int = 0,
         ) -> dict[str, Any]:
             snippet_rows = [row for row in list(snippets or []) if isinstance(row, dict)]
             return {
@@ -4941,6 +5188,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "char_used": int(max(0, char_used)),
                 "top_k_target": int(max(0, top_k_target)),
                 "neighbor_window": int(max(0, neighbor_window)),
+                "target_query_count": int(max(0, target_query_count)),
+                "target_hit_snippets": int(max(0, target_hit_snippets)),
             }
 
         lexical_top_n = _env_int("STUDYPLAN_AI_TUTOR_RAG_LEXICAL_TOP_N", 24, 12, 60)
@@ -4994,6 +5243,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             " ".join(recent_user_lines).strip(),
         ]
         query_text = " ".join(part for part in query_parts if part).strip()
+        target_queries = build_targeted_rag_queries(str(user_prompt or ""), max_targets=4)
+        query_variants: list[tuple[str, float]] = [(query_text, 1.0)]
+        for target_query in target_queries:
+            tq = str(target_query or "").strip()
+            if not tq or tq == query_text:
+                continue
+            query_variants.append((tq, 0.72))
         try:
             requested_top_k = int(top_k)
         except Exception:
@@ -5018,6 +5274,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 top_k_target=top_k_target,
                 neighbor_window=neighbor_window,
                 char_budget=char_budget,
+                target_query_count=len(target_queries),
             )
         candidates: list[dict[str, Any]] = []
         chunk_lookup: dict[tuple[str, int], dict[str, Any]] = {}
@@ -5050,27 +5307,58 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 chunk_indices.append(int(chunk_idx))
             if not chunk_texts:
                 continue
-            ranked = lexical_rank_rag_chunks(query_text, chunk_texts, top_n=lexical_top_n)
-            for chunk_idx, lex_score in ranked:
-                if chunk_idx < 0 or chunk_idx >= len(chunk_texts):
-                    continue
+            doc_scores: dict[int, dict[str, Any]] = {}
+            for query_idx, (query_variant, weight) in enumerate(query_variants):
+                ranked = lexical_rank_rag_chunks(query_variant, chunk_texts, top_n=lexical_top_n)
+                for chunk_idx, lex_score in ranked:
+                    if chunk_idx < 0 or chunk_idx >= len(chunk_texts):
+                        continue
+                    chunk_text = str(chunk_texts[chunk_idx] or "").strip()
+                    if not chunk_text:
+                        continue
+                    bucket = doc_scores.setdefault(
+                        int(chunk_idx),
+                        {
+                            "lex_score": 0.0,
+                            "blend_score": 0.0,
+                            "target_hits": 0,
+                            "target_hit_keys": set(),
+                        },
+                    )
+                    lex_val = float(lex_score)
+                    if query_idx == 0:
+                        bucket["lex_score"] = max(float(bucket.get("lex_score", 0.0) or 0.0), lex_val)
+                    else:
+                        hit_keys = bucket.get("target_hit_keys")
+                        if isinstance(hit_keys, set):
+                            key = f"t{query_idx}"
+                            if key not in hit_keys:
+                                hit_keys.add(key)
+                                bucket["target_hits"] = int(bucket.get("target_hits", 0) or 0) + 1
+                    bucket["blend_score"] = float(bucket.get("blend_score", 0.0) or 0.0) + (lex_val * float(weight))
+            for chunk_idx, score_row in doc_scores.items():
                 chunk_text = str(chunk_texts[chunk_idx] or "").strip()
                 if not chunk_text:
                     continue
                 real_idx = int(chunk_indices[chunk_idx])
                 item_key = (doc_path, real_idx)
+                primary_lex = float(score_row.get("lex_score", 0.0) or 0.0)
+                blend_score = float(score_row.get("blend_score", 0.0) or 0.0)
+                target_hits = int(score_row.get("target_hits", 0) or 0)
+                blended_lex = max(primary_lex, min(2.0, blend_score + (0.05 * float(target_hits))))
                 prev_lex = float(lex_lookup.get(item_key, 0.0))
-                if float(lex_score) > prev_lex:
-                    lex_lookup[item_key] = float(lex_score)
+                if blended_lex > prev_lex:
+                    lex_lookup[item_key] = blended_lex
                 candidates.append(
                     {
                         "source": source_name,
                         "path": doc_path,
                         "chunk_index": real_idx,
                         "text": chunk_text,
-                        "lex_score": float(lex_score),
+                        "lex_score": float(blended_lex),
                         "sem_score": 0.0,
-                        "score": float(lex_score),
+                        "score": float(blended_lex),
+                        "target_hits": int(target_hits),
                     }
                 )
         if not candidates:
@@ -5082,6 +5370,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 top_k_target=top_k_target,
                 neighbor_window=neighbor_window,
                 char_budget=char_budget,
+                target_query_count=len(target_queries),
             )
         candidates.sort(
             key=lambda item: (
@@ -5110,7 +5399,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         lex_score = max(0.0, float(item.get("lex_score", 0.0)))
                         blended = (0.65 * sem_score) + (0.35 * min(1.0, lex_score))
                         item["sem_score"] = sem_score
-                        item["score"] = blended
+                        item["score"] = blended + (0.02 * float(item.get("target_hits", 0) or 0))
                     method = "semantic_hybrid"
             except Exception as exc:
                 errors.append(f"semantic: {exc}")
@@ -5266,13 +5555,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             snippets.append(
                 {
                     "id": f"S{len(snippets) + 1}",
-                    "source": str(item.get("source", "") or ""),
-                    "text": text,
-                    "chunk_index": int(item.get("chunk_index", 0)),
-                    "score": float(item.get("score", item.get("lex_score", 0.0)) or 0.0),
-                }
-            )
-            char_used += len(text)
+                "source": str(item.get("source", "") or ""),
+                "text": text,
+                "chunk_index": int(item.get("chunk_index", 0)),
+                "score": float(item.get("score", item.get("lex_score", 0.0)) or 0.0),
+                "target_hits": int(item.get("target_hits", 0) or 0),
+            }
+        )
+        char_used += len(text)
+        target_hit_snippets = sum(
+            1
+            for row in snippets
+            if int(row.get("target_hits", 0) or 0) > 0
+        )
         context_block = build_rag_context_block(snippets)
         meta = _make_meta(
             len(docs),
@@ -5286,6 +5581,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             char_used=char_used,
             top_k_target=top_k_target,
             neighbor_window=neighbor_window,
+            target_query_count=len(target_queries),
+            target_hit_snippets=target_hit_snippets,
         )
         return context_block, meta
 
@@ -5857,9 +6154,597 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         }
         return context_text
 
+    def _coerce_ai_tutor_autonomy_mode(self, value: Any) -> str:
+        mode = str(value or "").strip().lower()
+        if mode not in AI_TUTOR_AUTONOMY_MODES:
+            mode = str(AI_TUTOR_DEFAULT_AUTONOMY_MODE)
+        return mode
+
+    def _coerce_ai_tutor_nudge_policy(self, value: Any) -> str:
+        policy = str(value or "").strip().lower()
+        if policy not in AI_TUTOR_NUDGE_POLICIES:
+            policy = str(AI_TUTOR_DEFAULT_NUDGE_POLICY)
+        return policy
+
+    def _coerce_ai_tutor_autopilot_tick_seconds(self, value: Any) -> int:
+        try:
+            tick = int(value)
+        except Exception:
+            tick = int(AI_TUTOR_AUTOPILOT_TICK_DEFAULT_SECONDS)
+        return max(AI_TUTOR_AUTOPILOT_TICK_MIN_SECONDS, min(AI_TUTOR_AUTOPILOT_TICK_MAX_SECONDS, int(tick)))
+
+    def _record_ai_tutor_autopilot_metrics(self, updates: dict[str, Any] | None = None, persist: bool = False) -> dict[str, Any]:
+        stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+        if not stats:
+            stats = {
+                "autopilot_mode": str(self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))),
+                "autopilot_decision_count": 0,
+                "autopilot_action_executed_count": 0,
+                "autopilot_action_blocked_count": 0,
+                "autopilot_last_block_reason": "",
+                "nudge_info_count": 0,
+                "nudge_warning_count": 0,
+                "nudge_intervention_count": 0,
+                "coverage_target_count": 0,
+                "coverage_hit_count": 0,
+                "gap_q_generated_count": 0,
+                "gap_q_saved_count": 0,
+                "gap_q_quarantined_count": 0,
+                "ctx_chars": 0,
+                "ctx_budget_chars": 0,
+                "ctx_tokens_est": 0,
+                "ctx_dropped_sections_count": 0,
+                "ctx_horizon_days": AI_CONTEXT_DEFAULT_HORIZON_DAYS,
+                "updated_at": "",
+            }
+        if isinstance(updates, dict):
+            for key, value in updates.items():
+                if key in {
+                    "autopilot_mode",
+                    "autopilot_last_block_reason",
+                }:
+                    if key == "autopilot_mode":
+                        stats[key] = self._coerce_ai_tutor_autonomy_mode(value)
+                    else:
+                        stats[key] = str(value or "")[:200]
+                    continue
+                try:
+                    if key.startswith("ctx_") or key.endswith("_count") or key in {"coverage_target_count", "coverage_hit_count"}:
+                        stats[key] = max(0, int(value or 0))
+                    else:
+                        stats[key] = value
+                except Exception:
+                    continue
+        stats["autopilot_mode"] = self._coerce_ai_tutor_autonomy_mode(stats.get("autopilot_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))
+        stats["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        self._ai_tutor_autopilot_stats = stats
+        if bool(persist):
+            try:
+                self.save_preferences()
+            except Exception:
+                pass
+        return dict(stats)
+
+    def _build_ai_tutor_autopilot_snapshot(self) -> dict[str, Any]:
+        packet = self._build_local_ai_context_packet(kind="tutor", horizon_days=AI_CONTEXT_DEFAULT_HORIZON_DAYS)
+        max_chars, max_tokens = self._context_budget_limits("tutor")
+        context_budget_chars = max(120, int(min(max_chars, max_tokens * 4)))
+        context_block = str(self._format_local_ai_context_block(packet, max_chars=context_budget_chars) or "").strip()
+        ctx_tokens = self._estimate_context_tokens(context_block)
+        format_meta = packet.get("_format_meta", {}) if isinstance(packet.get("_format_meta", {}), dict) else {}
+        try:
+            pom_active = bool(getattr(self, "pomodoro_timer_id", None) and int(getattr(self, "pomodoro_remaining", 0) or 0) > 0)
+        except Exception:
+            pom_active = False
+        try:
+            pom_paused = bool(getattr(self, "pomodoro_paused", False))
+        except Exception:
+            pom_paused = False
+        snapshot = {
+            "module": str(packet.get("module", "") or ""),
+            "current_topic": str(packet.get("current_topic", "") or ""),
+            "coach_pick": str(packet.get("coach_pick", "") or ""),
+            "days_to_exam": packet.get("days_to_exam"),
+            "must_review_due": int(packet.get("must_review_due", 0) or 0),
+            "overdue_srs_count": int(packet.get("overdue_srs_count", 0) or 0),
+            "new_srs_count": int(packet.get("new_srs_count", 0) or 0),
+            "weak_topics_top3": list(packet.get("weak_topics_top3", []) or []),
+            "risk_snapshot_top3": list(packet.get("risk_snapshot_top3", []) or []),
+            "due_snapshot_top3": list(packet.get("due_snapshot_top3", []) or []),
+            "quiz_trend_14d": dict(packet.get("quiz_trend_14d", {}) or {}),
+            "focus_trend_14d": dict(packet.get("focus_trend_14d", {}) or {}),
+            "recent_action_mix": list(packet.get("recent_action_mix", []) or []),
+            "pomodoro_active": bool(pom_active),
+            "pomodoro_paused": bool(pom_paused),
+            "pomodoro_remaining_sec": int(max(0, int(getattr(self, "pomodoro_remaining", 0) or 0))),
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            "allowed_actions": list(AI_TUTOR_ALLOWED_ACTIONS),
+            "autonomy_mode": self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE)),
+            "learning_context": context_block,
+            "learning_context_meta": {
+                "ctx_chars": int(len(context_block)),
+                "ctx_budget_chars": int(context_budget_chars),
+                "ctx_tokens_est": int(max(0, ctx_tokens)),
+                "ctx_dropped_sections_count": int(format_meta.get("dropped_sections_count", 0) or 0),
+                "ctx_horizon_days": int(packet.get("horizon_days", AI_CONTEXT_DEFAULT_HORIZON_DAYS) or AI_CONTEXT_DEFAULT_HORIZON_DAYS),
+            },
+        }
+        self._record_ai_tutor_autopilot_metrics(
+            {
+                "ctx_chars": int(snapshot["learning_context_meta"]["ctx_chars"]),
+                "ctx_budget_chars": int(snapshot["learning_context_meta"]["ctx_budget_chars"]),
+                "ctx_tokens_est": int(snapshot["learning_context_meta"]["ctx_tokens_est"]),
+                "ctx_dropped_sections_count": int(snapshot["learning_context_meta"]["ctx_dropped_sections_count"]),
+                "ctx_horizon_days": int(snapshot["learning_context_meta"]["ctx_horizon_days"]),
+            },
+            persist=False,
+        )
+        return snapshot
+
+    def _build_ai_tutor_autopilot_prompt(self, snapshot: dict[str, Any]) -> str:
+        payload_json = json.dumps(snapshot, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        lines = [
+            "You are an ACCA AI tutor cockpit controller.",
+            "Return exactly one JSON object and nothing else.",
+            "Use this schema:",
+            '{"action":"focus_start|timer_pause|timer_resume|timer_stop|quiz_start|drill_start|review_start|interleave_start|coach_next|gap_drill_generate","topic":"chapter|empty","duration_minutes":25,"reason":"short reason","confidence":0.0,"requires_confirmation":false}',
+            "Rules:",
+            "- Prefer the safest next step with low latency impact.",
+            "- Use only topics found in snapshot weak_topics_top3/current_topic/coach_pick.",
+            "- Set requires_confirmation=true for higher-impact actions (review_start, interleave_start, gap_drill_generate, timer_stop).",
+            "- If no action should run now, return action='focus_start' with a concise reason.",
+            "Snapshot JSON:",
+            payload_json,
+        ]
+        return "\n".join(lines).strip()
+
+    def _normalize_ai_tutor_action_plan(
+        self,
+        raw: dict[str, Any],
+        snapshot: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        if not isinstance(raw, dict):
+            return None, "response is not JSON object"
+        action = str(raw.get("action", "") or "").strip().lower()
+        if action not in AI_TUTOR_ALLOWED_ACTIONS:
+            return None, f"invalid action '{action or 'missing'}'"
+        chapters = set(ch for ch in list(getattr(self.engine, "CHAPTERS", []) or []) if isinstance(ch, str) and ch)
+        topic = str(raw.get("topic", "") or "").strip()
+        if topic and topic not in chapters:
+            topic = ""
+        if not topic:
+            topic = str(snapshot.get("current_topic", "") or "").strip() or str(snapshot.get("coach_pick", "") or "").strip()
+            if topic not in chapters:
+                topic = ""
+        duration = self._coerce_ai_coach_duration(raw.get("duration_minutes", AI_COACH_DEFAULT_DURATION_MINUTES))
+        reason = str(raw.get("reason", "") or "").replace("\n", " ").strip()
+        if not reason:
+            reason = "Tutor cockpit selected the next study action from learner state."
+        reason = reason[:220]
+        confidence_raw = raw.get("confidence")
+        if isinstance(confidence_raw, (int, float)):
+            confidence = max(0.0, min(1.0, float(confidence_raw)))
+        else:
+            confidence = 0.0
+        requires_confirmation = bool(raw.get("requires_confirmation", False))
+        if action in {"review_start", "interleave_start", "gap_drill_generate", "timer_stop"}:
+            requires_confirmation = True
+        return {
+            "action": action,
+            "topic": topic,
+            "duration_minutes": int(duration),
+            "reason": reason,
+            "confidence": float(confidence),
+            "requires_confirmation": bool(requires_confirmation),
+        }, None
+
+    def _build_ai_tutor_fallback_action(
+        self,
+        snapshot: dict[str, Any],
+        issue: str = "",
+    ) -> dict[str, Any]:
+        current_topic = str(snapshot.get("current_topic", "") or "").strip()
+        must_review_due = int(snapshot.get("must_review_due", 0) or 0)
+        action = "focus_start"
+        if must_review_due > 0:
+            action = "review_start"
+        reason = "Fallback cockpit action from current due-review and focus signals."
+        if issue:
+            reason = f"{reason} ({issue})"
+        return {
+            "action": action,
+            "topic": current_topic,
+            "duration_minutes": int(AI_COACH_DEFAULT_DURATION_MINUTES),
+            "reason": reason[:220],
+            "confidence": 0.0,
+            "requires_confirmation": action in {"review_start"},
+            "source": "deterministic_fallback",
+        }
+
+    def _request_ai_tutor_action_plan(
+        self,
+        snapshot: dict[str, Any],
+        model_override: str | None = None,
+    ) -> tuple[dict[str, Any], str | None]:
+        model_name = str(model_override or self.local_llm_model or "").strip()
+        if not bool(self.local_llm_enabled):
+            fallback = self._build_ai_tutor_fallback_action(snapshot, "local LLM disabled")
+            fallback["model"] = model_name
+            fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            return fallback, "Local LLM is disabled."
+        if not model_name:
+            models, list_err = self._ollama_list_models()
+            if list_err:
+                fallback = self._build_ai_tutor_fallback_action(snapshot, "model lookup failed")
+                fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+                return fallback, f"Ollama model lookup failed: {list_err}"
+            if not models:
+                fallback = self._build_ai_tutor_fallback_action(snapshot, "no local models found")
+                fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+                return fallback, "No local Ollama models found."
+            model_name = str(models[0]).strip()
+            self.local_llm_model = model_name
+            self.save_preferences()
+        prompt = self._build_ai_tutor_autopilot_prompt(snapshot)
+        text, err = self._ollama_generate_text(model_name, prompt)
+        if err:
+            fallback = self._build_ai_tutor_fallback_action(snapshot, "ollama request failed")
+            fallback["model"] = model_name
+            fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            _code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
+            return fallback, f"Ollama request failed: {friendly}"
+        json_text = self._extract_first_json_object(text)
+        if not json_text:
+            fallback = self._build_ai_tutor_fallback_action(snapshot, "non-JSON response")
+            fallback["model"] = model_name
+            fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            return fallback, "Model response did not contain valid JSON."
+        try:
+            parsed = json.loads(json_text)
+        except Exception as exc:
+            fallback = self._build_ai_tutor_fallback_action(snapshot, "invalid JSON parse")
+            fallback["model"] = model_name
+            fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            return fallback, f"Model JSON parse failed: {exc}"
+        normalized, norm_err = self._normalize_ai_tutor_action_plan(parsed, snapshot)
+        if norm_err or not normalized:
+            fallback = self._build_ai_tutor_fallback_action(snapshot, "guardrail validation fallback")
+            fallback["model"] = model_name
+            fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            return fallback, f"Guardrail validation failed: {norm_err or 'unknown error'}"
+        normalized["source"] = "ai"
+        normalized["model"] = model_name
+        normalized["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        return normalized, None
+
+    def _can_auto_execute_ai_tutor_action(
+        self,
+        action: str,
+        mode: str,
+        requires_confirmation: bool,
+    ) -> bool:
+        normalized_mode = self._coerce_ai_tutor_autonomy_mode(mode)
+        if normalized_mode == "suggest":
+            return False
+        if normalized_mode == "assist":
+            if bool(requires_confirmation):
+                return False
+            return action in AI_TUTOR_SAFE_AUTONOMOUS_ACTIONS
+        return action in AI_TUTOR_ALLOWED_ACTIONS
+
+    def _build_gap_generation_prompt(self, topic: str, count: int, snapshot: dict[str, Any]) -> str:
+        payload = {
+            "topic": str(topic or ""),
+            "count": int(count),
+            "module": str(getattr(self, "module_title", "ACCA") or "ACCA"),
+            "current_topic": str(snapshot.get("current_topic", "") or ""),
+            "weak_topics_top3": list(snapshot.get("weak_topics_top3", []) or []),
+            "risk_snapshot_top3": list(snapshot.get("risk_snapshot_top3", []) or []),
+            "learning_context": str(snapshot.get("learning_context", "") or ""),
+        }
+        return "\n".join(
+            [
+                "Generate ACCA practice questions as JSON only (no prose).",
+                "Schema:",
+                '{"chapter":"chapter","questions":[{"question":"text","options":["A","B","C","D"],"correct":"A","explanation":"short why"}]}',
+                "Rules:",
+                "- Exactly 4 options per question.",
+                "- correct must match one option exactly.",
+                "- Keep explanations concise and unambiguous.",
+                "- Avoid duplicate questions.",
+                "Payload JSON:",
+                json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True),
+            ]
+        ).strip()
+
+    def _parse_generated_gap_questions(self, text: str) -> tuple[str, list[dict[str, Any]], str | None]:
+        json_text = self._extract_first_json_object(text)
+        if not json_text:
+            return "", [], "No JSON object found."
+        try:
+            payload = json.loads(json_text)
+        except Exception as exc:
+            return "", [], f"JSON parse error: {exc}"
+        if not isinstance(payload, dict):
+            return "", [], "JSON payload is not an object."
+        chapter = str(payload.get("chapter", "") or "").strip()
+        questions = payload.get("questions", [])
+        if not isinstance(questions, list):
+            return chapter, [], "questions must be a list."
+        clean_rows: list[dict[str, Any]] = []
+        for row in questions:
+            if not isinstance(row, dict):
+                continue
+            clean_rows.append(dict(row))
+        return chapter, clean_rows, None
+
+    def _validate_generated_gap_questions(
+        self,
+        chapter: str,
+        questions: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        reasons: list[str] = []
+        validated: list[dict[str, Any]] = []
+        if chapter not in getattr(self.engine, "CHAPTERS", []):
+            reasons.append("invalid_chapter")
+            return [], reasons
+        existing = list(getattr(self.engine, "QUESTIONS", {}).get(chapter, []) or [])
+        existing_keys = set()
+        for row in existing:
+            if isinstance(row, dict):
+                try:
+                    existing_keys.add(self.engine._question_dedupe_key(row))
+                except Exception:
+                    continue
+        seen_new: set[Any] = set()
+        for row in list(questions or []):
+            if not isinstance(row, dict):
+                reasons.append("non_object_row")
+                continue
+            question = str(row.get("question", "") or "").strip()
+            options = row.get("options", [])
+            correct = str(row.get("correct", "") or "").strip()
+            explanation = str(row.get("explanation", "") or "").strip()
+            if not question or len(question) < 8:
+                reasons.append("question_too_short")
+                continue
+            if not isinstance(options, list) or len(options) != 4:
+                reasons.append("options_not_four")
+                continue
+            norm_options = [str(opt or "").strip() for opt in options]
+            if any(not opt for opt in norm_options):
+                reasons.append("empty_option")
+                continue
+            if len({opt.lower() for opt in norm_options}) != len(norm_options):
+                reasons.append("duplicate_options")
+                continue
+            if correct not in norm_options:
+                reasons.append("correct_not_in_options")
+                continue
+            if len(explanation) < 6:
+                reasons.append("explanation_too_short")
+                continue
+            clean_row = {
+                "question": question,
+                "options": norm_options,
+                "correct": correct,
+                "explanation": explanation,
+            }
+            try:
+                key = self.engine._question_dedupe_key(clean_row)
+            except Exception:
+                key = (question.strip().lower(), tuple(opt.strip().lower() for opt in norm_options), correct.strip().lower())
+            if key in existing_keys or key in seen_new:
+                reasons.append("duplicate_or_near_duplicate")
+                continue
+            seen_new.add(key)
+            validated.append(clean_row)
+        return validated, sorted(set(reasons))
+
+    def _append_gap_question_quarantine(
+        self,
+        chapter: str,
+        questions: list[dict[str, Any]],
+        reasons: list[str],
+        model_name: str,
+    ) -> None:
+        payload = {
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            "chapter": str(chapter or ""),
+            "model": str(model_name or ""),
+            "reasons": [str(reason) for reason in list(reasons or []) if str(reason)],
+            "questions": list(questions or []),
+        }
+        path = os.path.expanduser("~/.config/studyplan/ai_gap_question_quarantine.jsonl")
+        line = json.dumps(payload, ensure_ascii=True) + "\n"
+        self._atomic_write_text_file(path, (self._read_text_file(path) + line) if os.path.exists(path) else line)
+
+    def _read_text_file(self, file_path: str) -> str:
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return str(f.read() or "")
+        except Exception:
+            return ""
+
+    def _save_generated_gap_questions(
+        self,
+        chapter: str,
+        questions: list[dict[str, Any]],
+    ) -> int:
+        if not questions:
+            return 0
+        added, _stats = self.engine._add_questions_with_stats(chapter, questions)
+        if added > 0:
+            try:
+                self.engine.save_questions()
+                self.engine.save_data()
+            except Exception:
+                pass
+        return int(max(0, added))
+
+    def _generate_gap_drill_questions(
+        self,
+        topic: str,
+        snapshot: dict[str, Any],
+        requested_count: int = AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS,
+    ) -> tuple[bool, str]:
+        if not bool(getattr(self, "ai_tutor_gap_generation_enabled", True)):
+            return False, "AI gap-question generation is disabled."
+        if not bool(self.local_llm_enabled):
+            return False, "Local LLM is disabled."
+        chapter = str(topic or "").strip()
+        if chapter not in getattr(self.engine, "CHAPTERS", []):
+            chapter = str(snapshot.get("current_topic", "") or "").strip()
+        if chapter not in getattr(self.engine, "CHAPTERS", []):
+            return False, "No valid chapter for gap-question generation."
+        try:
+            count = int(requested_count)
+        except Exception:
+            count = int(AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS)
+        count = max(AI_TUTOR_GAP_GENERATION_MIN_QUESTIONS, min(AI_TUTOR_GAP_GENERATION_MAX_QUESTIONS, count))
+        model_name = str(self.local_llm_model or "").strip()
+        if not model_name:
+            models, err = self._ollama_list_models()
+            if err or not models:
+                return False, "No local model available for gap-question generation."
+            model_name = str(models[0]).strip()
+            self.local_llm_model = model_name
+        prompt = self._build_gap_generation_prompt(chapter, count, snapshot)
+        text, err = self._ollama_generate_text(model_name, prompt)
+        if err:
+            return False, f"Gap-question generation failed: {err}"
+        parsed_chapter, questions, parse_err = self._parse_generated_gap_questions(text)
+        if parse_err:
+            try:
+                self._append_gap_question_quarantine(chapter, [], [parse_err], model_name)
+            except Exception:
+                pass
+            self._record_ai_tutor_autopilot_metrics(
+                {"gap_q_quarantined_count": int(getattr(self, "_ai_tutor_autopilot_stats", {}).get("gap_q_quarantined_count", 0) or 0) + 1},
+                persist=False,
+            )
+            return False, f"Gap-question output rejected: {parse_err}"
+        final_chapter = parsed_chapter if parsed_chapter in getattr(self.engine, "CHAPTERS", []) else chapter
+        valid_rows, reasons = self._validate_generated_gap_questions(final_chapter, questions)
+        generated_count = int(len(questions))
+        stats = getattr(self, "_ai_tutor_autopilot_stats", {}) or {}
+        self._record_ai_tutor_autopilot_metrics(
+            {"gap_q_generated_count": int(stats.get("gap_q_generated_count", 0) or 0) + generated_count},
+            persist=False,
+        )
+        if not valid_rows:
+            try:
+                self._append_gap_question_quarantine(final_chapter, questions, reasons or ["strict_validation_failed"], model_name)
+            except Exception:
+                pass
+            self._record_ai_tutor_autopilot_metrics(
+                {"gap_q_quarantined_count": int(stats.get("gap_q_quarantined_count", 0) or 0) + max(1, generated_count)},
+                persist=False,
+            )
+            return False, "Generated questions failed strict validation and were quarantined."
+        if not bool(getattr(self, "ai_tutor_gap_autosave_enabled", True)):
+            return True, f"Generated {len(valid_rows)} validated gap question(s). Auto-save is disabled."
+        added = self._save_generated_gap_questions(final_chapter, valid_rows)
+        if added <= 0:
+            try:
+                self._append_gap_question_quarantine(final_chapter, valid_rows, ["no_questions_added"], model_name)
+            except Exception:
+                pass
+            self._record_ai_tutor_autopilot_metrics(
+                {"gap_q_quarantined_count": int(stats.get("gap_q_quarantined_count", 0) or 0) + len(valid_rows)},
+                persist=False,
+            )
+            return False, "Validated questions were duplicate/filtered and not added."
+        self._record_ai_tutor_autopilot_metrics(
+            {"gap_q_saved_count": int(stats.get("gap_q_saved_count", 0) or 0) + added},
+            persist=False,
+        )
+        return True, f"Generated and saved {added} gap question(s) for {final_chapter}."
+
+    def _execute_ai_tutor_action(self, action_plan: dict[str, Any]) -> tuple[bool, str]:
+        action = str(action_plan.get("action", "") or "").strip().lower()
+        topic = str(action_plan.get("topic", "") or "").strip()
+        if action not in AI_TUTOR_ALLOWED_ACTIONS:
+            return False, f"Unsupported tutor action: {action or 'missing'}"
+        if action in {"quiz_start", "drill_start", "review_start", "interleave_start", "gap_drill_generate"}:
+            if not self._ensure_chapters_ready("Tutor Cockpit"):
+                return False, "No chapters loaded."
+        if topic and topic in getattr(self.engine, "CHAPTERS", []):
+            try:
+                self._set_current_topic(topic)
+            except Exception:
+                pass
+        if action == "focus_start":
+            self.on_focus_now(None)
+            return True, "Started focus block."
+        if action == "timer_pause":
+            if not getattr(self, "pomodoro_timer_id", None) or int(getattr(self, "pomodoro_remaining", 0) or 0) <= 0:
+                return False, "No active Pomodoro to pause."
+            if bool(getattr(self, "pomodoro_paused", False)):
+                return False, "Pomodoro is already paused."
+            self.on_pomodoro_pause(self.pomodoro_btn_pause)
+            return True, "Paused Pomodoro."
+        if action == "timer_resume":
+            if not getattr(self, "pomodoro_timer_id", None) or int(getattr(self, "pomodoro_remaining", 0) or 0) <= 0:
+                return False, "No active Pomodoro to resume."
+            if not bool(getattr(self, "pomodoro_paused", False)):
+                return False, "Pomodoro is already running."
+            self.on_pomodoro_pause(self.pomodoro_btn_pause)
+            return True, "Resumed Pomodoro."
+        if action == "timer_stop":
+            if not getattr(self, "pomodoro_timer_id", None) or int(getattr(self, "pomodoro_remaining", 0) or 0) <= 0:
+                return False, "No active Pomodoro to stop."
+            self.on_pomodoro_stop(self.pomodoro_btn_stop)
+            return True, "Stopped Pomodoro."
+        if action == "quiz_start":
+            quiz_topic = topic if self._topic_has_questions(topic) else (self.current_topic if self._topic_has_questions(self.current_topic) else "")
+            if not quiz_topic:
+                return False, "No quiz topic with questions is available."
+            self.start_quiz_session(topic=quiz_topic, total_override=8, kind="quiz")
+            return True, f"Started quiz on {quiz_topic}."
+        if action == "drill_start":
+            drill_topic = topic if self._topic_has_questions(topic) else self._get_drill_topic()
+            if not drill_topic:
+                return False, "No drill topic with questions is available."
+            self.start_quiz_session(topic=drill_topic, total_override=8, kind="drill")
+            return True, f"Started drill on {drill_topic}."
+        if action == "review_start":
+            before_topic = str(self.current_topic or "")
+            self.on_clear_must_review(None)
+            after_topic = str(self.current_topic or "")
+            if after_topic and after_topic != before_topic:
+                return True, f"Started due review on {after_topic}."
+            return True, "Triggered due review action."
+        if action == "interleave_start":
+            interleave_topic = self._get_interleave_topic()
+            if not interleave_topic:
+                return False, "No interleave topic with questions is available."
+            self.start_quiz_session(topic=interleave_topic, total_override=6, kind="interleave")
+            return True, f"Started interleave quiz on {interleave_topic}."
+        if action == "coach_next":
+            self.on_do_coach_next(None)
+            return True, "Executed coach-next action."
+        if action == "gap_drill_generate":
+            requested_count = int(action_plan.get("question_count", AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS) or AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS)
+            snapshot = self._build_ai_tutor_autopilot_snapshot()
+            return self._generate_gap_drill_questions(topic or self.current_topic, snapshot, requested_count=requested_count)
+        return False, f"Unsupported tutor action: {action}"
+
     def _sanitize_ai_tutor_telemetry_event(self, event: Any) -> dict[str, Any] | None:
         if not isinstance(event, dict):
             return None
+
+        def _normalize_mode(value: Any) -> str:
+            normalizer = getattr(self, "_coerce_ai_tutor_autonomy_mode", None)
+            if callable(normalizer):
+                try:
+                    return str(normalizer(value) or AI_TUTOR_DEFAULT_AUTONOMY_MODE)
+                except Exception:
+                    pass
+            mode = str(value or AI_TUTOR_DEFAULT_AUTONOMY_MODE).strip().lower()
+            if mode not in AI_TUTOR_AUTONOMY_MODES:
+                mode = AI_TUTOR_DEFAULT_AUTONOMY_MODE
+            return mode
 
         def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
             try:
@@ -5889,6 +6774,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "model": str(event.get("model", "") or "").strip()[:120],
             "outcome": outcome,
             "error_class": error_class,
+            "autopilot_mode": _normalize_mode(event.get("autopilot_mode", getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))),
+            "autopilot_decision_count": _clamp_int(event.get("autopilot_decision_count", 0), default=0, minimum=0, maximum=100000),
+            "autopilot_action_executed_count": _clamp_int(event.get("autopilot_action_executed_count", 0), default=0, minimum=0, maximum=100000),
+            "autopilot_action_blocked_count": _clamp_int(event.get("autopilot_action_blocked_count", 0), default=0, minimum=0, maximum=100000),
+            "autopilot_last_block_reason": str(event.get("autopilot_last_block_reason", "") or "").strip()[:200],
+            "nudge_info_count": _clamp_int(event.get("nudge_info_count", 0), default=0, minimum=0, maximum=100000),
+            "nudge_warning_count": _clamp_int(event.get("nudge_warning_count", 0), default=0, minimum=0, maximum=100000),
+            "nudge_intervention_count": _clamp_int(event.get("nudge_intervention_count", 0), default=0, minimum=0, maximum=100000),
+            "coverage_target_count": _clamp_int(event.get("coverage_target_count", 0), default=0, minimum=0, maximum=1000),
+            "coverage_hit_count": _clamp_int(event.get("coverage_hit_count", 0), default=0, minimum=0, maximum=1000),
+            "gap_q_generated_count": _clamp_int(event.get("gap_q_generated_count", 0), default=0, minimum=0, maximum=100000),
+            "gap_q_saved_count": _clamp_int(event.get("gap_q_saved_count", 0), default=0, minimum=0, maximum=100000),
+            "gap_q_quarantined_count": _clamp_int(event.get("gap_q_quarantined_count", 0), default=0, minimum=0, maximum=100000),
             "latency_ms": _clamp_int(event.get("latency_ms", 0), default=0, minimum=0, maximum=3600000),
             "prompt_chars": _clamp_int(event.get("prompt_chars", 0), default=0, minimum=0, maximum=500000),
             "response_chars": _clamp_int(event.get("response_chars", 0), default=0, minimum=0, maximum=500000),
@@ -5962,6 +6860,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return cleaned
 
     def _summarize_ai_tutor_telemetry(self, window: int = AI_TUTOR_TELEMETRY_SUMMARY_WINDOW) -> dict[str, Any]:
+        def _normalize_mode(value: Any) -> str:
+            normalizer = getattr(self, "_coerce_ai_tutor_autonomy_mode", None)
+            if callable(normalizer):
+                try:
+                    return str(normalizer(value) or AI_TUTOR_DEFAULT_AUTONOMY_MODE)
+                except Exception:
+                    pass
+            mode = str(value or AI_TUTOR_DEFAULT_AUTONOMY_MODE).strip().lower()
+            if mode not in AI_TUTOR_AUTONOMY_MODES:
+                mode = AI_TUTOR_DEFAULT_AUTONOMY_MODE
+            return mode
+
         events = [row for row in list(getattr(self, "_ai_tutor_telemetry_events", []) or []) if isinstance(row, dict)]
         limit = max(1, min(500, int(window or AI_TUTOR_TELEMETRY_SUMMARY_WINDOW)))
         sample = events[-limit:]
@@ -5981,6 +6891,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "avg_prompt_tokens_est": 0.0,
                 "avg_response_tokens_est": 0.0,
                 "error_classes": {},
+                "autopilot_mode": _normalize_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE)),
+                "autopilot_decision_count": 0,
+                "autopilot_action_executed_count": 0,
+                "autopilot_action_blocked_count": 0,
+                "autopilot_last_block_reason": "",
+                "nudge_info_count": 0,
+                "nudge_warning_count": 0,
+                "nudge_intervention_count": 0,
+                "coverage_target_count": 0,
+                "coverage_hit_count": 0,
+                "gap_q_generated_count": 0,
+                "gap_q_saved_count": 0,
+                "gap_q_quarantined_count": 0,
             }
 
         success = 0
@@ -5992,6 +6915,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         prompt_tokens_total = 0
         response_tokens_total = 0
         error_classes: dict[str, int] = {}
+        autopilot_mode = _normalize_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))
+        autopilot_decision_count = 0
+        autopilot_action_executed_count = 0
+        autopilot_action_blocked_count = 0
+        autopilot_last_block_reason = ""
+        nudge_info_count = 0
+        nudge_warning_count = 0
+        nudge_intervention_count = 0
+        coverage_target_count = 0
+        coverage_hit_count = 0
+        gap_q_generated_count = 0
+        gap_q_saved_count = 0
+        gap_q_quarantined_count = 0
         for row in sample:
             outcome = str(row.get("outcome", "") or "").strip().lower()
             if outcome == "success":
@@ -6025,6 +6961,42 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 code = str(row.get("error_class", "") or "").strip().lower()
                 if code:
                     error_classes[code] = int(error_classes.get(code, 0) or 0) + 1
+            autopilot_mode = _normalize_mode(row.get("autopilot_mode", autopilot_mode))
+            autopilot_decision_count = max(
+                autopilot_decision_count,
+                max(0, int(row.get("autopilot_decision_count", 0) or 0)),
+            )
+            autopilot_action_executed_count = max(
+                autopilot_action_executed_count,
+                max(0, int(row.get("autopilot_action_executed_count", 0) or 0)),
+            )
+            autopilot_action_blocked_count = max(
+                autopilot_action_blocked_count,
+                max(0, int(row.get("autopilot_action_blocked_count", 0) or 0)),
+            )
+            nudge_info_count = max(nudge_info_count, max(0, int(row.get("nudge_info_count", 0) or 0)))
+            nudge_warning_count = max(nudge_warning_count, max(0, int(row.get("nudge_warning_count", 0) or 0)))
+            nudge_intervention_count = max(
+                nudge_intervention_count,
+                max(0, int(row.get("nudge_intervention_count", 0) or 0)),
+            )
+            coverage_target_count = max(
+                coverage_target_count,
+                max(0, int(row.get("coverage_target_count", 0) or 0)),
+            )
+            coverage_hit_count = max(coverage_hit_count, max(0, int(row.get("coverage_hit_count", 0) or 0)))
+            gap_q_generated_count = max(
+                gap_q_generated_count,
+                max(0, int(row.get("gap_q_generated_count", 0) or 0)),
+            )
+            gap_q_saved_count = max(gap_q_saved_count, max(0, int(row.get("gap_q_saved_count", 0) or 0)))
+            gap_q_quarantined_count = max(
+                gap_q_quarantined_count,
+                max(0, int(row.get("gap_q_quarantined_count", 0) or 0)),
+            )
+            block_reason = str(row.get("autopilot_last_block_reason", "") or "").strip()
+            if block_reason:
+                autopilot_last_block_reason = block_reason[:200]
 
         latencies_sorted = sorted(latencies)
         idx = max(0, min(len(latencies_sorted) - 1, int(math.ceil(0.95 * len(latencies_sorted))) - 1))
@@ -6050,6 +7022,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "avg_prompt_tokens_est": float(prompt_tokens_total / float(total)),
             "avg_response_tokens_est": float(response_tokens_total / float(total)),
             "error_classes": ranked_errors,
+            "autopilot_mode": str(autopilot_mode),
+            "autopilot_decision_count": int(autopilot_decision_count),
+            "autopilot_action_executed_count": int(autopilot_action_executed_count),
+            "autopilot_action_blocked_count": int(autopilot_action_blocked_count),
+            "autopilot_last_block_reason": str(autopilot_last_block_reason),
+            "nudge_info_count": int(nudge_info_count),
+            "nudge_warning_count": int(nudge_warning_count),
+            "nudge_intervention_count": int(nudge_intervention_count),
+            "coverage_target_count": int(coverage_target_count),
+            "coverage_hit_count": int(coverage_hit_count),
+            "gap_q_generated_count": int(gap_q_generated_count),
+            "gap_q_saved_count": int(gap_q_saved_count),
+            "gap_q_quarantined_count": int(gap_q_quarantined_count),
         }
 
     def _coerce_ai_coach_duration(self, value: Any) -> int:

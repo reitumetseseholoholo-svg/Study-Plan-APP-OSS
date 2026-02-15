@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 import threading
 import time
 from typing import Any, TYPE_CHECKING, cast
@@ -17,6 +18,106 @@ AI_TUTOR_RAG_USAGE_HINT = (
     "Use snippets when relevant and cite IDs like [S1] for snippet-backed facts. "
     "If snippets are insufficient, answer with model knowledge and state assumptions clearly."
 )
+
+
+def extract_tutor_coverage_targets(user_prompt: str, max_targets: int = 6) -> list[str]:
+    raw = str(user_prompt or "").strip()
+    if not raw:
+        return []
+    try:
+        cap = max(1, min(12, int(max_targets)))
+    except Exception:
+        cap = 6
+    text = re.sub(r"\s+", " ", raw)
+    parts = re.split(r"\s*(?:,|;|\band\b|\bthen\b|\balso\b|\+|\/)\s*", text, flags=re.IGNORECASE)
+    stop_words = {
+        "explain",
+        "compare",
+        "and",
+        "the",
+        "a",
+        "an",
+        "for",
+        "with",
+        "about",
+        "please",
+        "show",
+        "tell",
+        "give",
+        "help",
+        "me",
+    }
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        item = re.sub(r"[\(\)\[\]\{\}:]+", " ", str(part or "")).strip()
+        item = re.sub(r"\s+", " ", item)
+        if not item:
+            continue
+        lowered = item.lower()
+        if lowered in stop_words:
+            continue
+        if len(lowered) < 4:
+            continue
+        tokens = [tok for tok in re.findall(r"[a-z0-9]{2,}", lowered) if tok not in stop_words]
+        if not tokens:
+            continue
+        normalized = " ".join(tokens[:8]).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        cleaned.append(item[:80])
+        if len(cleaned) >= cap:
+            break
+    if len(cleaned) <= 1:
+        return cleaned
+    # Filter broad fragments when more specific targets exist.
+    dense: list[str] = []
+    for target in cleaned:
+        key = target.lower()
+        if any(key != other.lower() and key in other.lower() for other in cleaned):
+            continue
+        dense.append(target)
+    return dense[:cap] if dense else cleaned[:cap]
+
+
+def build_targeted_rag_queries(user_prompt: str, max_targets: int = 4) -> list[str]:
+    targets = extract_tutor_coverage_targets(user_prompt, max_targets=max_targets)
+    return [str(target).strip() for target in targets if str(target).strip()]
+
+
+def assess_tutor_coverage(response_text: str, targets: list[str]) -> dict[str, Any]:
+    response = str(response_text or "").lower()
+    target_rows = [str(target or "").strip() for target in list(targets or []) if str(target or "").strip()]
+    if not target_rows:
+        return {
+            "target_count": 0,
+            "hit_count": 0,
+            "missed_targets": [],
+            "coverage_ratio": 1.0,
+        }
+    hit_count = 0
+    missed: list[str] = []
+    for target in target_rows:
+        tokens = [tok for tok in re.findall(r"[a-z0-9]{2,}", target.lower()) if tok]
+        if not tokens:
+            continue
+        if " ".join(tokens) in response:
+            hit_count += 1
+            continue
+        matched = sum(1 for tok in tokens if tok in response)
+        threshold = max(1, int(math.ceil(float(len(tokens)) * 0.6)))
+        if matched >= threshold:
+            hit_count += 1
+        else:
+            missed.append(target)
+    total = max(1, len(target_rows))
+    return {
+        "target_count": int(len(target_rows)),
+        "hit_count": int(hit_count),
+        "missed_targets": missed[:8],
+        "coverage_ratio": float(hit_count / float(total)),
+    }
 
 
 def normalize_tutor_timeout_seconds(
@@ -343,13 +444,30 @@ def build_ai_tutor_context_prompt_details(
     older_messages = cleaned_history[:-recent_cap] if len(cleaned_history) > recent_cap else []
     recent_messages = cleaned_history[-recent_cap:]
     older_summary = _summarize_older_tutor_messages(older_messages)
+    coverage_targets = extract_tutor_coverage_targets(user_prompt, max_targets=6)
     lines = [
         "You are a concise ACCA study tutor.",
         f"Module: {module_title or 'ACCA'}",
         f"Current chapter: {chapter or 'not selected'}",
         "Use short sections, bullets, formulas when relevant, and exam-focused tips.",
+        "If assumptions are required, state them explicitly.",
         "",
     ]
+    if len(coverage_targets) >= 2:
+        lines.append("Multi-concept coverage targets:")
+        for idx, target in enumerate(coverage_targets, start=1):
+            lines.append(f"- T{idx}: {target}")
+        lines.extend(
+            [
+                "Response contract for multi-concept prompts:",
+                "- Direct answer",
+                "- Coverage checklist (T1..Tn)",
+                "- Key formulas/rules",
+                "- Pitfalls to avoid",
+                "- Quick drill (2-3 checks)",
+                "",
+            ]
+        )
     if older_messages:
         lines.append("Earlier context summary (older turns condensed):")
         if older_summary:
@@ -370,6 +488,8 @@ def build_ai_tutor_context_prompt_details(
         "older_condensed": int(len(older_messages)),
         "context_condensed": bool(older_messages),
         "summary_included": bool(older_summary),
+        "coverage_targets": coverage_targets,
+        "coverage_target_count": int(len(coverage_targets)),
     }
     return prompt, meta
 
@@ -582,6 +702,18 @@ class AITutorDialogController:
         status_label.add_css_class("muted")
         content.append(status_label)
 
+        cockpit_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        cockpit_row.add_css_class("inline-toolbar")
+        cockpit_status_label = Gtk.Label(label="Tutor cockpit: idle")
+        cockpit_status_label.set_halign(Gtk.Align.START)
+        cockpit_status_label.set_hexpand(True)
+        cockpit_status_label.add_css_class("muted")
+        cockpit_pause_btn = Gtk.Button(label="Pause Autopilot")
+        cockpit_pause_btn.add_css_class("flat")
+        cockpit_row.append(cockpit_status_label)
+        cockpit_row.append(cockpit_pause_btn)
+        content.append(cockpit_row)
+
         response_label = Gtk.Label(label="Response")
         response_label.set_halign(Gtk.Align.START)
         response_label.add_css_class("section-title")
@@ -632,6 +764,13 @@ class AITutorDialogController:
             "stream_render_force": False,
             "stream_last_clean_text": "",
             "stream_label_inserted": False,
+            "autopilot_paused": False,
+            "autopilot_busy": False,
+            "autopilot_loop_id": 0,
+            "autopilot_last_action_at": 0.0,
+            "autopilot_action_window": [],
+            "autopilot_last_nudge_at": 0.0,
+            "autopilot_last_nudge_key": "",
         }
 
         if not bool(app.local_llm_enabled):
@@ -865,6 +1004,185 @@ class AITutorDialogController:
             copy_last_btn.set_sensitive(bool(controls.get("copy_last_enabled", False)))
             jump_latest_btn.set_sensitive(bool(controls.get("jump_latest_enabled", False)))
 
+        def _autopilot_mode() -> str:
+            try:
+                return str(app._coerce_ai_tutor_autonomy_mode(getattr(app, "ai_tutor_autonomy_mode", "assist")) or "assist")
+            except Exception:
+                return str(getattr(app, "ai_tutor_autonomy_mode", "assist") or "assist").strip().lower() or "assist"
+
+        def _set_cockpit_status(message: str) -> None:
+            mode = _autopilot_mode()
+            base = f"Tutor cockpit [{mode}]"
+            detail = str(message or "").strip()
+            cockpit_status_label.set_text(f"{base}: {detail}" if detail else base)
+
+        def _consume_action_budget(now_ts: float) -> bool:
+            window = []
+            for ts in list(run_state.get("autopilot_action_window", []) or []):
+                try:
+                    value = float(ts)
+                except Exception:
+                    continue
+                if (now_ts - value) <= float(getattr(app, "AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS", 600) if hasattr(app, "AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS") else 600):
+                    window.append(value)
+            limit = int(getattr(app, "AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW", 6) if hasattr(app, "AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW") else 6)
+            if len(window) >= max(1, limit):
+                run_state["autopilot_action_window"] = window
+                return False
+            window.append(float(now_ts))
+            run_state["autopilot_action_window"] = window
+            return True
+
+        def _emit_nudge(severity: str, message: str) -> None:
+            if not bool(getattr(app, "ai_tutor_nudges_enabled", True)):
+                return
+            now_ts = float(time.monotonic())
+            policy = str(getattr(app, "ai_tutor_nudge_policy", "moderate") or "moderate").strip().lower()
+            cooldown_map = {"minimal": 240, "moderate": 120, "aggressive": 60}
+            cooldown = int(cooldown_map.get(policy, 120))
+            last_at = float(run_state.get("autopilot_last_nudge_at", 0.0) or 0.0)
+            key = f"{severity}:{str(message or '').strip()[:80]}"
+            if key == str(run_state.get("autopilot_last_nudge_key", "") or "") and (now_ts - last_at) < float(cooldown):
+                return
+            run_state["autopilot_last_nudge_at"] = now_ts
+            run_state["autopilot_last_nudge_key"] = key
+            metric_key = "nudge_info_count"
+            title = "Tutor Nudge"
+            if severity == "warning":
+                metric_key = "nudge_warning_count"
+                title = "Tutor Warning"
+            elif severity == "intervention":
+                metric_key = "nudge_intervention_count"
+                title = "Tutor Intervention"
+            try:
+                stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
+                app._record_ai_tutor_autopilot_metrics(
+                    {metric_key: int(stats.get(metric_key, 0) or 0) + 1},
+                    persist=False,
+                )
+            except Exception:
+                pass
+            try:
+                app.send_notification(title, str(message or "").strip()[:220])
+            except Exception:
+                pass
+
+        def _autopilot_tick() -> bool:
+            if not bool(dialog.get_visible()):
+                return False
+            if not bool(getattr(app, "ai_tutor_autopilot_enabled", True)):
+                _set_cockpit_status("disabled in Preferences")
+                return True
+            if bool(run_state.get("autopilot_paused", False)):
+                _set_cockpit_status("paused")
+                return True
+            if bool(run_state.get("autopilot_busy", False)) or bool(run_state.get("active", False)):
+                return True
+            run_state["autopilot_busy"] = True
+
+            def _worker() -> None:
+                decision: dict[str, Any] | None = None
+                decision_err: str | None = None
+                action_message = ""
+                executed = False
+                blocked_reason = ""
+                try:
+                    snapshot = app._build_ai_tutor_autopilot_snapshot()
+                    mode = _autopilot_mode()
+                    try:
+                        stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
+                        app._record_ai_tutor_autopilot_metrics(
+                            {
+                                "autopilot_mode": mode,
+                                "autopilot_decision_count": int(stats.get("autopilot_decision_count", 0) or 0) + 1,
+                            },
+                            persist=False,
+                        )
+                    except Exception:
+                        pass
+                    must_due = int(snapshot.get("must_review_due", 0) or 0)
+                    focus_info = snapshot.get("focus_trend_14d", {}) if isinstance(snapshot.get("focus_trend_14d", {}), dict) else {}
+                    integrity = focus_info.get("integrity_pct")
+                    if isinstance(integrity, (int, float)) and float(integrity) < 60.0:
+                        _emit_nudge("warning", "Focus integrity is slipping. Stay in allowlisted apps for this block.")
+                    if must_due >= 5:
+                        _emit_nudge("intervention", f"{must_due} must-review items are due. Consider a short review burst now.")
+
+                    decision, decision_err = app._request_ai_tutor_action_plan(snapshot)
+                    if not isinstance(decision, dict):
+                        decision = None
+                        blocked_reason = "invalid_decision"
+                    else:
+                        action = str(decision.get("action", "") or "").strip().lower()
+                        requires_confirmation = bool(decision.get("requires_confirmation", False))
+                        if not bool(app._can_auto_execute_ai_tutor_action(action, mode, requires_confirmation)):
+                            blocked_reason = "needs_confirmation_or_mode_block"
+                            reason = str(decision.get("reason", "") or "").strip()
+                            if reason:
+                                _emit_nudge("info", f"Suggested: {action} — {reason}")
+                        else:
+                            now_ts = float(time.monotonic())
+                            cooldown = 20.0
+                            try:
+                                last_action = float(run_state.get("autopilot_last_action_at", 0.0) or 0.0)
+                            except Exception:
+                                last_action = 0.0
+                            if (now_ts - last_action) < cooldown:
+                                blocked_reason = "action_cooldown"
+                            elif not _consume_action_budget(now_ts):
+                                blocked_reason = "action_rate_limit"
+                            else:
+                                ok, msg = app._execute_ai_tutor_action(decision)
+                                action_message = str(msg or "").strip()
+                                executed = bool(ok)
+                                if ok:
+                                    run_state["autopilot_last_action_at"] = now_ts
+                                else:
+                                    blocked_reason = action_message or "action_failed"
+                except Exception as exc:
+                    blocked_reason = str(exc)
+
+                def _finish() -> bool:
+                    run_state["autopilot_busy"] = False
+                    stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
+                    updates: dict[str, Any] = {"autopilot_mode": _autopilot_mode()}
+                    if executed:
+                        updates["autopilot_action_executed_count"] = int(stats.get("autopilot_action_executed_count", 0) or 0) + 1
+                        _set_cockpit_status(action_message or "action executed")
+                        try:
+                            app.send_notification("Tutor Cockpit", action_message or "Action executed.")
+                        except Exception:
+                            pass
+                    else:
+                        if blocked_reason:
+                            updates["autopilot_action_blocked_count"] = int(stats.get("autopilot_action_blocked_count", 0) or 0) + 1
+                            updates["autopilot_last_block_reason"] = blocked_reason
+                        if decision_err:
+                            _set_cockpit_status(f"fallback: {decision_err[:80]}")
+                        elif blocked_reason:
+                            _set_cockpit_status(f"blocked: {blocked_reason[:80]}")
+                        else:
+                            _set_cockpit_status("monitoring")
+                    try:
+                        app._record_ai_tutor_autopilot_metrics(updates, persist=False)
+                    except Exception:
+                        pass
+                    return False
+
+                GLib.idle_add(_finish, priority=GLib.PRIORITY_LOW)
+
+            threading.Thread(target=_worker, daemon=True).start()
+            return True
+
+        def _toggle_autopilot_pause(*_args) -> None:
+            paused = not bool(run_state.get("autopilot_paused", False))
+            run_state["autopilot_paused"] = paused
+            cockpit_pause_btn.set_label("Resume Autopilot" if paused else "Pause Autopilot")
+            if paused:
+                _set_cockpit_status("paused")
+            else:
+                _set_cockpit_status("resumed")
+
         def _selected_model_name() -> str:
             try:
                 item = model_dropdown.get_selected_item()
@@ -890,6 +1208,7 @@ class AITutorDialogController:
 
         current_models: list[str] = []
         model_poll_id: int | None = None
+        autopilot_tick_id: int | None = None
         model_poll_errors = 0
 
         def _set_dropdown_models(model_names: list[str]) -> None:
@@ -1065,6 +1384,12 @@ class AITutorDialogController:
                 module_title=module_title,
                 chapter=chapter,
             )
+            coverage_targets = [
+                str(item or "").strip()
+                for item in list(prompt_meta.get("coverage_targets", []) or [])
+                if str(item or "").strip()
+            ]
+            coverage_target_count = int(prompt_meta.get("coverage_target_count", len(coverage_targets)) or len(coverage_targets))
             context_block = ""
             context_chars = 0
             context_budget_chars = 0
@@ -1137,10 +1462,11 @@ class AITutorDialogController:
             rag_context = ""
             rag_meta: dict[str, Any] = {"snippet_count": 0, "source_count": 0, "method": "disabled", "errors": []}
             try:
+                rag_top_k = max(4, min(12, int(4 + max(0, coverage_target_count))))
                 rag_context, rag_meta = app._build_ai_tutor_rag_prompt_context(
                     user_prompt=user_prompt,
                     history=history,
-                    top_k=4,
+                    top_k=rag_top_k,
                 )
             except Exception as exc:
                 rag_context = ""
@@ -1171,6 +1497,10 @@ class AITutorDialogController:
                 prompt_tokens_est = int(app._estimate_ai_tutor_token_count(str(user_prompt or "")))
             except Exception:
                 prompt_tokens_est = max(0, int(round(float(prompt_chars) / 4.0)))
+            coverage_state: dict[str, Any] = {
+                "target_count": int(max(0, coverage_target_count)),
+                "hit_count": 0,
+            }
 
             def _request_stream_stop_once() -> None:
                 if bool(guard_state.get("stop_issued", False)):
@@ -1209,11 +1539,20 @@ class AITutorDialogController:
                     latency_ms = int(max(0.0, (float(time.monotonic()) - float(turn_started_at)) * 1000.0))
                 except Exception:
                     latency_ms = 0
+                autopilot_stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
                 payload = {
                     "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "model": str(model_name or "").strip(),
                     "outcome": str(outcome or "").strip().lower(),
                     "error_class": str(error_class or "").strip().lower(),
+                    "autopilot_mode": str(autopilot_stats.get("autopilot_mode", getattr(app, "ai_tutor_autonomy_mode", "assist")) or "assist"),
+                    "autopilot_decision_count": int(autopilot_stats.get("autopilot_decision_count", 0) or 0),
+                    "autopilot_action_executed_count": int(autopilot_stats.get("autopilot_action_executed_count", 0) or 0),
+                    "autopilot_action_blocked_count": int(autopilot_stats.get("autopilot_action_blocked_count", 0) or 0),
+                    "autopilot_last_block_reason": str(autopilot_stats.get("autopilot_last_block_reason", "") or ""),
+                    "nudge_info_count": int(autopilot_stats.get("nudge_info_count", 0) or 0),
+                    "nudge_warning_count": int(autopilot_stats.get("nudge_warning_count", 0) or 0),
+                    "nudge_intervention_count": int(autopilot_stats.get("nudge_intervention_count", 0) or 0),
                     "latency_ms": int(latency_ms),
                     "prompt_chars": int(prompt_chars),
                     "response_chars": int(response_chars),
@@ -1230,6 +1569,11 @@ class AITutorDialogController:
                     "rag_char_budget": int(rag_char_budget),
                     "rag_top_k_target": int(rag_top_k_target),
                     "rag_neighbor_window": int(rag_neighbor_window),
+                    "coverage_target_count": int(max(0, coverage_state.get("target_count", 0) or 0)),
+                    "coverage_hit_count": int(max(0, coverage_state.get("hit_count", 0) or 0)),
+                    "gap_q_generated_count": int(autopilot_stats.get("gap_q_generated_count", 0) or 0),
+                    "gap_q_saved_count": int(autopilot_stats.get("gap_q_saved_count", 0) or 0),
+                    "gap_q_quarantined_count": int(autopilot_stats.get("gap_q_quarantined_count", 0) or 0),
                     "ctx_chars": int(context_chars),
                     "ctx_budget_chars": int(context_budget_chars),
                     "ctx_tokens_est": int(max(0, context_tokens_est)),
@@ -1262,11 +1606,15 @@ class AITutorDialogController:
             rag_char_budget = int(rag_meta.get("char_budget", 0) or 0)
             rag_top_k_target = int(rag_meta.get("top_k_target", 0) or 0)
             rag_neighbor_window = int(rag_meta.get("neighbor_window", 0) or 0)
+            rag_target_query_count = int(rag_meta.get("target_query_count", 0) or 0)
+            rag_target_hit_snippets = int(rag_meta.get("target_hit_snippets", 0) or 0)
             status_parts = ["Generating…"]
             if condensed_count > 0:
                 status_parts.append(f"context condensed: {condensed_count} older turn(s)")
             if context_budget_chars > 0:
                 status_parts.append(f"CTX: {context_chars}/{context_budget_chars} chars")
+            if coverage_target_count > 1:
+                status_parts.append(f"Coverage targets: {coverage_target_count}")
             if rag_count > 0:
                 budget_text = ""
                 if rag_char_budget > 0:
@@ -1280,9 +1628,15 @@ class AITutorDialogController:
                 candidate_text = ""
                 if rag_candidate_count > 0 or rag_selected_total_count > 0:
                     candidate_text = f", {rag_selected_total_count}/{rag_candidate_count} kept"
+                target_query_text = ""
+                if rag_target_query_count > 0:
+                    target_query_text = f", tq {rag_target_query_count}"
+                target_hit_text = ""
+                if rag_target_hit_snippets > 0:
+                    target_hit_text = f", target-hit {rag_target_hit_snippets}"
                 status_parts.append(
                     f"RAG: {rag_count} snippet(s) from {rag_sources} PDF(s) "
-                    f"[{rag_method}{budget_text}{target_text}{neighbor_text}{candidate_text}]"
+                    f"[{rag_method}{budget_text}{target_text}{neighbor_text}{candidate_text}{target_query_text}{target_hit_text}]"
                 )
             elif rag_sources > 0:
                 status_parts.append("RAG: no relevant snippets")
@@ -1331,6 +1685,27 @@ class AITutorDialogController:
                     run_state["draft_assistant"] = ""
                     _set_running(False)
                     final_text = str(text or "").strip() or draft_assistant
+
+                    coverage_eval = assess_tutor_coverage(final_text, coverage_targets)
+                    coverage_state["target_count"] = int(coverage_eval.get("target_count", coverage_target_count) or coverage_target_count)
+                    coverage_state["hit_count"] = int(coverage_eval.get("hit_count", 0) or 0)
+                    try:
+                        app_stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
+                        app._record_ai_tutor_autopilot_metrics(
+                            {
+                                "coverage_target_count": max(
+                                    int(app_stats.get("coverage_target_count", 0) or 0),
+                                    int(coverage_state["target_count"]),
+                                ),
+                                "coverage_hit_count": max(
+                                    int(app_stats.get("coverage_hit_count", 0) or 0),
+                                    int(coverage_state["hit_count"]),
+                                ),
+                            },
+                            persist=False,
+                        )
+                    except Exception:
+                        pass
                     if err == "cancelled":
                         if bool(guard_state.get("timeout_hit", False)):
                             telemetry_error = "timeout"
@@ -1393,7 +1768,12 @@ class AITutorDialogController:
                         response_text=final_text,
                     )
                     _render_transcript(force_scroll=True)
-                    status_label.set_text(f"Done ({model_name}) • turns: {_turn_count()}")
+                    if int(coverage_state.get("target_count", 0) or 0) > 1:
+                        status_label.set_text(
+                            f"Done ({model_name}) • turns: {_turn_count()} • coverage {int(coverage_state.get('hit_count', 0) or 0)}/{int(coverage_state.get('target_count', 0) or 0)}"
+                        )
+                    else:
+                        status_label.set_text(f"Done ({model_name}) • turns: {_turn_count()}")
                     return False
 
                 GLib.idle_add(_finish)
@@ -1420,6 +1800,11 @@ class AITutorDialogController:
                     GLib.source_remove(model_poll_id)
                 except Exception:
                     pass
+            if autopilot_tick_id:
+                try:
+                    GLib.source_remove(autopilot_tick_id)
+                except Exception:
+                    pass
             _persist_history()
             d.destroy()
 
@@ -1441,6 +1826,7 @@ class AITutorDialogController:
         auto_scroll_toggle.connect("toggled", _on_auto_scroll_toggled)
         jump_latest_btn.connect("clicked", _jump_latest)
         stop_btn.connect("clicked", _stop_generation)
+        cockpit_pause_btn.connect("clicked", _toggle_autopilot_pause)
         generate_btn.connect("clicked", _generate)
         prompt_buf.connect("changed", _on_prompt_changed)
         for btn, template in quick_prompt_buttons:
@@ -1454,3 +1840,14 @@ class AITutorDialogController:
         _render_transcript(force_scroll=True)
         _refresh_models()
         model_poll_id = GLib.timeout_add_seconds(45, _auto_poll_models)
+        try:
+            tick_reader = getattr(app, "_coerce_ai_tutor_autopilot_tick_seconds", None)
+            tick_value = int(getattr(app, "ai_tutor_autopilot_tick_seconds", 45) or 45)
+            if callable(tick_reader):
+                tick_value = int(cast(Any, tick_reader(tick_value)))
+            tick_value = max(15, min(180, int(tick_value)))
+            autopilot_tick_id = GLib.timeout_add_seconds(tick_value, _autopilot_tick)
+            _set_cockpit_status("active")
+        except Exception:
+            autopilot_tick_id = None
+            _set_cockpit_status("unavailable")

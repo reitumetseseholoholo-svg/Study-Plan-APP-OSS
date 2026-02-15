@@ -8,11 +8,14 @@ import urllib.request
 import pytest
 from studyplan_ai_tutor import (
     AI_TUTOR_RAG_USAGE_HINT,
+    assess_tutor_coverage,
     assemble_ai_tutor_turn_prompt,
+    build_targeted_rag_queries,
     build_rag_context_block,
     classify_ollama_error,
     chunk_text_for_rag,
     compute_tutor_control_state,
+    extract_tutor_coverage_targets,
     lexical_rank_rag_chunks,
     normalize_tutor_timeout_seconds,
     should_keep_response_bottom,
@@ -891,6 +894,101 @@ def test_classify_ollama_error_busy():
     code, message = classify_ollama_error("server busy, try again")
     assert code == "busy"
     assert "busy" in message.lower()
+
+
+def test_extract_tutor_coverage_targets_and_queries_for_multi_concept_prompt():
+    prompt = "Compare CAPM and WACC, then explain NPV sensitivity and working capital risk."
+    targets = extract_tutor_coverage_targets(prompt, max_targets=6)
+    queries = build_targeted_rag_queries(prompt, max_targets=4)
+    assert len(targets) >= 3
+    assert len(queries) >= 2
+    assert any("capm" in t.lower() for t in targets)
+    assert any("wacc" in t.lower() for t in targets)
+
+
+def test_assess_tutor_coverage_reports_hits_and_misses():
+    targets = ["CAPM assumptions", "WACC formula", "NPV sensitivity"]
+    text = "CAPM assumptions matter. WACC formula uses weighted costs."
+    summary = assess_tutor_coverage(text, targets)
+    assert summary["target_count"] == 3
+    assert summary["hit_count"] == 2
+    assert "NPV sensitivity" in summary["missed_targets"]
+
+
+def test_can_auto_execute_ai_tutor_action_respects_mode_and_confirmation():
+    dummy = types.SimpleNamespace()
+    dummy._coerce_ai_tutor_autonomy_mode = types.MethodType(StudyPlanGUI._coerce_ai_tutor_autonomy_mode, dummy)
+    assert StudyPlanGUI._can_auto_execute_ai_tutor_action(dummy, "focus_start", "suggest", False) is False
+    assert StudyPlanGUI._can_auto_execute_ai_tutor_action(dummy, "focus_start", "assist", False) is True
+    assert StudyPlanGUI._can_auto_execute_ai_tutor_action(dummy, "review_start", "assist", True) is False
+    assert StudyPlanGUI._can_auto_execute_ai_tutor_action(dummy, "review_start", "cockpit", True) is True
+
+
+def test_normalize_ai_tutor_action_plan_validates_action_and_topic():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"])
+    dummy = types.SimpleNamespace(engine=engine)
+    dummy._coerce_ai_coach_duration = types.MethodType(StudyPlanGUI._coerce_ai_coach_duration, dummy)
+    snapshot = {"current_topic": "Topic A", "coach_pick": "Topic A"}
+    plan, err = StudyPlanGUI._normalize_ai_tutor_action_plan(
+        dummy,
+        {"action": "quiz_start", "topic": "Unknown", "duration_minutes": 120, "reason": "run"},
+        snapshot,
+    )
+    assert err is None
+    assert plan is not None
+    assert plan["action"] == "quiz_start"
+    assert plan["topic"] == "Topic A"
+    assert plan["duration_minutes"] == 60
+
+    bad_plan, bad_err = StudyPlanGUI._normalize_ai_tutor_action_plan(
+        dummy,
+        {"action": "unknown_action", "topic": "Topic A"},
+        snapshot,
+    )
+    assert bad_plan is None
+    assert bad_err is not None
+
+
+def test_validate_generated_gap_questions_strict_gate():
+    engine = types.SimpleNamespace(
+        CHAPTERS=["Topic A"],
+        QUESTIONS={
+            "Topic A": [
+                {
+                    "question": "Existing Q",
+                    "options": ["A", "B", "C", "D"],
+                    "correct": "A",
+                    "explanation": "Existing",
+                }
+            ]
+        },
+        _question_dedupe_key=lambda row: (
+            str(row.get("question", "")).strip().lower(),
+            tuple(str(v).strip().lower() for v in list(row.get("options", []) or [])),
+            str(row.get("correct", "")).strip().lower(),
+        ),
+    )
+    dummy = types.SimpleNamespace(engine=engine)
+    valid, reasons = StudyPlanGUI._validate_generated_gap_questions(
+        dummy,
+        "Topic A",
+        [
+            {
+                "question": "What is CAPM used for?",
+                "options": ["Return estimate", "Stock split", "Tax filing", "Inventory count"],
+                "correct": "Return estimate",
+                "explanation": "CAPM estimates required return.",
+            },
+            {
+                "question": "Bad duplicate options",
+                "options": ["A", "A", "C", "D"],
+                "correct": "A",
+                "explanation": "Duplicate options should fail.",
+            },
+        ],
+    )
+    assert len(valid) == 1
+    assert "duplicate_options" in reasons
 
 
 def test_format_ai_tutor_transcript_labels_roles():
