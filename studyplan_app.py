@@ -184,6 +184,11 @@ DEFAULT_GPT4ALL_AUTO_IMPORT_MAX_MODELS = 12
 DEFAULT_SAFE_OLLAMA_HOST = "http://127.0.0.1:11434"
 AI_TUTOR_TELEMETRY_MAX_EVENTS = 160
 AI_TUTOR_TELEMETRY_SUMMARY_WINDOW = 40
+AI_TUTOR_LATENCY_ADAPT_WINDOW = 24
+AI_TUTOR_LATENCY_ADAPT_P90_WARN_MS = 45000
+AI_TUTOR_LATENCY_ADAPT_P90_CRITICAL_MS = 80000
+AI_TUTOR_LATENCY_ADAPT_RATIO_WARN = 2.4
+AI_TUTOR_LATENCY_ADAPT_RATIO_CRITICAL = 3.1
 MAX_IMPORT_PDF_BYTES = 120 * 1024 * 1024
 MAX_IMPORT_JSON_BYTES = 25 * 1024 * 1024
 MAX_IMPORT_SNAPSHOT_BYTES = 50 * 1024 * 1024
@@ -3730,7 +3735,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         tutor_error = int(tutor_map.get("error_count", 0) or 0)
         tutor_cancel_pct = max(0.0, min(100.0, float(tutor_map.get("cancellation_rate", 0.0) or 0.0) * 100.0))
         tutor_avg_latency = max(0.0, float(tutor_map.get("avg_latency_ms", 0.0) or 0.0))
+        tutor_p50_latency = max(0.0, float(tutor_map.get("p50_latency_ms", 0.0) or 0.0))
+        tutor_p90_latency = max(0.0, float(tutor_map.get("p90_latency_ms", 0.0) or 0.0))
         tutor_p95_latency = max(0.0, float(tutor_map.get("p95_latency_ms", 0.0) or 0.0))
+        tutor_latency_spread = max(1.0, float(tutor_map.get("latency_spread_ratio", 1.0) or 1.0))
+        tutor_avg_queue_ms = max(0.0, float(tutor_map.get("avg_queue_ms", 0.0) or 0.0))
+        tutor_avg_prompt_build_ms = max(0.0, float(tutor_map.get("avg_prompt_build_ms", 0.0) or 0.0))
+        tutor_avg_rag_ms = max(0.0, float(tutor_map.get("avg_rag_ms", 0.0) or 0.0))
+        tutor_avg_generation_ms = max(0.0, float(tutor_map.get("avg_generation_ms", 0.0) or 0.0))
+        tutor_avg_stream_ms = max(0.0, float(tutor_map.get("avg_stream_ms", 0.0) or 0.0))
+        tutor_avg_first_token_ms = max(0.0, float(tutor_map.get("avg_first_token_ms", 0.0) or 0.0))
         tutor_avg_prompt_chars = max(0.0, float(tutor_map.get("avg_prompt_chars", 0.0) or 0.0))
         tutor_avg_response_chars = max(0.0, float(tutor_map.get("avg_response_chars", 0.0) or 0.0))
         tutor_avg_prompt_tokens = max(0.0, float(tutor_map.get("avg_prompt_tokens_est", 0.0) or 0.0))
@@ -3784,7 +3798,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             f"AI Tutor turns (last {tutor_window}): {tutor_total}\n"
             f"AI Tutor success/cancel/error: {tutor_success}/{tutor_cancelled}/{tutor_error}\n"
             f"AI Tutor cancellation rate: {tutor_cancel_pct:.1f}%\n"
-            f"AI Tutor latency avg/p95 (ms): {tutor_avg_latency:.1f}/{tutor_p95_latency:.1f}\n"
+            f"AI Tutor latency avg/p50/p90/p95 (ms): {tutor_avg_latency:.1f}/{tutor_p50_latency:.1f}/{tutor_p90_latency:.1f}/{tutor_p95_latency:.1f}\n"
+            f"AI Tutor latency spread p90/p50: {tutor_latency_spread:.2f}x\n"
+            f"AI Tutor stage avg queue/prompt/rag/gen/stream/first-token (ms): "
+            f"{tutor_avg_queue_ms:.1f}/{tutor_avg_prompt_build_ms:.1f}/{tutor_avg_rag_ms:.1f}/"
+            f"{tutor_avg_generation_ms:.1f}/{tutor_avg_stream_ms:.1f}/{tutor_avg_first_token_ms:.1f}\n"
             f"AI Tutor prompt/response avg chars: {tutor_avg_prompt_chars:.1f}/{tutor_avg_response_chars:.1f}\n"
             f"AI Tutor prompt/response avg tokens(est): {tutor_avg_prompt_tokens:.1f}/{tutor_avg_response_tokens:.1f}\n"
             f"AI Tutor top error classes: {error_classes_text}\n"
@@ -6418,6 +6436,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         user_prompt: str,
         history: list[dict[str, str]] | None = None,
         top_k: int = 4,
+        char_budget_override: int | None = None,
     ) -> tuple[str, dict[str, Any]]:
         def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
             try:
@@ -6521,7 +6540,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         candidate_cap = _env_int("STUDYPLAN_AI_TUTOR_RAG_CANDIDATE_CAP", 72, 24, 160)
         top_k_max = _env_int("STUDYPLAN_AI_TUTOR_RAG_TOP_K_MAX", 10, 4, 16)
         neighbor_window = _env_int("STUDYPLAN_AI_TUTOR_RAG_NEIGHBOR_WINDOW", 1, 0, 2)
-        char_budget = _env_int("STUDYPLAN_AI_TUTOR_RAG_CHAR_BUDGET", 1800, 800, 3600)
+        char_budget_default = _env_int("STUDYPLAN_AI_TUTOR_RAG_CHAR_BUDGET", 1800, 800, 3600)
+        if char_budget_override is None:
+            char_budget = int(char_budget_default)
+        else:
+            char_budget = _clamp_int(char_budget_override, char_budget_default, 800, 3600)
         rag_min_score = _env_float("STUDYPLAN_AI_TUTOR_RAG_MIN_SCORE", 0.06, 0.0, 0.8)
         neighbor_decay = 0.86
         source_pdfs = self._get_ai_tutor_rag_source_pdfs()
@@ -8480,6 +8503,95 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return self._generate_gap_drill_questions(topic or self.current_topic, snapshot, requested_count=requested_count)
         return False, f"Unsupported tutor action: {action}"
 
+    def _get_ai_tutor_latency_profile(self, window: int = AI_TUTOR_LATENCY_ADAPT_WINDOW) -> dict[str, Any]:
+        events = [row for row in list(getattr(self, "_ai_tutor_telemetry_events", []) or []) if isinstance(row, dict)]
+        try:
+            limit = max(1, min(500, int(window or AI_TUTOR_LATENCY_ADAPT_WINDOW)))
+        except Exception:
+            limit = int(AI_TUTOR_LATENCY_ADAPT_WINDOW)
+        sample = events[-limit:]
+        latencies: list[int] = []
+        for row in sample:
+            try:
+                value = int(row.get("latency_ms", 0) or 0)
+            except Exception:
+                value = 0
+            if value > 0:
+                latencies.append(int(value))
+        latencies_sorted = sorted(latencies)
+        if not latencies_sorted:
+            return {
+                "window": int(limit),
+                "samples": 0,
+                "p50_latency_ms": 0.0,
+                "p90_latency_ms": 0.0,
+                "p95_latency_ms": 0.0,
+                "latency_spread_ratio": 1.0,
+                "load_level": "normal",
+            }
+        p50_idx = max(0, min(len(latencies_sorted) - 1, int(math.ceil(0.50 * len(latencies_sorted))) - 1))
+        p90_idx = max(0, min(len(latencies_sorted) - 1, int(math.ceil(0.90 * len(latencies_sorted))) - 1))
+        p95_idx = max(0, min(len(latencies_sorted) - 1, int(math.ceil(0.95 * len(latencies_sorted))) - 1))
+        p50_latency = float(latencies_sorted[p50_idx])
+        p90_latency = float(latencies_sorted[p90_idx])
+        p95_latency = float(latencies_sorted[p95_idx])
+        spread_ratio = float(p90_latency / max(1.0, p50_latency))
+        load_level = "normal"
+        if p90_latency >= float(AI_TUTOR_LATENCY_ADAPT_P90_CRITICAL_MS) or spread_ratio >= float(AI_TUTOR_LATENCY_ADAPT_RATIO_CRITICAL):
+            load_level = "critical"
+        elif p90_latency >= float(AI_TUTOR_LATENCY_ADAPT_P90_WARN_MS) or spread_ratio >= float(AI_TUTOR_LATENCY_ADAPT_RATIO_WARN):
+            load_level = "warn"
+        return {
+            "window": int(limit),
+            "samples": int(len(latencies_sorted)),
+            "p50_latency_ms": float(p50_latency),
+            "p90_latency_ms": float(p90_latency),
+            "p95_latency_ms": float(p95_latency),
+            "latency_spread_ratio": float(spread_ratio),
+            "load_level": str(load_level),
+        }
+
+    def _compute_ai_tutor_adaptive_limits(
+        self,
+        *,
+        coverage_target_count: int,
+        context_max_chars: int,
+        context_max_tokens: int,
+        rag_top_k: int,
+        rag_char_budget: int,
+    ) -> dict[str, Any]:
+        profile = self._get_ai_tutor_latency_profile(window=AI_TUTOR_LATENCY_ADAPT_WINDOW)
+        load_level = str(profile.get("load_level", "normal") or "normal").strip().lower()
+        if load_level not in {"normal", "warn", "critical"}:
+            load_level = "normal"
+        if load_level == "critical":
+            ctx_scale = 0.70
+            rag_scale = 0.72
+            top_k_cap = 6
+        elif load_level == "warn":
+            ctx_scale = 0.84
+            rag_scale = 0.86
+            top_k_cap = 8
+        else:
+            ctx_scale = 1.0
+            rag_scale = 1.0
+            top_k_cap = 12
+        max_chars = max(120, int(round(float(context_max_chars) * float(ctx_scale))))
+        max_tokens = max(80, int(round(float(context_max_tokens) * float(ctx_scale))))
+        rag_char = max(800, int(round(float(rag_char_budget) * float(rag_scale))))
+        base_top_k = max(4, int(rag_top_k))
+        # Preserve multi-concept coverage floor while clamping load spikes.
+        target_floor = 4 + min(4, max(0, int(coverage_target_count) - 1))
+        rag_top_k_out = max(4, min(int(top_k_cap), max(base_top_k, int(target_floor))))
+        return {
+            "load_level": str(load_level),
+            "context_max_chars": int(max_chars),
+            "context_max_tokens": int(max_tokens),
+            "rag_top_k": int(rag_top_k_out),
+            "rag_char_budget": int(rag_char),
+            "profile": dict(profile),
+        }
+
     def _sanitize_ai_tutor_telemetry_event(self, event: Any) -> dict[str, Any] | None:
         if not isinstance(event, dict):
             return None
@@ -8502,6 +8614,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 parsed = int(default)
             return max(int(minimum), min(int(maximum), int(parsed)))
+
+        def _clamp_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+            try:
+                parsed = float(value)
+            except Exception:
+                parsed = float(default)
+            return max(float(minimum), min(float(maximum), float(parsed)))
 
         ts_utc = str(event.get("ts_utc", "") or "").strip()
         if not ts_utc:
@@ -8538,6 +8657,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "gap_q_saved_count": _clamp_int(event.get("gap_q_saved_count", 0), default=0, minimum=0, maximum=100000),
             "gap_q_quarantined_count": _clamp_int(event.get("gap_q_quarantined_count", 0), default=0, minimum=0, maximum=100000),
             "latency_ms": _clamp_int(event.get("latency_ms", 0), default=0, minimum=0, maximum=3600000),
+            "queue_ms": _clamp_int(event.get("queue_ms", 0), default=0, minimum=0, maximum=3600000),
+            "prompt_build_ms": _clamp_int(event.get("prompt_build_ms", 0), default=0, minimum=0, maximum=3600000),
+            "rag_ms": _clamp_int(event.get("rag_ms", 0), default=0, minimum=0, maximum=3600000),
+            "generation_ms": _clamp_int(event.get("generation_ms", 0), default=0, minimum=0, maximum=3600000),
+            "stream_ms": _clamp_int(event.get("stream_ms", 0), default=0, minimum=0, maximum=3600000),
+            "model_first_token_ms": _clamp_int(
+                event.get("model_first_token_ms", 0),
+                default=0,
+                minimum=0,
+                maximum=3600000,
+            ),
+            "latency_p50_ms": _clamp_int(event.get("latency_p50_ms", 0), default=0, minimum=0, maximum=3600000),
+            "latency_p90_ms": _clamp_int(event.get("latency_p90_ms", 0), default=0, minimum=0, maximum=3600000),
+            "latency_spread_ratio": _clamp_float(
+                event.get("latency_spread_ratio", 1.0),
+                default=1.0,
+                minimum=1.0,
+                maximum=20.0,
+            ),
+            "latency_load_level": str(event.get("latency_load_level", "normal") or "normal").strip().lower()[:16],
             "prompt_chars": _clamp_int(event.get("prompt_chars", 0), default=0, minimum=0, maximum=500000),
             "response_chars": _clamp_int(event.get("response_chars", 0), default=0, minimum=0, maximum=500000),
             "prompt_tokens_est": _clamp_int(event.get("prompt_tokens_est", 0), default=0, minimum=0, maximum=200000),
@@ -8651,7 +8790,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "error_count": 0,
                 "cancellation_rate": 0.0,
                 "avg_latency_ms": 0.0,
+                "p50_latency_ms": 0.0,
+                "p90_latency_ms": 0.0,
                 "p95_latency_ms": 0.0,
+                "latency_spread_ratio": 1.0,
+                "avg_queue_ms": 0.0,
+                "avg_prompt_build_ms": 0.0,
+                "avg_rag_ms": 0.0,
+                "avg_generation_ms": 0.0,
+                "avg_stream_ms": 0.0,
+                "avg_first_token_ms": 0.0,
                 "avg_prompt_chars": 0.0,
                 "avg_response_chars": 0.0,
                 "avg_prompt_tokens_est": 0.0,
@@ -8689,6 +8837,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         response_chars_total = 0
         prompt_tokens_total = 0
         response_tokens_total = 0
+        queue_ms_total = 0
+        prompt_build_ms_total = 0
+        rag_ms_total = 0
+        generation_ms_total = 0
+        stream_ms_total = 0
+        first_token_ms_total = 0
         error_classes: dict[str, int] = {}
         autopilot_mode = _normalize_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))
         autopilot_decision_count = 0
@@ -8739,6 +8893,30 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
             try:
                 response_tokens_total += max(0, int(row.get("response_tokens_est", 0) or 0))
+            except Exception:
+                pass
+            try:
+                queue_ms_total += max(0, int(row.get("queue_ms", 0) or 0))
+            except Exception:
+                pass
+            try:
+                prompt_build_ms_total += max(0, int(row.get("prompt_build_ms", 0) or 0))
+            except Exception:
+                pass
+            try:
+                rag_ms_total += max(0, int(row.get("rag_ms", 0) or 0))
+            except Exception:
+                pass
+            try:
+                generation_ms_total += max(0, int(row.get("generation_ms", 0) or 0))
+            except Exception:
+                pass
+            try:
+                stream_ms_total += max(0, int(row.get("stream_ms", 0) or 0))
+            except Exception:
+                pass
+            try:
+                first_token_ms_total += max(0, int(row.get("model_first_token_ms", 0) or 0))
             except Exception:
                 pass
             if outcome != "success":
@@ -8792,9 +8970,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 autopilot_last_block_reason = block_reason[:200]
 
         latencies_sorted = sorted(latencies)
+        p50_idx = max(0, min(len(latencies_sorted) - 1, int(math.ceil(0.50 * len(latencies_sorted))) - 1))
+        p90_idx = max(0, min(len(latencies_sorted) - 1, int(math.ceil(0.90 * len(latencies_sorted))) - 1))
         idx = max(0, min(len(latencies_sorted) - 1, int(math.ceil(0.95 * len(latencies_sorted))) - 1))
+        p50_latency_ms = float(latencies_sorted[p50_idx]) if latencies_sorted else 0.0
+        p90_latency_ms = float(latencies_sorted[p90_idx]) if latencies_sorted else 0.0
         p95_latency_ms = float(latencies_sorted[idx]) if latencies_sorted else 0.0
         avg_latency_ms = float(sum(latencies_sorted) / len(latencies_sorted)) if latencies_sorted else 0.0
+        latency_spread_ratio = float(p90_latency_ms / max(1.0, p50_latency_ms)) if p90_latency_ms > 0 else 1.0
         ranked_errors = dict(
             sorted(
                 error_classes.items(),
@@ -8809,7 +8992,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "error_count": int(errors),
             "cancellation_rate": float(cancelled / float(total)),
             "avg_latency_ms": float(avg_latency_ms),
+            "p50_latency_ms": float(p50_latency_ms),
+            "p90_latency_ms": float(p90_latency_ms),
             "p95_latency_ms": float(p95_latency_ms),
+            "latency_spread_ratio": float(latency_spread_ratio),
+            "avg_queue_ms": float(queue_ms_total / float(total)),
+            "avg_prompt_build_ms": float(prompt_build_ms_total / float(total)),
+            "avg_rag_ms": float(rag_ms_total / float(total)),
+            "avg_generation_ms": float(generation_ms_total / float(total)),
+            "avg_stream_ms": float(stream_ms_total / float(total)),
+            "avg_first_token_ms": float(first_token_ms_total / float(total)),
             "avg_prompt_chars": float(prompt_chars_total / float(total)),
             "avg_response_chars": float(response_chars_total / float(total)),
             "avg_prompt_tokens_est": float(prompt_tokens_total / float(total)),

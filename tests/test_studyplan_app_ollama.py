@@ -825,9 +825,43 @@ def test_summarize_ai_tutor_telemetry_computes_rates_and_error_breakdown():
     assert summary["error_count"] == 2
     assert summary["cancellation_rate"] == pytest.approx(0.25)
     assert summary["avg_latency_ms"] == pytest.approx((900 + 1200 + 600 + 400) / 4.0)
+    assert summary["p50_latency_ms"] == pytest.approx(600.0)
+    assert summary["p90_latency_ms"] == pytest.approx(1200.0)
+    assert summary["latency_spread_ratio"] == pytest.approx(2.0)
     assert summary["p95_latency_ms"] == pytest.approx(1200.0)
     assert summary["avg_prompt_chars"] == pytest.approx((120 + 100 + 80 + 60) / 4.0)
     assert summary["error_classes"] == {"busy": 2, "timeout": 1}
+
+
+def test_get_ai_tutor_latency_profile_and_adaptive_limits_under_load():
+    dummy = types.SimpleNamespace(
+        _ai_tutor_telemetry_events=[
+            {"latency_ms": 26000},
+            {"latency_ms": 32000},
+            {"latency_ms": 35000},
+            {"latency_ms": 91000},
+            {"latency_ms": 98000},
+        ]
+    )
+    dummy._get_ai_tutor_latency_profile = types.MethodType(StudyPlanGUI._get_ai_tutor_latency_profile, dummy)
+    dummy._compute_ai_tutor_adaptive_limits = types.MethodType(StudyPlanGUI._compute_ai_tutor_adaptive_limits, dummy)
+    profile = StudyPlanGUI._get_ai_tutor_latency_profile(dummy, window=5)
+    assert profile["samples"] == 5
+    assert profile["p90_latency_ms"] >= 91000.0
+    assert profile["load_level"] == "critical"
+    limits = StudyPlanGUI._compute_ai_tutor_adaptive_limits(
+        dummy,
+        coverage_target_count=5,
+        context_max_chars=900,
+        context_max_tokens=280,
+        rag_top_k=12,
+        rag_char_budget=1800,
+    )
+    assert limits["load_level"] == "critical"
+    assert int(limits["context_max_chars"]) < 900
+    assert int(limits["context_max_tokens"]) < 280
+    assert int(limits["rag_top_k"]) <= 6
+    assert int(limits["rag_char_budget"]) < 1800
 
 
 def test_build_debug_info_message_includes_ai_tutor_summary_lines():
@@ -856,7 +890,16 @@ def test_build_debug_info_message_includes_ai_tutor_summary_lines():
             "error_count": 1,
             "cancellation_rate": 2 / 9,
             "avg_latency_ms": 830.0,
+            "p50_latency_ms": 700.0,
+            "p90_latency_ms": 1500.0,
             "p95_latency_ms": 1700.0,
+            "latency_spread_ratio": 2.14,
+            "avg_queue_ms": 0.0,
+            "avg_prompt_build_ms": 12.0,
+            "avg_rag_ms": 48.0,
+            "avg_generation_ms": 770.0,
+            "avg_stream_ms": 620.0,
+            "avg_first_token_ms": 140.0,
             "avg_prompt_chars": 150.0,
             "avg_response_chars": 390.0,
             "avg_prompt_tokens_est": 38.0,
@@ -867,7 +910,8 @@ def test_build_debug_info_message_includes_ai_tutor_summary_lines():
     assert "AI Tutor turns (last 40): 9" in msg
     assert "AI Tutor success/cancel/error: 6/2/1" in msg
     assert "AI Tutor cancellation rate: 22.2%" in msg
-    assert "AI Tutor latency avg/p95 (ms): 830.0/1700.0" in msg
+    assert "AI Tutor latency avg/p50/p90/p95 (ms): 830.0/700.0/1500.0/1700.0" in msg
+    assert "AI Tutor latency spread p90/p50: 2.14x" in msg
     assert "AI Tutor top error classes: busy:1" in msg
 
 

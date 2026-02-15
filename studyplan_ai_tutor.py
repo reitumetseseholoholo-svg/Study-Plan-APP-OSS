@@ -1525,6 +1525,8 @@ class AITutorDialogController:
             if not user_prompt:
                 status_label.set_text("Enter a prompt first.")
                 return
+            turn_requested_at = float(time.monotonic())
+            prompt_stage_started_at = float(time.monotonic())
             module_title = str(getattr(app, "module_title", "ACCA") or "ACCA").strip()
             chapter = str(getattr(app, "current_topic", "") or "").strip()
             full_prompt, prompt_meta = build_ai_tutor_context_prompt_details(
@@ -1539,6 +1541,46 @@ class AITutorDialogController:
                 if str(item or "").strip()
             ]
             coverage_target_count = int(prompt_meta.get("coverage_target_count", len(coverage_targets)) or len(coverage_targets))
+            rag_top_k = max(4, min(12, int(4 + max(0, coverage_target_count))))
+            rag_char_budget_override = 1800
+            latency_profile: dict[str, Any] = {
+                "p50_latency_ms": 0.0,
+                "p90_latency_ms": 0.0,
+                "latency_spread_ratio": 1.0,
+            }
+            latency_load_level = "normal"
+            adaptive_limits: dict[str, Any] = {}
+            adaptive_reader = getattr(app, "_compute_ai_tutor_adaptive_limits", None)
+            if callable(adaptive_reader):
+                try:
+                    adaptive_limits = cast(
+                        Any,
+                        adaptive_reader(
+                            coverage_target_count=int(max(0, coverage_target_count)),
+                            context_max_chars=900,
+                            context_max_tokens=280,
+                            rag_top_k=int(rag_top_k),
+                            rag_char_budget=1800,
+                        ),
+                    )
+                except Exception:
+                    adaptive_limits = {}
+                if isinstance(adaptive_limits, dict):
+                    try:
+                        rag_top_k = max(4, min(12, int(adaptive_limits.get("rag_top_k", rag_top_k) or rag_top_k)))
+                    except Exception:
+                        rag_top_k = max(4, min(12, int(rag_top_k)))
+                    try:
+                        rag_char_budget_override = max(
+                            800,
+                            min(3600, int(adaptive_limits.get("rag_char_budget", rag_char_budget_override) or rag_char_budget_override)),
+                        )
+                    except Exception:
+                        rag_char_budget_override = 1800
+                    profile_candidate = adaptive_limits.get("profile", {})
+                    if isinstance(profile_candidate, dict):
+                        latency_profile = profile_candidate
+                    latency_load_level = str(adaptive_limits.get("load_level", "normal") or "normal").strip().lower() or "normal"
             context_block = ""
             context_chars = 0
             context_budget_chars = 0
@@ -1573,6 +1615,15 @@ class AITutorDialogController:
                                 max_tokens = int(raw_limits[1] or max_tokens)
                             except Exception:
                                 max_tokens = 280
+                    if isinstance(adaptive_limits, dict) and adaptive_limits:
+                        try:
+                            max_chars = min(max_chars, int(adaptive_limits.get("context_max_chars", max_chars) or max_chars))
+                        except Exception:
+                            pass
+                        try:
+                            max_tokens = min(max_tokens, int(adaptive_limits.get("context_max_tokens", max_tokens) or max_tokens))
+                        except Exception:
+                            pass
                     max_chars = max(120, max_chars)
                     max_tokens = max(80, max_tokens)
                     context_budget_chars = int(min(max_chars, max_tokens * 4))
@@ -1608,6 +1659,7 @@ class AITutorDialogController:
                 context_chars = 0
                 context_tokens_est = 0
                 context_dropped_sections = 0
+            prompt_build_ms = int(max(0.0, (float(time.monotonic()) - float(prompt_stage_started_at)) * 1000.0))
             try:
                 cache_debug = getattr(app, "_ai_cache_debug_last", {})
                 if isinstance(cache_debug, dict):
@@ -1626,12 +1678,13 @@ class AITutorDialogController:
                 pass
             rag_context = ""
             rag_meta: dict[str, Any] = {"snippet_count": 0, "source_count": 0, "method": "disabled", "errors": []}
+            rag_stage_started_at = float(time.monotonic())
             try:
-                rag_top_k = max(4, min(12, int(4 + max(0, coverage_target_count))))
                 rag_context, rag_meta = app._build_ai_tutor_rag_prompt_context(
                     user_prompt=user_prompt,
                     history=history,
                     top_k=rag_top_k,
+                    char_budget_override=rag_char_budget_override,
                 )
             except Exception as exc:
                 rag_context = ""
@@ -1641,6 +1694,7 @@ class AITutorDialogController:
                     "method": "error",
                     "errors": [str(exc)],
                 }
+            rag_ms = int(max(0.0, (float(time.monotonic()) - float(rag_stage_started_at)) * 1000.0))
             full_prompt = assemble_ai_tutor_turn_prompt(
                 full_prompt,
                 learning_context=context_block,
@@ -1655,8 +1709,11 @@ class AITutorDialogController:
                 "timeout_hit": False,
                 "truncated": False,
                 "stop_issued": False,
+                "first_token_ms": 0,
+                "generation_started_at": 0.0,
+                "stream_started_at": 0.0,
             }
-            turn_started_at = float(time.monotonic())
+            turn_started_at = float(turn_requested_at)
             prompt_chars = len(str(user_prompt or ""))
             try:
                 prompt_tokens_est = int(app._estimate_ai_tutor_token_count(str(user_prompt or "")))
@@ -1704,6 +1761,23 @@ class AITutorDialogController:
                     latency_ms = int(max(0.0, (float(time.monotonic()) - float(turn_started_at)) * 1000.0))
                 except Exception:
                     latency_ms = 0
+                try:
+                    generation_started_at = float(guard_state.get("generation_started_at", 0.0) or 0.0)
+                except Exception:
+                    generation_started_at = 0.0
+                if generation_started_at > 0.0:
+                    generation_ms = int(max(0.0, (float(time.monotonic()) - generation_started_at) * 1000.0))
+                else:
+                    generation_ms = 0
+                try:
+                    stream_started_at = float(guard_state.get("stream_started_at", 0.0) or 0.0)
+                except Exception:
+                    stream_started_at = 0.0
+                if stream_started_at > 0.0:
+                    stream_ms = int(max(0.0, (float(time.monotonic()) - stream_started_at) * 1000.0))
+                else:
+                    stream_ms = 0
+                first_token_ms = int(max(0, int(guard_state.get("first_token_ms", 0) or 0)))
                 autopilot_stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
                 payload = {
                     "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1719,6 +1793,16 @@ class AITutorDialogController:
                     "nudge_warning_count": int(autopilot_stats.get("nudge_warning_count", 0) or 0),
                     "nudge_intervention_count": int(autopilot_stats.get("nudge_intervention_count", 0) or 0),
                     "latency_ms": int(latency_ms),
+                    "queue_ms": 0,
+                    "prompt_build_ms": int(max(0, prompt_build_ms)),
+                    "rag_ms": int(max(0, rag_ms)),
+                    "generation_ms": int(max(0, generation_ms)),
+                    "stream_ms": int(max(0, stream_ms)),
+                    "model_first_token_ms": int(max(0, first_token_ms)),
+                    "latency_p50_ms": int(max(0.0, float(latency_profile.get("p50_latency_ms", 0.0) or 0.0))),
+                    "latency_p90_ms": int(max(0.0, float(latency_profile.get("p90_latency_ms", 0.0) or 0.0))),
+                    "latency_spread_ratio": float(max(1.0, float(latency_profile.get("latency_spread_ratio", 1.0) or 1.0))),
+                    "latency_load_level": str(latency_load_level or "normal"),
                     "prompt_chars": int(prompt_chars),
                     "response_chars": int(response_chars),
                     "prompt_tokens_est": int(max(0, prompt_tokens_est)),
@@ -1794,6 +1878,8 @@ class AITutorDialogController:
                 status_parts.append(f"CTX: {context_chars}/{context_budget_chars} chars")
             if coverage_target_count > 1:
                 status_parts.append(f"Coverage targets: {coverage_target_count}")
+            if latency_load_level in {"warn", "critical"}:
+                status_parts.append(f"Adaptive mode: {latency_load_level}")
             if rag_count > 0:
                 budget_text = ""
                 if rag_char_budget > 0:
@@ -1849,6 +1935,16 @@ class AITutorDialogController:
                             return False
                         if not bool(run_state.get("active", False)):
                             return False
+                        if int(guard_state.get("first_token_ms", 0) or 0) <= 0:
+                            try:
+                                started = float(guard_state.get("generation_started_at", 0.0) or 0.0)
+                            except Exception:
+                                started = 0.0
+                            if started > 0.0:
+                                guard_state["first_token_ms"] = int(
+                                    max(0.0, (float(time.monotonic()) - started) * 1000.0)
+                                )
+                                guard_state["stream_started_at"] = float(time.monotonic())
                         draft = str(run_state.get("draft_assistant", "") or "") + str(piece or "")
                         if len(draft) > int(AI_TUTOR_MAX_RESPONSE_CHARS):
                             draft = draft[: int(AI_TUTOR_MAX_RESPONSE_CHARS)]
@@ -1861,6 +1957,7 @@ class AITutorDialogController:
 
                     GLib.idle_add(_apply_chunk)
 
+                guard_state["generation_started_at"] = float(time.monotonic())
                 text, err = app._ollama_generate_text_stream(
                     model_name,
                     full_prompt,
