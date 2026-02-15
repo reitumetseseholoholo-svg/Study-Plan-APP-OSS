@@ -1,5 +1,6 @@
 import datetime
 import json
+import os
 import types
 import urllib.error
 import urllib.request
@@ -334,6 +335,43 @@ def _make_rag_dummy(docs_by_path: dict[str, dict[str, object]]) -> types.SimpleN
     dummy._get_ai_tutor_rag_source_pdfs = lambda: list(docs_by_path.keys())
     dummy._load_ai_tutor_rag_doc = lambda path: (docs_by_path.get(path), None)
     return dummy
+
+
+def test_get_ai_tutor_rag_source_pdfs_respects_preferences_and_limit(tmp_path):
+    pdf_a = tmp_path / "a.pdf"
+    pdf_b = tmp_path / "b.pdf"
+    pdf_c = tmp_path / "c.pdf"
+    txt = tmp_path / "note.txt"
+    for path in (pdf_a, pdf_b, pdf_c):
+        path.write_bytes(b"%PDF-1.4")
+    txt.write_text("not a pdf", encoding="utf-8")
+
+    dummy = types.SimpleNamespace(
+        ai_tutor_rag_pdfs=f"{pdf_a}\n{pdf_b}\n{txt}",
+        ai_tutor_rag_max_sources=2,
+        engine=types.SimpleNamespace(syllabus_meta={"source_pdf": str(pdf_c)}),
+    )
+    sources = StudyPlanGUI._get_ai_tutor_rag_source_pdfs(dummy)
+    assert len(sources) == 2
+    assert sources[0] == os.path.realpath(str(pdf_a))
+    assert sources[1] == os.path.realpath(str(pdf_b))
+
+
+def test_get_ai_tutor_rag_source_pdfs_env_max_overrides_preference(tmp_path, monkeypatch):
+    pdf_a = tmp_path / "a.pdf"
+    pdf_b = tmp_path / "b.pdf"
+    pdf_c = tmp_path / "c.pdf"
+    for path in (pdf_a, pdf_b, pdf_c):
+        path.write_bytes(b"%PDF-1.4")
+
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_MAX_SOURCES", "3")
+    dummy = types.SimpleNamespace(
+        ai_tutor_rag_pdfs=f"{pdf_a}\n{pdf_b}\n{pdf_c}",
+        ai_tutor_rag_max_sources=1,
+        engine=types.SimpleNamespace(syllabus_meta={}),
+    )
+    sources = StudyPlanGUI._get_ai_tutor_rag_source_pdfs(dummy)
+    assert len(sources) == 3
 
 
 def test_rag_prompt_context_dynamic_target_and_budget(monkeypatch):

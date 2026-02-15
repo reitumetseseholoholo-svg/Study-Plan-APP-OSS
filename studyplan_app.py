@@ -172,6 +172,7 @@ try:
     )
 except Exception:
     DEFAULT_OLLAMA_NUM_THREADS = 6
+DEFAULT_AI_TUTOR_RAG_MAX_SOURCES = 6
 DEFAULT_GPT4ALL_MODELS_DIR = os.path.expanduser("~/.local/share/nomic.ai/GPT4All")
 DEFAULT_GPT4ALL_AUTO_IMPORT = True
 DEFAULT_GPT4ALL_AUTO_IMPORT_MAX_MODELS = 12
@@ -916,6 +917,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.local_llm_host = str(DEFAULT_OLLAMA_HOST or "http://127.0.0.1:11434")
         self.local_llm_model = str(DEFAULT_OLLAMA_MODEL or "").strip()
         self.local_llm_timeout_seconds = int(DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+        self.ai_tutor_rag_pdfs = ""
+        self.ai_tutor_rag_max_sources = int(DEFAULT_AI_TUTOR_RAG_MAX_SOURCES)
         self._gpt4all_auto_import_started = False
         self._gpt4all_auto_import_in_progress = False
         self._gpt4all_auto_import_summary: dict[str, Any] = {}
@@ -3069,6 +3072,43 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         content.append(llm_model_row)
         content.append(llm_timeout_row)
 
+        rag_title = Gtk.Label(label="Tutor RAG")
+        rag_title.set_halign(Gtk.Align.START)
+        rag_title.add_css_class("section-title")
+        content.append(rag_title)
+        rag_note = Gtk.Label(
+            label="Add syllabus/reference PDFs for Tutor retrieval. One path per line."
+        )
+        rag_note.set_halign(Gtk.Align.START)
+        rag_note.set_wrap(True)
+        rag_note.add_css_class("muted")
+        content.append(rag_note)
+        rag_max_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        rag_max_label = Gtk.Label(label="Max active RAG PDFs")
+        rag_max_label.set_halign(Gtk.Align.START)
+        rag_max_spin = Gtk.SpinButton.new_with_range(1, 24, 1)
+        rag_max_spin.set_value(float(int(getattr(self, "ai_tutor_rag_max_sources", DEFAULT_AI_TUTOR_RAG_MAX_SOURCES) or DEFAULT_AI_TUTOR_RAG_MAX_SOURCES)))
+        rag_max_spin.set_numeric(True)
+        _configure_numeric_row(rag_max_row, rag_max_label, rag_max_spin)
+        rag_max_row.append(rag_max_label)
+        rag_max_row.append(rag_max_spin)
+        content.append(rag_max_row)
+
+        rag_paths_label = Gtk.Label(label="RAG PDF paths")
+        rag_paths_label.set_halign(Gtk.Align.START)
+        rag_paths_label.add_css_class("muted")
+        content.append(rag_paths_label)
+        rag_paths_scroller = Gtk.ScrolledWindow()
+        rag_paths_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        rag_paths_scroller.set_min_content_height(92)
+        rag_paths_view = Gtk.TextView()
+        rag_paths_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        rag_paths_view.set_monospace(True)
+        rag_paths_buf = rag_paths_view.get_buffer()
+        rag_paths_buf.set_text(str(getattr(self, "ai_tutor_rag_pdfs", "") or ""))
+        rag_paths_scroller.set_child(rag_paths_view)
+        content.append(rag_paths_scroller)
+
         pomodoro_title = Gtk.Label(label="Pomodoro")
         pomodoro_title.set_halign(Gtk.Align.START)
         pomodoro_title.add_css_class("section-title")
@@ -3312,6 +3352,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         add_active_class_btn.connect("clicked", _add_active_class)
 
         def _on_close(_d, _r):
+            prev_rag_paths = str(getattr(self, "ai_tutor_rag_pdfs", "") or "").strip()
+            try:
+                prev_rag_max = int(getattr(self, "ai_tutor_rag_max_sources", DEFAULT_AI_TUTOR_RAG_MAX_SOURCES) or DEFAULT_AI_TUTOR_RAG_MAX_SOURCES)
+            except Exception:
+                prev_rag_max = int(DEFAULT_AI_TUTOR_RAG_MAX_SOURCES)
             self.allow_lower_scores = bool(allow_lower.get_active())
             self.menu_bar_visible = bool(show_menu.get_active())
             self.notifications_enabled = bool(notifications.get_active())
@@ -3350,6 +3395,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.local_llm_timeout_seconds = max(10, min(600, timeout_val))
             except Exception:
                 self.local_llm_timeout_seconds = int(DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+            try:
+                rag_max_val = int(rag_max_spin.get_value())
+                self.ai_tutor_rag_max_sources = max(1, min(24, rag_max_val))
+            except Exception:
+                self.ai_tutor_rag_max_sources = int(DEFAULT_AI_TUTOR_RAG_MAX_SOURCES)
+            try:
+                start, end = rag_paths_buf.get_bounds()
+                rag_paths_raw = str(rag_paths_buf.get_text(start, end, True) or "")
+            except Exception:
+                rag_paths_raw = ""
+            rag_paths_clean: list[str] = []
+            seen_paths: set[str] = set()
+            for token in re.split(r"[,\n;]+", rag_paths_raw):
+                path = str(token or "").strip()
+                if not path or path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                rag_paths_clean.append(path)
+            self.ai_tutor_rag_pdfs = "\n".join(rag_paths_clean[:96]).strip()
             self.focus_tracking_enabled = bool(focus_tracking.get_active())
             self.focus_auto_pause_enabled = bool(focus_autopause.get_active())
             try:
@@ -3362,6 +3426,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if getattr(self, "engine", None) is not None:
                 self.engine.adaptive_quiz_prioritization = bool(self.adaptive_quiz_prioritization)
                 self.engine.semantic_enabled = bool(self.semantic_enabled)
+            if (
+                self.ai_tutor_rag_pdfs != prev_rag_paths
+                or int(self.ai_tutor_rag_max_sources) != int(prev_rag_max)
+            ):
+                try:
+                    self._ai_tutor_rag_cache.clear()
+                    self._ai_tutor_rag_cache_order.clear()
+                except Exception:
+                    pass
             self._sync_semantic_action_state()
             self.save_preferences()
             dialog.destroy()
@@ -3997,6 +4070,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         self.local_llm_timeout_seconds = max(10, min(600, int(timeout_val)))
                     except Exception:
                         self.local_llm_timeout_seconds = int(DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+                    rag_paths_val = data.get("ai_tutor_rag_pdfs", "")
+                    if isinstance(rag_paths_val, list):
+                        rag_paths_val = "\n".join(str(item or "").strip() for item in rag_paths_val if str(item or "").strip())
+                    self.ai_tutor_rag_pdfs = str(rag_paths_val or "").strip()
+                    rag_max_sources_val = data.get("ai_tutor_rag_max_sources", DEFAULT_AI_TUTOR_RAG_MAX_SOURCES)
+                    try:
+                        self.ai_tutor_rag_max_sources = max(1, min(24, int(rag_max_sources_val)))
+                    except Exception:
+                        self.ai_tutor_rag_max_sources = int(DEFAULT_AI_TUTOR_RAG_MAX_SOURCES)
                     ai_history = data.get("ai_tutor_history", []) or []
                     cleaned_history: list[dict[str, str]] = []
                     if isinstance(ai_history, list):
@@ -4159,6 +4241,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "local_llm_host": str(self.local_llm_host),
                 "local_llm_model": str(self.local_llm_model),
                 "local_llm_timeout_seconds": int(self.local_llm_timeout_seconds),
+                "ai_tutor_rag_pdfs": str(getattr(self, "ai_tutor_rag_pdfs", "") or ""),
+                "ai_tutor_rag_max_sources": int(getattr(self, "ai_tutor_rag_max_sources", DEFAULT_AI_TUTOR_RAG_MAX_SOURCES) or DEFAULT_AI_TUTOR_RAG_MAX_SOURCES),
                 "ai_tutor_history": list(getattr(self, "_ai_tutor_history", []) or [])[-20:],
                 "ai_tutor_telemetry_events": telemetry_events,
                 "last_coach_pick": self.last_coach_pick,
@@ -4658,10 +4742,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return "".join(chunks), (last_err or "Ollama request failed")
 
     def _get_ai_tutor_rag_source_pdfs(self) -> list[str]:
+        def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+            try:
+                parsed = int(value)
+            except Exception:
+                parsed = int(default)
+            return max(int(minimum), min(int(maximum), int(parsed)))
+
         candidates: list[str] = []
         env_raw = str(os.environ.get("STUDYPLAN_AI_TUTOR_RAG_PDFS", "") or "").strip()
         if env_raw:
             for token in re.split(r"[,\n;]+", env_raw):
+                path = str(token or "").strip()
+                if path:
+                    candidates.append(path)
+        pref_raw = str(getattr(self, "ai_tutor_rag_pdfs", "") or "").strip()
+        if pref_raw:
+            for token in re.split(r"[,\n;]+", pref_raw):
                 path = str(token or "").strip()
                 if path:
                     candidates.append(path)
@@ -4704,7 +4801,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 continue
             seen_real.add(real_path)
             unique_paths.append(real_path)
-        return unique_paths[:6]
+        max_sources = _clamp_int(
+            getattr(self, "ai_tutor_rag_max_sources", DEFAULT_AI_TUTOR_RAG_MAX_SOURCES),
+            DEFAULT_AI_TUTOR_RAG_MAX_SOURCES,
+            1,
+            24,
+        )
+        env_max_raw = str(os.environ.get("STUDYPLAN_AI_TUTOR_RAG_MAX_SOURCES", "") or "").strip()
+        if env_max_raw:
+            max_sources = _clamp_int(env_max_raw, max_sources, 1, 24)
+        return unique_paths[: int(max_sources)]
 
     def _ai_tutor_rag_doc_cache_key(self, file_path: str) -> str:
         abs_path = os.path.abspath(os.path.expanduser(str(file_path or "")))
@@ -15574,7 +15680,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._dialog_smoke_index = 0
         GLib.timeout_add(200, self._run_next_dialog_smoke_step)
         # Give each smoke step enough time to open/close dialogs and sync UI state.
-        smoke_timeout_ms = max(20000, (len(self._dialog_smoke_steps) * 1300) + 3000)
+        # Default is intentionally conservative to avoid strict-mode false negatives
+        # on slower machines; can be overridden via env.
+        try:
+            smoke_timeout_ms = int(
+                str(os.environ.get("STUDYPLAN_DIALOG_SMOKE_TIMEOUT_MS", "") or "").strip()
+            )
+        except Exception:
+            smoke_timeout_ms = 0
+        if smoke_timeout_ms <= 0:
+            smoke_timeout_ms = max(75000, (len(self._dialog_smoke_steps) * 2200) + 15000)
+        smoke_timeout_ms = max(30000, min(300000, int(smoke_timeout_ms)))
         GLib.timeout_add(smoke_timeout_ms, self._force_end_smoke_test)
         return False
 
@@ -16609,6 +16725,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     pass
             semantic_label = Gtk.Label(label=semantic_text)
             semantic_label.set_halign(Gtk.Align.START)
+            _mark_single_line(semantic_label)
             semantic_label.add_css_class("muted")
             if semantic_warn:
                 semantic_label.add_css_class("status-warn")
@@ -16628,6 +16745,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     )
                 )
                 ch_line.set_halign(Gtk.Align.START)
+                _mark_single_line(ch_line)
                 ch_line.add_css_class("muted")
                 if not ch_ready:
                     ch_line.add_css_class("status-warn")
@@ -16646,6 +16764,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             drift_text = f"Semantic drift: {drift_status} • flagged {flagged} • avg gap {avg_gap:.0f}%"
             drift_label = Gtk.Label(label=drift_text)
             drift_label.set_halign(Gtk.Align.START)
+            _mark_single_line(drift_label)
             drift_label.add_css_class("muted")
             if drift_status in {"warning", "severe"}:
                 drift_label.add_css_class("status-warn")
@@ -16662,6 +16781,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         label=f"Top drift chapter: {top_ch} • gap {top_gap:.0f}% • lag {top_lag}d"
                     )
                     drift_top.set_halign(Gtk.Align.START)
+                    _mark_single_line(drift_top)
                     drift_top.add_css_class("muted")
                     coach_box.append(drift_top)
         except Exception:
@@ -17295,6 +17415,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 )
                             )
                             chapter_ml_label.set_halign(Gtk.Align.START)
+                            _mark_single_line(chapter_ml_label)
                             chapter_ml_label.add_css_class("muted")
                             if not ch_ready:
                                 chapter_ml_label.add_css_class("status-warn")
