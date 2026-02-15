@@ -6,6 +6,8 @@ import urllib.request
 
 import pytest
 from studyplan_ai_tutor import (
+    AI_TUTOR_RAG_USAGE_HINT,
+    assemble_ai_tutor_turn_prompt,
     build_rag_context_block,
     classify_ollama_error,
     chunk_text_for_rag,
@@ -53,6 +55,76 @@ def _make_ai_coach_dummy():
     )
     dummy._coerce_ai_coach_duration = types.MethodType(StudyPlanGUI._coerce_ai_coach_duration, dummy)
     dummy._get_next_action_line = types.MethodType(StudyPlanGUI._get_next_action_line, dummy)
+    return dummy
+
+
+def _make_local_context_dummy():
+    today = datetime.date.today()
+    engine = types.SimpleNamespace(
+        CHAPTERS=["Topic A", "Topic B", "Topic C"],
+        exam_date=today + datetime.timedelta(days=40),
+        competence={"Topic A": 42.0, "Topic B": 58.0, "Topic C": 77.0},
+        srs_data={
+            "Topic A": [{"last_review": None, "interval": 1}, {"last_review": today.isoformat(), "interval": 1}],
+            "Topic B": [{"last_review": (today - datetime.timedelta(days=8)).isoformat(), "interval": 2}],
+            "Topic C": [],
+        },
+        question_stats={
+            "Topic A": {
+                "0": {"attempts": 10, "correct": 6, "last_seen": today.isoformat()},
+                "1": {"attempts": 4, "correct": 1, "last_seen": (today - datetime.timedelta(days=3)).isoformat()},
+            },
+            "Topic B": {
+                "0": {"attempts": 3, "correct": 2, "last_seen": (today - datetime.timedelta(days=10)).isoformat()},
+            },
+        },
+        get_chapter_recall_risk=lambda chapter: {"Topic A": 0.62, "Topic B": 0.41, "Topic C": 0.15}.get(chapter, 0.0),
+        is_overdue=lambda item, _today: item.get("last_review") is not None and str(item.get("last_review")) <= (
+            today - datetime.timedelta(days=2)
+        ).isoformat(),
+    )
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        module_title="ACCA FM",
+        current_topic="Topic B",
+        action_time_sessions=[
+            {
+                "kind": "quiz",
+                "topic": "Topic A",
+                "seconds": 600,
+                "timestamp": datetime.datetime.combine(today, datetime.time(12, 0)).isoformat(timespec="seconds"),
+            },
+            {
+                "kind": "pomodoro_focus",
+                "topic": "Topic B",
+                "seconds": 1500,
+                "timestamp": datetime.datetime.combine(today - datetime.timedelta(days=1), datetime.time(13, 0)).isoformat(
+                    timespec="seconds"
+                ),
+            },
+            {
+                "kind": "review",
+                "topic": "Topic A",
+                "seconds": 480,
+                "timestamp": datetime.datetime.combine(today - datetime.timedelta(days=2), datetime.time(14, 0)).isoformat(
+                    timespec="seconds"
+                ),
+            },
+        ],
+        focus_integrity_log=[
+            {"date": (today - datetime.timedelta(days=1)).isoformat(), "raw": 30.0, "verified": 24.0},
+            {"date": (today - datetime.timedelta(days=4)).isoformat(), "raw": 25.0, "verified": 20.0},
+        ],
+        _get_coach_pick_snapshot=lambda force=True: ("Topic A", "plan"),
+        _get_must_review_due_count=lambda _today: 2,
+        _get_topic_due_count=lambda topic, _today=None: {"Topic A": 3, "Topic B": 1, "Topic C": 0}.get(topic, 0),
+        _get_chapter_miss_risk=lambda chapter: {"Topic A": 0.55, "Topic B": 0.2, "Topic C": 0.1}.get(chapter, 0.0),
+    )
+    dummy._estimate_ai_tutor_token_count = types.MethodType(StudyPlanGUI._estimate_ai_tutor_token_count, dummy)
+    dummy._estimate_context_tokens = types.MethodType(StudyPlanGUI._estimate_context_tokens, dummy)
+    dummy._context_budget_limits = types.MethodType(StudyPlanGUI._context_budget_limits, dummy)
+    dummy._build_local_ai_context_packet = types.MethodType(StudyPlanGUI._build_local_ai_context_packet, dummy)
+    dummy._format_local_ai_context_block = types.MethodType(StudyPlanGUI._format_local_ai_context_block, dummy)
     return dummy
 
 
@@ -252,6 +324,272 @@ def test_build_ai_tutor_rag_prompt_context_returns_snippets_for_relevant_query()
     assert "WACC" in context or "NPV" in context
 
 
+def _make_rag_dummy(docs_by_path: dict[str, dict[str, object]]) -> types.SimpleNamespace:
+    dummy = types.SimpleNamespace(
+        module_title="ACCA FM",
+        current_topic="Cost of Capital",
+        semantic_enabled=False,
+        engine=types.SimpleNamespace(),
+    )
+    dummy._get_ai_tutor_rag_source_pdfs = lambda: list(docs_by_path.keys())
+    dummy._load_ai_tutor_rag_doc = lambda path: (docs_by_path.get(path), None)
+    return dummy
+
+
+def test_rag_prompt_context_dynamic_target_and_budget(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_TOP_K_MAX", "12")
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_CHAR_BUDGET", "1800")
+    docs = {
+        "/tmp/fm_source.pdf": {
+            "path": "/tmp/fm_source.pdf",
+            "source": "fm_source.pdf",
+            "chunks": [
+                {"chunk_index": idx, "text": f"WACC and NPV concept {idx} with discount rate details {idx}."}
+                for idx in range(16)
+            ],
+        }
+    }
+    dummy = _make_rag_dummy(docs)
+    prompt = " ".join(["Explain interactions between WACC and NPV across scenarios."] * 40)
+    context, meta = StudyPlanGUI._build_ai_tutor_rag_prompt_context(
+        dummy,
+        user_prompt=prompt,
+        history=[{"role": "user", "content": "Need integrated guidance on WACC and NPV"}],
+        top_k=4,
+    )
+    assert context
+    assert int(meta.get("top_k_target", 0) or 0) >= 6
+    assert int(meta.get("char_used", 0) or 0) <= int(meta.get("char_budget", 0) or 0)
+    assert int(meta.get("candidate_count", 0) or 0) >= 1
+
+
+def test_rag_prompt_context_neighbor_expansion_adds_adjacent_chunks(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_NEIGHBOR_WINDOW", "1")
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_TOP_K_MAX", "4")
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_CHAR_BUDGET", "2200")
+    docs = {
+        "/tmp/fm_source.pdf": {
+            "path": "/tmp/fm_source.pdf",
+            "source": "fm_source.pdf",
+            "chunks": [
+                {"chunk_index": 0, "text": "General intro paragraph unrelated."},
+                {"chunk_index": 1, "text": "Neighbor left context for the target explanation."},
+                {"chunk_index": 2, "text": "Core targetterm discussion on WACC and capital structure."},
+                {"chunk_index": 3, "text": "Neighbor right context extending the target explanation."},
+                {"chunk_index": 4, "text": "General outro paragraph unrelated."},
+            ],
+        }
+    }
+    dummy = _make_rag_dummy(docs)
+    context, meta = StudyPlanGUI._build_ai_tutor_rag_prompt_context(
+        dummy,
+        user_prompt="Explain targetterm impact",
+        history=[],
+        top_k=4,
+    )
+    assert "Neighbor left context" in context or "Neighbor right context" in context
+    assert int(meta.get("selected_total_count", 0) or 0) >= int(meta.get("selected_primary_count", 0) or 0)
+    assert int(meta.get("neighbor_window", 0) or 0) == 1
+
+
+def test_rag_prompt_context_source_diversification_prefers_cross_source(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_TOP_K_MAX", "6")
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_CHAR_BUDGET", "1800")
+    docs = {
+        "/tmp/src_a.pdf": {
+            "path": "/tmp/src_a.pdf",
+            "source": "src_a.pdf",
+            "chunks": [
+                {"chunk_index": 0, "text": "WACC discount rate and NPV relationship details from source A."},
+                {"chunk_index": 1, "text": "Another WACC discount paragraph from source A."},
+            ],
+        },
+        "/tmp/src_b.pdf": {
+            "path": "/tmp/src_b.pdf",
+            "source": "src_b.pdf",
+            "chunks": [
+                {"chunk_index": 0, "text": "NPV decision thresholds with WACC support from source B."},
+            ],
+        },
+    }
+    dummy = _make_rag_dummy(docs)
+    _context, meta = StudyPlanGUI._build_ai_tutor_rag_prompt_context(
+        dummy,
+        user_prompt="How do WACC and NPV interact in decisions?",
+        history=[],
+        top_k=4,
+    )
+    sources = list(meta.get("sources", []) or [])
+    assert "src_a.pdf" in sources
+    assert "src_b.pdf" in sources
+
+
+def test_rag_prompt_context_dedup_suppresses_duplicate_chunks(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_CHAR_BUDGET", "1800")
+    docs = {
+        "/tmp/fm_source.pdf": {
+            "path": "/tmp/fm_source.pdf",
+            "source": "fm_source.pdf",
+            "chunks": [
+                {"chunk_index": 0, "text": "WACC formula and NPV are linked in investment appraisal."},
+                {"chunk_index": 1, "text": "WACC formula and NPV are linked in investment appraisal."},
+            ],
+        }
+    }
+    dummy = _make_rag_dummy(docs)
+    context, meta = StudyPlanGUI._build_ai_tutor_rag_prompt_context(
+        dummy,
+        user_prompt="Show WACC formula link to NPV",
+        history=[],
+        top_k=4,
+    )
+    assert int(meta.get("snippet_count", 0) or 0) == 1
+    snippet_lines = [line for line in context.splitlines() if line.startswith("[S")]
+    assert len(snippet_lines) == 1
+
+
+def test_rag_prompt_context_invalid_env_falls_back_safely(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_TOP_K_MAX", "invalid")
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_CHAR_BUDGET", "bad")
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_NEIGHBOR_WINDOW", "bad")
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_LEXICAL_TOP_N", "oops")
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_CANDIDATE_CAP", "nope")
+    docs = {
+        "/tmp/fm_source.pdf": {
+            "path": "/tmp/fm_source.pdf",
+            "source": "fm_source.pdf",
+            "chunks": [{"chunk_index": 0, "text": "WACC details."}],
+        }
+    }
+    dummy = _make_rag_dummy(docs)
+    _context, meta = StudyPlanGUI._build_ai_tutor_rag_prompt_context(
+        dummy,
+        user_prompt="WACC",
+        history=[],
+        top_k=4,
+    )
+    assert 4 <= int(meta.get("top_k_target", 0) or 0) <= 16
+    assert 800 <= int(meta.get("char_budget", 0) or 0) <= 3600
+    assert 0 <= int(meta.get("neighbor_window", 0) or 0) <= 2
+
+
+def test_rag_prompt_context_budget_keeps_primary_hits_before_neighbors(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_TOP_K_MAX", "8")
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_NEIGHBOR_WINDOW", "1")
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_CHAR_BUDGET", "220")
+    docs = {
+        "/tmp/src_a.pdf": {
+            "path": "/tmp/src_a.pdf",
+            "source": "src_a.pdf",
+            "chunks": [
+                {"chunk_index": 0, "text": "Neighbor context from source A with extra words and explanation."},
+                {"chunk_index": 1, "text": "Core signal termalpha from source A."},
+                {"chunk_index": 2, "text": "Another neighbor from source A to test ordering under budget."},
+            ],
+        },
+        "/tmp/src_b.pdf": {
+            "path": "/tmp/src_b.pdf",
+            "source": "src_b.pdf",
+            "chunks": [
+                {"chunk_index": 0, "text": "Neighbor context from source B with extra words and explanation."},
+                {"chunk_index": 1, "text": "Core signal termalpha from source B."},
+                {"chunk_index": 2, "text": "Another neighbor from source B to test ordering under budget."},
+            ],
+        },
+    }
+    dummy = _make_rag_dummy(docs)
+    context, meta = StudyPlanGUI._build_ai_tutor_rag_prompt_context(
+        dummy,
+        user_prompt="Explain termalpha impact",
+        history=[],
+        top_k=4,
+    )
+    assert int(meta.get("char_used", 0) or 0) <= int(meta.get("char_budget", 0) or 0)
+    assert "Core signal termalpha from source A." in context
+    assert "Core signal termalpha from source B." in context
+
+
+def test_rag_prompt_context_relevance_floor_with_fallback(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_MIN_SCORE", "0.95")
+    docs = {
+        "/tmp/fm_source.pdf": {
+            "path": "/tmp/fm_source.pdf",
+            "source": "fm_source.pdf",
+            "chunks": [
+                {"chunk_index": 0, "text": "This text is weakly related to finance in general."},
+                {"chunk_index": 1, "text": "Another broad sentence with little lexical overlap."},
+            ],
+        }
+    }
+    dummy = _make_rag_dummy(docs)
+    context, meta = StudyPlanGUI._build_ai_tutor_rag_prompt_context(
+        dummy,
+        user_prompt="finance risk token",
+        history=[],
+        top_k=4,
+    )
+    # Even with an aggressive relevance floor, fallback should keep at least one candidate.
+    assert int(meta.get("candidate_count", 0) or 0) >= 1
+    assert int(meta.get("snippet_count", 0) or 0) >= 1
+    assert "Reference snippets" in context
+
+
+def test_build_local_ai_context_packet_returns_required_fields():
+    dummy = _make_local_context_dummy()
+    packet = StudyPlanGUI._build_local_ai_context_packet(dummy, kind="tutor", horizon_days=14)
+    assert packet["module"] == "ACCA FM"
+    assert packet["current_topic"] == "Topic B"
+    assert packet["coach_pick"] == "Topic A"
+    assert "weak_topics_top3" in packet
+    assert "quiz_trend_14d" in packet
+    assert "focus_trend_14d" in packet
+    assert "risk_snapshot_top3" in packet
+    assert "due_snapshot_top3" in packet
+    assert "recent_action_mix" in packet
+
+
+def test_format_local_ai_context_block_enforces_budget_and_degrade_order():
+    dummy = _make_local_context_dummy()
+    packet = StudyPlanGUI._build_local_ai_context_packet(dummy, kind="tutor", horizon_days=14)
+    text = StudyPlanGUI._format_local_ai_context_block(dummy, packet, max_chars=220)
+    assert len(text) <= 220
+    assert "Topic:" in text
+    assert "Must-review:" in text
+    assert "Weak topics:" in text
+    format_meta = packet.get("_format_meta", {})
+    dropped = list(format_meta.get("dropped_sections", []) or [])
+    assert dropped[:3] == ["recent_action_mix", "focus_trend_14d", "quiz_trend_14d"]
+
+
+def test_context_budget_limits_and_horizon_env_fallback(monkeypatch):
+    dummy = _make_local_context_dummy()
+    monkeypatch.setenv("STUDYPLAN_AI_CONTEXT_MAX_CHARS_TUTOR", "oops")
+    monkeypatch.setenv("STUDYPLAN_AI_CONTEXT_MAX_TOKENS_TUTOR", "bad")
+    monkeypatch.setenv("STUDYPLAN_AI_CONTEXT_HORIZON_DAYS", "invalid")
+    max_chars, max_tokens = StudyPlanGUI._context_budget_limits(dummy, "tutor")
+    assert 400 <= max_chars <= 1600
+    assert 120 <= max_tokens <= 480
+    packet = StudyPlanGUI._build_local_ai_context_packet(dummy, kind="tutor", horizon_days=14)
+    assert 7 <= int(packet.get("horizon_days", 0) or 0) <= 30
+
+
+def test_ai_tutor_rag_usage_hint_is_non_rigid():
+    hint = str(AI_TUTOR_RAG_USAGE_HINT or "").strip().lower()
+    assert "use snippets when relevant" in hint
+    assert "model knowledge" in hint
+
+
+def test_assemble_ai_tutor_turn_prompt_includes_learning_context_and_rag():
+    prompt = assemble_ai_tutor_turn_prompt(
+        "BASE PROMPT",
+        learning_context="Topic: Topic A\nMust-review: 2",
+        rag_context="Reference snippets (use only when relevant):\n[S1] Source: text",
+    )
+    assert "Learning context (aggregated app state):" in prompt
+    assert "Reference snippets" in prompt
+    assert "Use snippets when relevant" in prompt
+
+
 def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
     save_calls = {"count": 0}
     dummy = types.SimpleNamespace(
@@ -273,6 +611,11 @@ def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
             "prompt_chars": "120",
             "response_chars": 240,
             "timeout_seconds": 9999,
+            "ctx_chars": 99999,
+            "ctx_budget_chars": -1,
+            "ctx_tokens_est": "222",
+            "ctx_dropped_sections_count": 999,
+            "ctx_horizon_days": 999,
         },
         persist=False,
     )
@@ -283,6 +626,11 @@ def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
     assert cleaned["prompt_chars"] == 120
     assert cleaned["response_chars"] == 240
     assert cleaned["timeout_seconds"] == 600
+    assert cleaned["ctx_chars"] == 10000
+    assert cleaned["ctx_budget_chars"] == 0
+    assert cleaned["ctx_tokens_est"] == 222
+    assert cleaned["ctx_dropped_sections_count"] == 50
+    assert cleaned["ctx_horizon_days"] == 90
     assert cleaned["ts_utc"]
 
     for idx in range(4):
@@ -768,6 +1116,23 @@ def test_build_ai_coach_fallback_prefers_review_when_due_exists():
     rec = StudyPlanGUI._build_ai_coach_fallback_recommendation(dummy, payload, issue="")
     assert rec["action"] == "review"
     assert rec["topic"] == "Topic A"
+
+
+def test_build_ai_coach_prompt_includes_learning_context_when_available():
+    dummy = _make_local_context_dummy()
+    payload = {"recommended_topic": "Topic A", "action_topics": {"focus": "Topic A"}}
+    prompt = StudyPlanGUI._build_ai_coach_prompt(dummy, payload)
+    assert "Learning context (aggregated app state):" in prompt
+    assert "Payload JSON:" in prompt
+
+
+def test_build_ai_coach_prompt_omits_learning_context_when_packet_fails():
+    dummy = _make_local_context_dummy()
+    dummy._build_local_ai_context_packet = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+    payload = {"recommended_topic": "Topic A", "action_topics": {"focus": "Topic A"}}
+    prompt = StudyPlanGUI._build_ai_coach_prompt(dummy, payload)
+    assert "Learning context (aggregated app state):" not in prompt
+    assert "Payload JSON:" in prompt
 
 
 def test_get_topic_must_review_due_count_ignores_out_of_range_indices():

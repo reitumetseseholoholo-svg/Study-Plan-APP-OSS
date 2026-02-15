@@ -164,7 +164,14 @@ DEFAULT_OLLAMA_MODEL = os.environ.get("STUDYPLAN_OLLAMA_MODEL", "")
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 300
 DEFAULT_OLLAMA_TRANSIENT_RETRIES = 1
 DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS = 0.4
-DEFAULT_OLLAMA_CONTEXT = 4096
+DEFAULT_OLLAMA_CONTEXT = 2048
+try:
+    DEFAULT_OLLAMA_NUM_THREADS = max(
+        1,
+        int(os.environ.get("STUDYPLAN_OLLAMA_NUM_THREADS", os.environ.get("OLLAMA_NUM_THREADS", "6"))),
+    )
+except Exception:
+    DEFAULT_OLLAMA_NUM_THREADS = 6
 DEFAULT_GPT4ALL_MODELS_DIR = os.path.expanduser("~/.local/share/nomic.ai/GPT4All")
 DEFAULT_GPT4ALL_AUTO_IMPORT = True
 DEFAULT_GPT4ALL_AUTO_IMPORT_MAX_MODELS = 12
@@ -179,6 +186,13 @@ AI_COACH_DEFAULT_DURATION_MINUTES = 25
 AI_COACH_MIN_DURATION_MINUTES = 5
 AI_COACH_MAX_DURATION_MINUTES = 60
 AI_COACH_REASON_MAX_CHARS = 220
+AI_CONTEXT_DEFAULT_HORIZON_DAYS = 14
+AI_CONTEXT_MIN_HORIZON_DAYS = 7
+AI_CONTEXT_MAX_HORIZON_DAYS = 30
+AI_CONTEXT_DEFAULT_MAX_CHARS_TUTOR = 900
+AI_CONTEXT_DEFAULT_MAX_CHARS_COACH = 700
+AI_CONTEXT_DEFAULT_MAX_TOKENS_TUTOR = 280
+AI_CONTEXT_DEFAULT_MAX_TOKENS_COACH = 220
 MIN_POMODORO_CREDIT_MINUTES = 10
 MAX_SHORT_POMODOROS_PER_DAY = 2
 SHORT_POMODORO_XP = 2
@@ -4500,7 +4514,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "model": model_name,
             "prompt": prompt_text,
             "stream": False,
-            "options": {"num_ctx": int(DEFAULT_OLLAMA_CONTEXT), "temperature": 0.2},
+            "options": {
+                "num_ctx": int(DEFAULT_OLLAMA_CONTEXT),
+                "num_thread": int(DEFAULT_OLLAMA_NUM_THREADS),
+                "temperature": 0.2,
+            },
         }
         retries = int(self._get_ollama_retry_limit())
         max_attempts = retries + 1
@@ -4551,7 +4569,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "model": model_name,
             "prompt": prompt_text,
             "stream": True,
-            "options": {"num_ctx": int(DEFAULT_OLLAMA_CONTEXT), "temperature": 0.2},
+            "options": {
+                "num_ctx": int(DEFAULT_OLLAMA_CONTEXT),
+                "num_thread": int(DEFAULT_OLLAMA_NUM_THREADS),
+                "temperature": 0.2,
+            },
         }
         try:
             timeout = int(self.local_llm_timeout_seconds)
@@ -4754,9 +4776,84 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         history: list[dict[str, str]] | None = None,
         top_k: int = 4,
     ) -> tuple[str, dict[str, Any]]:
+        def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+            try:
+                parsed = int(value)
+            except Exception:
+                parsed = int(default)
+            return max(int(minimum), min(int(maximum), int(parsed)))
+
+        def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+            raw = os.environ.get(name, "")
+            if raw is None or str(raw).strip() == "":
+                return _clamp_int(default, default, minimum, maximum)
+            return _clamp_int(raw, default, minimum, maximum)
+
+        def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+            raw = os.environ.get(name, "")
+            if raw is None or str(raw).strip() == "":
+                parsed = float(default)
+            else:
+                try:
+                    parsed = float(raw)
+                except Exception:
+                    parsed = float(default)
+            parsed = max(float(minimum), min(float(maximum), float(parsed)))
+            return float(parsed)
+
+        def _make_meta(
+            source_count: int,
+            method: str,
+            errors_list: list[str],
+            snippets: list[dict[str, Any]] | None = None,
+            *,
+            candidate_count: int = 0,
+            selected_primary_count: int = 0,
+            selected_total_count: int = 0,
+            char_budget: int = 0,
+            char_used: int = 0,
+            top_k_target: int = 0,
+            neighbor_window: int = 0,
+        ) -> dict[str, Any]:
+            snippet_rows = [row for row in list(snippets or []) if isinstance(row, dict)]
+            return {
+                "snippet_count": int(len(snippet_rows)),
+                "source_count": int(max(0, source_count)),
+                "method": str(method or "lexical"),
+                "errors": list(errors_list or []),
+                "sources": sorted(
+                    {
+                        str(row.get("source", "") or "")
+                        for row in snippet_rows
+                        if str(row.get("source", "") or "")
+                    }
+                ),
+                "candidate_count": int(max(0, candidate_count)),
+                "selected_primary_count": int(max(0, selected_primary_count)),
+                "selected_total_count": int(max(0, selected_total_count)),
+                "char_budget": int(max(0, char_budget)),
+                "char_used": int(max(0, char_used)),
+                "top_k_target": int(max(0, top_k_target)),
+                "neighbor_window": int(max(0, neighbor_window)),
+            }
+
+        lexical_top_n = _env_int("STUDYPLAN_AI_TUTOR_RAG_LEXICAL_TOP_N", 24, 12, 60)
+        candidate_cap = _env_int("STUDYPLAN_AI_TUTOR_RAG_CANDIDATE_CAP", 72, 24, 160)
+        top_k_max = _env_int("STUDYPLAN_AI_TUTOR_RAG_TOP_K_MAX", 10, 4, 16)
+        neighbor_window = _env_int("STUDYPLAN_AI_TUTOR_RAG_NEIGHBOR_WINDOW", 1, 0, 2)
+        char_budget = _env_int("STUDYPLAN_AI_TUTOR_RAG_CHAR_BUDGET", 1800, 800, 3600)
+        rag_min_score = _env_float("STUDYPLAN_AI_TUTOR_RAG_MIN_SCORE", 0.06, 0.0, 0.8)
+        neighbor_decay = 0.86
         source_pdfs = self._get_ai_tutor_rag_source_pdfs()
         if not source_pdfs:
-            return "", {"snippet_count": 0, "source_count": 0, "method": "disabled", "errors": []}
+            return "", _make_meta(
+                0,
+                "disabled",
+                [],
+                top_k_target=4,
+                neighbor_window=neighbor_window,
+                char_budget=char_budget,
+            )
         docs: list[dict[str, Any]] = []
         errors: list[str] = []
         for pdf_path in source_pdfs:
@@ -4766,7 +4863,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             elif err:
                 errors.append(f"{os.path.basename(pdf_path)}: {err}")
         if not docs:
-            return "", {"snippet_count": 0, "source_count": 0, "method": "empty", "errors": errors}
+            return "", _make_meta(
+                0,
+                "empty",
+                errors,
+                top_k_target=4,
+                neighbor_window=neighbor_window,
+                char_budget=char_budget,
+            )
         recent_user_lines: list[str] = []
         for msg in list(history or [])[-4:]:
             if not isinstance(msg, dict):
@@ -4784,26 +4888,79 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             " ".join(recent_user_lines).strip(),
         ]
         query_text = " ".join(part for part in query_parts if part).strip()
+        try:
+            requested_top_k = int(top_k)
+        except Exception:
+            requested_top_k = 4
+        requested_top_k = max(1, requested_top_k)
+        estimator = getattr(self, "_estimate_ai_tutor_token_count", None)
+        if callable(estimator):
+            try:
+                estimate_value = cast(Any, estimator(query_text))
+                prompt_tokens_est = max(0, int(estimate_value))
+            except Exception:
+                prompt_tokens_est = max(0, int(math.ceil(float(len(query_text)) / 4.0)))
+        else:
+            prompt_tokens_est = max(0, int(math.ceil(float(len(query_text)) / 4.0)))
+        dynamic_target = 4 + max(0, int(prompt_tokens_est // 120))
+        top_k_target = _clamp_int(max(dynamic_target, requested_top_k), 4, 4, top_k_max)
         if not query_text:
-            return "", {"snippet_count": 0, "source_count": len(docs), "method": "empty_query", "errors": errors}
+            return "", _make_meta(
+                len(docs),
+                "empty_query",
+                errors,
+                top_k_target=top_k_target,
+                neighbor_window=neighbor_window,
+                char_budget=char_budget,
+            )
         candidates: list[dict[str, Any]] = []
+        chunk_lookup: dict[tuple[str, int], dict[str, Any]] = {}
+        lex_lookup: dict[tuple[str, int], float] = {}
         for doc in docs:
             rows = doc.get("chunks", [])
             if not isinstance(rows, list) or not rows:
                 continue
-            chunk_texts = [str(row.get("text", "") or "") for row in rows if isinstance(row, dict)]
-            ranked = lexical_rank_rag_chunks(query_text, chunk_texts, top_n=18)
+            source_name = str(doc.get("source", "") or "").strip() or "PDF source"
+            doc_path = str(doc.get("path", "") or "").strip() or source_name
+            chunk_texts: list[str] = []
+            chunk_indices: list[int] = []
+            for fallback_idx, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    continue
+                text = str(row.get("text", "") or "").strip()
+                if not text:
+                    continue
+                try:
+                    chunk_idx = int(row.get("chunk_index", fallback_idx))
+                except Exception:
+                    chunk_idx = int(fallback_idx)
+                chunk_lookup[(doc_path, int(chunk_idx))] = {
+                    "source": source_name,
+                    "path": doc_path,
+                    "chunk_index": int(chunk_idx),
+                    "text": text,
+                }
+                chunk_texts.append(text)
+                chunk_indices.append(int(chunk_idx))
+            if not chunk_texts:
+                continue
+            ranked = lexical_rank_rag_chunks(query_text, chunk_texts, top_n=lexical_top_n)
             for chunk_idx, lex_score in ranked:
                 if chunk_idx < 0 or chunk_idx >= len(chunk_texts):
                     continue
                 chunk_text = str(chunk_texts[chunk_idx] or "").strip()
                 if not chunk_text:
                     continue
+                real_idx = int(chunk_indices[chunk_idx])
+                item_key = (doc_path, real_idx)
+                prev_lex = float(lex_lookup.get(item_key, 0.0))
+                if float(lex_score) > prev_lex:
+                    lex_lookup[item_key] = float(lex_score)
                 candidates.append(
                     {
-                        "source": str(doc.get("source", "") or ""),
-                        "path": str(doc.get("path", "") or ""),
-                        "chunk_index": int(chunk_idx),
+                        "source": source_name,
+                        "path": doc_path,
+                        "chunk_index": real_idx,
                         "text": chunk_text,
                         "lex_score": float(lex_score),
                         "sem_score": 0.0,
@@ -4811,10 +4968,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     }
                 )
         if not candidates:
-            return "", {"snippet_count": 0, "source_count": len(docs), "method": "lexical", "errors": errors}
-        candidates.sort(key=lambda item: (-float(item.get("lex_score", 0.0)), str(item.get("source", "")), int(item.get("chunk_index", 0))))
-        candidate_cap = min(len(candidates), 48)
-        candidates = candidates[:candidate_cap]
+            return "", _make_meta(
+                len(docs),
+                "lexical",
+                errors,
+                candidate_count=0,
+                top_k_target=top_k_target,
+                neighbor_window=neighbor_window,
+                char_budget=char_budget,
+            )
+        candidates.sort(
+            key=lambda item: (
+                -float(item.get("lex_score", 0.0)),
+                str(item.get("source", "")),
+                int(item.get("chunk_index", 0)),
+            )
+        )
+        candidates = candidates[: min(len(candidates), int(candidate_cap))]
 
         method = "lexical"
         try:
@@ -4839,43 +5009,178 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception as exc:
                 errors.append(f"semantic: {exc}")
 
-        candidates.sort(key=lambda item: (-float(item.get("score", item.get("lex_score", 0.0))), -float(item.get("lex_score", 0.0)), str(item.get("source", "")), int(item.get("chunk_index", 0))))
-        try:
-            keep = max(1, min(8, int(top_k)))
-        except Exception:
-            keep = 4
-        selected: list[dict[str, Any]] = []
-        seen_text: set[str] = set()
+        candidates.sort(
+            key=lambda item: (
+                -float(item.get("score", item.get("lex_score", 0.0))),
+                -float(item.get("lex_score", 0.0)),
+                str(item.get("source", "")),
+                int(item.get("chunk_index", 0)),
+            )
+        )
+        filtered_candidates: list[dict[str, Any]] = []
+        for item in candidates:
+            try:
+                relevance = float(item.get("score", item.get("lex_score", 0.0)) or 0.0)
+            except Exception:
+                relevance = 0.0
+            try:
+                lexical = float(item.get("lex_score", 0.0) or 0.0)
+            except Exception:
+                lexical = 0.0
+            if relevance >= rag_min_score or lexical >= rag_min_score:
+                filtered_candidates.append(item)
+        if filtered_candidates:
+            candidates = filtered_candidates
+        elif candidates:
+            fallback_keep = max(1, min(len(candidates), max(1, int(top_k_target))))
+            candidates = candidates[:fallback_keep]
+        selected_primary: list[dict[str, Any]] = []
+        seen_primary_text: set[str] = set()
+        seen_sources: set[str] = set()
         for item in candidates:
             text = str(item.get("text", "") or "").strip()
             if not text:
                 continue
             signature = re.sub(r"\s+", " ", text.lower())[:260]
+            if signature in seen_primary_text:
+                continue
+            source = str(item.get("source", "") or "").strip()
+            if source in seen_sources:
+                continue
+            seen_primary_text.add(signature)
+            seen_sources.add(source)
+            selected_primary.append(item)
+            if len(selected_primary) >= top_k_target:
+                break
+        for item in candidates:
+            text = str(item.get("text", "") or "").strip()
+            if not text:
+                continue
+            signature = re.sub(r"\s+", " ", text.lower())[:260]
+            if signature in seen_primary_text:
+                continue
+            seen_primary_text.add(signature)
+            selected_primary.append(item)
+            if len(selected_primary) >= top_k_target:
+                break
+        expanded_primary: list[dict[str, Any]] = []
+        expanded_neighbors: list[dict[str, Any]] = []
+        seen_chunk_keys: set[tuple[str, int]] = set()
+
+        def _append_primary(item: dict[str, Any]) -> None:
+            path = str(item.get("path", "") or "")
+            try:
+                idx = int(item.get("chunk_index", 0))
+            except Exception:
+                idx = 0
+            key = (path, idx)
+            if key in seen_chunk_keys:
+                return
+            seen_chunk_keys.add(key)
+            expanded_primary.append(item)
+
+        for primary in selected_primary:
+            _append_primary(primary)
+            if neighbor_window <= 0:
+                continue
+            path = str(primary.get("path", "") or "")
+            source = str(primary.get("source", "") or "")
+            try:
+                base_idx = int(primary.get("chunk_index", 0))
+            except Exception:
+                base_idx = 0
+            try:
+                primary_score = float(primary.get("score", primary.get("lex_score", 0.0)) or 0.0)
+            except Exception:
+                primary_score = 0.0
+            for step in range(1, int(neighbor_window) + 1):
+                for delta in (-step, step):
+                    neighbor_idx = base_idx + delta
+                    payload = chunk_lookup.get((path, neighbor_idx))
+                    if not isinstance(payload, dict):
+                        continue
+                    neighbor_text = str(payload.get("text", "") or "").strip()
+                    if not neighbor_text:
+                        continue
+                    neighbor_lex = float(lex_lookup.get((path, neighbor_idx), 0.0) or 0.0)
+                    neighbor_score = max(0.0, primary_score * (neighbor_decay ** float(step)))
+                    expanded_neighbors.append(
+                        {
+                            "source": source or str(payload.get("source", "") or ""),
+                            "path": path,
+                            "chunk_index": int(neighbor_idx),
+                            "text": neighbor_text,
+                            "lex_score": neighbor_lex,
+                            "sem_score": 0.0,
+                            "score": neighbor_score,
+                        }
+                    )
+        expanded_neighbors.sort(
+            key=lambda item: (
+                -float(item.get("score", item.get("lex_score", 0.0))),
+                -float(item.get("lex_score", 0.0)),
+                str(item.get("source", "")),
+                int(item.get("chunk_index", 0)),
+            )
+        )
+        expanded: list[dict[str, Any]] = list(expanded_primary)
+        for item in expanded_neighbors:
+            path = str(item.get("path", "") or "")
+            try:
+                idx = int(item.get("chunk_index", 0))
+            except Exception:
+                idx = 0
+            key = (path, idx)
+            if key in seen_chunk_keys:
+                continue
+            seen_chunk_keys.add(key)
+            expanded.append(item)
+
+        snippets: list[dict[str, Any]] = []
+        seen_text: set[str] = set()
+        char_used = 0
+        for idx, item in enumerate(expanded, start=1):
+            raw_text = str(item.get("text", "") or "").strip()
+            if not raw_text:
+                continue
+            signature = re.sub(r"\s+", " ", raw_text.lower())[:260]
             if signature in seen_text:
                 continue
-            seen_text.add(signature)
-            selected.append(item)
-            if len(selected) >= keep:
+            remaining = int(char_budget) - int(char_used)
+            if remaining <= 0:
                 break
-        snippets: list[dict[str, Any]] = []
-        for idx, item in enumerate(selected, start=1):
+            text = raw_text
+            if len(text) > remaining:
+                if remaining < 96:
+                    break
+                text = f"{text[: max(80, remaining - 3)].rstrip()}..."
+            if not text:
+                continue
+            seen_text.add(signature)
             snippets.append(
                 {
-                    "id": f"S{idx}",
+                    "id": f"S{len(snippets) + 1}",
                     "source": str(item.get("source", "") or ""),
-                    "text": str(item.get("text", "") or ""),
+                    "text": text,
                     "chunk_index": int(item.get("chunk_index", 0)),
                     "score": float(item.get("score", item.get("lex_score", 0.0)) or 0.0),
                 }
             )
+            char_used += len(text)
         context_block = build_rag_context_block(snippets)
-        meta = {
-            "snippet_count": int(len(snippets)),
-            "source_count": int(len(docs)),
-            "method": str(method),
-            "errors": errors,
-            "sources": sorted({str(item.get("source", "") or "") for item in snippets if str(item.get("source", "") or "")}),
-        }
+        meta = _make_meta(
+            len(docs),
+            str(method),
+            errors,
+            snippets,
+            candidate_count=len(candidates),
+            selected_primary_count=len(selected_primary),
+            selected_total_count=len(expanded),
+            char_budget=char_budget,
+            char_used=char_used,
+            top_k_target=top_k_target,
+            neighbor_window=neighbor_window,
+        )
         return context_block, meta
 
     def _build_ai_tutor_context_prompt(
@@ -4902,6 +5207,549 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         char_est = int(math.ceil(float(len(compact)) / 4.0))
         estimate = max(1, max(word_est, char_est))
         return min(200000, int(estimate))
+
+    def _estimate_context_tokens(self, text: str) -> int:
+        estimator = getattr(self, "_estimate_ai_tutor_token_count", None)
+        if callable(estimator):
+            try:
+                estimated = cast(Any, estimator(text))
+                return max(0, int(estimated))
+            except Exception:
+                pass
+        compact = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not compact:
+            return 0
+        return max(1, int(math.ceil(float(len(compact)) / 4.0)))
+
+    def _context_budget_limits(self, kind: str) -> tuple[int, int]:
+        def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+            try:
+                parsed = int(value)
+            except Exception:
+                parsed = int(default)
+            return max(int(minimum), min(int(maximum), int(parsed)))
+
+        def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+            raw = str(os.environ.get(name, "") or "").strip()
+            if not raw:
+                return _clamp_int(default, default, minimum, maximum)
+            return _clamp_int(raw, default, minimum, maximum)
+
+        mode = str(kind or "tutor").strip().lower()
+        if mode == "coach":
+            max_chars = _env_int("STUDYPLAN_AI_CONTEXT_MAX_CHARS_COACH", AI_CONTEXT_DEFAULT_MAX_CHARS_COACH, 300, 1400)
+            max_tokens = _env_int("STUDYPLAN_AI_CONTEXT_MAX_TOKENS_COACH", AI_CONTEXT_DEFAULT_MAX_TOKENS_COACH, 100, 400)
+        else:
+            max_chars = _env_int("STUDYPLAN_AI_CONTEXT_MAX_CHARS_TUTOR", AI_CONTEXT_DEFAULT_MAX_CHARS_TUTOR, 400, 1600)
+            max_tokens = _env_int("STUDYPLAN_AI_CONTEXT_MAX_TOKENS_TUTOR", AI_CONTEXT_DEFAULT_MAX_TOKENS_TUTOR, 120, 480)
+        return int(max_chars), int(max_tokens)
+
+    def _build_local_ai_context_packet(self, kind: str, horizon_days: int = 14) -> dict[str, Any]:
+        def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+            try:
+                parsed = int(value)
+            except Exception:
+                parsed = int(default)
+            return max(int(minimum), min(int(maximum), int(parsed)))
+
+        def _safe_trend_label(delta: float, epsilon: float = 0.05) -> str:
+            if delta > epsilon:
+                return "up"
+            if delta < -epsilon:
+                return "down"
+            return "flat"
+
+        today = datetime.date.today()
+        raw_horizon = str(os.environ.get("STUDYPLAN_AI_CONTEXT_HORIZON_DAYS", "") or "").strip()
+        if raw_horizon:
+            horizon = _clamp_int(
+                raw_horizon,
+                AI_CONTEXT_DEFAULT_HORIZON_DAYS,
+                AI_CONTEXT_MIN_HORIZON_DAYS,
+                AI_CONTEXT_MAX_HORIZON_DAYS,
+            )
+        else:
+            horizon = _clamp_int(
+                horizon_days,
+                AI_CONTEXT_DEFAULT_HORIZON_DAYS,
+                AI_CONTEXT_MIN_HORIZON_DAYS,
+                AI_CONTEXT_MAX_HORIZON_DAYS,
+            )
+        start_day = today - datetime.timedelta(days=max(1, int(horizon)) - 1)
+        half_days = max(1, int(horizon) // 2)
+        split_day = today - datetime.timedelta(days=half_days - 1)
+
+        engine = getattr(self, "engine", None)
+        chapters = [ch for ch in list(getattr(engine, "CHAPTERS", []) or []) if isinstance(ch, str) and ch]
+        module_title = str(getattr(self, "module_title", "ACCA") or "ACCA").strip() or "ACCA"
+        current_topic = str(getattr(self, "current_topic", "") or "").strip()
+        coach_pick = ""
+        try:
+            picker = getattr(self, "_get_coach_pick_snapshot", None)
+            if callable(picker):
+                pick_raw = cast(Any, picker(force=True))
+                if isinstance(pick_raw, tuple) and len(pick_raw) >= 1:
+                    coach_pick = str(pick_raw[0] or "").strip()
+                elif isinstance(pick_raw, str):
+                    coach_pick = pick_raw.strip()
+        except Exception:
+            coach_pick = ""
+        exam_date = getattr(engine, "exam_date", None)
+        if isinstance(exam_date, datetime.date):
+            try:
+                days_to_exam: int | None = int((exam_date - today).days)
+            except Exception:
+                days_to_exam = None
+        else:
+            days_to_exam = None
+
+        comp_map = getattr(engine, "competence", {}) if engine is not None else {}
+        if not isinstance(comp_map, dict):
+            comp_map = {}
+        comp_rows: list[tuple[str, float]] = []
+        for chapter in chapters:
+            try:
+                comp_rows.append((chapter, float(comp_map.get(chapter, 0.0) or 0.0)))
+            except Exception:
+                comp_rows.append((chapter, 0.0))
+        comp_rows.sort(key=lambda item: (item[1], item[0]))
+        weak_topics_top3 = [
+            {"chapter": chapter, "competence": round(float(score), 1)}
+            for chapter, score in comp_rows[:3]
+        ]
+
+        must_review_due = 0
+        try:
+            due_counter = getattr(self, "_get_must_review_due_count", None)
+            if callable(due_counter):
+                must_review_due = int(cast(Any, due_counter(today)) or 0)
+        except Exception:
+            must_review_due = 0
+
+        overdue_srs_count = 0
+        new_srs_count = 0
+        srs_by_chapter = getattr(engine, "srs_data", {}) if engine is not None else {}
+        if isinstance(srs_by_chapter, dict):
+            for chapter in chapters:
+                items = srs_by_chapter.get(chapter, [])
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    last_review = item.get("last_review")
+                    if last_review is None:
+                        new_srs_count += 1
+                        continue
+                    overdue = False
+                    try:
+                        if engine is not None and hasattr(engine, "is_overdue"):
+                            overdue = bool(engine.is_overdue(item, today))
+                    except Exception:
+                        overdue = False
+                    if not overdue:
+                        try:
+                            last_date = datetime.date.fromisoformat(str(last_review))
+                            interval = max(1, int(item.get("interval", 1) or 1))
+                            overdue = (last_date + datetime.timedelta(days=interval)) <= today
+                        except Exception:
+                            overdue = False
+                    if overdue:
+                        overdue_srs_count += 1
+
+        due_rows: list[dict[str, Any]] = []
+        risk_rows: list[dict[str, Any]] = []
+        due_counter = getattr(self, "_get_topic_due_count", None)
+        miss_risk_getter = getattr(self, "_get_chapter_miss_risk", None)
+        recall_risk_getter = getattr(engine, "get_chapter_recall_risk", None) if engine is not None else None
+        for chapter in chapters:
+            due_count = 0
+            if callable(due_counter):
+                try:
+                    due_count = int(cast(Any, due_counter(chapter, today)) or 0)
+                except Exception:
+                    due_count = 0
+            if due_count > 0:
+                due_rows.append({"chapter": chapter, "due": int(due_count)})
+            miss_val = 0.0
+            if callable(miss_risk_getter):
+                try:
+                    miss_raw = cast(Any, miss_risk_getter(chapter))
+                    miss_val = float(miss_raw) if miss_raw is not None else 0.0
+                except Exception:
+                    miss_val = 0.0
+            recall_val = 0.0
+            if callable(recall_risk_getter):
+                try:
+                    recall_raw = cast(Any, recall_risk_getter(chapter))
+                    recall_val = float(recall_raw) if recall_raw is not None else 0.0
+                except Exception:
+                    recall_val = 0.0
+            risk = max(miss_val, recall_val)
+            if risk > 0:
+                risk_rows.append(
+                    {
+                        "chapter": chapter,
+                        "risk": round(float(risk), 3),
+                        "miss_risk": round(float(miss_val), 3),
+                        "recall_risk": round(float(recall_val), 3),
+                    }
+                )
+        due_rows.sort(key=lambda row: (-int(row.get("due", 0) or 0), str(row.get("chapter", ""))))
+        risk_rows.sort(key=lambda row: (-float(row.get("risk", 0.0) or 0.0), str(row.get("chapter", ""))))
+
+        sessions = getattr(self, "action_time_sessions", []) or []
+        quiz_kinds = {"quiz", "drill", "review", "leech", "interleave"}
+        quiz_daily_sessions: dict[datetime.date, int] = {}
+        quiz_session_total = 0
+        action_seconds_by_kind: dict[str, float] = {}
+        for row in sessions if isinstance(sessions, list) else []:
+            if not isinstance(row, dict):
+                continue
+            ts = row.get("timestamp")
+            try:
+                dt = datetime.datetime.fromisoformat(ts) if ts else None
+            except Exception:
+                dt = None
+            if dt is None:
+                continue
+            day = dt.date()
+            if day < start_day:
+                continue
+            kind_name = str(row.get("kind", "") or "").strip().lower()
+            try:
+                secs = float(row.get("seconds", 0.0) or 0.0)
+            except Exception:
+                secs = 0.0
+            if secs > 0 and kind_name:
+                action_seconds_by_kind[kind_name] = action_seconds_by_kind.get(kind_name, 0.0) + secs
+            if kind_name in quiz_kinds:
+                quiz_session_total += 1
+                quiz_daily_sessions[day] = int(quiz_daily_sessions.get(day, 0) or 0) + 1
+
+        quiz_prev_total = sum(count for day, count in quiz_daily_sessions.items() if day < split_day)
+        quiz_recent_total = sum(count for day, count in quiz_daily_sessions.items() if day >= split_day)
+        quiz_prev_avg = float(quiz_prev_total) / float(max(1, half_days))
+        quiz_recent_avg = float(quiz_recent_total) / float(max(1, half_days))
+        quiz_delta = quiz_recent_avg - quiz_prev_avg
+
+        recent_question_count = 0
+        weighted_correct = 0.0
+        weighted_attempts = 0.0
+        question_stats = getattr(engine, "question_stats", {}) if engine is not None else {}
+        if isinstance(question_stats, dict):
+            for stats_by_ch in question_stats.values():
+                if not isinstance(stats_by_ch, dict):
+                    continue
+                for entry in stats_by_ch.values():
+                    if not isinstance(entry, dict):
+                        continue
+                    try:
+                        seen_date = datetime.date.fromisoformat(str(entry.get("last_seen", "") or ""))
+                    except Exception:
+                        continue
+                    if seen_date < start_day:
+                        continue
+                    recent_question_count += 1
+                    try:
+                        attempts = max(0, int(entry.get("attempts", 0) or 0))
+                    except Exception:
+                        attempts = 0
+                    try:
+                        correct = max(0, int(entry.get("correct", 0) or 0))
+                    except Exception:
+                        correct = 0
+                    if attempts > 0:
+                        weighted_attempts += float(attempts)
+                        weighted_correct += float(min(correct, attempts))
+        if weighted_attempts > 0:
+            quiz_accuracy_pct: float | None = max(0.0, min(100.0, (weighted_correct / weighted_attempts) * 100.0))
+        else:
+            quiz_accuracy_pct = None
+
+        focus_entries = getattr(self, "focus_integrity_log", []) or []
+        verified_by_day: dict[datetime.date, float] = {}
+        raw_by_day: dict[datetime.date, float] = {}
+        for row in focus_entries if isinstance(focus_entries, list) else []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                day = datetime.date.fromisoformat(str(row.get("date", "") or ""))
+            except Exception:
+                continue
+            if day < start_day:
+                continue
+            try:
+                verified_val = max(0.0, float(row.get("verified", 0.0) or 0.0))
+            except Exception:
+                verified_val = 0.0
+            try:
+                raw_val = max(0.0, float(row.get("raw", 0.0) or 0.0))
+            except Exception:
+                raw_val = 0.0
+            verified_by_day[day] = verified_by_day.get(day, 0.0) + verified_val
+            raw_by_day[day] = raw_by_day.get(day, 0.0) + raw_val
+        focus_prev_total = sum(val for day, val in verified_by_day.items() if day < split_day)
+        focus_recent_total = sum(val for day, val in verified_by_day.items() if day >= split_day)
+        focus_prev_avg = float(focus_prev_total) / float(max(1, half_days))
+        focus_recent_avg = float(focus_recent_total) / float(max(1, half_days))
+        focus_delta = focus_recent_avg - focus_prev_avg
+        verified_total = sum(verified_by_day.values())
+        raw_total = sum(raw_by_day.values())
+        if raw_total > 0:
+            integrity_pct: float | None = max(0.0, min(100.0, (verified_total / raw_total) * 100.0))
+        else:
+            integrity_pct = None
+
+        action_mix_rows: list[dict[str, Any]] = []
+        total_action_secs = float(sum(action_seconds_by_kind.values()))
+        if total_action_secs > 0:
+            ordered = sorted(action_seconds_by_kind.items(), key=lambda item: (-float(item[1]), str(item[0])))
+            for action_kind, secs in ordered[:5]:
+                pct = max(0.0, min(100.0, (float(secs) / total_action_secs) * 100.0))
+                action_mix_rows.append(
+                    {
+                        "kind": str(action_kind),
+                        "minutes": round(float(secs) / 60.0, 1),
+                        "pct": round(pct, 1),
+                    }
+                )
+
+        return {
+            "kind": str(kind or "tutor").strip().lower() or "tutor",
+            "horizon_days": int(horizon),
+            "module": module_title,
+            "current_topic": current_topic,
+            "coach_pick": coach_pick,
+            "days_to_exam": days_to_exam,
+            "weak_topics_top3": weak_topics_top3,
+            "must_review_due": int(max(0, must_review_due)),
+            "overdue_srs_count": int(max(0, overdue_srs_count)),
+            "new_srs_count": int(max(0, new_srs_count)),
+            "quiz_trend_14d": {
+                "sessions": int(max(0, quiz_session_total)),
+                "questions": int(max(0, recent_question_count)),
+                "accuracy_pct": None if quiz_accuracy_pct is None else round(float(quiz_accuracy_pct), 1),
+                "trend": _safe_trend_label(quiz_delta, epsilon=0.05),
+                "delta_per_day": round(float(quiz_delta), 2),
+            },
+            "focus_trend_14d": {
+                "verified_minutes": round(float(verified_total), 1),
+                "avg_daily_verified": round(float(verified_total) / float(max(1, horizon)), 1),
+                "integrity_pct": None if integrity_pct is None else round(float(integrity_pct), 1),
+                "trend": _safe_trend_label(focus_delta, epsilon=1.0),
+                "delta_per_day": round(float(focus_delta), 2),
+            },
+            "risk_snapshot_top3": risk_rows[:3],
+            "due_snapshot_top3": due_rows[:3],
+            "recent_action_mix": action_mix_rows,
+        }
+
+    def _format_local_ai_context_block(self, packet: dict[str, Any], max_chars: int) -> str:
+        if not isinstance(packet, dict):
+            return ""
+        try:
+            budget = max(120, min(6000, int(max_chars)))
+        except Exception:
+            budget = 900
+
+        module = str(packet.get("module", "") or "").strip()
+        current_topic = str(packet.get("current_topic", "") or "").strip()
+        coach_pick = str(packet.get("coach_pick", "") or "").strip()
+        days_to_exam = packet.get("days_to_exam")
+        try:
+            must_review_due = max(0, int(packet.get("must_review_due", 0) or 0))
+        except Exception:
+            must_review_due = 0
+        try:
+            overdue_srs_count = max(0, int(packet.get("overdue_srs_count", 0) or 0))
+        except Exception:
+            overdue_srs_count = 0
+        try:
+            new_srs_count = max(0, int(packet.get("new_srs_count", 0) or 0))
+        except Exception:
+            new_srs_count = 0
+        weak_topics = [row for row in list(packet.get("weak_topics_top3", []) or []) if isinstance(row, dict)]
+        quiz_trend = packet.get("quiz_trend_14d", {}) if isinstance(packet.get("quiz_trend_14d", {}), dict) else {}
+        focus_trend = packet.get("focus_trend_14d", {}) if isinstance(packet.get("focus_trend_14d", {}), dict) else {}
+        risk_rows = [row for row in list(packet.get("risk_snapshot_top3", []) or []) if isinstance(row, dict)]
+        due_rows = [row for row in list(packet.get("due_snapshot_top3", []) or []) if isinstance(row, dict)]
+        action_mix_rows = [row for row in list(packet.get("recent_action_mix", []) or []) if isinstance(row, dict)]
+
+        include_quiz = bool(quiz_trend)
+        include_focus = bool(focus_trend)
+        include_action_mix = bool(action_mix_rows)
+        dropped_sections: list[str] = []
+
+        def _weak_line(rows: list[dict[str, Any]]) -> str:
+            if not rows:
+                return "Weak topics: n/a"
+            parts: list[str] = []
+            for row in rows:
+                chapter = str(row.get("chapter", "") or "").strip()
+                if not chapter:
+                    continue
+                try:
+                    comp = float(row.get("competence", 0.0) or 0.0)
+                except Exception:
+                    comp = 0.0
+                parts.append(f"{chapter} ({comp:.1f}%)")
+            if not parts:
+                return "Weak topics: n/a"
+            return "Weak topics: " + " | ".join(parts)
+
+        def _risk_line(rows: list[dict[str, Any]]) -> str:
+            if not rows:
+                return ""
+            parts = []
+            for row in rows:
+                chapter = str(row.get("chapter", "") or "").strip()
+                if not chapter:
+                    continue
+                try:
+                    risk_val = float(row.get("risk", 0.0) or 0.0)
+                except Exception:
+                    risk_val = 0.0
+                parts.append(f"{chapter} ({risk_val:.2f})")
+            if not parts:
+                return ""
+            return "Risk top: " + " | ".join(parts)
+
+        def _due_line(rows: list[dict[str, Any]]) -> str:
+            if not rows:
+                return ""
+            parts = []
+            for row in rows:
+                chapter = str(row.get("chapter", "") or "").strip()
+                if not chapter:
+                    continue
+                try:
+                    due_val = int(row.get("due", 0) or 0)
+                except Exception:
+                    due_val = 0
+                parts.append(f"{chapter} ({due_val})")
+            if not parts:
+                return ""
+            return "Due top: " + " | ".join(parts)
+
+        weak_rows_live = list(weak_topics)
+        risk_rows_live = list(risk_rows)
+        due_rows_live = list(due_rows)
+
+        def _build_text() -> str:
+            lines: list[str] = []
+            if module:
+                lines.append(f"Module: {module}")
+            lines.append(f"Topic: {current_topic or 'n/a'}")
+            if coach_pick and coach_pick != current_topic:
+                lines.append(f"Coach pick: {coach_pick}")
+            if isinstance(days_to_exam, int):
+                lines.append(f"Days to exam: {days_to_exam}")
+            lines.append(
+                "Must-review: "
+                + f"{must_review_due} | Overdue SRS: {overdue_srs_count} | New SRS: {new_srs_count}"
+            )
+            lines.append(_weak_line(weak_rows_live))
+            if include_quiz and quiz_trend:
+                try:
+                    sessions = int(quiz_trend.get("sessions", 0) or 0)
+                except Exception:
+                    sessions = 0
+                try:
+                    questions = int(quiz_trend.get("questions", 0) or 0)
+                except Exception:
+                    questions = 0
+                accuracy = quiz_trend.get("accuracy_pct")
+                trend = str(quiz_trend.get("trend", "") or "").strip() or "flat"
+                if isinstance(accuracy, (int, float)):
+                    lines.append(
+                        f"Quiz {packet.get('horizon_days', 14)}d: {sessions} sessions | {questions} questions | {float(accuracy):.1f}% | {trend}"
+                    )
+                else:
+                    lines.append(
+                        f"Quiz {packet.get('horizon_days', 14)}d: {sessions} sessions | {questions} questions | {trend}"
+                    )
+            if include_focus and focus_trend:
+                try:
+                    verified_minutes = float(focus_trend.get("verified_minutes", 0.0) or 0.0)
+                except Exception:
+                    verified_minutes = 0.0
+                try:
+                    avg_daily = float(focus_trend.get("avg_daily_verified", 0.0) or 0.0)
+                except Exception:
+                    avg_daily = 0.0
+                trend = str(focus_trend.get("trend", "") or "").strip() or "flat"
+                integrity = focus_trend.get("integrity_pct")
+                if isinstance(integrity, (int, float)):
+                    lines.append(
+                        f"Focus {packet.get('horizon_days', 14)}d: {verified_minutes:.0f}m verified | avg {avg_daily:.1f}m/day | integrity {float(integrity):.1f}% | {trend}"
+                    )
+                else:
+                    lines.append(
+                        f"Focus {packet.get('horizon_days', 14)}d: {verified_minutes:.0f}m verified | avg {avg_daily:.1f}m/day | {trend}"
+                    )
+            risk_line = _risk_line(risk_rows_live)
+            if risk_line:
+                lines.append(risk_line)
+            due_line = _due_line(due_rows_live)
+            if due_line:
+                lines.append(due_line)
+            if include_action_mix and action_mix_rows:
+                mix_parts: list[str] = []
+                for row in action_mix_rows:
+                    kind = str(row.get("kind", "") or "").strip()
+                    if not kind:
+                        continue
+                    try:
+                        pct = float(row.get("pct", 0.0) or 0.0)
+                    except Exception:
+                        pct = 0.0
+                    mix_parts.append(f"{kind} {pct:.1f}%")
+                if mix_parts:
+                    lines.append("Action mix: " + " | ".join(mix_parts))
+            return "\n".join(line for line in lines if line).strip()
+
+        while True:
+            context_text = _build_text()
+            if len(context_text) <= budget:
+                break
+            if include_action_mix:
+                include_action_mix = False
+                dropped_sections.append("recent_action_mix")
+                continue
+            if include_focus:
+                include_focus = False
+                dropped_sections.append("focus_trend_14d")
+                continue
+            if include_quiz:
+                include_quiz = False
+                dropped_sections.append("quiz_trend_14d")
+                continue
+            if len(risk_rows_live) > 1:
+                risk_rows_live = risk_rows_live[:-1]
+                dropped_sections.append("risk_snapshot_row")
+                continue
+            if len(due_rows_live) > 1:
+                due_rows_live = due_rows_live[:-1]
+                dropped_sections.append("due_snapshot_row")
+                continue
+            if len(weak_rows_live) > 1:
+                weak_rows_live = weak_rows_live[:-1]
+                dropped_sections.append("weak_topics_row")
+                continue
+            if len(context_text) > budget:
+                context_text = f"{context_text[: max(0, budget - 3)].rstrip()}..."
+            break
+
+        tokens_est = self._estimate_context_tokens(context_text)
+        packet["_format_meta"] = {
+            "char_budget": int(budget),
+            "char_used": int(len(context_text)),
+            "tokens_est": int(tokens_est),
+            "dropped_sections_count": int(len(dropped_sections)),
+            "dropped_sections": dropped_sections,
+        }
+        return context_text
 
     def _sanitize_ai_tutor_telemetry_event(self, event: Any) -> dict[str, Any] | None:
         if not isinstance(event, dict):
@@ -4950,6 +5798,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "truncated": bool(event.get("truncated", False)),
             "rag_snippets": _clamp_int(event.get("rag_snippets", 0), default=0, minimum=0, maximum=100),
             "rag_sources": _clamp_int(event.get("rag_sources", 0), default=0, minimum=0, maximum=50),
+            "rag_candidate_count": _clamp_int(event.get("rag_candidate_count", 0), default=0, minimum=0, maximum=500),
+            "rag_selected_total_count": _clamp_int(event.get("rag_selected_total_count", 0), default=0, minimum=0, maximum=500),
+            "rag_char_used": _clamp_int(event.get("rag_char_used", 0), default=0, minimum=0, maximum=10000),
+            "rag_char_budget": _clamp_int(event.get("rag_char_budget", 0), default=0, minimum=0, maximum=10000),
+            "rag_top_k_target": _clamp_int(event.get("rag_top_k_target", 0), default=0, minimum=0, maximum=64),
+            "rag_neighbor_window": _clamp_int(event.get("rag_neighbor_window", 0), default=0, minimum=0, maximum=8),
+            "ctx_chars": _clamp_int(event.get("ctx_chars", 0), default=0, minimum=0, maximum=10000),
+            "ctx_budget_chars": _clamp_int(event.get("ctx_budget_chars", 0), default=0, minimum=0, maximum=10000),
+            "ctx_tokens_est": _clamp_int(event.get("ctx_tokens_est", 0), default=0, minimum=0, maximum=5000),
+            "ctx_dropped_sections_count": _clamp_int(
+                event.get("ctx_dropped_sections_count", 0),
+                default=0,
+                minimum=0,
+                maximum=50,
+            ),
+            "ctx_horizon_days": _clamp_int(event.get("ctx_horizon_days", 14), default=14, minimum=1, maximum=90),
             "context_condensed_turns": _clamp_int(
                 event.get("context_condensed_turns", 0),
                 default=0,
@@ -5289,21 +6153,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         }
 
     def _build_ai_coach_prompt(self, payload: dict[str, Any]) -> str:
+        learning_context = ""
+        try:
+            packet = self._build_local_ai_context_packet(kind="coach", horizon_days=AI_CONTEXT_DEFAULT_HORIZON_DAYS)
+            max_chars, max_tokens = self._context_budget_limits("coach")
+            budget_chars = max(120, int(min(max_chars, max_tokens * 4)))
+            learning_context = str(self._format_local_ai_context_block(packet, max_chars=budget_chars) or "").strip()
+            if learning_context and self._estimate_context_tokens(learning_context) > int(max_tokens):
+                resized_budget = max(120, int(max_tokens * 4))
+                learning_context = str(self._format_local_ai_context_block(packet, max_chars=resized_budget) or "").strip()
+        except Exception:
+            learning_context = ""
         payload_json = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
-        return "\n".join(
+        lines = [
+            "You are an ACCA AI study coach.",
+            "Return exactly one JSON object and nothing else.",
+            "Choose only one action from: focus, quiz, drill, interleave, review.",
+            "If unsure, pick the safest deterministic action from the payload action_topics map.",
+            "Do not invent topics; use only payload.action_topics values or payload.recommended_topic.",
+            "Keep reason concise and practical (max 220 chars).",
+            "Schema:",
+            '{"action":"focus|quiz|drill|interleave|review","topic":"chapter","duration_minutes":25,"reason":"short explanation","confidence":0.0}',
+        ]
+        if learning_context:
+            lines.append("Learning context (aggregated app state):")
+            lines.append(learning_context)
+        lines.extend(
             [
-                "You are an ACCA AI study coach.",
-                "Return exactly one JSON object and nothing else.",
-                "Choose only one action from: focus, quiz, drill, interleave, review.",
-                "If unsure, pick the safest deterministic action from the payload action_topics map.",
-                "Do not invent topics; use only payload.action_topics values or payload.recommended_topic.",
-                "Keep reason concise and practical (max 220 chars).",
-                "Schema:",
-                '{"action":"focus|quiz|drill|interleave|review","topic":"chapter","duration_minutes":25,"reason":"short explanation","confidence":0.0}',
                 "Payload JSON:",
                 payload_json,
             ]
-        ).strip()
+        )
+        return "\n".join(lines).strip()
 
     def _normalize_ai_coach_recommendation(
         self,

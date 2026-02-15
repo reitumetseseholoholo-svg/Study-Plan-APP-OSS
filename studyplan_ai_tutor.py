@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import threading
 import time
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, cast
 
 if TYPE_CHECKING:  # pragma: no cover - reserved for future editor hints
     pass
@@ -13,6 +13,10 @@ AI_TUTOR_MAX_RESPONSE_CHARS = 12000
 AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS = 90
 AI_TUTOR_MIN_TURN_TIMEOUT_SECONDS = 20
 AI_TUTOR_MAX_TURN_TIMEOUT_SECONDS = 240
+AI_TUTOR_RAG_USAGE_HINT = (
+    "Use snippets when relevant and cite IDs like [S1] for snippet-backed facts. "
+    "If snippets are insufficient, answer with model knowledge and state assumptions clearly."
+)
 
 
 def normalize_tutor_timeout_seconds(
@@ -210,6 +214,22 @@ def build_rag_context_block(snippets: list[dict[str, Any]]) -> str:
             *rows,
         ]
     ).strip()
+
+
+def assemble_ai_tutor_turn_prompt(
+    base_prompt: str,
+    learning_context: str = "",
+    rag_context: str = "",
+) -> str:
+    parts: list[str] = [str(base_prompt or "").strip()]
+    context_text = str(learning_context or "").strip()
+    if context_text:
+        parts.append("\n".join(["Learning context (aggregated app state):", context_text]).strip())
+    rag_text = str(rag_context or "").strip()
+    if rag_text:
+        parts.append(rag_text)
+        parts.append(AI_TUTOR_RAG_USAGE_HINT)
+    return "\n\n".join([part for part in parts if part]).strip()
 
 
 def should_keep_response_bottom(
@@ -1045,6 +1065,75 @@ class AITutorDialogController:
                 module_title=module_title,
                 chapter=chapter,
             )
+            context_block = ""
+            context_chars = 0
+            context_budget_chars = 0
+            context_tokens_est = 0
+            context_dropped_sections = 0
+            context_horizon_days = 14
+            try:
+                packet_builder = getattr(app, "_build_local_ai_context_packet", None)
+                formatter = getattr(app, "_format_local_ai_context_block", None)
+                budget_reader = getattr(app, "_context_budget_limits", None)
+                token_estimator = getattr(app, "_estimate_context_tokens", None)
+                if callable(packet_builder) and callable(formatter):
+                    packet = packet_builder(kind="tutor", horizon_days=14)
+                    if isinstance(packet, dict):
+                        try:
+                            context_horizon_days = int(packet.get("horizon_days", 14) or 14)
+                        except Exception:
+                            context_horizon_days = 14
+                    max_chars = 900
+                    max_tokens = 280
+                    if callable(budget_reader):
+                        try:
+                            raw_limits = budget_reader("tutor")
+                        except Exception:
+                            raw_limits = None
+                        if isinstance(raw_limits, tuple) and len(raw_limits) >= 2:
+                            try:
+                                max_chars = int(raw_limits[0] or max_chars)
+                            except Exception:
+                                max_chars = 900
+                            try:
+                                max_tokens = int(raw_limits[1] or max_tokens)
+                            except Exception:
+                                max_tokens = 280
+                    max_chars = max(120, max_chars)
+                    max_tokens = max(80, max_tokens)
+                    context_budget_chars = int(min(max_chars, max_tokens * 4))
+                    context_block = str(formatter(packet, max_chars=context_budget_chars) or "").strip()
+                    if callable(token_estimator):
+                        try:
+                            context_tokens_est = int(cast(Any, token_estimator(context_block)))
+                        except Exception:
+                            context_tokens_est = max(0, int(round(float(len(context_block)) / 4.0)))
+                    else:
+                        context_tokens_est = max(0, int(round(float(len(context_block)) / 4.0)))
+                    if context_tokens_est > max_tokens:
+                        resized_budget = max(120, int(max_tokens * 4))
+                        if resized_budget < context_budget_chars:
+                            context_budget_chars = int(resized_budget)
+                            context_block = str(formatter(packet, max_chars=context_budget_chars) or "").strip()
+                            if callable(token_estimator):
+                                try:
+                                    context_tokens_est = int(cast(Any, token_estimator(context_block)))
+                                except Exception:
+                                    context_tokens_est = max(0, int(round(float(len(context_block)) / 4.0)))
+                            else:
+                                context_tokens_est = max(0, int(round(float(len(context_block)) / 4.0)))
+                    context_chars = int(len(context_block))
+                    format_meta = {}
+                    if isinstance(packet, dict):
+                        maybe_meta = packet.get("_format_meta")
+                        if isinstance(maybe_meta, dict):
+                            format_meta = maybe_meta
+                    context_dropped_sections = int(format_meta.get("dropped_sections_count", 0) or 0)
+            except Exception:
+                context_block = ""
+                context_chars = 0
+                context_tokens_est = 0
+                context_dropped_sections = 0
             rag_context = ""
             rag_meta: dict[str, Any] = {"snippet_count": 0, "source_count": 0, "method": "disabled", "errors": []}
             try:
@@ -1061,15 +1150,11 @@ class AITutorDialogController:
                     "method": "error",
                     "errors": [str(exc)],
                 }
-            if rag_context:
-                full_prompt = "\n\n".join(
-                    [
-                        full_prompt,
-                        rag_context,
-                        "If you use snippet facts, cite IDs like [S1] inline. "
-                        "If snippets are not relevant, answer normally without forced citations.",
-                    ]
-                ).strip()
+            full_prompt = assemble_ai_tutor_turn_prompt(
+                full_prompt,
+                learning_context=context_block,
+                rag_context=rag_context,
+            )
             turn_timeout_seconds = normalize_tutor_timeout_seconds(
                 getattr(app, "local_llm_timeout_seconds", AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS),
                 default=AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS,
@@ -1139,6 +1224,17 @@ class AITutorDialogController:
                     "truncated": bool(guard_state.get("truncated", False)),
                     "rag_snippets": int(rag_count),
                     "rag_sources": int(rag_sources),
+                    "rag_candidate_count": int(rag_candidate_count),
+                    "rag_selected_total_count": int(rag_selected_total_count),
+                    "rag_char_used": int(rag_char_used),
+                    "rag_char_budget": int(rag_char_budget),
+                    "rag_top_k_target": int(rag_top_k_target),
+                    "rag_neighbor_window": int(rag_neighbor_window),
+                    "ctx_chars": int(context_chars),
+                    "ctx_budget_chars": int(context_budget_chars),
+                    "ctx_tokens_est": int(max(0, context_tokens_est)),
+                    "ctx_dropped_sections_count": int(max(0, context_dropped_sections)),
+                    "ctx_horizon_days": int(max(1, context_horizon_days)),
                     "context_condensed_turns": int(condensed_count),
                 }
                 try:
@@ -1160,11 +1256,34 @@ class AITutorDialogController:
             rag_count = int(rag_meta.get("snippet_count", 0) or 0)
             rag_sources = int(rag_meta.get("source_count", 0) or 0)
             rag_method = str(rag_meta.get("method", "disabled") or "disabled").strip()
+            rag_candidate_count = int(rag_meta.get("candidate_count", 0) or 0)
+            rag_selected_total_count = int(rag_meta.get("selected_total_count", 0) or 0)
+            rag_char_used = int(rag_meta.get("char_used", 0) or 0)
+            rag_char_budget = int(rag_meta.get("char_budget", 0) or 0)
+            rag_top_k_target = int(rag_meta.get("top_k_target", 0) or 0)
+            rag_neighbor_window = int(rag_meta.get("neighbor_window", 0) or 0)
             status_parts = ["Generating…"]
             if condensed_count > 0:
                 status_parts.append(f"context condensed: {condensed_count} older turn(s)")
+            if context_budget_chars > 0:
+                status_parts.append(f"CTX: {context_chars}/{context_budget_chars} chars")
             if rag_count > 0:
-                status_parts.append(f"RAG: {rag_count} snippet(s) from {rag_sources} PDF(s) [{rag_method}]")
+                budget_text = ""
+                if rag_char_budget > 0:
+                    budget_text = f", {rag_char_used}/{rag_char_budget} chars"
+                target_text = ""
+                if rag_top_k_target > 0:
+                    target_text = f", target {rag_top_k_target}"
+                neighbor_text = ""
+                if rag_neighbor_window > 0:
+                    neighbor_text = f", +/-{rag_neighbor_window} neighbors"
+                candidate_text = ""
+                if rag_candidate_count > 0 or rag_selected_total_count > 0:
+                    candidate_text = f", {rag_selected_total_count}/{rag_candidate_count} kept"
+                status_parts.append(
+                    f"RAG: {rag_count} snippet(s) from {rag_sources} PDF(s) "
+                    f"[{rag_method}{budget_text}{target_text}{neighbor_text}{candidate_text}]"
+                )
             elif rag_sources > 0:
                 status_parts.append("RAG: no relevant snippets")
             elif rag_method == "disabled":
