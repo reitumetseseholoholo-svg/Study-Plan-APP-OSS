@@ -1,3 +1,5 @@
+# pyright: reportArgumentType=false
+
 import datetime
 import json
 import os

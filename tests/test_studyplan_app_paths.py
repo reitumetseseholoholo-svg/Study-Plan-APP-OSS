@@ -1,3 +1,5 @@
+# pyright: reportArgumentType=false
+
 import os
 import types
 

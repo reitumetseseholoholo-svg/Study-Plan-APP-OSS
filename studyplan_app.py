@@ -5555,14 +5555,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             snippets.append(
                 {
                     "id": f"S{len(snippets) + 1}",
-                "source": str(item.get("source", "") or ""),
-                "text": text,
-                "chunk_index": int(item.get("chunk_index", 0)),
-                "score": float(item.get("score", item.get("lex_score", 0.0)) or 0.0),
-                "target_hits": int(item.get("target_hits", 0) or 0),
-            }
-        )
-        char_used += len(text)
+                    "source": str(item.get("source", "") or ""),
+                    "text": text,
+                    "chunk_index": int(item.get("chunk_index", 0)),
+                    "score": float(item.get("score", item.get("lex_score", 0.0)) or 0.0),
+                    "target_hits": int(item.get("target_hits", 0) or 0),
+                }
+            )
+            char_used += len(text)
         target_hit_snippets = sum(
             1
             for row in snippets
