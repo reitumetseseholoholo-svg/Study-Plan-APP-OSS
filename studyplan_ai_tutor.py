@@ -13,7 +13,10 @@ if TYPE_CHECKING:  # pragma: no cover - reserved for future editor hints
 AI_TUTOR_MAX_RESPONSE_CHARS = 12000
 AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS = 90
 AI_TUTOR_MIN_TURN_TIMEOUT_SECONDS = 20
-AI_TUTOR_MAX_TURN_TIMEOUT_SECONDS = 240
+AI_TUTOR_MAX_TURN_TIMEOUT_SECONDS = 900
+AI_TUTOR_PROMPT_CONTRACT_VERSION = 3
+AI_TUTOR_STREAM_STALL_MS = 900
+AI_TUTOR_STREAM_WATCHDOG_INTERVAL_MS = 240
 AI_TUTOR_RAG_USAGE_HINT = (
     "Use snippets when relevant and cite IDs like [S1] for snippet-backed facts. "
     "If snippets are insufficient, answer with model knowledge and state assumptions clearly."
@@ -422,6 +425,39 @@ def should_keep_response_bottom(
     return bool(auto_scroll_enabled) and (bool(force_scroll) or bool(near_bottom))
 
 
+def should_force_stream_flush(
+    *,
+    last_chunk_monotonic: float,
+    last_render_monotonic: float,
+    now_monotonic: float,
+    stall_ms: int = AI_TUTOR_STREAM_STALL_MS,
+) -> bool:
+    try:
+        chunk_at = float(last_chunk_monotonic)
+    except Exception:
+        chunk_at = 0.0
+    if chunk_at <= 0.0:
+        return False
+    try:
+        render_at = float(last_render_monotonic)
+    except Exception:
+        render_at = 0.0
+    # Flush only when render progress is behind latest chunk.
+    if render_at >= chunk_at:
+        return False
+    try:
+        now_at = float(now_monotonic)
+    except Exception:
+        now_at = 0.0
+    if now_at <= 0.0 or now_at < chunk_at:
+        return False
+    try:
+        stall_limit_ms = max(150, min(5000, int(stall_ms)))
+    except Exception:
+        stall_limit_ms = AI_TUTOR_STREAM_STALL_MS
+    return ((now_at - chunk_at) * 1000.0) >= float(stall_limit_ms)
+
+
 def compute_tutor_control_state(
     *,
     running: bool,
@@ -527,10 +563,15 @@ def build_ai_tutor_context_prompt_details(
     older_summary = _summarize_older_tutor_messages(older_messages)
     coverage_targets = extract_tutor_coverage_targets(user_prompt, max_targets=6)
     lines = [
-        "You are a concise ACCA study tutor.",
+        "You are a first-class local ACCA tutor embedded inside the StudyPlan app.",
         f"Module: {module_title or 'ACCA'}",
         f"Current chapter: {chapter or 'not selected'}",
+        "Mission: maximize exam readiness per minute using the learner state and current syllabus context.",
+        "Priority order: must-review pressure -> weak-topic repair -> retrieval practice -> formula accuracy -> exam-style clarity.",
+        "Operate as the session pilot: diagnose gaps, prescribe actions, drill, and finish with a concrete next move.",
         "Use short sections, bullets, formulas when relevant, and exam-focused tips.",
+        "Avoid generic motivation; be operational and exam-hard.",
+        "When useful, end with one concrete next step (topic + mode + duration).",
         "If assumptions are required, state them explicitly.",
         "",
     ]
@@ -673,6 +714,10 @@ class AITutorDialogController:
         Gtk = self.Gtk
         GLib = self.GLib
         Gdk = self.Gdk
+        try:
+            app._ai_tutor_dialog_open = True
+        except Exception:
+            pass
         dialog = app._new_dialog(title="AI Tutor (Ollama)", transient_for=app, modal=True)
         dialog.set_default_size(760, 620)
         dialog.add_buttons("_Close", Gtk.ResponseType.CLOSE)
@@ -857,6 +902,11 @@ class AITutorDialogController:
             "stream_render_force": False,
             "stream_last_clean_text": "",
             "stream_label_inserted": False,
+            "stream_last_chunk_at": 0.0,
+            "stream_last_render_at": 0.0,
+            "stream_watchdog_last_force_at": 0.0,
+            "stream_watchdog_forced_flushes": 0,
+            "stream_watchdog_id": 0,
             "autopilot_paused": False,
             "autopilot_busy": False,
             "autopilot_loop_id": 0,
@@ -1012,6 +1062,7 @@ class AITutorDialogController:
             text = format_ai_tutor_transcript(entries)
             response_buf.set_text(text if text else "No conversation yet.")
             _sync_stream_tracking_from_draft()
+            run_state["stream_last_render_at"] = float(time.monotonic())
             if should_keep_bottom and text:
                 _scroll_response_end_deferred()
 
@@ -1049,6 +1100,7 @@ class AITutorDialogController:
             else:
                 _render_transcript(force_scroll=False)
             run_state["stream_last_clean_text"] = cleaned_full
+            run_state["stream_last_render_at"] = float(time.monotonic())
             if should_keep_bottom:
                 _scroll_response_end_deferred()
 
@@ -1069,6 +1121,43 @@ class AITutorDialogController:
                 return False
 
             GLib.idle_add(_apply_stream_render, priority=GLib.PRIORITY_DEFAULT_IDLE)
+
+        def _ensure_stream_watchdog() -> None:
+            existing_id = int(run_state.get("stream_watchdog_id", 0) or 0)
+            if existing_id > 0:
+                return
+
+            def _watch_stream() -> bool:
+                if not bool(run_state.get("active", False)):
+                    run_state["stream_watchdog_id"] = 0
+                    return False
+                now_ts = float(time.monotonic())
+                if should_force_stream_flush(
+                    last_chunk_monotonic=float(run_state.get("stream_last_chunk_at", 0.0) or 0.0),
+                    last_render_monotonic=float(run_state.get("stream_last_render_at", 0.0) or 0.0),
+                    now_monotonic=now_ts,
+                    stall_ms=AI_TUTOR_STREAM_STALL_MS,
+                ):
+                    last_force = float(run_state.get("stream_watchdog_last_force_at", 0.0) or 0.0)
+                    if (now_ts - last_force) >= 0.25:
+                        run_state["stream_watchdog_last_force_at"] = now_ts
+                        run_state["stream_watchdog_forced_flushes"] = int(
+                            run_state.get("stream_watchdog_forced_flushes", 0) or 0
+                        ) + 1
+                        run_state["stream_render_pending"] = False
+                        run_state["stream_render_force"] = False
+                        try:
+                            _append_stream_delta(force_scroll=False)
+                        except Exception:
+                            _render_transcript(force_scroll=False)
+                        run_state["stream_last_render_at"] = float(time.monotonic())
+                return True
+
+            try:
+                watchdog_ms = max(120, min(2000, int(AI_TUTOR_STREAM_WATCHDOG_INTERVAL_MS)))
+            except Exception:
+                watchdog_ms = 240
+            run_state["stream_watchdog_id"] = int(GLib.timeout_add(watchdog_ms, _watch_stream) or 0)
 
         def _sync_cockpit_controls() -> None:
             autopilot_enabled = bool(getattr(app, "ai_tutor_autopilot_enabled", True))
@@ -1098,6 +1187,18 @@ class AITutorDialogController:
                 run_state["stream_render_pending"] = False
                 run_state["stream_last_clean_text"] = ""
                 run_state["stream_label_inserted"] = False
+                run_state["stream_last_chunk_at"] = 0.0
+                run_state["stream_last_render_at"] = 0.0
+                run_state["stream_watchdog_last_force_at"] = 0.0
+                stream_watchdog_id = int(run_state.get("stream_watchdog_id", 0) or 0)
+                if stream_watchdog_id > 0:
+                    try:
+                        GLib.source_remove(stream_watchdog_id)
+                    except Exception:
+                        pass
+                run_state["stream_watchdog_id"] = 0
+            else:
+                _ensure_stream_watchdog()
             controls = compute_tutor_control_state(
                 running=bool(running),
                 model_ready=bool(_selected_model_name()),
@@ -1123,6 +1224,9 @@ class AITutorDialogController:
 
         def _autopilot_mode() -> str:
             try:
+                resolver = getattr(app, "_effective_ai_tutor_autonomy_mode", None)
+                if callable(resolver):
+                    return str(resolver() or "assist")
                 return str(app._coerce_ai_tutor_autonomy_mode(getattr(app, "ai_tutor_autonomy_mode", "assist")) or "assist")
             except Exception:
                 return str(getattr(app, "ai_tutor_autonomy_mode", "assist") or "assist").strip().lower() or "assist"
@@ -1491,13 +1595,14 @@ class AITutorDialogController:
                 return
             model_name = _selected_model_name() or str(app.local_llm_model or "").strip()
             auto_model_note = ""
+            failover_note = ""
+            available_models = [
+                str(item).strip()
+                for item in list(current_models or [])
+                if str(item or "").strip() and not str(item or "").strip().startswith("(")
+            ]
             selector = getattr(app, "_select_local_llm_model", None)
             if callable(selector):
-                available_models = [
-                    str(item).strip()
-                    for item in list(current_models or [])
-                    if str(item or "").strip() and not str(item or "").strip().startswith("(")
-                ]
                 try:
                     selected_name, selected_err = cast(
                         Any,
@@ -1521,6 +1626,36 @@ class AITutorDialogController:
             if not model_name:
                 status_label.set_text("Select an Ollama model first.")
                 return
+            model_candidates: list[str] = [str(model_name or "").strip()]
+            failover_builder = getattr(app, "_build_local_llm_model_failover_sequence", None)
+            if callable(failover_builder):
+                try:
+                    failover_models, _failover_err = cast(
+                        Any,
+                        failover_builder(
+                            purpose="tutor",
+                            model_override=None,
+                            available_models=available_models or None,
+                            persist=True,
+                        ),
+                    )
+                except Exception:
+                    failover_models = []
+                normalized_failover = [
+                    str(item).strip()
+                    for item in list(failover_models or [])
+                    if str(item or "").strip() and not str(item or "").strip().startswith("(")
+                ]
+                if normalized_failover:
+                    model_candidates = [str(model_name or "").strip()]
+                    for candidate in normalized_failover:
+                        if candidate not in model_candidates:
+                            model_candidates.append(candidate)
+            model_candidates = [name for name in model_candidates if name]
+            if not model_candidates:
+                model_candidates = [str(model_name or "").strip()]
+            if len(model_candidates) > 1:
+                failover_note = f"Failover armed: {len(model_candidates)} models"
             user_prompt = _current_prompt_text(strip=True)
             if not user_prompt:
                 status_label.set_text("Enter a prompt first.")
@@ -1716,6 +1851,7 @@ class AITutorDialogController:
                 "first_token_ms": 0,
                 "generation_started_at": 0.0,
                 "stream_started_at": 0.0,
+                "failover_count": 0,
             }
             turn_started_at = float(turn_requested_at)
             prompt_chars = len(str(user_prompt or ""))
@@ -1857,6 +1993,10 @@ class AITutorDialogController:
             run_state["draft_assistant"] = ""
             run_state["stream_last_clean_text"] = ""
             run_state["stream_label_inserted"] = False
+            run_state["stream_last_chunk_at"] = 0.0
+            run_state["stream_last_render_at"] = 0.0
+            run_state["stream_watchdog_last_force_at"] = 0.0
+            run_state["stream_watchdog_forced_flushes"] = 0
             app.local_llm_model = model_name
             app.save_preferences()
             condensed_count = int(prompt_meta.get("older_condensed", 0) or 0)
@@ -1931,11 +2071,15 @@ class AITutorDialogController:
                 status_parts.append(f"RAG errors: {rag_errors[0][:72]}")
             if auto_model_note:
                 status_parts.append(auto_model_note)
+            if failover_note:
+                status_parts.append(failover_note)
             status_label.set_text(" • ".join(status_parts))
             _set_running(True)
             _render_transcript(force_scroll=True)
 
             def _worker():
+                nonlocal model_name
+
                 def _on_chunk(piece: str) -> None:
                     def _apply_chunk():
                         if int(run_state.get("job_id", 0) or 0) != job_id:
@@ -1959,18 +2103,55 @@ class AITutorDialogController:
                             cancel_event.set()
                             _request_stream_stop_once()
                         run_state["draft_assistant"] = draft
+                        run_state["stream_last_chunk_at"] = float(time.monotonic())
                         _schedule_stream_render(force_scroll=False)
                         return False
 
                     GLib.idle_add(_apply_chunk)
 
-                guard_state["generation_started_at"] = float(time.monotonic())
-                text, err = app._ollama_generate_text_stream(
-                    model_name,
-                    full_prompt,
-                    on_chunk=_on_chunk,
-                    cancel_check=_cancel_check,
-                )
+                text = ""
+                err: str | None = None
+                failover_count = 0
+                for idx, candidate_model in enumerate(model_candidates):
+                    candidate_name = str(candidate_model or "").strip()
+                    if not candidate_name:
+                        continue
+                    model_name = candidate_name
+                    run_state["model"] = candidate_name
+                    guard_state["generation_started_at"] = float(time.monotonic())
+                    guard_state["stream_started_at"] = 0.0
+                    guard_state["first_token_ms"] = 0
+                    text, err = app._ollama_generate_text_stream(
+                        candidate_name,
+                        full_prompt,
+                        on_chunk=_on_chunk,
+                        cancel_check=_cancel_check,
+                    )
+                    if not err or err == "cancelled":
+                        break
+                    partial_text = str(text or "").strip()
+                    draft_text = str(run_state.get("draft_assistant", "") or "").strip()
+                    if partial_text or draft_text:
+                        break
+                    if idx >= (len(model_candidates) - 1):
+                        break
+                    next_model = str(model_candidates[idx + 1] or "").strip()
+                    if not next_model:
+                        continue
+                    failover_count += 1
+
+                    def _notify_failover(failed_model: str, retry_model: str) -> bool:
+                        if int(run_state.get("job_id", 0) or 0) != job_id:
+                            return False
+                        if not bool(run_state.get("active", False)):
+                            return False
+                        status_label.set_text(
+                            f"Model {failed_model} failed, retrying with {retry_model}..."
+                        )
+                        return False
+
+                    GLib.idle_add(_notify_failover, candidate_name, next_model)
+                guard_state["failover_count"] = int(failover_count)
 
                 def _finish():
                     if int(run_state.get("job_id", 0) or 0) != job_id:
@@ -2113,6 +2294,17 @@ class AITutorDialogController:
                     GLib.source_remove(autopilot_tick_id)
                 except Exception:
                     pass
+            stream_watchdog_id = int(run_state.get("stream_watchdog_id", 0) or 0)
+            if stream_watchdog_id:
+                try:
+                    GLib.source_remove(stream_watchdog_id)
+                except Exception:
+                    pass
+            run_state["stream_watchdog_id"] = 0
+            try:
+                app._ai_tutor_dialog_open = False
+            except Exception:
+                pass
             _persist_history()
             d.destroy()
 

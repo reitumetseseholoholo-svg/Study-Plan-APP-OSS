@@ -45,6 +45,30 @@ def test_constructor_sets_today_and_initial_structures(monkeypatch):
     assert eng.pomodoro_log.get("by_chapter") == {}
 
 
+def test_cleanup_joblib_loky_runtime_is_idempotent(monkeypatch):
+    calls = {"count": 0, "kwargs": []}
+
+    class _Executor:
+        def shutdown(self, **kwargs):
+            calls["count"] += 1
+            calls["kwargs"].append(dict(kwargs))
+
+    fake_module = types.SimpleNamespace(get_reusable_executor=lambda: _Executor())
+    monkeypatch.setitem(sys.modules, "joblib.externals.loky.reusable_executor", fake_module)
+
+    original_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_DONE", False))
+    try:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = False
+        StudyPlanEngine._cleanup_joblib_loky_runtime()
+        StudyPlanEngine._cleanup_joblib_loky_runtime()
+    finally:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = original_done
+
+    assert calls["count"] == 1
+    assert calls["kwargs"]
+    assert calls["kwargs"][0].get("wait") is True
+
+
 def test_competence_initialization_covers_all_chapters(engine_no_io):
     eng = engine_no_io
     assert set(eng.competence.keys()) == set(StudyPlanEngine.CHAPTERS)

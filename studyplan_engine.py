@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import atexit
 import datetime
 import re
 import json
@@ -78,6 +79,8 @@ class StudyPlanEngine:
     _SEMANTIC_SHARED_RERANKERS: Dict[str, Any] = {}
     _SEMANTIC_SHARED_MODEL_LOCK = threading.Lock()
     _SEMANTIC_SHARED_RERANK_LOCK = threading.Lock()
+    _LOKY_CLEANUP_REGISTERED = False
+    _LOKY_CLEANUP_DONE = False
     CHAPTERS = [
         "FM Function",
         "FM Environment",
@@ -2508,6 +2511,12 @@ class StudyPlanEngine:
         self.module_id = self._sanitize_module_id(module_id or "acca_f9")
         self.module_title = str(module_title or "ACCA F9")
         self._init_module_defaults()
+        if not bool(self.__class__._LOKY_CLEANUP_REGISTERED):
+            try:
+                atexit.register(self.__class__._cleanup_joblib_loky_runtime)
+                self.__class__._LOKY_CLEANUP_REGISTERED = True
+            except Exception:
+                pass
         self.target_total_hours = 180
         self.importance_weights = {
             "Investment Decisions": 40,
@@ -2759,6 +2768,48 @@ class StudyPlanEngine:
 
         # Quick test that all required methods exist (call it here)
         self.test_methods()
+
+    @classmethod
+    def _cleanup_joblib_loky_runtime(cls) -> None:
+        if bool(cls._LOKY_CLEANUP_DONE):
+            return
+        cls._LOKY_CLEANUP_DONE = True
+        get_reusable_executor = None
+        try:
+            from joblib.externals.loky.reusable_executor import get_reusable_executor as _get_reusable_executor  # type: ignore
+            get_reusable_executor = _get_reusable_executor
+        except Exception:
+            try:
+                from loky.reusable_executor import get_reusable_executor as _get_reusable_executor  # type: ignore
+                get_reusable_executor = _get_reusable_executor
+            except Exception:
+                get_reusable_executor = None
+        if not callable(get_reusable_executor):
+            return
+        try:
+            executor = get_reusable_executor()
+        except Exception:
+            executor = None
+        if executor is None:
+            return
+        executor_any = cast(Any, executor)
+        # Handle joblib/loky signature differences across versions.
+        for kwargs in (
+            {"wait": True, "kill_workers": True},
+            {"wait": True},
+            {"kill_workers": True},
+            {},
+        ):
+            try:
+                executor_any.shutdown(**kwargs)
+                break
+            except TypeError:
+                continue
+            except Exception:
+                break
+
+    def shutdown_runtime(self) -> None:
+        self.__class__._cleanup_joblib_loky_runtime()
 
     def _parse_date(self, value):
         """Parse a date from iso string/datetime/date; return date or None."""

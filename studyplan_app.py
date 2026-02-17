@@ -5,18 +5,48 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Gtk, GLib, Gdk, Gio, Pango  # type: ignore[reportAttributeAccessIssue,import-untyped]
 from studyplan_engine import StudyPlanEngine
 from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
-from studyplan_theme import apply_theme
+from studyplan_theme import apply_theme, set_theme_runtime_options
 from studyplan_ai_tutor import (
     AITutorDialogController,
+    AI_TUTOR_MAX_RESPONSE_CHARS,
+    AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS,
+    AI_TUTOR_STREAM_STALL_MS,
+    AI_TUTOR_STREAM_WATCHDOG_INTERVAL_MS,
+    AI_TUTOR_PROMPT_CONTRACT_VERSION,
+    assess_tutor_coverage,
+    assemble_ai_tutor_turn_prompt,
     build_rag_context_block,
+    build_ai_tutor_context_prompt_details,
     build_ai_tutor_context_prompt,
+    build_tutor_coverage_checklist_note,
     build_ai_tutor_seed_prompt,
     build_targeted_rag_queries,
     chunk_text_for_rag,
     clean_ai_tutor_text,
+    compute_tutor_control_state,
     format_ai_tutor_transcript,
+    normalize_tutor_timeout_seconds,
     lexical_rank_rag_chunks,
+    should_force_stream_flush,
+    should_keep_response_bottom,
     classify_ollama_error,
+)
+from studyplan_ui_runtime import (
+    UISectionState,
+    UIRenderContext,
+    UIActionIntent,
+    UIFaultReport,
+    CoachPanelVM,
+    StudyRoomVM,
+    DashboardVM,
+    PreferencesVM,
+    UIRefreshScheduler,
+    UIDialogLifecycle,
+    CoachPanelController,
+    StudyRoomController,
+    PomodoroPanelController,
+    DashboardController,
+    PreferencesController,
 )
 
 
@@ -195,6 +225,7 @@ AI_TUTOR_LATENCY_SLO_SPREAD_RATIO = 2.4
 AI_TUTOR_LATENCY_SLO_MIN_SAMPLES = 8
 AI_TUTOR_MODEL_SWITCH_SCORE_MARGIN = 0.05
 AI_TUTOR_MODEL_SWITCH_COOLDOWN_SECONDS = 300
+AI_TUTOR_MODEL_FAILOVER_MAX = 3
 MAX_IMPORT_PDF_BYTES = 120 * 1024 * 1024
 MAX_IMPORT_JSON_BYTES = 25 * 1024 * 1024
 MAX_IMPORT_SNAPSHOT_BYTES = 50 * 1024 * 1024
@@ -210,6 +241,8 @@ AI_TUTOR_DEFAULT_NUDGE_POLICY = "moderate"
 AI_TUTOR_AUTOPILOT_TICK_DEFAULT_SECONDS = 45
 AI_TUTOR_AUTOPILOT_TICK_MIN_SECONDS = 15
 AI_TUTOR_AUTOPILOT_TICK_MAX_SECONDS = 180
+AI_TUTOR_AUTOPILOT_DECISION_REFRESH_SECONDS = 300
+AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS = 180
 AI_TUTOR_AUTOPILOT_ACTION_COOLDOWN_SECONDS = 20
 AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW = 6
 AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS = 600
@@ -223,8 +256,15 @@ AI_TUTOR_ALLOWED_ACTIONS = (
     "timer_pause",
     "timer_resume",
     "timer_stop",
+    "tutor_open",
+    "coach_open",
     "quiz_start",
+    "quick_quiz_start",
     "drill_start",
+    "weak_drill_start",
+    "leitner_drill_start",
+    "error_drill_start",
+    "leech_drill_start",
     "review_start",
     "interleave_start",
     "coach_next",
@@ -234,6 +274,8 @@ AI_TUTOR_SAFE_AUTONOMOUS_ACTIONS = {
     "focus_start",
     "timer_pause",
     "timer_resume",
+    "tutor_open",
+    "coach_open",
     "coach_next",
 }
 AI_TUTOR_GAP_GENERATION_MIN_QUESTIONS = 1
@@ -284,6 +326,25 @@ SMOKE_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
     "coach_next_burst_integrity_rate": {"op": "==", "value": 1.0},
     "ui_trigger_integrity_rate": {"op": "==", "value": 1.0},
 }
+UI_DENSITY_MODES = ("progressive",)
+DEFAULT_UI_DENSITY_MODE = "progressive"
+UI_LEGACY_MODE_ALLOWED = str(os.environ.get("STUDYPLAN_UI_LEGACY_ALLOWED", "0") or "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+UI_MODERN_HARD_LOCK = not bool(UI_LEGACY_MODE_ALLOWED)
+DEFAULT_UI_MODERN_ENABLED = True if UI_MODERN_HARD_LOCK else (
+    str(os.environ.get("STUDYPLAN_UI_MODERN_ENABLED", "1") or "1").strip().lower() in {"1", "true", "yes", "on"}
+)
+DEFAULT_UI_REDUCE_MOTION = str(os.environ.get("STUDYPLAN_UI_REDUCE_MOTION", "0") or "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+DEFAULT_UI_LEGACY_FALLBACK_ENABLED = False if UI_MODERN_HARD_LOCK else True
 
 
 def _merge_gap_and_srs_indices(gap_indices: list[int], srs_indices: list[int], total: int) -> list[int]:
@@ -821,6 +882,12 @@ class AppMessageDialog:
             except Exception:
                 pass
 
+set_theme_runtime_options(
+    modern_enabled=bool(DEFAULT_UI_MODERN_ENABLED),
+    density_mode=str(DEFAULT_UI_DENSITY_MODE),
+    reduce_motion=bool(DEFAULT_UI_REDUCE_MOTION),
+    legacy_fallback_enabled=bool(DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
+)
 apply_theme(True)
 
 
@@ -845,6 +912,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.level = 1
         self.achievements = set()
         self.use_system_theme = True
+        self.ui_modern_enabled = bool(DEFAULT_UI_MODERN_ENABLED)
+        self.ui_density_mode = str(DEFAULT_UI_DENSITY_MODE)
+        self.ui_reduce_motion = bool(DEFAULT_UI_REDUCE_MOTION)
+        self.ui_legacy_fallback_enabled = bool(DEFAULT_UI_LEGACY_FALLBACK_ENABLED)
         self.coach_only_view = False
         self.sticky_coach_pick = True
         self.adaptive_quiz_prioritization = True
@@ -999,6 +1070,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.ai_tutor_gap_autosave_enabled = True
         self.ai_tutor_gap_autosave_strict_gate = True
         self.ai_tutor_autopilot_tick_seconds = int(AI_TUTOR_AUTOPILOT_TICK_DEFAULT_SECONDS)
+        self._ai_tutor_global_autopilot_id = 0
+        self._ai_tutor_global_autopilot_busy = False
+        self._ai_tutor_global_autopilot_last_action_at = 0.0
+        self._ai_tutor_global_autopilot_action_window: list[float] = []
+        self._ai_tutor_global_autopilot_last_nudge_at = 0.0
+        self._ai_tutor_global_autopilot_last_nudge_key = ""
+        self._ai_tutor_global_last_event_sig = ""
+        self._ai_tutor_global_last_decision_at = 0.0
+        self._ai_tutor_global_quiet_until = 0.0
+        self._ai_tutor_dialog_open = False
         self._ai_tutor_autopilot_stats: dict[str, Any] = {
             "autopilot_mode": str(AI_TUTOR_DEFAULT_AUTONOMY_MODE),
             "autopilot_decision_count": 0,
@@ -1051,8 +1132,73 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "token_est_cache_hit": 0,
             "model_stats_persisted": 0,
         }
+        self._ui_dialog_lifecycle = UIDialogLifecycle()
+        self._ui_refresh_scheduler = UIRefreshScheduler(
+            schedule_timeout_fn=lambda delay_ms, cb: int(GLib.timeout_add(max(1, int(delay_ms)), cb) or 0),
+            schedule_idle_fn=lambda cb: int(GLib.idle_add(cb) or 0),
+            cancel_fn=lambda source_id: GLib.source_remove(int(source_id)),
+        )
+        self._ui_controllers: dict[str, Any] = {
+            "coach_panel": CoachPanelController(),
+            "study_room": StudyRoomController(),
+            "pomodoro_panel": PomodoroPanelController(),
+            "dashboard": DashboardController(),
+            "preferences": PreferencesController(),
+        }
+        self._ui_last_fault: UIFaultReport | None = None
+        self._ui_last_render_context: UIRenderContext | None = None
+        self._ui_last_action_intent: UIActionIntent | None = None
+        self._force_preferences_dialog_open = False
+        self.workbench_shell: Gtk.Box | None = None
+        self.workbench_stack: Gtk.Stack | None = None
+        self.workbench_switcher: Gtk.StackSwitcher | None = None
+        self.workbench_status_label: Gtk.Label | None = None
+        self._workbench_page_names: set[str] = set()
+        self._workbench_aliases: dict[str, str] = {
+            "dashboard": "dashboard",
+            "tutor": "tutor",
+            "coach": "coach",
+            "insights": "insights",
+            "debug": "insights",
+            "settings": "settings",
+            "preferences": "settings",
+        }
+        self._tutor_workspace_status_label: Gtk.Label | None = None
+        self._tutor_workspace_summary_label: Gtk.Label | None = None
+        self._tutor_workspace_model_dropdown: Gtk.DropDown | None = None
+        self._tutor_workspace_prompt_view: Gtk.TextView | None = None
+        self._tutor_workspace_prompt_count_label: Gtk.Label | None = None
+        self._tutor_workspace_response_view: Gtk.TextView | None = None
+        self._tutor_workspace_response_scroll: Gtk.ScrolledWindow | None = None
+        self._tutor_workspace_send_btn: Gtk.Button | None = None
+        self._tutor_workspace_stop_btn: Gtk.Button | None = None
+        self._tutor_workspace_new_chat_btn: Gtk.Button | None = None
+        self._tutor_workspace_clear_prompt_btn: Gtk.Button | None = None
+        self._tutor_workspace_copy_btn: Gtk.Button | None = None
+        self._tutor_workspace_copy_last_btn: Gtk.Button | None = None
+        self._tutor_workspace_follow_btn: Gtk.Button | None = None
+        self._tutor_workspace_jump_btn: Gtk.Button | None = None
+        self._tutor_workspace_cockpit_label: Gtk.Label | None = None
+        self._tutor_workspace_state: dict[str, Any] = {}
+        self._coach_workspace_status_label: Gtk.Label | None = None
+        self._coach_workspace_model_label: Gtk.Label | None = None
+        self._coach_workspace_view: Gtk.TextView | None = None
+        self._coach_workspace_apply_btn: Gtk.Button | None = None
+        self._coach_workspace_generate_btn: Gtk.Button | None = None
+        self._coach_workspace_state: dict[str, Any] = {"active": False, "job_id": 0, "recommendation": None}
+        self._insights_workspace_status_label: Gtk.Label | None = None
+        self._insights_workspace_view: Gtk.TextView | None = None
+        self._settings_workspace_status_label: Gtk.Label | None = None
+        self._settings_workspace_llm_enabled_toggle: Gtk.CheckButton | None = None
+        self._settings_workspace_semantic_toggle: Gtk.CheckButton | None = None
+        self._settings_workspace_autopilot_toggle: Gtk.CheckButton | None = None
+        self._settings_workspace_notifications_toggle: Gtk.CheckButton | None = None
+        self._settings_workspace_auto_select_toggle: Gtk.CheckButton | None = None
+        self._settings_workspace_modern_toggle: Gtk.CheckButton | None = None
+        self._settings_workspace_reduce_motion_toggle: Gtk.CheckButton | None = None
+        self._settings_workspace_mode_dropdown: Gtk.DropDown | None = None
         self.load_preferences()
-        apply_theme(bool(self.use_system_theme))
+        self._refresh_ui_style_runtime()
 
         self.exam_date = exam_date
         self.last_study_date = None
@@ -1752,7 +1898,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.dashboard.set_hexpand(True)
         self.dashboard.set_vexpand(True)
         dash_scroll.set_child(self.dashboard)
-        hbox.append(dash_scroll)
+        self.workbench_shell = self._build_workbench_shell(dash_scroll)
+        hbox.append(self.workbench_shell)
         self.dash_scroll = dash_scroll
 
         self.update_exam_date_display()
@@ -1762,6 +1909,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         GLib.idle_add(self._maybe_show_first_run)
         GLib.timeout_add(30_000, self._auto_train_ml_tick)
         GLib.timeout_add(4_000, self._semantic_warmup_tick)
+        self._restart_ai_tutor_global_autopilot_timer()
 
         # Autosave on close
         self.connect("close-request", self.on_close_request)
@@ -1946,6 +2094,2110 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         menubar.set_visible(self.menu_bar_visible)
         return menubar
 
+    def _build_workbench_shell(self, dashboard_scroll: Gtk.ScrolledWindow) -> Gtk.Box:
+        shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        shell.add_css_class("panel")
+        shell.add_css_class("panel-right")
+        shell.add_css_class("workbench-shell")
+        shell.set_hexpand(True)
+        shell.set_vexpand(True)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        header.add_css_class("workbench-header")
+        header.set_hexpand(True)
+        header.set_halign(Gtk.Align.FILL)
+
+        title = Gtk.Label(label="Workspace")
+        title.set_halign(Gtk.Align.START)
+        title.add_css_class("section-title")
+        title.add_css_class("workbench-title")
+        header.append(title)
+
+        switcher = Gtk.StackSwitcher()
+        switcher.add_css_class("workspace-tabs")
+        switcher.set_halign(Gtk.Align.START)
+        switcher.set_hexpand(True)
+        header.append(switcher)
+
+        quick_actions_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        quick_actions_row.add_css_class("inline-toolbar")
+        quick_actions_row.add_css_class("workbench-quick-actions")
+
+        def _run_quick_action(action: Callable[[], Any]) -> None:
+            try:
+                action()
+            except Exception:
+                pass
+            self._refresh_workbench_shell_status()
+
+        quick_actions: list[tuple[str, Callable[[], Any], str, bool]] = [
+            ("Focus 25m", lambda: self.on_focus_now(None), "Start a 25-minute focus block.", True),
+            ("Quiz 8", lambda: self.on_quick_quiz(None), "Start a quick quiz session.", False),
+            ("Review Due", lambda: self.on_clear_must_review(None), "Run due-review cleanup/apply action.", False),
+            ("Coach Next", lambda: self.on_do_coach_next(None), "Apply the next coach action.", False),
+            ("Tutor", lambda: self._open_workspace_tab("tutor", present=False), "Open Tutor workspace.", False),
+            ("Coach", lambda: self._open_workspace_tab("coach", present=False), "Open Coach workspace.", False),
+            ("Insights", lambda: self._open_workspace_tab("insights", present=False), "Open Insights workspace.", False),
+        ]
+        for label_text, callback, tooltip, primary in quick_actions:
+            btn = Gtk.Button(label=label_text)
+            if primary:
+                btn.add_css_class("suggested-action")
+            else:
+                btn.add_css_class("flat")
+            btn.set_tooltip_text(tooltip)
+            btn.connect("clicked", lambda *_args, cb=callback: _run_quick_action(cb))
+            quick_actions_row.append(btn)
+
+        quick_actions_scroll = Gtk.ScrolledWindow()
+        quick_actions_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        quick_actions_scroll.set_hexpand(True)
+        quick_actions_scroll.set_min_content_height(40)
+        quick_actions_scroll.add_css_class("workbench-quick-scroll")
+        quick_actions_scroll.set_child(quick_actions_row)
+
+        status_label = Gtk.Label(label="")
+        status_label.set_halign(Gtk.Align.START)
+        status_label.set_wrap(True)
+        status_label.add_css_class("muted")
+        status_label.add_css_class("workbench-status")
+        self.workbench_status_label = status_label
+
+        stack = Gtk.Stack()
+        stack.set_hexpand(True)
+        stack.set_vexpand(True)
+        stack.set_hhomogeneous(False)
+        stack.set_vhomogeneous(False)
+        stack.add_css_class("workbench-stack")
+        if bool(getattr(self, "ui_reduce_motion", False)):
+            stack.set_transition_type(Gtk.StackTransitionType.NONE)
+            stack.set_transition_duration(0)
+        else:
+            stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+            stack.set_transition_duration(140)
+        switcher.set_stack(stack)
+        self.workbench_switcher = switcher
+        self.workbench_stack = stack
+
+        for css_class in ("panel", "panel-right", "panel-scroll"):
+            try:
+                dashboard_scroll.remove_css_class(css_class)
+            except Exception:
+                pass
+        dashboard_scroll.add_css_class("workbench-page")
+        dashboard_scroll.add_css_class("dashboard-workbench-page")
+        try:
+            self.dashboard.add_css_class("dashboard-workbench-panel")
+        except Exception:
+            pass
+        stack.add_titled(dashboard_scroll, "dashboard", "Dashboard")
+        self._workbench_page_names.add("dashboard")
+
+        tutor_page = self._build_tutor_workspace_page()
+        stack.add_titled(tutor_page, "tutor", "Tutor")
+        self._workbench_page_names.add("tutor")
+
+        coach_page = self._build_coach_workspace_page()
+        stack.add_titled(coach_page, "coach", "Coach")
+        self._workbench_page_names.add("coach")
+
+        insights_page = self._build_insights_workspace_page()
+        stack.add_titled(insights_page, "insights", "Insights")
+        self._workbench_page_names.add("insights")
+
+        settings_page = self._build_settings_workspace_page()
+        stack.add_titled(settings_page, "settings", "Settings")
+        self._workbench_page_names.add("settings")
+
+        stack.connect("notify::visible-child-name", self._on_workbench_visible_page_changed)
+        stack.set_visible_child_name("dashboard")
+
+        shell.append(header)
+        shell.append(quick_actions_scroll)
+        shell.append(status_label)
+        shell.append(stack)
+        self._refresh_workbench_shell_status()
+        return shell
+
+    def _on_workbench_visible_page_changed(self, _stack: Gtk.Stack, _pspec: Any) -> None:
+        page = ""
+        try:
+            current_stack = getattr(self, "workbench_stack", None)
+            if current_stack is not None:
+                page = str(current_stack.get_visible_child_name() or "")
+        except Exception:
+            page = ""
+        self._refresh_workbench_page(page)
+
+    def _refresh_workbench_shell_status(self) -> None:
+        label = getattr(self, "workbench_status_label", None)
+        if label is None:
+            return
+        page_key = ""
+        try:
+            stack = getattr(self, "workbench_stack", None)
+            if stack is not None:
+                page_key = str(stack.get_visible_child_name() or "").strip().lower()
+        except Exception:
+            page_key = ""
+        page_map = {
+            "dashboard": "Dashboard",
+            "tutor": "Tutor",
+            "coach": "Coach",
+            "insights": "Insights",
+            "settings": "Settings",
+        }
+        page_title = str(page_map.get(page_key, "Workspace"))
+        topic = str(getattr(self, "current_topic", "") or "").strip() or "No active topic"
+        llm_enabled = bool(getattr(self, "local_llm_enabled", False))
+        model_name = str(getattr(self, "local_llm_model", "") or "").strip()
+        if not llm_enabled:
+            model_label = "Local AI disabled"
+        elif model_name:
+            model_label = model_name
+        else:
+            model_label = "Auto-select"
+        autopilot_enabled = bool(getattr(self, "ai_tutor_autopilot_enabled", True))
+        autopilot_mode = self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", "assist"))
+        semantic_enabled = bool(getattr(self, "semantic_enabled", False))
+        status_text = (
+            f"{page_title} • Topic: {topic} • Model: {model_label} • "
+            f"Tutor autopilot: {'on' if autopilot_enabled else 'off'} ({autopilot_mode}) • "
+            f"Semantic: {'on' if semantic_enabled else 'off'}"
+        )
+        self._set_label_text_if_changed(label, status_text)
+
+    def _refresh_workbench_page(self, page: str) -> None:
+        key = str(page or "").strip().lower()
+        if key == "tutor":
+            self._refresh_tutor_workspace_page()
+        elif key == "coach":
+            self._refresh_coach_workspace_page()
+        elif key == "insights":
+            self._refresh_insights_workspace_page()
+        elif key == "settings":
+            self._refresh_settings_workspace_page()
+        self._refresh_workbench_shell_status()
+
+    def _open_workspace_tab(self, page: str, *, present: bool = True) -> bool:
+        stack = getattr(self, "workbench_stack", None)
+        if stack is None:
+            return False
+        alias = str(page or "").strip().lower()
+        if not alias:
+            return False
+        target = str(getattr(self, "_workbench_aliases", {}).get(alias, alias) or "").strip().lower()
+        if target not in set(getattr(self, "_workbench_page_names", set()) or set()):
+            return False
+        try:
+            stack.set_visible_child_name(target)
+        except Exception:
+            return False
+        self._refresh_workbench_page(target)
+        if present:
+            try:
+                self.present()
+            except Exception:
+                pass
+        return True
+
+    def _build_tutor_workspace_page(self) -> Gtk.Widget:
+        page_scroll = Gtk.ScrolledWindow()
+        page_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page_scroll.set_hexpand(True)
+        page_scroll.set_vexpand(True)
+        page_scroll.add_css_class("workbench-page")
+
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        page_box.add_css_class("card")
+        page_box.add_css_class("workbench-page-card")
+        page_box.add_css_class("tutor-workbench")
+        page_box.set_margin_top(6)
+        page_box.set_margin_bottom(6)
+        page_box.set_margin_start(6)
+        page_box.set_margin_end(6)
+        page_scroll.set_child(page_box)
+
+        title = Gtk.Label(label="AI Tutor Cockpit")
+        title.set_halign(Gtk.Align.START)
+        title.add_css_class("section-title")
+        title.add_css_class("workbench-heading")
+        subtitle = Gtk.Label(
+            label=(
+                "Run a full in-app tutor conversation with local Ollama models. "
+                "This workspace is optimized for professional exam-prep flow."
+            )
+        )
+        subtitle.set_halign(Gtk.Align.START)
+        subtitle.set_wrap(True)
+        subtitle.add_css_class("muted")
+        page_box.append(title)
+        page_box.append(subtitle)
+
+        host_label = Gtk.Label(label=f"Host: {self._normalize_ollama_host()}")
+        host_label.set_halign(Gtk.Align.START)
+        host_label.add_css_class("muted")
+        page_box.append(host_label)
+
+        cockpit_label = Gtk.Label(label="Tutor cockpit: initializing")
+        cockpit_label.set_halign(Gtk.Align.START)
+        cockpit_label.set_wrap(True)
+        cockpit_label.add_css_class("muted")
+        cockpit_label.add_css_class("tutor-cockpit-line")
+        self._tutor_workspace_cockpit_label = cockpit_label
+        page_box.append(cockpit_label)
+
+        model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        model_row.add_css_class("inline-toolbar")
+        model_label = Gtk.Label(label="Model")
+        model_label.set_halign(Gtk.Align.START)
+        model_label.set_size_request(70, -1)
+        model_dropdown = Gtk.DropDown.new(Gtk.StringList.new(["Loading models…"]), None)
+        model_dropdown.set_hexpand(True)
+        model_dropdown.add_css_class("topic-selector")
+        self._tutor_workspace_model_dropdown = model_dropdown
+        refresh_btn = Gtk.Button(label="Refresh")
+        popout_btn = Gtk.Button(label="Popout")
+        popout_btn.set_tooltip_text("Open tutor in separate dialog.")
+        popout_btn.connect("clicked", lambda *_: self._open_ai_tutor_dialog())
+        model_row.append(model_label)
+        model_row.append(model_dropdown)
+        model_row.append(refresh_btn)
+        model_row.append(popout_btn)
+        page_box.append(model_row)
+
+        prompt_label = Gtk.Label(label="Prompt")
+        prompt_label.set_halign(Gtk.Align.START)
+        prompt_label.add_css_class("section-title")
+        page_box.append(prompt_label)
+
+        prompt_meta_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        prompt_meta_row.add_css_class("inline-toolbar")
+        prompt_hint = Gtk.Label(label="Ctrl+Enter to send.")
+        prompt_hint.set_halign(Gtk.Align.START)
+        prompt_hint.add_css_class("muted")
+        prompt_hint.set_hexpand(True)
+        prompt_count_label = Gtk.Label(label="0 chars")
+        prompt_count_label.set_halign(Gtk.Align.END)
+        prompt_count_label.add_css_class("muted")
+        self._tutor_workspace_prompt_count_label = prompt_count_label
+        prompt_meta_row.append(prompt_hint)
+        prompt_meta_row.append(prompt_count_label)
+        page_box.append(prompt_meta_row)
+
+        quick_prompts_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        quick_prompts_box.add_css_class("inline-toolbar")
+        quick_prompts_label = Gtk.Label(label="Quick prompts")
+        quick_prompts_label.set_halign(Gtk.Align.START)
+        quick_prompts_label.add_css_class("muted")
+        quick_prompts_box.append(quick_prompts_label)
+        quick_prompt_templates: list[tuple[str, str]] = [
+            ("Explain topic", "Explain '{topic}' for {module} in exam-focused terms."),
+            ("Drill 5", "Write a 5-question drill on '{topic}' with short answers."),
+            ("Formula sheet", "List the must-know formulas for '{topic}' and when to use each."),
+            ("Exam pitfalls", "Give common exam pitfalls for '{topic}' and how to avoid them."),
+        ]
+        quick_prompt_buttons: list[tuple[Gtk.Button, str]] = []
+        for label, template in quick_prompt_templates:
+            btn = Gtk.Button(label=label)
+            btn.add_css_class("flat")
+            btn.set_tooltip_text(template.replace("{topic}", "current topic").replace("{module}", "module"))
+            quick_prompts_box.append(btn)
+            quick_prompt_buttons.append((btn, template))
+        quick_prompt_scroll = Gtk.ScrolledWindow()
+        quick_prompt_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        quick_prompt_scroll.set_min_content_height(42)
+        quick_prompt_scroll.set_child(quick_prompts_box)
+        page_box.append(quick_prompt_scroll)
+
+        prompt_scroller = Gtk.ScrolledWindow()
+        prompt_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        prompt_scroller.set_min_content_height(130)
+        prompt_scroller.add_css_class("tutor-prompt-scroll")
+        prompt_view = Gtk.TextView()
+        prompt_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        prompt_view.add_css_class("tutor-prompt-view")
+        prompt_buf = prompt_view.get_buffer()
+        prompt_buf.set_text(
+            build_ai_tutor_seed_prompt(
+                topic=str(getattr(self, "current_topic", "") or "").strip(),
+                module_title=str(getattr(self, "module_title", "ACCA") or "ACCA").strip(),
+            )
+        )
+        prompt_scroller.set_child(prompt_view)
+        self._tutor_workspace_prompt_view = prompt_view
+        page_box.append(prompt_scroller)
+
+        action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        action_row.add_css_class("inline-toolbar")
+        send_btn = Gtk.Button(label="Send")
+        send_btn.add_css_class("suggested-action")
+        stop_btn = Gtk.Button(label="Stop")
+        stop_btn.set_sensitive(False)
+        new_chat_btn = Gtk.Button(label="New chat")
+        clear_prompt_btn = Gtk.Button(label="Clear prompt")
+        copy_btn = Gtk.Button(label="Copy chat")
+        copy_btn.set_sensitive(False)
+        copy_last_btn = Gtk.Button(label="Copy last")
+        copy_last_btn.set_sensitive(False)
+        jump_btn = Gtk.Button(label="Jump latest")
+        jump_btn.set_sensitive(False)
+        follow_btn = Gtk.Button(label="Following live")
+        follow_btn.add_css_class("flat")
+        follow_btn.set_sensitive(False)
+        for btn in (
+            send_btn,
+            stop_btn,
+            new_chat_btn,
+            clear_prompt_btn,
+            copy_btn,
+            copy_last_btn,
+            jump_btn,
+            follow_btn,
+        ):
+            action_row.append(btn)
+        action_scroller = Gtk.ScrolledWindow()
+        action_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        action_scroller.set_min_content_height(42)
+        action_scroller.set_child(action_row)
+        page_box.append(action_scroller)
+        self._tutor_workspace_send_btn = send_btn
+        self._tutor_workspace_stop_btn = stop_btn
+        self._tutor_workspace_new_chat_btn = new_chat_btn
+        self._tutor_workspace_clear_prompt_btn = clear_prompt_btn
+        self._tutor_workspace_copy_btn = copy_btn
+        self._tutor_workspace_copy_last_btn = copy_last_btn
+        self._tutor_workspace_follow_btn = follow_btn
+        self._tutor_workspace_jump_btn = jump_btn
+
+        status_label = Gtk.Label(label="")
+        status_label.set_halign(Gtk.Align.START)
+        status_label.set_wrap(True)
+        status_label.add_css_class("muted")
+        status_label.add_css_class("tutor-status-line")
+        self._tutor_workspace_status_label = status_label
+        page_box.append(status_label)
+
+        response_label = Gtk.Label(label="Tutor Response")
+        response_label.set_halign(Gtk.Align.START)
+        response_label.add_css_class("section-title")
+        page_box.append(response_label)
+
+        response_scroller = Gtk.ScrolledWindow()
+        response_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        response_scroller.set_min_content_height(320)
+        response_scroller.set_vexpand(True)
+        response_scroller.add_css_class("tutor-response-scroll")
+        response_view = Gtk.TextView()
+        response_view.set_editable(False)
+        response_view.set_cursor_visible(False)
+        response_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        response_view.add_css_class("tutor-response-view")
+        response_buf = response_view.get_buffer()
+        response_scroller.set_child(response_view)
+        self._tutor_workspace_response_scroll = response_scroller
+        self._tutor_workspace_response_view = response_view
+        page_box.append(response_scroller)
+
+        summary_label = Gtk.Label(label="Telemetry: waiting for tutor turns.")
+        summary_label.set_halign(Gtk.Align.START)
+        summary_label.set_wrap(True)
+        summary_label.add_css_class("muted")
+        summary_label.add_css_class("tutor-summary-line")
+        self._tutor_workspace_summary_label = summary_label
+        page_box.append(summary_label)
+
+        run_state: dict[str, Any] = {
+            "active": False,
+            "job_id": 0,
+            "cancel_event": None,
+            "model": "",
+            "draft_user": "",
+            "draft_assistant": "",
+            "stream_render_pending": False,
+            "stream_render_force": False,
+            "stream_last_clean_text": "",
+            "stream_label_inserted": False,
+            "stream_last_chunk_at": 0.0,
+            "stream_last_render_at": 0.0,
+            "stream_watchdog_last_force_at": 0.0,
+            "stream_watchdog_forced_flushes": 0,
+            "stream_watchdog_id": 0,
+            "model_poll_id": 0,
+            "models": [],
+            "model_poll_errors": 0,
+            "follow_live": True,
+            "follow_manual_override": False,
+            "ignore_scroll_event": False,
+            "refresh_runtime": None,
+            "refresh_status": None,
+            "set_running": None,
+        }
+        self._tutor_workspace_state = run_state
+
+        history: list[dict[str, str]] = []
+        for item in list(getattr(self, "_ai_tutor_history", []) or [])[-20:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "") or "").strip().lower()
+            text = str(item.get("content", "") or "").strip()
+            if role in ("user", "assistant") and text:
+                history.append({"role": role, "content": text[:8000]})
+
+        def _set_status(text: str) -> None:
+            self._set_label_text_if_changed(status_label, str(text or ""))
+
+        def _update_follow_button() -> None:
+            has_text = bool(history) or bool(run_state.get("active", False))
+            follow_live = bool(run_state.get("follow_live", True))
+            manual_override = bool(run_state.get("follow_manual_override", False))
+            follow_btn.set_sensitive(has_text)
+            if follow_live:
+                follow_btn.set_label("Following live")
+                follow_btn.remove_css_class("suggested-action")
+                follow_btn.add_css_class("flat")
+            else:
+                follow_btn.set_label("Follow paused" if manual_override else "Follow live")
+                follow_btn.remove_css_class("flat")
+                follow_btn.add_css_class("suggested-action")
+
+        def _response_tail_gap() -> float:
+            try:
+                adj = response_scroller.get_vadjustment()
+                if adj is None:
+                    return 0.0
+                value = float(adj.get_value() or 0.0)
+                upper = float(adj.get_upper() or 0.0)
+                page = float(adj.get_page_size() or 0.0)
+                return max(0.0, upper - page - value)
+            except Exception:
+                return 0.0
+
+        def _response_is_near_bottom(padding: float = 36.0) -> bool:
+            return _response_tail_gap() <= max(0.0, float(padding))
+
+        def _on_response_adjustment_changed(*_args) -> None:
+            if bool(run_state.get("ignore_scroll_event", False)):
+                return
+            gap = _response_tail_gap()
+            if gap > 72.0 and bool(run_state.get("follow_live", True)):
+                run_state["follow_live"] = False
+                run_state["follow_manual_override"] = False
+                _update_follow_button()
+            elif (
+                gap <= 24.0
+                and not bool(run_state.get("follow_live", True))
+                and not bool(run_state.get("follow_manual_override", False))
+            ):
+                run_state["follow_live"] = True
+                _update_follow_button()
+
+        def _scroll_response_end_deferred() -> None:
+            def _apply_scroll() -> bool:
+                try:
+                    adj = response_scroller.get_vadjustment()
+                    if adj is None:
+                        return False
+                    run_state["ignore_scroll_event"] = True
+                    upper = float(adj.get_upper() or 0.0)
+                    page = float(adj.get_page_size() or 0.0)
+                    adj.set_value(max(0.0, upper - page))
+                except Exception:
+                    pass
+                finally:
+                    run_state["ignore_scroll_event"] = False
+                return False
+
+            GLib.idle_add(_apply_scroll, priority=GLib.PRIORITY_LOW)
+
+        def _persist_history() -> None:
+            compact: list[dict[str, str]] = []
+            for item in list(history)[-20:]:
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role", "") or "").strip().lower()
+                text = str(item.get("content", "") or "").strip()
+                if role not in ("user", "assistant") or not text:
+                    continue
+                compact.append({"role": role, "content": text[:8000]})
+            self._ai_tutor_history = compact
+            self.save_preferences()
+
+        def _current_prompt_text(strip: bool = False) -> str:
+            try:
+                start, end = prompt_buf.get_bounds()
+                text = str(prompt_buf.get_text(start, end, True) or "")
+            except Exception:
+                text = ""
+            return text.strip() if strip else text
+
+        def _latest_assistant_answer() -> str:
+            for item in reversed(list(history)):
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role", "") or "").strip().lower()
+                if role != "assistant":
+                    continue
+                text = str(item.get("content", "") or "").strip()
+                if text:
+                    return clean_ai_tutor_text(text)
+            draft_assistant = str(run_state.get("draft_assistant", "") or "").strip()
+            if draft_assistant:
+                return clean_ai_tutor_text(draft_assistant)
+            return ""
+
+        def _turn_count() -> int:
+            return sum(
+                1
+                for msg in history
+                if isinstance(msg, dict) and str(msg.get("role", "")).strip().lower() == "assistant"
+            )
+
+        def _update_prompt_meta() -> None:
+            prompt_text = _current_prompt_text(strip=False)
+            char_count = len(prompt_text)
+            word_count = len([tok for tok in prompt_text.split() if tok.strip()])
+            prompt_count_label.set_text(f"{char_count} chars · {word_count} words")
+            if char_count > 2200:
+                prompt_count_label.add_css_class("status-warn")
+            else:
+                prompt_count_label.remove_css_class("status-warn")
+
+        def _render_transcript(force_scroll: bool = False) -> None:
+            should_keep_bottom = should_keep_response_bottom(
+                auto_scroll_enabled=bool(run_state.get("follow_live", True)),
+                force_scroll=bool(force_scroll),
+                near_bottom=_response_is_near_bottom(56.0 if bool(run_state.get("active", False)) else 28.0),
+            )
+            entries: list[dict[str, str]] = list(history)
+            if bool(run_state.get("active", False)):
+                draft_user = str(run_state.get("draft_user", "") or "").strip()
+                draft_assistant = str(run_state.get("draft_assistant", "") or "")
+                if draft_user:
+                    entries.append({"role": "user", "content": draft_user})
+                if draft_assistant.strip():
+                    entries.append({"role": "assistant", "content": draft_assistant})
+            text = format_ai_tutor_transcript(entries)
+            response_buf.set_text(text if text else "No conversation yet.")
+            run_state["stream_last_clean_text"] = clean_ai_tutor_text(str(run_state.get("draft_assistant", "") or ""))
+            run_state["stream_label_inserted"] = bool(run_state["stream_last_clean_text"])
+            run_state["stream_last_render_at"] = float(time.monotonic())
+            if should_keep_bottom and text:
+                _scroll_response_end_deferred()
+            _update_follow_button()
+
+        def _append_response_text(text: str) -> None:
+            piece = str(text or "")
+            if not piece:
+                return
+            try:
+                end_iter = response_buf.get_end_iter()
+                response_buf.insert(end_iter, piece)
+            except Exception:
+                _render_transcript(force_scroll=False)
+
+        def _response_buffer_text() -> str:
+            try:
+                start, end = response_buf.get_bounds()
+                return str(response_buf.get_text(start, end, True) or "")
+            except Exception:
+                return ""
+
+        def _append_stream_delta(force_scroll: bool = False) -> None:
+            if not bool(run_state.get("active", False)):
+                _render_transcript(force_scroll=force_scroll)
+                return
+            should_keep_bottom = should_keep_response_bottom(
+                auto_scroll_enabled=bool(run_state.get("follow_live", True)),
+                force_scroll=bool(force_scroll),
+                near_bottom=_response_is_near_bottom(56.0),
+            )
+            draft_assistant = str(run_state.get("draft_assistant", "") or "")
+            cleaned_full = clean_ai_tutor_text(draft_assistant)
+            prev_clean = str(run_state.get("stream_last_clean_text", "") or "")
+            if not cleaned_full:
+                run_state["stream_last_clean_text"] = ""
+                run_state["stream_label_inserted"] = False
+                if should_keep_bottom:
+                    _scroll_response_end_deferred()
+                return
+            if not bool(run_state.get("stream_label_inserted", False)):
+                existing_text = _response_buffer_text()
+                if not existing_text or existing_text.strip() == "No conversation yet.":
+                    response_buf.set_text("Tutor:\n")
+                else:
+                    _append_response_text("\n\nTutor:\n")
+                run_state["stream_label_inserted"] = True
+                prev_clean = ""
+            if cleaned_full.startswith(prev_clean):
+                delta = cleaned_full[len(prev_clean):]
+                if delta:
+                    _append_response_text(delta)
+            else:
+                _render_transcript(force_scroll=False)
+            run_state["stream_last_clean_text"] = cleaned_full
+            run_state["stream_last_render_at"] = float(time.monotonic())
+            if should_keep_bottom:
+                _scroll_response_end_deferred()
+            _update_follow_button()
+
+        def _schedule_stream_render(force_scroll: bool = False) -> None:
+            run_state["stream_render_force"] = bool(run_state.get("stream_render_force", False)) or bool(force_scroll)
+            if bool(run_state.get("stream_render_pending", False)):
+                return
+            run_state["stream_render_pending"] = True
+
+            def _apply_stream_render() -> bool:
+                run_state["stream_render_pending"] = False
+                force_flag = bool(run_state.get("stream_render_force", False))
+                run_state["stream_render_force"] = False
+                if bool(run_state.get("active", False)):
+                    _append_stream_delta(force_scroll=force_flag)
+                else:
+                    _render_transcript(force_scroll=force_flag)
+                return False
+
+            GLib.idle_add(_apply_stream_render, priority=GLib.PRIORITY_DEFAULT_IDLE)
+
+        def _ensure_stream_watchdog() -> None:
+            existing_id = int(run_state.get("stream_watchdog_id", 0) or 0)
+            if existing_id > 0:
+                return
+
+            def _watch_stream() -> bool:
+                if not bool(run_state.get("active", False)):
+                    run_state["stream_watchdog_id"] = 0
+                    return False
+                now_ts = float(time.monotonic())
+                if should_force_stream_flush(
+                    last_chunk_monotonic=float(run_state.get("stream_last_chunk_at", 0.0) or 0.0),
+                    last_render_monotonic=float(run_state.get("stream_last_render_at", 0.0) or 0.0),
+                    now_monotonic=now_ts,
+                    stall_ms=AI_TUTOR_STREAM_STALL_MS,
+                ):
+                    last_force = float(run_state.get("stream_watchdog_last_force_at", 0.0) or 0.0)
+                    if (now_ts - last_force) >= 0.25:
+                        run_state["stream_watchdog_last_force_at"] = now_ts
+                        run_state["stream_watchdog_forced_flushes"] = int(
+                            run_state.get("stream_watchdog_forced_flushes", 0) or 0
+                        ) + 1
+                        run_state["stream_render_pending"] = False
+                        run_state["stream_render_force"] = False
+                        try:
+                            _append_stream_delta(force_scroll=False)
+                        except Exception:
+                            _render_transcript(force_scroll=False)
+                        run_state["stream_last_render_at"] = float(time.monotonic())
+                return True
+
+            try:
+                watchdog_ms = max(120, min(2000, int(AI_TUTOR_STREAM_WATCHDOG_INTERVAL_MS)))
+            except Exception:
+                watchdog_ms = 240
+            run_state["stream_watchdog_id"] = int(GLib.timeout_add(watchdog_ms, _watch_stream) or 0)
+
+        def _selected_model_name() -> str:
+            try:
+                item = model_dropdown.get_selected_item()
+            except Exception:
+                item = None
+            if item is None:
+                return ""
+            text_val = ""
+            if hasattr(item, "get_string"):
+                try:
+                    text_val = str(item.get_string() or "")
+                except Exception:
+                    text_val = ""
+            if not text_val:
+                try:
+                    text_val = str(item)
+                except Exception:
+                    text_val = ""
+            text_val = text_val.strip()
+            if text_val.startswith("("):
+                return ""
+            return text_val
+
+        def _set_running(running: bool) -> None:
+            run_state["active"] = bool(running)
+            if not running:
+                run_state["stream_render_force"] = False
+                run_state["stream_render_pending"] = False
+                run_state["stream_last_clean_text"] = ""
+                run_state["stream_label_inserted"] = False
+                run_state["stream_last_chunk_at"] = 0.0
+                run_state["stream_last_render_at"] = 0.0
+                run_state["stream_watchdog_last_force_at"] = 0.0
+                stream_watchdog_id = int(run_state.get("stream_watchdog_id", 0) or 0)
+                if stream_watchdog_id > 0:
+                    try:
+                        GLib.source_remove(stream_watchdog_id)
+                    except Exception:
+                        pass
+                run_state["stream_watchdog_id"] = 0
+            else:
+                _ensure_stream_watchdog()
+            controls = compute_tutor_control_state(
+                running=bool(running),
+                model_ready=bool(_selected_model_name()),
+                llm_ready=bool(self.local_llm_enabled),
+                prompt_ready=bool(_current_prompt_text(strip=True)),
+                has_history=bool(history),
+                has_latest_answer=bool(_latest_assistant_answer()),
+                has_active_or_history=bool(history) or bool(run_state.get("active", False)),
+            )
+            send_btn.set_sensitive(bool(controls.get("send_enabled", False)))
+            stop_btn.set_sensitive(bool(controls.get("stop_enabled", False)))
+            new_chat_btn.set_sensitive(bool(controls.get("new_chat_enabled", False)))
+            clear_prompt_btn.set_sensitive(bool(controls.get("prompt_editable", False)))
+            refresh_btn.set_sensitive(bool(controls.get("refresh_models_enabled", False)))
+            model_dropdown.set_sensitive(bool(controls.get("model_dropdown_enabled", False)))
+            prompt_view.set_editable(bool(controls.get("prompt_editable", False)))
+            quick_prompts_enabled = bool(controls.get("quick_prompts_enabled", False))
+            for btn, _template in quick_prompt_buttons:
+                btn.set_sensitive(quick_prompts_enabled)
+            copy_btn.set_sensitive(bool(controls.get("copy_transcript_enabled", False)))
+            copy_last_btn.set_sensitive(bool(controls.get("copy_last_enabled", False)))
+            jump_btn.set_sensitive(bool(controls.get("jump_latest_enabled", False)))
+            _update_follow_button()
+
+        def _copy_to_clipboard(text: str, success_message: str, empty_message: str) -> None:
+            payload = str(text or "").strip()
+            if not payload:
+                _set_status(empty_message)
+                return
+            try:
+                display = self.get_display() if hasattr(self, "get_display") else Gdk.Display.get_default()
+                clipboard = display.get_clipboard() if display is not None else None
+                if clipboard is None:
+                    _set_status("Clipboard unavailable.")
+                    return
+                clipboard.set(payload)
+                _set_status(success_message)
+            except Exception:
+                _set_status("Clipboard unavailable.")
+
+        def _refresh_status_line() -> None:
+            mode = str(self._effective_ai_tutor_autonomy_mode() or "assist")
+            autopilot_enabled = bool(getattr(self, "ai_tutor_autopilot_enabled", True))
+            dialog_open = bool(getattr(self, "_ai_tutor_dialog_open", False))
+            scope = "app-wide" if autopilot_enabled else "manual"
+            cockpit_text = (
+                f"Tutor cockpit: {'active' if autopilot_enabled else 'paused'} • "
+                f"mode {mode} • scope {scope} • dialog {'open' if dialog_open else 'closed'}"
+            )
+            self._set_label_text_if_changed(cockpit_label, cockpit_text)
+            try:
+                summary = self._summarize_ai_tutor_telemetry(window=AI_TUTOR_TELEMETRY_SUMMARY_WINDOW)
+            except Exception:
+                summary = {}
+            total = int(summary.get("total", 0) or 0) if isinstance(summary, dict) else 0
+            if total <= 0:
+                summary_text = "Telemetry: no tutor turns yet."
+            else:
+                avg_ms = float(summary.get("avg_latency_ms", 0.0) or 0.0)
+                p90_ms = float(summary.get("p90_latency_ms", 0.0) or 0.0)
+                success = int(summary.get("success_count", 0) or 0)
+                cancelled = int(summary.get("cancelled_count", 0) or 0)
+                errors = int(summary.get("error_count", 0) or 0)
+                summary_text = (
+                    f"Telemetry: {total} turns • success/cancel/error {success}/{cancelled}/{errors} • "
+                    f"latency avg {avg_ms:.0f}ms, p90 {p90_ms:.0f}ms"
+                )
+            self._set_label_text_if_changed(summary_label, summary_text)
+
+        def _set_dropdown_models(model_names: list[str]) -> None:
+            cleaned = [str(m).strip() for m in model_names if str(m).strip()]
+            if not cleaned:
+                cleaned = ["(no local models found)"]
+            model_dropdown.set_model(Gtk.StringList.new(cleaned))
+            preferred = str(self.local_llm_model or "").strip()
+            if preferred and preferred in cleaned:
+                model_dropdown.set_selected(cleaned.index(preferred))
+            else:
+                model_dropdown.set_selected(0)
+            run_state["models"] = cleaned
+            _set_running(bool(run_state.get("active", False)))
+
+        def _refresh_models(*_args) -> None:
+            if bool(run_state.get("active", False)):
+                return
+            _set_status("Loading models from Ollama…")
+            refresh_btn.set_sensitive(False)
+            send_btn.set_sensitive(False)
+
+            def _worker() -> None:
+                models, err = self._ollama_list_models()
+
+                def _finish() -> bool:
+                    refresh_btn.set_sensitive(True)
+                    if err:
+                        _code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
+                        _set_dropdown_models([])
+                        _set_status(friendly)
+                        return False
+                    run_state["model_poll_errors"] = 0
+                    _set_dropdown_models(models)
+                    if models:
+                        _set_status(f"Loaded {len(models)} model(s).")
+                    else:
+                        _set_status("No local models found in Ollama.")
+                    return False
+
+                GLib.idle_add(_finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _auto_poll_models() -> bool:
+            if bool(run_state.get("active", False)):
+                return True
+
+            def _worker() -> None:
+                models, err = self._ollama_list_models()
+
+                def _finish() -> bool:
+                    if err:
+                        run_state["model_poll_errors"] = int(run_state.get("model_poll_errors", 0) or 0) + 1
+                        _code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
+                        if int(run_state.get("model_poll_errors", 0) or 0) >= 3:
+                            _set_status("Model refresh paused after repeated errors; use Refresh.")
+                            return False
+                        _set_status(friendly)
+                        return True
+                    run_state["model_poll_errors"] = 0
+                    cleaned = [str(m).strip() for m in models if str(m).strip()]
+                    if cleaned and cleaned != list(run_state.get("models", []) or []):
+                        _set_dropdown_models(cleaned)
+                        _set_status(f"Models updated ({len(cleaned)}).")
+                    return True
+
+                GLib.idle_add(_finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
+            return True
+
+        def _on_model_change(*_args) -> None:
+            if bool(run_state.get("active", False)):
+                return
+            model_name = _selected_model_name()
+            if model_name:
+                self.local_llm_model = model_name
+                self.save_preferences()
+            _set_running(False)
+
+        def _new_chat(*_args) -> None:
+            if bool(run_state.get("active", False)):
+                return
+            history.clear()
+            _persist_history()
+            _set_status("New chat started.")
+            run_state["follow_live"] = True
+            run_state["follow_manual_override"] = False
+            _render_transcript(force_scroll=True)
+            _set_running(False)
+
+        def _clear_prompt(*_args) -> None:
+            if bool(run_state.get("active", False)):
+                return
+            prompt_buf.set_text("")
+            _update_prompt_meta()
+            _set_running(False)
+
+        def _insert_quick_prompt(template: str) -> None:
+            if bool(run_state.get("active", False)):
+                return
+            topic = str(getattr(self, "current_topic", "") or "").strip() or "the current topic"
+            module = str(getattr(self, "module_title", "ACCA") or "ACCA").strip()
+            try:
+                resolved = str(template or "").format(topic=topic, module=module)
+            except Exception:
+                resolved = str(template or "")
+            prompt_buf.set_text(resolved.strip())
+            _update_prompt_meta()
+            _set_running(False)
+            _set_status("Quick prompt inserted.")
+            try:
+                end_iter = prompt_buf.get_end_iter()
+                prompt_buf.place_cursor(end_iter)
+                prompt_view.grab_focus()
+            except Exception:
+                pass
+
+        def _jump_latest(*_args) -> None:
+            run_state["follow_live"] = True
+            run_state["follow_manual_override"] = False
+            _update_follow_button()
+            _scroll_response_end_deferred()
+
+        def _follow_live_toggle(*_args) -> None:
+            follow_live = bool(run_state.get("follow_live", True))
+            run_state["follow_live"] = not follow_live
+            if bool(run_state.get("follow_live", True)):
+                run_state["follow_manual_override"] = False
+                _scroll_response_end_deferred()
+            else:
+                run_state["follow_manual_override"] = True
+            _update_follow_button()
+
+        def _on_prompt_changed(*_args) -> None:
+            _update_prompt_meta()
+            _set_running(bool(run_state.get("active", False)))
+
+        def _record_turn_telemetry(
+            *,
+            model_name: str,
+            outcome: str,
+            error_class: str,
+            response_text: str,
+            turn_started_at: float,
+            prompt_chars: int,
+            prompt_tokens_est: int,
+            timeout_seconds: int,
+            guard_state: dict[str, Any],
+            rag_count: int,
+            rag_sources: int,
+            context_chars: int,
+            context_budget_chars: int,
+            context_tokens_est: int,
+            coverage_target_count: int,
+            coverage_hit_count: int,
+            prompt_build_ms: int,
+            rag_ms: int,
+            first_token_ms: int,
+        ) -> None:
+            clean_response = clean_ai_tutor_text(str(response_text or ""))
+            response_chars = len(clean_response)
+            try:
+                response_tokens_est = int(self._estimate_ai_tutor_token_count(clean_response))
+            except Exception:
+                response_tokens_est = max(0, int(round(float(response_chars) / 4.0)))
+            try:
+                latency_ms = int(max(0.0, (float(time.monotonic()) - float(turn_started_at)) * 1000.0))
+            except Exception:
+                latency_ms = 0
+            autopilot_stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+            payload = {
+                "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "model": str(model_name or "").strip(),
+                "outcome": str(outcome or "").strip().lower(),
+                "error_class": str(error_class or "").strip().lower(),
+                "autopilot_mode": str(
+                    autopilot_stats.get("autopilot_mode", getattr(self, "ai_tutor_autonomy_mode", "assist")) or "assist"
+                ),
+                "autopilot_decision_count": int(autopilot_stats.get("autopilot_decision_count", 0) or 0),
+                "autopilot_action_executed_count": int(autopilot_stats.get("autopilot_action_executed_count", 0) or 0),
+                "autopilot_action_blocked_count": int(autopilot_stats.get("autopilot_action_blocked_count", 0) or 0),
+                "autopilot_last_block_reason": str(autopilot_stats.get("autopilot_last_block_reason", "") or ""),
+                "nudge_info_count": int(autopilot_stats.get("nudge_info_count", 0) or 0),
+                "nudge_warning_count": int(autopilot_stats.get("nudge_warning_count", 0) or 0),
+                "nudge_intervention_count": int(autopilot_stats.get("nudge_intervention_count", 0) or 0),
+                "latency_ms": int(latency_ms),
+                "queue_ms": 0,
+                "prompt_build_ms": int(max(0, prompt_build_ms)),
+                "rag_ms": int(max(0, rag_ms)),
+                "generation_ms": int(max(0, latency_ms - prompt_build_ms - rag_ms)),
+                "stream_ms": int(max(0, latency_ms - prompt_build_ms - rag_ms)),
+                "model_first_token_ms": int(max(0, first_token_ms)),
+                "prompt_chars": int(prompt_chars),
+                "response_chars": int(response_chars),
+                "prompt_tokens_est": int(max(0, prompt_tokens_est)),
+                "response_tokens_est": int(max(0, response_tokens_est)),
+                "timeout_seconds": int(timeout_seconds),
+                "timeout_hit": bool(guard_state.get("timeout_hit", False)),
+                "truncated": bool(guard_state.get("truncated", False)),
+                "rag_snippets": int(rag_count),
+                "rag_sources": int(rag_sources),
+                "ctx_chars": int(context_chars),
+                "ctx_budget_chars": int(context_budget_chars),
+                "ctx_tokens_est": int(max(0, context_tokens_est)),
+                "coverage_target_count": int(max(0, coverage_target_count)),
+                "coverage_hit_count": int(max(0, coverage_hit_count)),
+            }
+            try:
+                self._record_ai_tutor_telemetry(payload, persist=True)
+            except Exception:
+                pass
+
+        def _generate(*_args) -> None:
+            if not bool(self.local_llm_enabled):
+                _set_status("Local AI tutor is disabled in Preferences.")
+                return
+            if bool(run_state.get("active", False)):
+                _set_status("Generation already running.")
+                return
+            model_name = _selected_model_name() or str(self.local_llm_model or "").strip()
+            auto_model_note = ""
+            failover_note = ""
+            available_models = [
+                str(item).strip()
+                for item in list(run_state.get("models", []) or [])
+                if str(item or "").strip() and not str(item or "").strip().startswith("(")
+            ]
+            selector = getattr(self, "_select_local_llm_model", None)
+            if callable(selector):
+                try:
+                    selected_name, selected_err = cast(
+                        Any,
+                        selector(
+                            model_override=None,
+                            purpose="tutor",
+                            available_models=available_models or None,
+                            persist=True,
+                        ),
+                    )
+                except Exception:
+                    selected_name, selected_err = "", None
+                selected_text = str(selected_name or "").strip()
+                if selected_text:
+                    if model_name and model_name != selected_text:
+                        auto_model_note = f"Auto model: {selected_text}"
+                    model_name = selected_text
+                elif not model_name and selected_err:
+                    _set_status(str(selected_err))
+                    return
+            if not model_name:
+                _set_status("Select an Ollama model first.")
+                return
+            model_candidates: list[str] = [str(model_name or "").strip()]
+            failover_builder = getattr(self, "_build_local_llm_model_failover_sequence", None)
+            if callable(failover_builder):
+                try:
+                    failover_models, _failover_err = cast(
+                        Any,
+                        failover_builder(
+                            purpose="tutor",
+                            model_override=None,
+                            available_models=available_models or None,
+                            persist=True,
+                        ),
+                    )
+                except Exception:
+                    failover_models = []
+                normalized_failover = [
+                    str(item).strip()
+                    for item in list(failover_models or [])
+                    if str(item or "").strip() and not str(item or "").strip().startswith("(")
+                ]
+                if normalized_failover:
+                    model_candidates = [str(model_name or "").strip()]
+                    for candidate in normalized_failover:
+                        if candidate not in model_candidates:
+                            model_candidates.append(candidate)
+            model_candidates = [name for name in model_candidates if name]
+            if not model_candidates:
+                model_candidates = [str(model_name or "").strip()]
+            if len(model_candidates) > 1:
+                failover_note = f"Failover armed: {len(model_candidates)} models"
+            user_prompt = _current_prompt_text(strip=True)
+            if not user_prompt:
+                _set_status("Enter a prompt first.")
+                return
+
+            turn_requested_at = float(time.monotonic())
+            prompt_stage_started_at = float(time.monotonic())
+            module_title = str(getattr(self, "module_title", "ACCA") or "ACCA").strip()
+            chapter = str(getattr(self, "current_topic", "") or "").strip()
+            full_prompt, prompt_meta = build_ai_tutor_context_prompt_details(
+                history=history,
+                user_prompt=user_prompt,
+                module_title=module_title,
+                chapter=chapter,
+            )
+            coverage_targets = [
+                str(item or "").strip()
+                for item in list(prompt_meta.get("coverage_targets", []) or [])
+                if str(item or "").strip()
+            ]
+            coverage_target_count = int(prompt_meta.get("coverage_target_count", len(coverage_targets)) or len(coverage_targets))
+            rag_top_k = max(4, min(12, int(4 + max(0, coverage_target_count))))
+            rag_char_budget_override = 1800
+            adaptive_limits: dict[str, Any] = {}
+            adaptive_reader = getattr(self, "_compute_ai_tutor_adaptive_limits", None)
+            if callable(adaptive_reader):
+                try:
+                    adaptive_limits = cast(
+                        Any,
+                        adaptive_reader(
+                            coverage_target_count=int(max(0, coverage_target_count)),
+                            context_max_chars=900,
+                            context_max_tokens=280,
+                            rag_top_k=int(rag_top_k),
+                            rag_char_budget=1800,
+                        ),
+                    )
+                except Exception:
+                    adaptive_limits = {}
+                if isinstance(adaptive_limits, dict):
+                    try:
+                        rag_top_k = max(4, min(12, int(adaptive_limits.get("rag_top_k", rag_top_k) or rag_top_k)))
+                    except Exception:
+                        rag_top_k = max(4, min(12, int(rag_top_k)))
+                    try:
+                        rag_char_budget_override = max(
+                            800,
+                            min(3600, int(adaptive_limits.get("rag_char_budget", rag_char_budget_override) or rag_char_budget_override)),
+                        )
+                    except Exception:
+                        rag_char_budget_override = 1800
+            context_block = ""
+            context_chars = 0
+            context_budget_chars = 0
+            context_tokens_est = 0
+            context_horizon_days = 14
+            try:
+                packet_builder = getattr(self, "_build_local_ai_context_packet", None)
+                formatter = getattr(self, "_format_local_ai_context_block", None)
+                budget_reader = getattr(self, "_context_budget_limits", None)
+                token_estimator = getattr(self, "_estimate_context_tokens", None)
+                if callable(packet_builder) and callable(formatter):
+                    packet = packet_builder(kind="tutor", horizon_days=14)
+                    if isinstance(packet, dict):
+                        try:
+                            context_horizon_days = int(packet.get("horizon_days", 14) or 14)
+                        except Exception:
+                            context_horizon_days = 14
+                    max_chars = 900
+                    max_tokens = 280
+                    if callable(budget_reader):
+                        try:
+                            raw_limits = budget_reader("tutor")
+                        except Exception:
+                            raw_limits = None
+                        if isinstance(raw_limits, tuple) and len(raw_limits) >= 2:
+                            try:
+                                max_chars = int(raw_limits[0] or max_chars)
+                            except Exception:
+                                max_chars = 900
+                            try:
+                                max_tokens = int(raw_limits[1] or max_tokens)
+                            except Exception:
+                                max_tokens = 280
+                    if isinstance(adaptive_limits, dict) and adaptive_limits:
+                        try:
+                            max_chars = min(max_chars, int(adaptive_limits.get("context_max_chars", max_chars) or max_chars))
+                        except Exception:
+                            pass
+                        try:
+                            max_tokens = min(max_tokens, int(adaptive_limits.get("context_max_tokens", max_tokens) or max_tokens))
+                        except Exception:
+                            pass
+                    max_chars = max(120, max_chars)
+                    max_tokens = max(80, max_tokens)
+                    context_budget_chars = int(min(max_chars, max_tokens * 4))
+                    context_block = str(formatter(packet, max_chars=context_budget_chars) or "").strip()
+                    if callable(token_estimator):
+                        try:
+                            context_tokens_est = int(cast(Any, token_estimator(context_block)))
+                        except Exception:
+                            context_tokens_est = max(0, int(round(float(len(context_block)) / 4.0)))
+                    else:
+                        context_tokens_est = max(0, int(round(float(len(context_block)) / 4.0)))
+                    context_chars = int(len(context_block))
+            except Exception:
+                context_block = ""
+            prompt_build_ms = int(max(0.0, (float(time.monotonic()) - float(prompt_stage_started_at)) * 1000.0))
+
+            rag_stage_started_at = float(time.monotonic())
+            rag_context = ""
+            rag_meta: dict[str, Any] = {"snippet_count": 0, "source_count": 0, "method": "disabled", "errors": []}
+            try:
+                rag_context, rag_meta = self._build_ai_tutor_rag_prompt_context(
+                    user_prompt=user_prompt,
+                    history=history,
+                    top_k=rag_top_k,
+                    char_budget_override=rag_char_budget_override,
+                )
+            except Exception as exc:
+                rag_context = ""
+                rag_meta = {
+                    "snippet_count": 0,
+                    "source_count": 0,
+                    "method": "error",
+                    "errors": [str(exc)],
+                }
+            rag_ms = int(max(0.0, (float(time.monotonic()) - float(rag_stage_started_at)) * 1000.0))
+            full_prompt = assemble_ai_tutor_turn_prompt(
+                full_prompt,
+                learning_context=context_block,
+                rag_context=rag_context,
+            )
+            turn_timeout_seconds = normalize_tutor_timeout_seconds(
+                getattr(self, "local_llm_timeout_seconds", AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS),
+                default=AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS,
+            )
+            cancel_event = threading.Event()
+            guard_state: dict[str, Any] = {
+                "timeout_hit": False,
+                "truncated": False,
+                "stop_issued": False,
+                "first_token_ms": 0,
+                "generation_started_at": 0.0,
+                "stream_started_at": 0.0,
+            }
+            turn_started_at = float(turn_requested_at)
+            prompt_chars = len(str(user_prompt or ""))
+            try:
+                prompt_tokens_est = int(self._estimate_ai_tutor_token_count(str(user_prompt or "")))
+            except Exception:
+                prompt_tokens_est = max(0, int(round(float(prompt_chars) / 4.0)))
+            coverage_state: dict[str, Any] = {
+                "target_count": int(max(0, coverage_target_count)),
+                "hit_count": 0,
+            }
+
+            def _request_stream_stop_once() -> None:
+                if bool(guard_state.get("stop_issued", False)):
+                    return
+                guard_state["stop_issued"] = True
+                try:
+                    self._ollama_stop_model(str(model_name or ""))
+                except Exception:
+                    pass
+
+            def _cancel_check() -> bool:
+                if cancel_event.is_set():
+                    return True
+                elapsed = float(time.monotonic() - turn_started_at)
+                if elapsed >= float(turn_timeout_seconds):
+                    guard_state["timeout_hit"] = True
+                    cancel_event.set()
+                    _request_stream_stop_once()
+                    return True
+                return False
+
+            run_state["job_id"] = int(run_state.get("job_id", 0) or 0) + 1
+            job_id = int(run_state.get("job_id", 0) or 0)
+            run_state["cancel_event"] = cancel_event
+            run_state["model"] = model_name
+            run_state["draft_user"] = user_prompt
+            run_state["draft_assistant"] = ""
+            run_state["stream_last_clean_text"] = ""
+            run_state["stream_label_inserted"] = False
+            run_state["stream_last_chunk_at"] = 0.0
+            run_state["stream_last_render_at"] = 0.0
+            run_state["stream_watchdog_last_force_at"] = 0.0
+            run_state["stream_watchdog_forced_flushes"] = 0
+            self.local_llm_model = model_name
+            self.save_preferences()
+            rag_count = int(rag_meta.get("snippet_count", 0) or 0)
+            rag_sources = int(rag_meta.get("source_count", 0) or 0)
+            rag_method = str(rag_meta.get("method", "disabled") or "disabled").strip()
+            status_parts = ["Generating…"]
+            if context_budget_chars > 0:
+                status_parts.append(f"CTX: {context_chars}/{context_budget_chars} chars")
+            if coverage_target_count > 1:
+                status_parts.append(f"Coverage targets: {coverage_target_count}")
+            if rag_count > 0:
+                status_parts.append(f"RAG: {rag_count} snippet(s) from {rag_sources} PDF(s) [{rag_method}]")
+            elif rag_method == "disabled":
+                status_parts.append("RAG disabled")
+            if auto_model_note:
+                status_parts.append(auto_model_note)
+            if failover_note:
+                status_parts.append(failover_note)
+            _set_status(" • ".join(status_parts))
+            _set_running(True)
+            run_state["follow_live"] = True
+            run_state["follow_manual_override"] = False
+            _render_transcript(force_scroll=True)
+
+            def _worker() -> None:
+                nonlocal model_name
+
+                def _on_chunk(piece: str) -> None:
+                    def _apply_chunk() -> bool:
+                        if int(run_state.get("job_id", 0) or 0) != job_id:
+                            return False
+                        if not bool(run_state.get("active", False)):
+                            return False
+                        if int(guard_state.get("first_token_ms", 0) or 0) <= 0:
+                            try:
+                                started = float(guard_state.get("generation_started_at", 0.0) or 0.0)
+                            except Exception:
+                                started = 0.0
+                            if started > 0.0:
+                                guard_state["first_token_ms"] = int(
+                                    max(0.0, (float(time.monotonic()) - started) * 1000.0)
+                                )
+                                guard_state["stream_started_at"] = float(time.monotonic())
+                        draft = str(run_state.get("draft_assistant", "") or "") + str(piece or "")
+                        if len(draft) > int(AI_TUTOR_MAX_RESPONSE_CHARS):
+                            draft = draft[: int(AI_TUTOR_MAX_RESPONSE_CHARS)]
+                            guard_state["truncated"] = True
+                            cancel_event.set()
+                            _request_stream_stop_once()
+                        run_state["draft_assistant"] = draft
+                        run_state["stream_last_chunk_at"] = float(time.monotonic())
+                        _schedule_stream_render(force_scroll=False)
+                        return False
+
+                    GLib.idle_add(_apply_chunk)
+
+                text = ""
+                err: str | None = None
+                for idx, candidate_model in enumerate(model_candidates):
+                    candidate_name = str(candidate_model or "").strip()
+                    if not candidate_name:
+                        continue
+                    model_name = candidate_name
+                    run_state["model"] = candidate_name
+                    guard_state["generation_started_at"] = float(time.monotonic())
+                    guard_state["stream_started_at"] = 0.0
+                    guard_state["first_token_ms"] = 0
+                    text, err = self._ollama_generate_text_stream(
+                        candidate_name,
+                        full_prompt,
+                        on_chunk=_on_chunk,
+                        cancel_check=_cancel_check,
+                    )
+                    if not err or err == "cancelled":
+                        break
+                    partial_text = str(text or "").strip()
+                    draft_text = str(run_state.get("draft_assistant", "") or "").strip()
+                    if partial_text or draft_text:
+                        break
+                    if idx >= (len(model_candidates) - 1):
+                        break
+                    next_model = str(model_candidates[idx + 1] or "").strip()
+                    if next_model:
+                        GLib.idle_add(
+                            lambda failed=candidate_name, retry=next_model: (
+                                _set_status(f"Model {failed} failed, retrying with {retry}...") or False
+                            )
+                        )
+
+                def _finish() -> bool:
+                    if int(run_state.get("job_id", 0) or 0) != job_id:
+                        return False
+                    draft_user = str(run_state.get("draft_user", "") or "").strip()
+                    draft_assistant = str(run_state.get("draft_assistant", "") or "").strip()
+                    run_state["cancel_event"] = None
+                    run_state["draft_user"] = ""
+                    run_state["draft_assistant"] = ""
+                    _set_running(False)
+                    final_text = str(text or "").strip() or draft_assistant
+
+                    coverage_eval = assess_tutor_coverage(final_text, coverage_targets)
+                    coverage_state["target_count"] = int(
+                        coverage_eval.get("target_count", coverage_target_count) or coverage_target_count
+                    )
+                    coverage_state["hit_count"] = int(coverage_eval.get("hit_count", 0) or 0)
+                    if not err:
+                        coverage_note = build_tutor_coverage_checklist_note(
+                            final_text,
+                            coverage_targets,
+                            max_items=6,
+                        )
+                        if coverage_note:
+                            merged = f"{str(final_text or '').rstrip()}\n\n{coverage_note}".strip()
+                            if len(merged) > int(AI_TUTOR_MAX_RESPONSE_CHARS):
+                                merged = merged[: int(AI_TUTOR_MAX_RESPONSE_CHARS)].rstrip()
+                            final_text = merged
+                    try:
+                        app_stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+                        self._record_ai_tutor_autopilot_metrics(
+                            {
+                                "coverage_target_count": max(
+                                    int(app_stats.get("coverage_target_count", 0) or 0),
+                                    int(coverage_state["target_count"]),
+                                ),
+                                "coverage_hit_count": max(
+                                    int(app_stats.get("coverage_hit_count", 0) or 0),
+                                    int(coverage_state["hit_count"]),
+                                ),
+                                "ctx_chars": int(context_chars),
+                                "ctx_budget_chars": int(context_budget_chars),
+                                "ctx_tokens_est": int(context_tokens_est),
+                                "ctx_horizon_days": int(max(1, context_horizon_days)),
+                            },
+                            persist=False,
+                        )
+                    except Exception:
+                        pass
+                    if err == "cancelled":
+                        telemetry_error = "cancelled"
+                        if bool(guard_state.get("timeout_hit", False)):
+                            telemetry_error = "timeout"
+                        elif bool(guard_state.get("truncated", False)):
+                            telemetry_error = "truncated"
+                        _record_turn_telemetry(
+                            model_name=str(model_name or ""),
+                            outcome="cancelled",
+                            error_class=telemetry_error,
+                            response_text=final_text,
+                            turn_started_at=turn_started_at,
+                            prompt_chars=prompt_chars,
+                            prompt_tokens_est=prompt_tokens_est,
+                            timeout_seconds=turn_timeout_seconds,
+                            guard_state=guard_state,
+                            rag_count=rag_count,
+                            rag_sources=rag_sources,
+                            context_chars=context_chars,
+                            context_budget_chars=context_budget_chars,
+                            context_tokens_est=context_tokens_est,
+                            coverage_target_count=int(coverage_state["target_count"]),
+                            coverage_hit_count=int(coverage_state["hit_count"]),
+                            prompt_build_ms=prompt_build_ms,
+                            rag_ms=rag_ms,
+                            first_token_ms=int(guard_state.get("first_token_ms", 0) or 0),
+                        )
+                        suffix = "[Stopped]"
+                        if bool(guard_state.get("timeout_hit", False)):
+                            suffix = f"[Timed out after {int(turn_timeout_seconds)}s]"
+                        elif bool(guard_state.get("truncated", False)):
+                            suffix = f"[Truncated at {int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars]"
+                        if draft_user and final_text:
+                            final_text = clean_ai_tutor_text(final_text) or final_text
+                            history.append({"role": "user", "content": draft_user})
+                            history.append({"role": "assistant", "content": f"{final_text}\n\n{suffix}"})
+                            _persist_history()
+                        _set_status(f"Stopped ({model_name}).")
+                        _render_transcript(force_scroll=True)
+                        _refresh_status_line()
+                        return False
+                    if err:
+                        _code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
+                        _record_turn_telemetry(
+                            model_name=str(model_name or ""),
+                            outcome="error",
+                            error_class=_code,
+                            response_text=final_text,
+                            turn_started_at=turn_started_at,
+                            prompt_chars=prompt_chars,
+                            prompt_tokens_est=prompt_tokens_est,
+                            timeout_seconds=turn_timeout_seconds,
+                            guard_state=guard_state,
+                            rag_count=rag_count,
+                            rag_sources=rag_sources,
+                            context_chars=context_chars,
+                            context_budget_chars=context_budget_chars,
+                            context_tokens_est=context_tokens_est,
+                            coverage_target_count=int(coverage_state["target_count"]),
+                            coverage_hit_count=int(coverage_state["hit_count"]),
+                            prompt_build_ms=prompt_build_ms,
+                            rag_ms=rag_ms,
+                            first_token_ms=int(guard_state.get("first_token_ms", 0) or 0),
+                        )
+                        _set_status(friendly)
+                        _render_transcript()
+                        _refresh_status_line()
+                        return False
+                    if draft_user and final_text:
+                        final_text = clean_ai_tutor_text(final_text) or final_text
+                        history.append({"role": "user", "content": draft_user})
+                        history.append({"role": "assistant", "content": final_text})
+                        _persist_history()
+                    _record_turn_telemetry(
+                        model_name=str(model_name or ""),
+                        outcome="success",
+                        error_class="",
+                        response_text=final_text,
+                        turn_started_at=turn_started_at,
+                        prompt_chars=prompt_chars,
+                        prompt_tokens_est=prompt_tokens_est,
+                        timeout_seconds=turn_timeout_seconds,
+                        guard_state=guard_state,
+                        rag_count=rag_count,
+                        rag_sources=rag_sources,
+                        context_chars=context_chars,
+                        context_budget_chars=context_budget_chars,
+                        context_tokens_est=context_tokens_est,
+                        coverage_target_count=int(coverage_state["target_count"]),
+                        coverage_hit_count=int(coverage_state["hit_count"]),
+                        prompt_build_ms=prompt_build_ms,
+                        rag_ms=rag_ms,
+                        first_token_ms=int(guard_state.get("first_token_ms", 0) or 0),
+                    )
+                    _render_transcript(force_scroll=True)
+                    if int(coverage_state.get("target_count", 0) or 0) > 1:
+                        _set_status(
+                            f"Done ({model_name}) • turns: {_turn_count()} • coverage "
+                            f"{int(coverage_state.get('hit_count', 0) or 0)}/{int(coverage_state.get('target_count', 0) or 0)}"
+                        )
+                    else:
+                        _set_status(f"Done ({model_name}) • turns: {_turn_count()}")
+                    _refresh_status_line()
+                    return False
+
+                GLib.idle_add(_finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _stop_generation(*_args) -> None:
+            if not bool(run_state.get("active", False)):
+                return
+            cancel_event = run_state.get("cancel_event")
+            if isinstance(cancel_event, threading.Event):
+                cancel_event.set()
+            self._ollama_stop_model(str(run_state.get("model", "") or ""))
+            _set_status("Stopping…")
+
+        def _on_prompt_key(_controller, keyval, _keycode, state) -> bool:
+            ctrl_mask = int(getattr(Gdk.ModifierType, "CONTROL_MASK", 0))
+            return_key = int(getattr(Gdk, "KEY_Return", 65293))
+            kp_enter = int(getattr(Gdk, "KEY_KP_Enter", 65421))
+            key_l = int(getattr(Gdk, "KEY_l", 108))
+            key_L = int(getattr(Gdk, "KEY_L", 76))
+            if (int(state) & ctrl_mask) and int(keyval) in (return_key, kp_enter):
+                _generate()
+                return True
+            if (int(state) & ctrl_mask) and int(keyval) in (key_l, key_L):
+                _clear_prompt()
+                return True
+            return False
+
+        model_dropdown.connect("notify::selected", _on_model_change)
+        refresh_btn.connect("clicked", _refresh_models)
+        send_btn.connect("clicked", _generate)
+        stop_btn.connect("clicked", _stop_generation)
+        new_chat_btn.connect("clicked", _new_chat)
+        clear_prompt_btn.connect("clicked", _clear_prompt)
+        copy_btn.connect(
+            "clicked",
+            lambda *_: _copy_to_clipboard(
+                format_ai_tutor_transcript(history),
+                "Chat copied to clipboard.",
+                "Nothing to copy.",
+            ),
+        )
+        copy_last_btn.connect(
+            "clicked",
+            lambda *_: _copy_to_clipboard(
+                _latest_assistant_answer(),
+                "Last tutor answer copied.",
+                "No tutor answer to copy yet.",
+            ),
+        )
+        jump_btn.connect("clicked", _jump_latest)
+        follow_btn.connect("clicked", _follow_live_toggle)
+        prompt_buf.connect("changed", _on_prompt_changed)
+        for btn, template in quick_prompt_buttons:
+            btn.connect("clicked", lambda _b, t=template: _insert_quick_prompt(t))
+        prompt_key = Gtk.EventControllerKey()
+        prompt_key.connect("key-pressed", _on_prompt_key)
+        prompt_view.add_controller(prompt_key)
+        try:
+            adj = response_scroller.get_vadjustment()
+            if adj is not None:
+                adj.connect("value-changed", _on_response_adjustment_changed)
+            hadj = response_scroller.get_hadjustment()
+            if hadj is not None:
+                hadj.connect("value-changed", _on_response_adjustment_changed)
+        except Exception:
+            pass
+
+        run_state["refresh_runtime"] = _refresh_models
+        run_state["refresh_status"] = _refresh_status_line
+        run_state["set_running"] = _set_running
+        _update_prompt_meta()
+        _render_transcript(force_scroll=True)
+        _refresh_status_line()
+        _set_running(False)
+        if not bool(self.local_llm_enabled):
+            _set_status("Local AI tutor is disabled in Preferences.")
+            send_btn.set_sensitive(False)
+        else:
+            _set_status("Ready. Press Ctrl+Enter to send.")
+        _refresh_models()
+        run_state["model_poll_id"] = int(GLib.timeout_add_seconds(45, _auto_poll_models) or 0)
+        return page_scroll
+
+    def _refresh_tutor_workspace_page(self) -> None:
+        state = getattr(self, "_tutor_workspace_state", None)
+        if not isinstance(state, dict):
+            return
+        refresh_status = state.get("refresh_status")
+        if callable(refresh_status):
+            try:
+                refresh_status()
+            except Exception:
+                pass
+        self._refresh_workbench_shell_status()
+
+    def _build_coach_workspace_page(self) -> Gtk.Widget:
+        page_scroll = Gtk.ScrolledWindow()
+        page_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page_scroll.set_hexpand(True)
+        page_scroll.set_vexpand(True)
+        page_scroll.add_css_class("workbench-page")
+
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        page_box.add_css_class("card")
+        page_box.add_css_class("workbench-page-card")
+        page_box.set_margin_top(6)
+        page_box.set_margin_bottom(6)
+        page_box.set_margin_start(6)
+        page_box.set_margin_end(6)
+        page_scroll.set_child(page_box)
+
+        title = Gtk.Label(label="AI Coach Workbench")
+        title.set_halign(Gtk.Align.START)
+        title.add_css_class("section-title")
+        title.add_css_class("workbench-heading")
+        subtitle = Gtk.Label(label="Generate, inspect, and apply coach recommendations without opening a modal dialog.")
+        subtitle.set_halign(Gtk.Align.START)
+        subtitle.set_wrap(True)
+        subtitle.add_css_class("muted")
+        page_box.append(title)
+        page_box.append(subtitle)
+
+        model_label = Gtk.Label(label="Model: —")
+        model_label.set_halign(Gtk.Align.START)
+        model_label.add_css_class("muted")
+        self._coach_workspace_model_label = model_label
+        page_box.append(model_label)
+
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        controls.add_css_class("inline-toolbar")
+        generate_btn = Gtk.Button(label="Generate recommendation")
+        generate_btn.add_css_class("suggested-action")
+        apply_btn = Gtk.Button(label="Apply action")
+        apply_btn.set_sensitive(False)
+        detailed_btn = Gtk.Button(label="Open detailed Coach")
+        detailed_btn.connect("clicked", lambda *_: self._open_ai_coach_dialog())
+        controls.append(generate_btn)
+        controls.append(apply_btn)
+        controls.append(detailed_btn)
+        page_box.append(controls)
+
+        status_label = Gtk.Label(label="Ready.")
+        status_label.set_halign(Gtk.Align.START)
+        status_label.set_wrap(True)
+        status_label.add_css_class("muted")
+        self._coach_workspace_status_label = status_label
+        page_box.append(status_label)
+
+        text_view = Gtk.TextView()
+        text_view.set_editable(False)
+        text_view.set_cursor_visible(False)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.add_css_class("workbench-text")
+        self._coach_workspace_view = text_view
+        text_scroll = Gtk.ScrolledWindow()
+        text_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        text_scroll.set_min_content_height(320)
+        text_scroll.set_hexpand(True)
+        text_scroll.set_vexpand(True)
+        text_scroll.set_child(text_view)
+        page_box.append(text_scroll)
+
+        self._coach_workspace_generate_btn = generate_btn
+        self._coach_workspace_apply_btn = apply_btn
+        generate_btn.connect("clicked", self._coach_workspace_generate_recommendation)
+        apply_btn.connect("clicked", self._coach_workspace_apply_recommendation)
+        self._refresh_coach_workspace_page()
+        return page_scroll
+
+    def _set_coach_workspace_running(self, active: bool) -> None:
+        state = getattr(self, "_coach_workspace_state", None)
+        if not isinstance(state, dict):
+            return
+        state["active"] = bool(active)
+        generate_btn = getattr(self, "_coach_workspace_generate_btn", None)
+        apply_btn = getattr(self, "_coach_workspace_apply_btn", None)
+        if generate_btn is not None:
+            generate_btn.set_sensitive(not bool(active))
+        if apply_btn is not None:
+            rec = state.get("recommendation")
+            apply_btn.set_sensitive((not bool(active)) and isinstance(rec, dict))
+
+    def _refresh_coach_workspace_page(self) -> None:
+        model_label = getattr(self, "_coach_workspace_model_label", None)
+        status_label = getattr(self, "_coach_workspace_status_label", None)
+        view = getattr(self, "_coach_workspace_view", None)
+        state = getattr(self, "_coach_workspace_state", None)
+        if model_label is None or status_label is None or view is None or not isinstance(state, dict):
+            return
+        model_name = str(getattr(self, "local_llm_model", "") or "").strip()
+        if model_name:
+            self._set_label_text_if_changed(model_label, f"Model: {model_name}")
+        else:
+            self._set_label_text_if_changed(model_label, "Model: (auto-select first local model)")
+        rec = state.get("recommendation")
+        if not isinstance(rec, dict):
+            rec = getattr(self, "_ai_coach_last_recommendation", None)
+        err = str(getattr(self, "_ai_coach_last_error", "") or "").strip()
+        text = "No recommendation yet."
+        if isinstance(rec, dict):
+            text = self._format_ai_coach_recommendation_text(rec, err or None)
+            state["recommendation"] = rec
+        buf = view.get_buffer()
+        current_text = ""
+        try:
+            start, end = buf.get_bounds()
+            current_text = str(buf.get_text(start, end, True) or "")
+        except Exception:
+            current_text = ""
+        if current_text != text:
+            buf.set_text(text)
+        if bool(state.get("active", False)):
+            self._set_label_text_if_changed(status_label, "Generating recommendation…")
+        elif err:
+            self._set_label_text_if_changed(status_label, f"Ready (fallback): {err}")
+        elif isinstance(rec, dict):
+            self._set_label_text_if_changed(status_label, "AI recommendation ready.")
+        else:
+            self._set_label_text_if_changed(status_label, "Ready.")
+        self._set_coach_workspace_running(bool(state.get("active", False)))
+        self._refresh_workbench_shell_status()
+
+    def _coach_workspace_generate_recommendation(self, *_args) -> None:
+        state = getattr(self, "_coach_workspace_state", None)
+        if not isinstance(state, dict):
+            return
+        if bool(state.get("active", False)):
+            return
+        state["job_id"] = int(state.get("job_id", 0) or 0) + 1
+        job_id = int(state.get("job_id", 0) or 0)
+        state["recommendation"] = None
+        self._set_coach_workspace_running(True)
+        status_label = getattr(self, "_coach_workspace_status_label", None)
+        if status_label is not None:
+            self._set_label_text_if_changed(status_label, "Generating recommendation…")
+
+        def _worker() -> None:
+            rec, err = self._request_ai_coach_recommendation()
+
+            def _finish() -> bool:
+                if int(state.get("job_id", 0) or 0) != job_id:
+                    return False
+                state["recommendation"] = rec if isinstance(rec, dict) else None
+                self._ai_coach_last_recommendation = rec if isinstance(rec, dict) else None
+                self._ai_coach_last_updated = datetime.datetime.now().isoformat(timespec="seconds")
+                self._ai_coach_last_error = err
+                self._update_ai_coach_labels(rec if isinstance(rec, dict) else None)
+                self._refresh_coach_workspace_page()
+                try:
+                    self.update_study_room_card()
+                except Exception:
+                    pass
+                self._set_coach_workspace_running(False)
+                return False
+
+            GLib.idle_add(_finish)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _coach_workspace_apply_recommendation(self, *_args) -> None:
+        state = getattr(self, "_coach_workspace_state", None)
+        if not isinstance(state, dict):
+            return
+        rec = state.get("recommendation")
+        status_label = getattr(self, "_coach_workspace_status_label", None)
+        if not isinstance(rec, dict):
+            if status_label is not None:
+                self._set_label_text_if_changed(status_label, "Generate a recommendation first.")
+            return
+        ok, msg = self._execute_ai_coach_recommendation(rec)
+        if status_label is not None:
+            self._set_label_text_if_changed(status_label, msg)
+        try:
+            self.send_notification("AI Coach", msg)
+        except Exception:
+            pass
+        if ok:
+            try:
+                self.update_dashboard()
+            except Exception:
+                pass
+            try:
+                self.update_study_room_card()
+            except Exception:
+                pass
+
+    def _build_insights_workspace_page(self) -> Gtk.Widget:
+        page_scroll = Gtk.ScrolledWindow()
+        page_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page_scroll.set_hexpand(True)
+        page_scroll.set_vexpand(True)
+        page_scroll.add_css_class("workbench-page")
+
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        page_box.add_css_class("card")
+        page_box.add_css_class("workbench-page-card")
+        page_box.set_margin_top(6)
+        page_box.set_margin_bottom(6)
+        page_box.set_margin_start(6)
+        page_box.set_margin_end(6)
+        page_scroll.set_child(page_box)
+
+        title = Gtk.Label(label="Diagnostics & Insights")
+        title.set_halign(Gtk.Align.START)
+        title.add_css_class("section-title")
+        title.add_css_class("workbench-heading")
+        subtitle = Gtk.Label(label="Unified operational state for AI, retrieval, semantic maps, and coaching health.")
+        subtitle.set_halign(Gtk.Align.START)
+        subtitle.set_wrap(True)
+        subtitle.add_css_class("muted")
+        page_box.append(title)
+        page_box.append(subtitle)
+
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        controls.add_css_class("inline-toolbar")
+        refresh_btn = Gtk.Button(label="Refresh")
+        copy_btn = Gtk.Button(label="Copy")
+        view_logs_btn = Gtk.Button(label="Logs")
+        reflections_btn = Gtk.Button(label="Reflections")
+        refresh_btn.connect("clicked", lambda *_: self._refresh_insights_workspace_page())
+        copy_btn.connect("clicked", lambda *_: self._copy_insights_workspace_text())
+        view_logs_btn.connect("clicked", lambda *_: self.on_view_logs(None, None))
+        reflections_btn.connect("clicked", lambda *_: self.on_view_reflections(None, None))
+        controls.append(refresh_btn)
+        controls.append(copy_btn)
+        controls.append(view_logs_btn)
+        controls.append(reflections_btn)
+        page_box.append(controls)
+
+        status_label = Gtk.Label(label="Ready.")
+        status_label.set_halign(Gtk.Align.START)
+        status_label.set_wrap(True)
+        status_label.add_css_class("muted")
+        self._insights_workspace_status_label = status_label
+        page_box.append(status_label)
+
+        text_view = Gtk.TextView()
+        text_view.set_editable(False)
+        text_view.set_cursor_visible(False)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.add_css_class("workbench-text")
+        self._insights_workspace_view = text_view
+        text_scroll = Gtk.ScrolledWindow()
+        text_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        text_scroll.set_min_content_height(340)
+        text_scroll.set_hexpand(True)
+        text_scroll.set_vexpand(True)
+        text_scroll.set_child(text_view)
+        page_box.append(text_scroll)
+        self._refresh_insights_workspace_page()
+        return page_scroll
+
+    def _refresh_insights_workspace_page(self) -> None:
+        view = getattr(self, "_insights_workspace_view", None)
+        status_label = getattr(self, "_insights_workspace_status_label", None)
+        if view is None or status_label is None:
+            return
+        try:
+            hub = getattr(self.engine, "study_hub_stats", {}) or {}
+            graph_status = self.engine.get_semantic_graph_status()
+            drift = self.engine.get_semantic_drift_kpi(days=7)
+            perf = self.engine.get_semantic_perf_stats()
+            tutor_summary = self._summarize_ai_tutor_telemetry(window=AI_TUTOR_TELEMETRY_SUMMARY_WINDOW)
+            msg = self._build_debug_info_message(
+                hub=hub,
+                graph_status=graph_status,
+                drift=drift,
+                perf=perf,
+                tutor_summary=tutor_summary,
+            )
+            buffer = view.get_buffer()
+            buffer.set_text(msg)
+            ts = datetime.datetime.now().strftime("%H:%M:%S")
+            self._set_label_text_if_changed(status_label, f"Updated at {ts}.")
+        except Exception as exc:
+            self._set_label_text_if_changed(status_label, f"Failed to refresh diagnostics: {exc}")
+        self._refresh_workbench_shell_status()
+
+    def _copy_insights_workspace_text(self) -> None:
+        view = getattr(self, "_insights_workspace_view", None)
+        if view is None:
+            return
+        text = ""
+        try:
+            buf = view.get_buffer()
+            start, end = buf.get_bounds()
+            text = str(buf.get_text(start, end, True) or "")
+        except Exception:
+            text = ""
+        if not text:
+            return
+        try:
+            display = self.get_display()
+            if display is not None:
+                clipboard = display.get_clipboard()
+                clipboard.set(text)
+            status_label = getattr(self, "_insights_workspace_status_label", None)
+            if status_label is not None:
+                self._set_label_text_if_changed(status_label, "Copied diagnostics to clipboard.")
+        except Exception:
+            pass
+
+    def _build_settings_workspace_page(self) -> Gtk.Widget:
+        page_scroll = Gtk.ScrolledWindow()
+        page_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page_scroll.set_hexpand(True)
+        page_scroll.set_vexpand(True)
+        page_scroll.add_css_class("workbench-page")
+
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        page_box.add_css_class("card")
+        page_box.add_css_class("workbench-page-card")
+        page_box.set_margin_top(6)
+        page_box.set_margin_bottom(6)
+        page_box.set_margin_start(6)
+        page_box.set_margin_end(6)
+        page_scroll.set_child(page_box)
+
+        title = Gtk.Label(label="Settings")
+        title.set_halign(Gtk.Align.START)
+        title.add_css_class("section-title")
+        title.add_css_class("workbench-heading")
+        subtitle = Gtk.Label(label="High-frequency controls for local AI and UI behavior. Changes apply immediately.")
+        subtitle.set_halign(Gtk.Align.START)
+        subtitle.set_wrap(True)
+        subtitle.add_css_class("muted")
+        page_box.append(title)
+        page_box.append(subtitle)
+
+        llm_enabled = Gtk.CheckButton(label="Enable local AI")
+        llm_auto_select = Gtk.CheckButton(label="Auto-select best model")
+        semantic_enabled = Gtk.CheckButton(label="Enable semantic routing")
+        autopilot_enabled = Gtk.CheckButton(label="Enable tutor autopilot")
+        notifications = Gtk.CheckButton(label="Enable desktop notifications")
+        modern_toggle = Gtk.CheckButton(label="Enable modern tabbed workspace")
+        reduce_motion = Gtk.CheckButton(label="Reduce motion")
+        self._settings_workspace_llm_enabled_toggle = llm_enabled
+        self._settings_workspace_auto_select_toggle = llm_auto_select
+        self._settings_workspace_semantic_toggle = semantic_enabled
+        self._settings_workspace_autopilot_toggle = autopilot_enabled
+        self._settings_workspace_notifications_toggle = notifications
+        self._settings_workspace_modern_toggle = modern_toggle
+        self._settings_workspace_reduce_motion_toggle = reduce_motion
+        page_box.append(llm_enabled)
+        page_box.append(llm_auto_select)
+        page_box.append(semantic_enabled)
+        page_box.append(autopilot_enabled)
+        page_box.append(notifications)
+        page_box.append(modern_toggle)
+        page_box.append(reduce_motion)
+
+        mode_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        mode_row.add_css_class("inline-toolbar")
+        mode_label = Gtk.Label(label="Tutor autonomy mode")
+        mode_label.set_halign(Gtk.Align.START)
+        mode_label.set_hexpand(True)
+        mode_dropdown = Gtk.DropDown.new(Gtk.StringList.new(["suggest", "assist", "cockpit"]), None)
+        mode_dropdown.set_hexpand(False)
+        mode_dropdown.set_halign(Gtk.Align.END)
+        mode_dropdown.set_size_request(160, -1)
+        self._settings_workspace_mode_dropdown = mode_dropdown
+        mode_row.append(mode_label)
+        mode_row.append(mode_dropdown)
+        page_box.append(mode_row)
+
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        controls.add_css_class("inline-toolbar")
+        apply_btn = Gtk.Button(label="Apply")
+        apply_btn.add_css_class("suggested-action")
+        apply_btn.connect("clicked", lambda *_: self._apply_settings_workspace_changes())
+        advanced_btn = Gtk.Button(label="Open Full Preferences")
+        advanced_btn.connect("clicked", lambda *_: self._open_preferences_dialog_force())
+        controls.append(apply_btn)
+        controls.append(advanced_btn)
+        page_box.append(controls)
+
+        status_label = Gtk.Label(label="Ready.")
+        status_label.set_halign(Gtk.Align.START)
+        status_label.set_wrap(True)
+        status_label.add_css_class("muted")
+        self._settings_workspace_status_label = status_label
+        page_box.append(status_label)
+
+        self._refresh_settings_workspace_page()
+        return page_scroll
+
+    def _refresh_settings_workspace_page(self) -> None:
+        llm_enabled = getattr(self, "_settings_workspace_llm_enabled_toggle", None)
+        llm_auto_select = getattr(self, "_settings_workspace_auto_select_toggle", None)
+        semantic_enabled = getattr(self, "_settings_workspace_semantic_toggle", None)
+        autopilot_enabled = getattr(self, "_settings_workspace_autopilot_toggle", None)
+        notifications = getattr(self, "_settings_workspace_notifications_toggle", None)
+        modern_toggle = getattr(self, "_settings_workspace_modern_toggle", None)
+        reduce_motion = getattr(self, "_settings_workspace_reduce_motion_toggle", None)
+        mode_dropdown = getattr(self, "_settings_workspace_mode_dropdown", None)
+        if (
+            llm_enabled is None
+            or llm_auto_select is None
+            or semantic_enabled is None
+            or autopilot_enabled is None
+            or notifications is None
+            or modern_toggle is None
+            or reduce_motion is None
+            or mode_dropdown is None
+        ):
+            return
+        llm_enabled.set_active(bool(getattr(self, "local_llm_enabled", True)))
+        llm_auto_select.set_active(bool(getattr(self, "local_llm_auto_select", DEFAULT_OLLAMA_AUTO_SELECT)))
+        semantic_enabled.set_active(bool(getattr(self, "semantic_enabled", True)))
+        autopilot_enabled.set_active(bool(getattr(self, "ai_tutor_autopilot_enabled", True)))
+        notifications.set_active(bool(getattr(self, "notifications_enabled", True)))
+        modern_locked = bool(UI_MODERN_HARD_LOCK)
+        modern_toggle.set_active(bool(getattr(self, "ui_modern_enabled", DEFAULT_UI_MODERN_ENABLED)))
+        modern_toggle.set_sensitive(not modern_locked)
+        if modern_locked:
+            modern_toggle.set_tooltip_text("Modern workspace is locked on in this build.")
+        else:
+            modern_toggle.set_tooltip_text(None)
+        reduce_motion.set_active(bool(getattr(self, "ui_reduce_motion", DEFAULT_UI_REDUCE_MOTION)))
+        mode = self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))
+        mapping = {"suggest": 0, "assist": 1, "cockpit": 2}
+        mode_dropdown.set_selected(int(mapping.get(mode, 1)))
+        self._refresh_workbench_shell_status()
+
+    def _apply_settings_workspace_changes(self) -> None:
+        llm_enabled = getattr(self, "_settings_workspace_llm_enabled_toggle", None)
+        llm_auto_select = getattr(self, "_settings_workspace_auto_select_toggle", None)
+        semantic_enabled = getattr(self, "_settings_workspace_semantic_toggle", None)
+        autopilot_enabled = getattr(self, "_settings_workspace_autopilot_toggle", None)
+        notifications = getattr(self, "_settings_workspace_notifications_toggle", None)
+        modern_toggle = getattr(self, "_settings_workspace_modern_toggle", None)
+        reduce_motion = getattr(self, "_settings_workspace_reduce_motion_toggle", None)
+        mode_dropdown = getattr(self, "_settings_workspace_mode_dropdown", None)
+        status_label = getattr(self, "_settings_workspace_status_label", None)
+        if (
+            llm_enabled is None
+            or llm_auto_select is None
+            or semantic_enabled is None
+            or autopilot_enabled is None
+            or notifications is None
+            or modern_toggle is None
+            or reduce_motion is None
+            or mode_dropdown is None
+        ):
+            return
+        self.local_llm_enabled = bool(llm_enabled.get_active())
+        self.local_llm_auto_select = self._coerce_local_llm_auto_select(llm_auto_select.get_active())
+        semantic_requested = bool(semantic_enabled.get_active())
+        self.notifications_enabled = bool(notifications.get_active())
+        self.ai_tutor_autopilot_enabled = bool(autopilot_enabled.get_active())
+        if bool(UI_MODERN_HARD_LOCK):
+            self.ui_modern_enabled = True
+            self.ui_legacy_fallback_enabled = False
+        else:
+            self.ui_modern_enabled = bool(modern_toggle.get_active())
+        self.ui_reduce_motion = bool(reduce_motion.get_active())
+        mode_idx = int(mode_dropdown.get_selected())
+        mode_map = {0: "suggest", 1: "assist", 2: "cockpit"}
+        self.ai_tutor_autonomy_mode = self._coerce_ai_tutor_autonomy_mode(mode_map.get(mode_idx, "assist"))
+        self._restart_ai_tutor_global_autopilot_timer()
+        self._set_semantic_enabled(semantic_requested, persist=False)
+        self._refresh_ui_style_runtime()
+        self.save_preferences()
+        self._refresh_tutor_workspace_page()
+        self._refresh_coach_workspace_page()
+        self._refresh_insights_workspace_page()
+        self._refresh_settings_workspace_page()
+        if status_label is not None:
+            self._set_label_text_if_changed(status_label, "Applied. Settings saved.")
+
+    def _open_preferences_dialog_force(self) -> None:
+        previous = bool(getattr(self, "_force_preferences_dialog_open", False))
+        self._force_preferences_dialog_open = True
+        try:
+            self.on_open_preferences(None, None)
+        finally:
+            self._force_preferences_dialog_open = previous
+
     def on_toggle_menu_shortcut(self, *_args):
         self.toggle_menu_bar()
         return True
@@ -2031,9 +4283,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.on_export_question_stats(None)
 
     def on_open_ai_tutor(self, *_args):
+        if bool(getattr(self, "ui_modern_enabled", False)) and self._open_workspace_tab("tutor"):
+            return
         self._open_ai_tutor_dialog()
 
     def on_open_ai_coach(self, *_args):
+        if bool(getattr(self, "ui_modern_enabled", False)) and self._open_workspace_tab("coach"):
+            return
         self._open_ai_coach_dialog()
 
     def on_view_weekly_report(self, _action, _param):
@@ -3057,6 +5313,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         dialog.present()
 
     def on_open_preferences(self, _action, _param):
+        if bool(getattr(self, "ui_modern_enabled", False)) and not bool(
+            getattr(self, "_force_preferences_dialog_open", False)
+        ):
+            if self._open_workspace_tab("settings"):
+                return
         dialog = self._new_dialog(title="Preferences", transient_for=self, modal=True)
         dialog.add_buttons("_Close", Gtk.ResponseType.CLOSE)
         content = dialog.get_content_area()
@@ -3136,6 +5397,90 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         content.append(semantic_toggle)
         content.append(show_perf)
         content.append(recall_release)
+
+        ui_title = Gtk.Label(label="UI Modernization")
+        ui_title.set_halign(Gtk.Align.START)
+        ui_title.add_css_class("section-title")
+        content.append(ui_title)
+        modern_locked = bool(UI_MODERN_HARD_LOCK)
+        ui_note = Gtk.Label(
+            label=(
+                "Calm professional UI with progressive disclosure."
+                if modern_locked
+                else "Calm professional UI with progressive disclosure and an emergency fallback path."
+            )
+        )
+        ui_note.set_halign(Gtk.Align.START)
+        ui_note.set_wrap(True)
+        ui_note.add_css_class("muted")
+        content.append(ui_note)
+        ui_modern_enabled = Gtk.CheckButton(label="Enable modern UI polish")
+        ui_modern_enabled.set_active(
+            bool(
+                self._coerce_ui_toggle(
+                    getattr(self, "ui_modern_enabled", DEFAULT_UI_MODERN_ENABLED),
+                    bool(DEFAULT_UI_MODERN_ENABLED),
+                )
+            )
+        )
+        ui_reduce_motion = Gtk.CheckButton(label="Reduce motion/transitions")
+        ui_reduce_motion.set_active(
+            bool(
+                self._coerce_ui_toggle(
+                    getattr(self, "ui_reduce_motion", DEFAULT_UI_REDUCE_MOTION),
+                    bool(DEFAULT_UI_REDUCE_MOTION),
+                )
+            )
+        )
+        ui_legacy_fallback = Gtk.CheckButton(label="Allow emergency fallback to legacy UI")
+        ui_legacy_fallback.set_active(
+            bool(
+                self._coerce_ui_toggle(
+                    getattr(self, "ui_legacy_fallback_enabled", DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
+                    bool(DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
+                )
+            )
+        )
+        if modern_locked:
+            ui_modern_enabled.set_active(True)
+            ui_modern_enabled.set_sensitive(False)
+            ui_modern_enabled.set_tooltip_text("Modern workspace is locked on in this build.")
+            ui_legacy_fallback.set_active(False)
+            ui_legacy_fallback.set_sensitive(False)
+            ui_legacy_fallback.set_tooltip_text("Legacy fallback is disabled in this build.")
+        ui_density_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        ui_density_label = Gtk.Label(label="UI density policy")
+        ui_density_label.set_halign(Gtk.Align.START)
+        ui_density_model = Gtk.StringList.new(["progressive"])
+        ui_density_dropdown = Gtk.DropDown.new(ui_density_model, None)
+        ui_density_dropdown.set_selected(0)
+        ui_density_row.set_spacing(10)
+        ui_density_row.set_hexpand(True)
+        ui_density_label.set_xalign(0.0)
+        ui_density_label.set_hexpand(True)
+        ui_density_dropdown.set_hexpand(False)
+        ui_density_dropdown.set_halign(Gtk.Align.END)
+        ui_density_dropdown.set_size_request(150, -1)
+        ui_density_row.append(ui_density_label)
+        ui_density_row.append(ui_density_dropdown)
+        ui_fallback_now_btn = Gtk.Button(label="Fallback to Legacy Now")
+        ui_fallback_now_btn.add_css_class("flat")
+        ui_fallback_now_btn.set_sensitive(
+            bool(ui_legacy_fallback.get_active()) and bool(ui_modern_enabled.get_active())
+        )
+        if modern_locked:
+            ui_fallback_now_btn.set_sensitive(False)
+            ui_fallback_now_btn.set_tooltip_text("Legacy fallback is disabled in this build.")
+        ui_state_info = Gtk.Label(label="")
+        ui_state_info.set_halign(Gtk.Align.START)
+        ui_state_info.set_wrap(True)
+        ui_state_info.add_css_class("muted")
+        content.append(ui_modern_enabled)
+        content.append(ui_reduce_motion)
+        content.append(ui_legacy_fallback)
+        content.append(ui_density_row)
+        content.append(ui_fallback_now_btn)
+        content.append(ui_state_info)
 
         llm_title = Gtk.Label(label="Local AI (Ollama)")
         llm_title.set_halign(Gtk.Align.START)
@@ -3516,6 +5861,43 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         test_sound_btn.connect("clicked", _test_sound)
         test_idle_btn.connect("clicked", _test_idle)
         test_idle_hook_btn.connect("clicked", _test_idle_hook)
+
+        def _apply_ui_runtime_preview() -> None:
+            if modern_locked:
+                self.ui_modern_enabled = True
+                self.ui_legacy_fallback_enabled = False
+            else:
+                self.ui_modern_enabled = bool(ui_modern_enabled.get_active())
+                self.ui_legacy_fallback_enabled = bool(ui_legacy_fallback.get_active())
+            self.ui_reduce_motion = bool(ui_reduce_motion.get_active())
+            self.ui_density_mode = str(DEFAULT_UI_DENSITY_MODE)
+            self._refresh_ui_style_runtime()
+            modern_state = "modern" if bool(self.ui_modern_enabled) else "legacy"
+            fallback_state = "on" if bool(self.ui_legacy_fallback_enabled) else "off"
+            motion_state = "reduced" if bool(self.ui_reduce_motion) else "standard"
+            ui_state_info.set_text(
+                f"UI state: {modern_state} • fallback {fallback_state} • motion {motion_state}"
+            )
+            ui_fallback_now_btn.set_sensitive(
+                (not modern_locked) and bool(ui_legacy_fallback.get_active()) and bool(ui_modern_enabled.get_active())
+            )
+
+        def _on_ui_fallback_now(_btn) -> None:
+            if modern_locked:
+                ui_state_info.set_text("Legacy fallback is disabled in this build.")
+                return
+            if not bool(ui_legacy_fallback.get_active()):
+                ui_state_info.set_text("Enable emergency fallback first.")
+                return
+            ui_modern_enabled.set_active(False)
+            _apply_ui_runtime_preview()
+
+        ui_modern_enabled.connect("toggled", lambda *_a: _apply_ui_runtime_preview())
+        ui_reduce_motion.connect("toggled", lambda *_a: _apply_ui_runtime_preview())
+        ui_legacy_fallback.connect("toggled", lambda *_a: _apply_ui_runtime_preview())
+        ui_fallback_now_btn.connect("clicked", _on_ui_fallback_now)
+        _apply_ui_runtime_preview()
+
         def _reset_pomodoro_defaults(_btn):
             pomodoro_banner.set_active(True)
             pomodoro_title_flash.set_active(True)
@@ -3591,6 +5973,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 self.max_break_skips = DEFAULT_MAX_BREAK_SKIPS
             self.use_system_theme = bool(system_theme.get_active())
+            if modern_locked:
+                self.ui_modern_enabled = True
+                self.ui_legacy_fallback_enabled = False
+            else:
+                self.ui_modern_enabled = bool(ui_modern_enabled.get_active())
+                self.ui_legacy_fallback_enabled = bool(ui_legacy_fallback.get_active())
+            self.ui_density_mode = str(DEFAULT_UI_DENSITY_MODE)
+            self.ui_reduce_motion = bool(ui_reduce_motion.get_active())
             self.coach_only_view = bool(coach_only.get_active())
             self.sticky_coach_pick = bool(sticky_pick.get_active())
             self.adaptive_quiz_prioritization = bool(adaptive_quiz.get_active())
@@ -3652,7 +6042,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.focus_idle_threshold = FOCUS_IDLE_THRESHOLD_SECONDS
             self.menu_bar.set_visible(self.menu_bar_visible)
             self._set_coach_only_view(bool(self.coach_only_view), persist=False, animate_badge=False)
-            apply_theme(bool(self.use_system_theme))
+            self._refresh_ui_style_runtime()
+            prefs_vm = PreferencesVM(
+                modern_enabled=bool(self.ui_modern_enabled),
+                density_mode=str(self.ui_density_mode),
+                reduce_motion=bool(self.ui_reduce_motion),
+                legacy_fallback_enabled=bool(self.ui_legacy_fallback_enabled),
+            )
+            prefs_controller = getattr(self, "_ui_controllers", {}).get("preferences")
+            if prefs_controller is not None:
+                try:
+                    prefs_controller.render(prefs_vm, self._ui_build_render_context("preferences.close"))
+                except Exception:
+                    pass
             if getattr(self, "engine", None) is not None:
                 self.engine.adaptive_quiz_prioritization = bool(self.adaptive_quiz_prioritization)
                 self.engine.semantic_enabled = bool(self.semantic_enabled)
@@ -3667,18 +6069,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     pass
             self._record_ai_tutor_autopilot_metrics(
                 {
-                    "autopilot_mode": str(self.ai_tutor_autonomy_mode),
+                    "autopilot_mode": str(self._effective_ai_tutor_autonomy_mode()),
                 },
                 persist=False,
             )
+            self._restart_ai_tutor_global_autopilot_timer()
             self._sync_semantic_action_state()
             self.save_preferences()
+            try:
+                self._refresh_tutor_workspace_page()
+                self._refresh_coach_workspace_page()
+                self._refresh_insights_workspace_page()
+                self._refresh_settings_workspace_page()
+            except Exception:
+                pass
             dialog.destroy()
 
         dialog.connect("response", _on_close)
         dialog.present()
 
     def on_debug_info(self, _action, _param):
+        if bool(getattr(self, "ui_modern_enabled", False)) and self._open_workspace_tab("insights"):
+            return
         hub = getattr(self.engine, "study_hub_stats", {}) or {}
         graph_status = self.engine.get_semantic_graph_status()
         drift = self.engine.get_semantic_drift_kpi(days=7)
@@ -3772,6 +6184,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         tutor_gap_generated = int(tutor_map.get("gap_q_generated_count", 0) or 0)
         tutor_gap_saved = int(tutor_map.get("gap_q_saved_count", 0) or 0)
         tutor_gap_quarantined = int(tutor_map.get("gap_q_quarantined_count", 0) or 0)
+        ui_modern = bool(getattr(self, "ui_modern_enabled", False))
+        ui_density_mode = str(getattr(self, "ui_density_mode", DEFAULT_UI_DENSITY_MODE) or DEFAULT_UI_DENSITY_MODE)
+        ui_reduce_motion = bool(getattr(self, "ui_reduce_motion", False))
+        ui_fallback = bool(getattr(self, "ui_legacy_fallback_enabled", True))
+        ui_dialogs_open = 0
+        try:
+            lifecycle = getattr(self, "_ui_dialog_lifecycle", None)
+            if lifecycle is not None and hasattr(lifecycle, "count"):
+                ui_dialogs_open = int(lifecycle.count() or 0)
+        except Exception:
+            ui_dialogs_open = 0
+        ui_last_fault = getattr(self, "_ui_last_fault", None)
+        ui_last_fault_text = "none"
+        if isinstance(ui_last_fault, UIFaultReport):
+            ui_last_fault_text = f"{ui_last_fault.section_id}:{ui_last_fault.error}"
         error_classes_map = tutor_map.get("error_classes", {})
         error_classes: list[str] = []
         if isinstance(error_classes_map, dict):
@@ -3803,6 +6230,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             f"Route cache hits: {int(perf_map.get('route_cache_hits', 0) or 0)}\n"
             f"TF-IDF assets hit/miss: {int(perf_map.get('tfidf_asset_hits', 0) or 0)}/{int(perf_map.get('tfidf_asset_misses', 0) or 0)}\n"
             f"Route latency max/avg (ms): {float(perf_map.get('max_route_ms', 0.0) or 0.0):.2f}/{float(perf_map.get('avg_route_ms', 0.0) or 0.0):.2f}\n"
+            f"UI mode: {'modern' if ui_modern else 'legacy'} ({ui_density_mode})\n"
+            f"UI fallback/reduce-motion: {ui_fallback}/{ui_reduce_motion}\n"
+            f"UI dialogs tracked: {ui_dialogs_open}\n"
+            f"UI last fault: {ui_last_fault_text}\n"
             f"AI Tutor turns (last {tutor_window}): {tutor_total}\n"
             f"AI Tutor success/cancel/error: {tutor_success}/{tutor_cancelled}/{tutor_error}\n"
             f"AI Tutor cancellation rate: {tutor_cancel_pct:.1f}%\n"
@@ -5196,6 +7627,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.level = int(data.get("level", 1) or 1)
                     self.achievements = set(data.get("achievements", []) or [])
                     self.use_system_theme = bool(data.get("use_system_theme", True))
+                    self.ui_modern_enabled = bool(
+                        self._coerce_ui_toggle(
+                            data.get("ui_modern_enabled", DEFAULT_UI_MODERN_ENABLED),
+                            bool(DEFAULT_UI_MODERN_ENABLED),
+                        )
+                    )
+                    self.ui_density_mode = str(
+                        self._coerce_ui_density_mode(data.get("ui_density_mode", DEFAULT_UI_DENSITY_MODE))
+                    )
+                    self.ui_reduce_motion = bool(
+                        self._coerce_ui_toggle(
+                            data.get("ui_reduce_motion", DEFAULT_UI_REDUCE_MOTION),
+                            bool(DEFAULT_UI_REDUCE_MOTION),
+                        )
+                    )
+                    self.ui_legacy_fallback_enabled = bool(
+                        self._coerce_ui_toggle(
+                            data.get("ui_legacy_fallback_enabled", DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
+                            bool(DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
+                        )
+                    )
                     self.coach_only_view = bool(data.get("coach_only_view", False))
                     self.sticky_coach_pick = bool(data.get("sticky_coach_pick", True))
                     self.adaptive_quiz_prioritization = bool(
@@ -5399,6 +7851,29 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "level": int(self.level),
                 "achievements": sorted(self.achievements),
                 "use_system_theme": bool(self.use_system_theme),
+                "ui_modern_enabled": bool(
+                    self._coerce_ui_toggle(
+                        getattr(self, "ui_modern_enabled", DEFAULT_UI_MODERN_ENABLED),
+                        bool(DEFAULT_UI_MODERN_ENABLED),
+                    )
+                ),
+                "ui_density_mode": str(
+                    self._coerce_ui_density_mode(
+                        getattr(self, "ui_density_mode", DEFAULT_UI_DENSITY_MODE)
+                    )
+                ),
+                "ui_reduce_motion": bool(
+                    self._coerce_ui_toggle(
+                        getattr(self, "ui_reduce_motion", DEFAULT_UI_REDUCE_MOTION),
+                        bool(DEFAULT_UI_REDUCE_MOTION),
+                    )
+                ),
+                "ui_legacy_fallback_enabled": bool(
+                    self._coerce_ui_toggle(
+                        getattr(self, "ui_legacy_fallback_enabled", DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
+                        bool(DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
+                    )
+                ),
                 "coach_only_view": bool(self.coach_only_view),
                 "sticky_coach_pick": bool(self.sticky_coach_pick),
                 "adaptive_quiz_prioritization": bool(self.adaptive_quiz_prioritization),
@@ -5546,6 +8021,176 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 getattr(self, "local_llm_auto_select", DEFAULT_OLLAMA_AUTO_SELECT)
             )
         )
+
+    def _coerce_ui_density_mode(self, value: Any) -> str:
+        mode = str(value or DEFAULT_UI_DENSITY_MODE).strip().lower()
+        if mode not in UI_DENSITY_MODES:
+            return str(DEFAULT_UI_DENSITY_MODE)
+        return mode
+
+    def _coerce_ui_toggle(self, value: Any, default: bool) -> bool:
+        if isinstance(value, bool):
+            return bool(value)
+        raw = str(value or "").strip().lower()
+        if not raw:
+            return bool(default)
+        return raw in {"1", "true", "yes", "on", "enabled"}
+
+    def _refresh_ui_style_runtime(self) -> None:
+        try:
+            self.ui_density_mode = self._coerce_ui_density_mode(
+                getattr(self, "ui_density_mode", DEFAULT_UI_DENSITY_MODE)
+            )
+            self.ui_modern_enabled = bool(
+                self._coerce_ui_toggle(
+                    getattr(self, "ui_modern_enabled", DEFAULT_UI_MODERN_ENABLED),
+                    bool(DEFAULT_UI_MODERN_ENABLED),
+                )
+            )
+            self.ui_reduce_motion = bool(
+                self._coerce_ui_toggle(
+                    getattr(self, "ui_reduce_motion", DEFAULT_UI_REDUCE_MOTION),
+                    bool(DEFAULT_UI_REDUCE_MOTION),
+                )
+            )
+            self.ui_legacy_fallback_enabled = bool(
+                self._coerce_ui_toggle(
+                    getattr(self, "ui_legacy_fallback_enabled", DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
+                    bool(DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
+                )
+            )
+            if bool(UI_MODERN_HARD_LOCK):
+                self.ui_modern_enabled = True
+                self.ui_legacy_fallback_enabled = False
+        except Exception:
+            pass
+        try:
+            set_theme_runtime_options(
+                modern_enabled=bool(getattr(self, "ui_modern_enabled", False)),
+                density_mode=str(getattr(self, "ui_density_mode", DEFAULT_UI_DENSITY_MODE)),
+                reduce_motion=bool(getattr(self, "ui_reduce_motion", False)),
+                legacy_fallback_enabled=bool(getattr(self, "ui_legacy_fallback_enabled", True)),
+            )
+        except Exception:
+            pass
+        try:
+            apply_theme(bool(self.use_system_theme))
+        except Exception:
+            pass
+        try:
+            if bool(getattr(self, "ui_modern_enabled", False)):
+                self.add_css_class("ui-modern")
+            else:
+                self.remove_css_class("ui-modern")
+        except Exception:
+            pass
+        try:
+            if bool(getattr(self, "ui_reduce_motion", False)):
+                self.add_css_class("reduce-motion")
+            else:
+                self.remove_css_class("reduce-motion")
+        except Exception:
+            pass
+        try:
+            switcher = getattr(self, "workbench_switcher", None)
+            stack = getattr(self, "workbench_stack", None)
+            modern_enabled = bool(getattr(self, "ui_modern_enabled", False))
+            reduce_motion = bool(getattr(self, "ui_reduce_motion", False))
+            if switcher is not None:
+                switcher.set_visible(modern_enabled)
+            if stack is not None:
+                if reduce_motion:
+                    stack.set_transition_type(Gtk.StackTransitionType.NONE)
+                    stack.set_transition_duration(0)
+                else:
+                    stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+                    stack.set_transition_duration(140)
+                if not modern_enabled:
+                    stack.set_visible_child_name("dashboard")
+        except Exception:
+            pass
+
+    def _schedule_ui_refresh(
+        self,
+        key: str,
+        callback: Callable[[], bool],
+        *,
+        delay_ms: int = 120,
+        idle: bool = False,
+    ) -> bool:
+        scheduler = getattr(self, "_ui_refresh_scheduler", None)
+        if scheduler is None:
+            return False
+        try:
+            return bool(
+                scheduler.schedule(
+                    str(key or ""),
+                    callback,
+                    delay_ms=max(1, int(delay_ms)),
+                    idle=bool(idle),
+                )
+            )
+        except Exception:
+            return False
+
+    def _ui_build_render_context(self, reason: str) -> UIRenderContext:
+        width = 0
+        height = 0
+        try:
+            width = int(self.get_width() or 0)
+            height = int(self.get_height() or 0)
+        except Exception:
+            width = 0
+            height = 0
+        compact = bool(getattr(self, "_compact_mode", False))
+        tile = bool(getattr(self, "_tile_mode", False))
+        context = UIRenderContext(
+            reason=str(reason or "ui_refresh"),
+            timestamp_iso=datetime.datetime.now().isoformat(timespec="seconds"),
+            width=width,
+            height=height,
+            compact=compact,
+            tile=tile,
+            density_mode=str(getattr(self, "ui_density_mode", DEFAULT_UI_DENSITY_MODE)),
+            reduce_motion=bool(getattr(self, "ui_reduce_motion", False)),
+        )
+        self._ui_last_render_context = context
+        return context
+
+    def _emit_ui_action_intent(self, action_id: str, source: str = "ui", payload: dict[str, Any] | None = None) -> UIActionIntent:
+        intent = UIActionIntent(
+            action_id=str(action_id or ""),
+            source=str(source or "ui"),
+            payload=dict(payload or {}),
+        )
+        try:
+            self._ui_last_action_intent = intent
+        except Exception:
+            pass
+        return intent
+
+    def _safe_render_section(
+        self,
+        section_id: str,
+        render_fn: Callable[[], Any],
+        fallback_fn: Callable[[UIFaultReport], Any] | None = None,
+    ) -> bool:
+        try:
+            render_fn()
+            return True
+        except Exception as exc:
+            report = UIFaultReport.build(section_id=section_id, error=type(exc).__name__, details=str(exc), recoverable=True)
+            self._ui_last_fault = report
+            if callable(fallback_fn):
+                try:
+                    fallback_fn(report)
+                except Exception:
+                    pass
+            try:
+                self._log_error(f"ui_section.{section_id}", exc)
+            except Exception:
+                pass
+            return False
 
     def _estimate_local_llm_model_size_b(self, model_name: str) -> float | None:
         raw = str(model_name or "").strip().lower()
@@ -5914,6 +8559,78 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     pass
         return selected, None
+
+    def _coerce_local_llm_model_failover_max(self, value: Any) -> int:
+        try:
+            parsed = int(value)
+        except Exception:
+            parsed = int(AI_TUTOR_MODEL_FAILOVER_MAX)
+        return max(1, min(5, int(parsed)))
+
+    def _build_local_llm_model_failover_sequence(
+        self,
+        purpose: str = "general",
+        model_override: str | None = None,
+        available_models: list[str] | None = None,
+        persist: bool = True,
+        max_candidates: int | None = None,
+    ) -> tuple[list[str], str | None]:
+        max_raw: Any = max_candidates
+        if max_raw is None:
+            max_raw = os.environ.get(
+                "STUDYPLAN_AI_TUTOR_MODEL_FAILOVER_MAX",
+                AI_TUTOR_MODEL_FAILOVER_MAX,
+            )
+        limit = self._coerce_local_llm_model_failover_max(max_raw)
+        selected, selected_err = self._select_local_llm_model(
+            model_override=model_override,
+            purpose=purpose,
+            available_models=available_models,
+            persist=persist,
+        )
+        if str(model_override or "").strip():
+            chosen = str(model_override or "").strip()
+            err_text = str(selected_err or "").strip()
+            return ([chosen] if chosen else []), (err_text or None)
+
+        if isinstance(available_models, list):
+            models = [
+                str(item).strip()
+                for item in list(available_models or [])
+                if str(item or "").strip() and not str(item or "").strip().startswith("(")
+            ]
+            list_err = None
+        else:
+            models, list_err = self._get_ollama_models_cached(force_refresh=False)
+        ranked = self._rank_local_llm_models(models, purpose=purpose) if models else []
+        configured = str(getattr(self, "local_llm_model", "") or "").strip()
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def _append(name: str) -> None:
+            candidate = str(name or "").strip()
+            if not candidate or candidate.startswith("(") or candidate in seen:
+                return
+            seen.add(candidate)
+            ordered.append(candidate)
+
+        _append(selected)
+        for row in list(ranked or []):
+            if isinstance(row, dict):
+                _append(str(row.get("model", "") or ""))
+        _append(configured)
+        for item in list(models or []):
+            _append(item)
+
+        errors: list[str] = []
+        if selected_err:
+            errors.append(str(selected_err))
+        if list_err:
+            msg = f"Ollama model lookup failed: {list_err}"
+            if msg not in errors:
+                errors.append(msg)
+        return ordered[: int(limit)], ("; ".join(errors) if errors else None)
 
     def _get_ollama_retry_limit(self) -> int:
         raw = str(os.environ.get("STUDYPLAN_OLLAMA_TRANSIENT_RETRIES", DEFAULT_OLLAMA_TRANSIENT_RETRIES) or "")
@@ -7285,6 +10002,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if callable(cache_hash) and callable(cache_get) and callable(cache_put):
             key_payload = {
                 "kind": "tutor_context_prompt",
+                "prompt_contract_version": int(AI_TUTOR_PROMPT_CONTRACT_VERSION),
                 "history": list(history or []),
                 "user_prompt": str(user_prompt or ""),
                 "module_title": str(module_title or ""),
@@ -7953,11 +10671,301 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             tick = int(AI_TUTOR_AUTOPILOT_TICK_DEFAULT_SECONDS)
         return max(AI_TUTOR_AUTOPILOT_TICK_MIN_SECONDS, min(AI_TUTOR_AUTOPILOT_TICK_MAX_SECONDS, int(tick)))
 
+    def _effective_ai_tutor_autonomy_mode(self) -> str:
+        if bool(getattr(self, "ai_tutor_autopilot_enabled", True)):
+            return "cockpit"
+        return self._coerce_ai_tutor_autonomy_mode(
+            getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE)
+        )
+
+    def _restart_ai_tutor_global_autopilot_timer(self) -> None:
+        source_id = int(getattr(self, "_ai_tutor_global_autopilot_id", 0) or 0)
+        if source_id > 0:
+            try:
+                self._remove_glib_source(source_id)
+            except Exception:
+                pass
+        self._ai_tutor_global_autopilot_id = 0
+        self._ai_tutor_global_autopilot_busy = False
+        self._ai_tutor_global_last_event_sig = ""
+        self._ai_tutor_global_last_decision_at = 0.0
+        self._ai_tutor_global_quiet_until = 0.0
+        if not bool(getattr(self, "ai_tutor_autopilot_enabled", True)):
+            return
+        interval = self._coerce_ai_tutor_autopilot_tick_seconds(
+            getattr(self, "ai_tutor_autopilot_tick_seconds", AI_TUTOR_AUTOPILOT_TICK_DEFAULT_SECONDS)
+        )
+        try:
+            source_id = int(GLib.timeout_add_seconds(int(interval), self._global_ai_tutor_autopilot_tick) or 0)
+        except Exception:
+            source_id = 0
+        self._ai_tutor_global_autopilot_id = source_id
+        self._register_glib_source(source_id)
+        def _kick_once() -> bool:
+            self._global_ai_tutor_autopilot_tick()
+            return False
+        GLib.idle_add(_kick_once, priority=GLib.PRIORITY_LOW)
+
+    def _consume_global_ai_tutor_action_budget(self, now_ts: float) -> bool:
+        window: list[float] = []
+        for ts in list(getattr(self, "_ai_tutor_global_autopilot_action_window", []) or []):
+            try:
+                value = float(ts)
+            except Exception:
+                continue
+            if (now_ts - value) <= float(AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS):
+                window.append(value)
+        if len(window) >= int(max(1, AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW)):
+            self._ai_tutor_global_autopilot_action_window = window
+            return False
+        window.append(float(now_ts))
+        self._ai_tutor_global_autopilot_action_window = window
+        return True
+
+    def _build_ai_tutor_autopilot_event_signature(self, snapshot: dict[str, Any]) -> str:
+        focus_info = snapshot.get("focus_trend_14d", {}) if isinstance(snapshot.get("focus_trend_14d", {}), dict) else {}
+        try:
+            integrity = float(focus_info.get("integrity_pct", -1.0) or -1.0)
+        except Exception:
+            integrity = -1.0
+        if integrity < 0.0:
+            integrity_bucket = -1
+        else:
+            integrity_bucket = int(max(0.0, min(100.0, integrity)) // 5.0)
+        try:
+            pomodoro_remaining_sec = int(snapshot.get("pomodoro_remaining_sec", 0) or 0)
+        except Exception:
+            pomodoro_remaining_sec = 0
+        signal = {
+            "current_topic": str(snapshot.get("current_topic", "") or ""),
+            "coach_pick": str(snapshot.get("coach_pick", "") or ""),
+            "must_review_due": int(snapshot.get("must_review_due", 0) or 0),
+            "overdue_srs_count": int(snapshot.get("overdue_srs_count", 0) or 0),
+            "new_srs_count": int(snapshot.get("new_srs_count", 0) or 0),
+            "pomodoro_active": bool(snapshot.get("pomodoro_active", False)),
+            "pomodoro_paused": bool(snapshot.get("pomodoro_paused", False)),
+            "pomodoro_bucket": int(max(0, pomodoro_remaining_sec // 300)),
+            "focus_integrity_bucket": int(integrity_bucket),
+            "weak_topics_top3": list(snapshot.get("weak_topics_top3", []) or [])[:3],
+            "risk_snapshot_top3": list(snapshot.get("risk_snapshot_top3", []) or [])[:2],
+            "due_snapshot_top3": list(snapshot.get("due_snapshot_top3", []) or [])[:2],
+            "runtime_scope": str(snapshot.get("runtime_scope", "") or ""),
+        }
+        signal_json = json.dumps(signal, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        cache_hash = getattr(self, "_ai_cache_sha1", None)
+        if callable(cache_hash):
+            try:
+                return str(cache_hash(signal_json))
+            except Exception:
+                pass
+        return hashlib.sha1(signal_json.encode("utf-8", errors="ignore")).hexdigest()
+
+    def _should_request_global_ai_tutor_decision(
+        self,
+        snapshot: dict[str, Any],
+        now_ts: float | None = None,
+    ) -> tuple[bool, str, str]:
+        event_sig = self._build_ai_tutor_autopilot_event_signature(snapshot)
+        if not event_sig:
+            return True, "missing_signature", ""
+        last_sig = str(getattr(self, "_ai_tutor_global_last_event_sig", "") or "")
+        if not last_sig:
+            return True, "first_run", event_sig
+        if event_sig != last_sig:
+            return True, "state_changed", event_sig
+        try:
+            now_val = float(now_ts if now_ts is not None else time.monotonic())
+        except Exception:
+            now_val = float(time.monotonic())
+        try:
+            quiet_until = float(getattr(self, "_ai_tutor_global_quiet_until", 0.0) or 0.0)
+        except Exception:
+            quiet_until = 0.0
+        if quiet_until > now_val:
+            return False, "quiet_window", event_sig
+        try:
+            last_decision_at = float(getattr(self, "_ai_tutor_global_last_decision_at", 0.0) or 0.0)
+        except Exception:
+            last_decision_at = 0.0
+        refresh_raw = os.environ.get("STUDYPLAN_AI_TUTOR_AUTOPILOT_REFRESH_SECONDS", AI_TUTOR_AUTOPILOT_DECISION_REFRESH_SECONDS)
+        try:
+            refresh_seconds = int(refresh_raw)
+        except Exception:
+            refresh_seconds = int(AI_TUTOR_AUTOPILOT_DECISION_REFRESH_SECONDS)
+        refresh_seconds = max(60, min(1800, int(refresh_seconds)))
+        if last_decision_at <= 0.0 or (now_val - last_decision_at) >= float(refresh_seconds):
+            return True, "periodic_refresh", event_sig
+        return False, "no_material_change", event_sig
+
+    def _emit_global_ai_tutor_nudge(self, severity: str, message: str) -> None:
+        if not bool(getattr(self, "ai_tutor_nudges_enabled", True)):
+            return
+        now_ts = float(time.monotonic())
+        policy = self._coerce_ai_tutor_nudge_policy(
+            getattr(self, "ai_tutor_nudge_policy", AI_TUTOR_DEFAULT_NUDGE_POLICY)
+        )
+        cooldown = int(AI_TUTOR_NUDGE_COOLDOWN_SECONDS.get(policy, 120))
+        key = f"{str(severity or 'info').strip().lower()}:{str(message or '').strip()[:80]}"
+        last_at = float(getattr(self, "_ai_tutor_global_autopilot_last_nudge_at", 0.0) or 0.0)
+        last_key = str(getattr(self, "_ai_tutor_global_autopilot_last_nudge_key", "") or "")
+        if key == last_key and (now_ts - last_at) < float(cooldown):
+            return
+        self._ai_tutor_global_autopilot_last_nudge_at = now_ts
+        self._ai_tutor_global_autopilot_last_nudge_key = key
+        metric_key = "nudge_info_count"
+        title = "Tutor Nudge"
+        if str(severity or "").strip().lower() == "warning":
+            metric_key = "nudge_warning_count"
+            title = "Tutor Warning"
+        elif str(severity or "").strip().lower() == "intervention":
+            metric_key = "nudge_intervention_count"
+            title = "Tutor Intervention"
+        stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+        self._record_ai_tutor_autopilot_metrics(
+            {metric_key: int(stats.get(metric_key, 0) or 0) + 1},
+            persist=False,
+        )
+        try:
+            self.send_notification(title, str(message or "").strip()[:220])
+        except Exception:
+            pass
+
+    def _global_ai_tutor_autopilot_tick(self) -> bool:
+        if not bool(getattr(self, "ai_tutor_autopilot_enabled", True)):
+            self._ai_tutor_global_autopilot_id = 0
+            return False
+        if bool(getattr(self, "_dialog_smoke_mode", False)):
+            return True
+        if bool(getattr(self, "_ai_tutor_dialog_open", False)):
+            return True
+        if bool(getattr(self, "_ai_tutor_global_autopilot_busy", False)):
+            return True
+        self._ai_tutor_global_autopilot_busy = True
+
+        def _worker() -> None:
+            mode = self._effective_ai_tutor_autonomy_mode()
+            snapshot: dict[str, Any] = {}
+            decision: dict[str, Any] | None = None
+            decision_err: str | None = None
+            decision_skip_reason = ""
+            blocked_reason = ""
+            model_requested = False
+            event_sig = ""
+            try:
+                snapshot = self._build_ai_tutor_autopilot_snapshot()
+                should_request, gate_reason, event_sig = self._should_request_global_ai_tutor_decision(snapshot)
+                if should_request:
+                    model_requested = True
+                    self._ai_tutor_global_last_event_sig = str(event_sig or "")
+                    self._ai_tutor_global_last_decision_at = float(time.monotonic())
+                    decision, decision_err = self._request_ai_tutor_action_plan(snapshot)
+                    if not isinstance(decision, dict):
+                        blocked_reason = "invalid_decision"
+                        decision = None
+                else:
+                    decision_skip_reason = str(gate_reason or "no_material_change")
+            except Exception as exc:
+                blocked_reason = str(exc)
+
+            def _finish() -> bool:
+                self._ai_tutor_global_autopilot_busy = False
+                stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+                executed = False
+                action_message = ""
+                updates: dict[str, Any] = {
+                    "autopilot_mode": str(mode),
+                }
+                if model_requested:
+                    updates["autopilot_decision_count"] = int(stats.get("autopilot_decision_count", 0) or 0) + 1
+                must_due = int(snapshot.get("must_review_due", 0) or 0)
+                focus_info = snapshot.get("focus_trend_14d", {}) if isinstance(snapshot.get("focus_trend_14d", {}), dict) else {}
+                integrity = focus_info.get("integrity_pct")
+                if isinstance(integrity, (int, float)) and float(integrity) < 60.0:
+                    self._emit_global_ai_tutor_nudge(
+                        "warning",
+                        "Focus integrity is slipping. Stay in allowlisted apps for this block.",
+                    )
+                if must_due >= 5:
+                    self._emit_global_ai_tutor_nudge(
+                        "intervention",
+                        f"{must_due} must-review items are due. Consider a short review burst now.",
+                    )
+                if isinstance(decision, dict):
+                    action = str(decision.get("action", "") or "").strip().lower()
+                    requires_confirmation = bool(decision.get("requires_confirmation", False))
+                    local_blocked = ""
+                    if not bool(self._can_auto_execute_ai_tutor_action(action, mode, requires_confirmation)):
+                        blocked_reason_local = "needs_confirmation_or_mode_block"
+                        reason = str(decision.get("reason", "") or "").strip()
+                        if reason:
+                            self._emit_global_ai_tutor_nudge("info", f"Suggested: {action} - {reason}")
+                        local_blocked = blocked_reason_local
+                    else:
+                        now_ts = float(time.monotonic())
+                        last_action = float(getattr(self, "_ai_tutor_global_autopilot_last_action_at", 0.0) or 0.0)
+                        if (now_ts - last_action) < float(AI_TUTOR_AUTOPILOT_ACTION_COOLDOWN_SECONDS):
+                            local_blocked = "action_cooldown"
+                        elif not self._consume_global_ai_tutor_action_budget(now_ts):
+                            local_blocked = "action_rate_limit"
+                        else:
+                            ok, msg = self._execute_ai_tutor_action(decision)
+                            action_message = str(msg or "").strip()
+                            executed = bool(ok)
+                            if executed:
+                                self._ai_tutor_global_autopilot_last_action_at = now_ts
+                            else:
+                                local_blocked = action_message or "action_failed"
+                    if not executed:
+                        if local_blocked:
+                            updates["autopilot_action_blocked_count"] = int(
+                                stats.get("autopilot_action_blocked_count", 0) or 0
+                            ) + 1
+                            updates["autopilot_last_block_reason"] = str(local_blocked)[:200]
+                else:
+                    if model_requested:
+                        if blocked_reason:
+                            updates["autopilot_action_blocked_count"] = int(
+                                stats.get("autopilot_action_blocked_count", 0) or 0
+                            ) + 1
+                            updates["autopilot_last_block_reason"] = str(blocked_reason)[:200]
+                        elif decision_err:
+                            updates["autopilot_action_blocked_count"] = int(
+                                stats.get("autopilot_action_blocked_count", 0) or 0
+                            ) + 1
+                            updates["autopilot_last_block_reason"] = str(decision_err)[:200]
+                if executed:
+                    updates["autopilot_action_executed_count"] = int(
+                        stats.get("autopilot_action_executed_count", 0) or 0
+                    ) + 1
+                    quiet_raw = os.environ.get(
+                        "STUDYPLAN_AI_TUTOR_AUTOPILOT_QUIET_SECONDS",
+                        AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS,
+                    )
+                    try:
+                        quiet_seconds = int(quiet_raw)
+                    except Exception:
+                        quiet_seconds = int(AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS)
+                    quiet_seconds = max(30, min(900, int(quiet_seconds)))
+                    self._ai_tutor_global_quiet_until = float(time.monotonic()) + float(quiet_seconds)
+                    try:
+                        self.send_notification("Tutor Cockpit", action_message or "Action executed.")
+                    except Exception:
+                        pass
+                elif decision_skip_reason and decision_skip_reason != "no_material_change":
+                    updates["autopilot_last_block_reason"] = str(decision_skip_reason)[:200]
+                self._record_ai_tutor_autopilot_metrics(updates, persist=False)
+                return False
+
+            GLib.idle_add(_finish, priority=GLib.PRIORITY_LOW)
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
+
     def _record_ai_tutor_autopilot_metrics(self, updates: dict[str, Any] | None = None, persist: bool = False) -> dict[str, Any]:
         stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
         if not stats:
             stats = {
-                "autopilot_mode": str(self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))),
+                "autopilot_mode": str(self._effective_ai_tutor_autonomy_mode()),
                 "autopilot_decision_count": 0,
                 "autopilot_action_executed_count": 0,
                 "autopilot_action_blocked_count": 0,
@@ -7995,7 +11003,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         stats[key] = value
                 except Exception:
                     continue
-        stats["autopilot_mode"] = self._coerce_ai_tutor_autonomy_mode(stats.get("autopilot_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))
+        stats["autopilot_mode"] = str(self._effective_ai_tutor_autonomy_mode())
         stats["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
         self._ai_tutor_autopilot_stats = stats
         if bool(persist):
@@ -8038,8 +11046,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "pomodoro_paused": bool(pom_paused),
             "pomodoro_remaining_sec": int(max(0, int(getattr(self, "pomodoro_remaining", 0) or 0))),
             "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            "runtime_scope": "app_wide" if bool(getattr(self, "ai_tutor_autopilot_enabled", True)) else "dialog_only",
+            "tutor_dialog_open": bool(getattr(self, "_ai_tutor_dialog_open", False)),
             "allowed_actions": list(AI_TUTOR_ALLOWED_ACTIONS),
-            "autonomy_mode": self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE)),
+            "autonomy_mode": str(self._effective_ai_tutor_autonomy_mode()),
+            "capabilities": {
+                "can_control_focus_workflow": True,
+                "can_send_notifications": bool(getattr(self, "notifications_enabled", True)),
+                "can_open_tutor_dialog": True,
+                "can_open_ai_coach": True,
+                "can_run_quiz_variants": True,
+                "can_run_drill_variants": True,
+                "can_generate_gap_questions": bool(getattr(self, "ai_tutor_gap_generation_enabled", True)),
+            },
             "learning_context": context_block,
             "learning_context_meta": {
                 "ctx_chars": int(len(context_block)),
@@ -8061,17 +11080,68 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         return snapshot
 
+    def _build_local_ai_runtime_contract(
+        self,
+        kind: str,
+        *,
+        days_to_exam: Any = None,
+        must_review_due: Any = 0,
+    ) -> str:
+        scope = str(kind or "").strip().lower()
+        try:
+            days = int(days_to_exam) if days_to_exam is not None else None
+        except Exception:
+            days = None
+        try:
+            must_due = max(0, int(must_review_due or 0))
+        except Exception:
+            must_due = 0
+        phase = "build_depth"
+        if isinstance(days, int):
+            if days <= 30:
+                phase = "final_push"
+            elif days <= 75:
+                phase = "consolidate"
+        load_state = "normal"
+        if must_due >= 8:
+            load_state = "due_pressure_high"
+        elif must_due >= 3:
+            load_state = "due_pressure_rising"
+        lines = [
+            f"Runtime contract ({scope or 'general'}):",
+            "- You are a first-class local model inside StudyPlan; the learner is in your cockpit.",
+            "- Primary objective: maximize exam score uplift per study minute with minimal learner friction.",
+            "- Use app state as source-of-truth; do not invent progress, topics, or capabilities.",
+            "- Optimization policy: clear due reviews first, then weak topics, then mixed retrieval reinforcement.",
+            f"- Exam phase: {phase}; pressure state: {load_state}.",
+            "- Keep recommendations operational: specific topic, mode, and timebox.",
+            "- Be proactive when the next high-value action is clear; do not wait for explicit prompting.",
+            "- If a preferred action is blocked, return the nearest safe alternative immediately.",
+            "- Optimize hard; avoid generic encouragement and filler.",
+        ]
+        return "\n".join(lines).strip()
+
     def _build_ai_tutor_autopilot_prompt(self, snapshot: dict[str, Any]) -> str:
         payload_json = json.dumps(snapshot, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        runtime_contract = StudyPlanGUI._build_local_ai_runtime_contract(
+            self,
+            "autopilot",
+            days_to_exam=snapshot.get("days_to_exam"),
+            must_review_due=snapshot.get("must_review_due"),
+        )
         lines = [
             "You are an ACCA AI tutor cockpit controller.",
+            runtime_contract,
             "Return exactly one JSON object and nothing else.",
             "Use this schema:",
-            '{"action":"focus_start|timer_pause|timer_resume|timer_stop|quiz_start|drill_start|review_start|interleave_start|coach_next|gap_drill_generate","topic":"chapter|empty","duration_minutes":25,"reason":"short reason","confidence":0.0,"requires_confirmation":false}',
+            '{"action":"focus_start|timer_pause|timer_resume|timer_stop|tutor_open|coach_open|quiz_start|quick_quiz_start|drill_start|weak_drill_start|leitner_drill_start|error_drill_start|leech_drill_start|review_start|interleave_start|coach_next|gap_drill_generate","topic":"chapter|empty","duration_minutes":25,"reason":"short reason","confidence":0.0,"requires_confirmation":false}',
             "Rules:",
-            "- Prefer the safest next step with low latency impact.",
+            "- Prefer the highest exam-impact safe action with bounded latency.",
+            "- Decision bias: high must_review_due -> review_start; weak-topic pressure -> weak_drill_start/drill_start; otherwise focus_start or quiz_start.",
             "- Use only topics found in snapshot weak_topics_top3/current_topic/coach_pick.",
             "- Set requires_confirmation=true for higher-impact actions (review_start, interleave_start, gap_drill_generate, timer_stop).",
+            "- Use tutor_open when opening/focusing the Tutor dialog would unblock the learner.",
+            "- Use coach_open when a coaching recommendation should be shown before further execution.",
             "- If no action should run now, return action='focus_start' with a concise reason.",
             "Snapshot JSON:",
             payload_json,
@@ -8146,18 +11216,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         snapshot: dict[str, Any],
         model_override: str | None = None,
     ) -> tuple[dict[str, Any], str | None]:
-        model_name, model_err = self._select_local_llm_model(
+        model_names, model_err = self._build_local_llm_model_failover_sequence(
             model_override=model_override,
             purpose="autopilot",
             available_models=None,
             persist=True,
         )
+        model_name = str(model_names[0] if model_names else "").strip()
         if not bool(self.local_llm_enabled):
             fallback = self._build_ai_tutor_fallback_action(snapshot, "local LLM disabled")
             fallback["model"] = model_name
             fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
             return fallback, "Local LLM is disabled."
-        if not model_name:
+        if not model_names:
             fallback_issue = "no local models found"
             if model_err and "lookup failed" in str(model_err or "").lower():
                 fallback_issue = "model lookup failed"
@@ -8165,36 +11236,53 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
             return fallback, str(model_err or "No local Ollama models found.")
         prompt = self._build_ai_tutor_autopilot_prompt(snapshot)
-        text, err = self._ollama_generate_text(model_name, prompt)
-        if err:
-            fallback = self._build_ai_tutor_fallback_action(snapshot, "ollama request failed")
-            fallback["model"] = model_name
-            fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-            _code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
-            return fallback, f"Ollama request failed: {friendly}"
-        json_text = self._extract_first_json_object(text)
-        if not json_text:
-            fallback = self._build_ai_tutor_fallback_action(snapshot, "non-JSON response")
-            fallback["model"] = model_name
-            fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-            return fallback, "Model response did not contain valid JSON."
-        try:
-            parsed = json.loads(json_text)
-        except Exception as exc:
-            fallback = self._build_ai_tutor_fallback_action(snapshot, "invalid JSON parse")
-            fallback["model"] = model_name
-            fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-            return fallback, f"Model JSON parse failed: {exc}"
-        normalized, norm_err = self._normalize_ai_tutor_action_plan(parsed, snapshot)
-        if norm_err or not normalized:
-            fallback = self._build_ai_tutor_fallback_action(snapshot, "guardrail validation fallback")
-            fallback["model"] = model_name
-            fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-            return fallback, f"Guardrail validation failed: {norm_err or 'unknown error'}"
-        normalized["source"] = "ai"
-        normalized["model"] = model_name
-        normalized["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-        return normalized, None
+        last_request_err = ""
+        last_structural_err = ""
+        attempted_models: list[str] = []
+        for attempt_idx, candidate in enumerate(model_names):
+            candidate_name = str(candidate or "").strip()
+            if not candidate_name:
+                continue
+            attempted_models.append(candidate_name)
+            text, err = self._ollama_generate_text(candidate_name, prompt)
+            if err:
+                last_request_err = str(err)
+                continue
+            json_text = self._extract_first_json_object(text)
+            if not json_text:
+                last_structural_err = "Model response did not contain valid JSON."
+                continue
+            try:
+                parsed = json.loads(json_text)
+            except Exception as exc:
+                last_structural_err = f"Model JSON parse failed: {exc}"
+                continue
+            normalized, norm_err = self._normalize_ai_tutor_action_plan(parsed, snapshot)
+            if norm_err or not normalized:
+                last_structural_err = f"Guardrail validation failed: {norm_err or 'unknown error'}"
+                continue
+            normalized["source"] = "ai"
+            normalized["model"] = candidate_name
+            normalized["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            if attempt_idx > 0:
+                normalized["failover_attempt"] = int(attempt_idx)
+            return normalized, None
+
+        if last_request_err:
+            issue = "ollama request failed"
+            _code, friendly = classify_ollama_error(last_request_err, host=self._normalize_ollama_host())
+            err_text = f"Ollama request failed: {friendly}"
+        elif last_structural_err:
+            issue = "invalid model output"
+            err_text = str(last_structural_err)
+        else:
+            issue = "no usable model output"
+            err_text = "No usable model output."
+        fallback = self._build_ai_tutor_fallback_action(snapshot, issue)
+        fallback["model"] = model_name
+        fallback["attempted_models"] = list(attempted_models)
+        fallback["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        return fallback, err_text
 
     def _can_auto_execute_ai_tutor_action(
         self,
@@ -8522,7 +11610,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         topic = str(action_plan.get("topic", "") or "").strip()
         if action not in AI_TUTOR_ALLOWED_ACTIONS:
             return False, f"Unsupported tutor action: {action or 'missing'}"
-        if action in {"quiz_start", "drill_start", "review_start", "interleave_start", "gap_drill_generate"}:
+        if action in {
+            "quiz_start",
+            "quick_quiz_start",
+            "drill_start",
+            "weak_drill_start",
+            "leitner_drill_start",
+            "error_drill_start",
+            "leech_drill_start",
+            "review_start",
+            "interleave_start",
+            "gap_drill_generate",
+        }:
             if not self._ensure_chapters_ready("Tutor Cockpit"):
                 return False, "No chapters loaded."
         if topic and topic in getattr(self.engine, "CHAPTERS", []):
@@ -8552,18 +11651,42 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return False, "No active Pomodoro to stop."
             self.on_pomodoro_stop(self.pomodoro_btn_stop)
             return True, "Stopped Pomodoro."
+        if action == "tutor_open":
+            already_open = bool(getattr(self, "_ai_tutor_dialog_open", False))
+            self._open_ai_tutor_dialog()
+            if already_open:
+                return True, "AI Tutor dialog already open and focused."
+            return True, "Opened AI Tutor dialog."
+        if action == "coach_open":
+            self.on_open_ai_coach(None)
+            return True, "Opened AI Coach dialog."
         if action == "quiz_start":
             quiz_topic = topic if self._topic_has_questions(topic) else (self.current_topic if self._topic_has_questions(self.current_topic) else "")
             if not quiz_topic:
                 return False, "No quiz topic with questions is available."
             self.start_quiz_session(topic=quiz_topic, total_override=8, kind="quiz")
             return True, f"Started quiz on {quiz_topic}."
+        if action == "quick_quiz_start":
+            self.on_quick_quiz(None)
+            return True, "Started quick quiz flow."
         if action == "drill_start":
             drill_topic = topic if self._topic_has_questions(topic) else self._get_drill_topic()
             if not drill_topic:
                 return False, "No drill topic with questions is available."
             self.start_quiz_session(topic=drill_topic, total_override=8, kind="drill")
             return True, f"Started drill on {drill_topic}."
+        if action == "weak_drill_start":
+            self.on_drill_weak(None)
+            return True, "Started weak-drill flow."
+        if action == "leitner_drill_start":
+            self.on_leitner_drill(None)
+            return True, "Started Leitner drill."
+        if action == "error_drill_start":
+            self.on_error_drill(None)
+            return True, "Started error drill flow."
+        if action == "leech_drill_start":
+            self.on_leech_drill(None)
+            return True, "Started leech drill flow."
         if action == "review_start":
             before_topic = str(self.current_topic or "")
             self.on_clear_must_review(None)
@@ -9406,6 +12529,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _build_ai_coach_prompt(self, payload: dict[str, Any]) -> str:
         learning_context = ""
+        runtime_contract = StudyPlanGUI._build_local_ai_runtime_contract(
+            self,
+            "coach",
+            days_to_exam=payload.get("days_to_exam"),
+            must_review_due=payload.get("must_review_due"),
+        )
         try:
             packet = self._build_local_ai_context_packet(kind="coach", horizon_days=AI_CONTEXT_DEFAULT_HORIZON_DAYS)
             max_chars, max_tokens = self._context_budget_limits("coach")
@@ -9426,8 +12555,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 json.dumps(
                     {
                         "kind": "coach_prompt",
+                        "prompt_contract_version": int(AI_TUTOR_PROMPT_CONTRACT_VERSION),
                         "payload_json": payload_json,
                         "learning_context": learning_context,
+                        "runtime_contract": runtime_contract,
                     },
                     ensure_ascii=True,
                     sort_keys=True,
@@ -9444,6 +12575,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     return str(text_cached)
         lines = [
             "You are an ACCA AI study coach.",
+            runtime_contract,
             "Return exactly one JSON object and nothing else.",
             "Choose only one action from: focus, quiz, drill, interleave, review.",
             "If unsure, pick the safest deterministic action from the payload action_topics map.",
@@ -9685,6 +12817,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.ai_coach_btn.set_tooltip_text(tooltip)
         if getattr(self, "study_room_ai_btn", None):
             self.study_room_ai_btn.set_tooltip_text(tooltip)
+        try:
+            self._refresh_coach_workspace_page()
+        except Exception:
+            pass
 
     def _get_ai_coach_status_line(self) -> str:
         rec = getattr(self, "_ai_coach_last_recommendation", None)
@@ -9931,7 +13067,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return build_ai_tutor_seed_prompt(topic=topic, module_title=module_title)
 
     def _open_ai_tutor_dialog(self) -> None:
-        AITutorDialogController(self, Gtk=Gtk, GLib=GLib, Gdk=Gdk).open()
+        if bool(getattr(self, "_ai_tutor_dialog_open", False)):
+            try:
+                self.present()
+            except Exception:
+                pass
+            return
+        self._ai_tutor_dialog_open = True
+        try:
+            AITutorDialogController(self, Gtk=Gtk, GLib=GLib, Gdk=Gdk).open()
+        except Exception:
+            self._ai_tutor_dialog_open = False
+            raise
 
     def _log_error(self, context: str, exc: Exception) -> None:
         try:
@@ -10746,8 +13893,42 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         kind = str(self._action_timer_kind).replace("_", " ").title()
         label.set_text(f"Session: {kind} {self._format_elapsed(elapsed)}")
 
+    def _is_focus_session_running(self) -> bool:
+        try:
+            remaining = int(getattr(self, "pomodoro_remaining", 0) or 0)
+        except Exception:
+            remaining = 0
+        if remaining <= 0:
+            return False
+        if bool(getattr(self, "pomodoro_paused", False)):
+            return False
+        return bool(getattr(self, "pomodoro_timer_id", None))
+
+    def _is_quiz_session_running(self) -> bool:
+        dialog = getattr(self, "quiz_dialog", None)
+        if dialog is None:
+            return False
+        session = getattr(self, "quiz_session", None)
+        if not isinstance(session, dict):
+            return False
+        try:
+            indices = list(session.get("indices", []) or [])
+            position = int(session.get("position", 0) or 0)
+            return bool(indices) and 0 <= position < len(indices)
+        except Exception:
+            return bool(session)
+
+    def _should_keep_action_timer_running(self) -> bool:
+        # Timer must stop when both quiz and focus are inactive.
+        if self._is_quiz_session_running() or self._is_focus_session_running():
+            return True
+        return False
+
     def _action_timer_tick(self) -> bool:
         if not self._action_timer_kind:
+            return False
+        if not self._should_keep_action_timer_running():
+            self._stop_action_timer(finalize=True)
             return False
         self._update_action_timer_label()
         return True
@@ -12004,6 +15185,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         today = datetime.date.today()
         reasons = self._compose_coach_reasons(topic)
         reason_text = ", ".join(reasons[:3])
+        coach_vm = CoachPanelVM(topic=str(topic), reason=str(reason_text), status=str(source or ""))
+        coach_controller = getattr(self, "_ui_controllers", {}).get("coach_panel")
+        if coach_controller is not None:
+            try:
+                coach_controller.render(coach_vm, self._ui_build_render_context("coach_pick.render"))
+            except Exception:
+                pass
         self._set_label_text_if_changed(
             self.coach_pick_label,
             f"Coach pick: {topic}\nFocus reason: {reason_text}",
@@ -12670,6 +15858,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         try:
             self._ellipsize_labels(self.dashboard)
+        except Exception:
+            pass
+        try:
+            self._refresh_tutor_workspace_page()
+            self._refresh_coach_workspace_page()
+            self._refresh_insights_workspace_page()
+            self._refresh_settings_workspace_page()
         except Exception:
             pass
         return False
@@ -14086,16 +17281,34 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         return window
 
+    def _register_ui_dialog(self, dialog_obj: Any) -> Any:
+        lifecycle = getattr(self, "_ui_dialog_lifecycle", None)
+        if lifecycle is None or dialog_obj is None:
+            return dialog_obj
+        try:
+            lifecycle.register(dialog_obj)
+        except Exception:
+            pass
+        try:
+            if hasattr(dialog_obj, "connect"):
+                dialog_obj.connect("destroy", lambda d: lifecycle.unregister(d))
+        except Exception:
+            pass
+        return dialog_obj
+
     def _new_dialog(self, *args, **kwargs) -> Gtk.Window:
-        return self._harden_window(AppDialog(*args, **kwargs))
+        dialog = self._harden_window(AppDialog(*args, **kwargs))
+        return cast(Gtk.Window, self._register_ui_dialog(dialog))
 
     def _new_message_dialog(self, *args, **kwargs):
         if getattr(self, "_force_message_dialog_fallback", False) and "force_fallback" not in kwargs:
             kwargs["force_fallback"] = True
-        return AppMessageDialog(*args, **kwargs)
+        dialog = AppMessageDialog(*args, **kwargs)
+        return self._register_ui_dialog(dialog)
 
     def _new_about_dialog(self, *args, **kwargs) -> Gtk.AboutDialog:
-        return self._harden_window(Gtk.AboutDialog(*args, **kwargs))
+        dialog = self._harden_window(Gtk.AboutDialog(*args, **kwargs))
+        return cast(Gtk.AboutDialog, self._register_ui_dialog(dialog))
 
     # --- Module helpers ---
     def _get_available_modules(self) -> list[dict]:
@@ -14227,6 +17440,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
 
     def update_study_room_card(self) -> None:
+        if self._schedule_ui_refresh(
+            "study_room_refresh",
+            self._debounced_study_room_refresh,
+            delay_ms=120,
+        ):
+            return
         if getattr(self, "_study_room_debounce_id", None):
             return
         self._study_room_debounce_id = GLib.timeout_add(120, self._debounced_study_room_refresh)
@@ -14312,6 +17531,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._queue_coach_sync_if_mismatch("study_room")
         self._ensure_coach_pick_consistency(recommended, pick_source, "study_room")
         recommended = str(getattr(self, "_coach_pick_topic", "") or recommended or "")
+        mission_snapshot = ""
+        try:
+            mission_label_obj = getattr(self, "study_room_mission_label", None)
+            if mission_label_obj is not None and hasattr(mission_label_obj, "get_text"):
+                mission_snapshot = str(mission_label_obj.get_text() or "")
+        except Exception:
+            mission_snapshot = ""
+        study_room_vm = StudyRoomVM(
+            topic=str(recommended or ""),
+            action_label=str(pick_source or ""),
+            mission_summary=mission_snapshot,
+        )
+        study_room_controller = getattr(self, "_ui_controllers", {}).get("study_room")
+        if study_room_controller is not None:
+            try:
+                study_room_controller.render(study_room_vm, self._ui_build_render_context("study_room.render"))
+            except Exception:
+                pass
         if getattr(self, "study_room_next_due_label", None):
             next_due = self._get_topic_next_due_text(recommended)
             self._set_label_text_if_changed(self.study_room_next_due_label, next_due or "")
@@ -18776,6 +22013,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.backup_warning_label.set_visible(False)
 
     def _close_aux_windows(self) -> bool:
+        lifecycle = getattr(self, "_ui_dialog_lifecycle", None)
+        if lifecycle is not None:
+            try:
+                lifecycle.close_all()
+            except Exception:
+                pass
         try:
             app = self.get_application()
             windows = app.get_windows() if app else []
@@ -18786,6 +22029,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 continue
             try:
                 win.destroy()
+            except Exception:
+                pass
+            try:
+                if lifecycle is not None:
+                    lifecycle.unregister(win)
             except Exception:
                 pass
         # Some custom transient dialogs can exist outside the application
@@ -18820,6 +22068,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 win.destroy()
             except Exception:
                 pass
+            try:
+                if lifecycle is not None:
+                    lifecycle.unregister(win)
+            except Exception:
+                pass
         dlg = getattr(self, "_active_native_dialog", None)
         if dlg is not None:
             try:
@@ -18838,6 +22091,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ("About", lambda: self.on_about(None, None)),
             ("Shortcuts", lambda: self.on_show_shortcuts(None, None)),
             ("Preferences", lambda: self.on_open_preferences(None, None)),
+            ("UI Modern Toggle", self._smoke_toggle_ui_modern_mode),
             ("Coach-only Toggle", self._smoke_toggle_coach_only),
             ("Coach Pick Consistency", self._smoke_check_coach_pick_consistency),
             ("Coach Next Burst", self._smoke_coach_next_burst),
@@ -18860,6 +22114,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ("First Run Tour", lambda: self.on_first_run_tour("smoke", None)),
             ("Quiz", lambda: self.on_take_quiz(None)),
         ]
+        if bool(UI_MODERN_HARD_LOCK):
+            self._dialog_smoke_steps = [
+                item for item in self._dialog_smoke_steps if str(item[0] or "").strip().lower() != "ui modern toggle"
+            ]
         self._dialog_smoke_index = 0
         GLib.timeout_add(200, self._run_next_dialog_smoke_step)
         # Give each smoke step enough time to open/close dialogs and sync UI state.
@@ -18872,8 +22130,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             smoke_timeout_ms = 0
         if smoke_timeout_ms <= 0:
-            smoke_timeout_ms = max(75000, (len(self._dialog_smoke_steps) * 2200) + 15000)
-        smoke_timeout_ms = max(30000, min(300000, int(smoke_timeout_ms)))
+            modern_enabled = bool(getattr(self, "ui_modern_enabled", False))
+            per_step_ms = 3000 if modern_enabled else 2400
+            floor_ms = 120000 if modern_enabled else 90000
+            smoke_timeout_ms = max(floor_ms, (len(self._dialog_smoke_steps) * per_step_ms) + 30000)
+        smoke_timeout_ms = max(45000, min(420000, int(smoke_timeout_ms)))
         GLib.timeout_add(smoke_timeout_ms, self._force_end_smoke_test)
         return False
 
@@ -18979,6 +22240,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 json.dump(self._smoke_report, f, ensure_ascii=True, indent=2)
         except Exception as exc:
             self._log_error("write_smoke_report", exc)
+
+    def _smoke_toggle_ui_modern_mode(self) -> None:
+        if bool(UI_MODERN_HARD_LOCK):
+            self.ui_modern_enabled = True
+            self.ui_legacy_fallback_enabled = False
+            self._refresh_ui_style_runtime()
+            return
+        prev_modern = bool(getattr(self, "ui_modern_enabled", False))
+        prev_fallback = bool(getattr(self, "ui_legacy_fallback_enabled", True))
+        targets = [not prev_modern, prev_modern]
+        for target in targets:
+            self.ui_modern_enabled = bool(target)
+            self.ui_legacy_fallback_enabled = bool(prev_fallback)
+            self._refresh_ui_style_runtime()
+            actual = bool(getattr(self, "ui_modern_enabled", False))
+            if actual != bool(target):
+                raise RuntimeError(
+                    f"UI modern toggle mismatch: expected={bool(target)} actual={actual}"
+                )
+        self.ui_modern_enabled = bool(prev_modern)
+        self.ui_legacy_fallback_enabled = bool(prev_fallback)
+        self._refresh_ui_style_runtime()
 
     def _smoke_toggle_coach_only(self) -> None:
         if not self._has_chapters():
@@ -19441,10 +22724,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return False
 
     def on_close_request(self, *_args):
+        try:
+            scheduler = getattr(self, "_ui_refresh_scheduler", None)
+            if scheduler is not None:
+                scheduler.cancel_all()
+        except Exception:
+            pass
         self._set_pomodoro_active_state(False)
         if self._closing_from_recap:
             try:
                 self.engine.save_data()
+            except Exception:
+                pass
+            try:
+                shutdown_runtime = getattr(self.engine, "shutdown_runtime", None)
+                if callable(shutdown_runtime):
+                    shutdown_runtime()
             except Exception:
                 pass
             self.update_save_status_display()
@@ -19499,6 +22794,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.focus_mode = bool(button.get_active())
         except Exception:
             self.focus_mode = False
+        self._emit_ui_action_intent(
+            "focus_mode_toggled",
+            source="toggle",
+            payload={"enabled": bool(self.focus_mode)},
+        )
         if getattr(self, "tools_box", None):
             self.tools_box.set_visible(not self.focus_mode)
         if getattr(self, "tools_label", None):
@@ -19521,6 +22821,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def update_dashboard(self) -> None:  # pyright: ignore[reportGeneralTypeIssues]
         # Coalesce multiple refresh requests into a single idle render.
+        if self._schedule_ui_refresh(
+            "dashboard_refresh",
+            self._debounced_dashboard_refresh,
+            delay_ms=120,
+        ):
+            return
         if getattr(self, "_dashboard_debounce_id", None):
             return
         self._dashboard_debounce_id = GLib.timeout_add(120, self._debounced_dashboard_refresh)
@@ -19566,11 +22872,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         focus_mode = bool(getattr(self, "focus_mode", False))
         tile_mode = bool(getattr(self, "_tile_mode", False))
+        _ctx = self._ui_build_render_context("dashboard.render")
+        _state = UISectionState(section_id="dashboard", visible=True, enabled=True, compact=_ctx.compact, tile=_ctx.tile, mode=_ctx.density_mode)
+        _vm = DashboardVM(title="Dashboard", status="focus" if focus_mode else "active", cards=())
+        dashboard_controller = getattr(self, "_ui_controllers", {}).get("dashboard")
+        if dashboard_controller is not None:
+            try:
+                dashboard_controller.render(_vm, _ctx)
+            except Exception:
+                pass
+        _ = _state
 
-        try:
-            self._update_risk_manager_progress()
-        except Exception:
-            pass
+        def _dashboard_section_fallback(report: UIFaultReport) -> None:
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            card.add_css_class("card")
+            title = Gtk.Label(label="Dashboard section degraded")
+            title.set_halign(Gtk.Align.START)
+            title.add_css_class("section-title")
+            body = Gtk.Label(
+                label=f"{report.section_id}: showing fallback view to keep UI responsive."
+            )
+            body.set_halign(Gtk.Align.START)
+            body.set_wrap(True)
+            body.add_css_class("muted")
+            card.append(title)
+            card.append(body)
+            self.dashboard.append(card)
+
+        self._safe_render_section(
+            "risk_manager_progress",
+            lambda: self._update_risk_manager_progress(),
+            _dashboard_section_fallback,
+        )
 
         charts_available = (plt is not None and FigureCanvas is not None and not focus_mode and not tile_mode)
         if not charts_available and not tile_mode:
@@ -22028,6 +25361,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return False
 
     def update_recommendations(self):
+        if self._schedule_ui_refresh(
+            "recommendations_refresh",
+            self._debounced_recommendations_refresh,
+            delay_ms=120,
+        ):
+            return
         if getattr(self, "_rec_debounce_id", None):
             return
         self._rec_debounce_id = GLib.timeout_add(120, self._debounced_recommendations_refresh)
@@ -22089,6 +25428,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     # --- Daily plan UI helpers ---
     def update_daily_plan(self, num_topics: int = 3) -> None:
         self._pending_plan_topics = int(num_topics or 3)
+        if self._schedule_ui_refresh(
+            "daily_plan_refresh",
+            self._debounced_plan_refresh,
+            delay_ms=120,
+        ):
+            return
         if getattr(self, "_plan_debounce_id", None):
             return
         self._plan_debounce_id = GLib.timeout_add(120, self._debounced_plan_refresh)

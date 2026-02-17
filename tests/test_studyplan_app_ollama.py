@@ -21,6 +21,7 @@ from studyplan_ai_tutor import (
     extract_tutor_coverage_targets,
     lexical_rank_rag_chunks,
     normalize_tutor_timeout_seconds,
+    should_force_stream_flush,
     should_keep_response_bottom,
 )
 
@@ -133,6 +134,23 @@ def _make_local_context_dummy():
     dummy._build_local_ai_context_packet = types.MethodType(StudyPlanGUI._build_local_ai_context_packet, dummy)
     dummy._format_local_ai_context_block = types.MethodType(StudyPlanGUI._format_local_ai_context_block, dummy)
     return dummy
+
+
+def test_coerce_ui_density_mode_defaults_to_progressive():
+    dummy = types.SimpleNamespace()
+    assert StudyPlanGUI._coerce_ui_density_mode(dummy, "progressive") == "progressive"
+    assert StudyPlanGUI._coerce_ui_density_mode(dummy, "unknown") == "progressive"
+    assert StudyPlanGUI._coerce_ui_density_mode(dummy, "") == "progressive"
+
+
+def test_coerce_ui_toggle_accepts_common_truthy_and_falsy():
+    dummy = types.SimpleNamespace()
+    assert StudyPlanGUI._coerce_ui_toggle(dummy, "1", False) is True
+    assert StudyPlanGUI._coerce_ui_toggle(dummy, "true", False) is True
+    assert StudyPlanGUI._coerce_ui_toggle(dummy, "yes", False) is True
+    assert StudyPlanGUI._coerce_ui_toggle(dummy, "on", False) is True
+    assert StudyPlanGUI._coerce_ui_toggle(dummy, "0", True) is False
+    assert StudyPlanGUI._coerce_ui_toggle(dummy, "", True) is True
 
 
 def test_normalize_ollama_host_adds_scheme_and_trims_slash():
@@ -288,6 +306,45 @@ def test_select_local_llm_model_auto_mode_avoids_switch_for_small_score_gap():
     assert picked == "steady-7b:latest"
 
 
+def test_build_local_llm_model_failover_sequence_orders_selected_then_alternatives(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_MODEL_FAILOVER_MAX", "2")
+    dummy = types.SimpleNamespace(
+        local_llm_model="steady-7b:latest",
+        local_llm_auto_select=True,
+        _ai_tutor_telemetry_events=[],
+        _local_llm_last_switch_at=0.0,
+        save_preferences=lambda: None,
+    )
+    dummy._coerce_local_llm_auto_select = types.MethodType(StudyPlanGUI._coerce_local_llm_auto_select, dummy)
+    dummy._is_local_llm_auto_select_enabled = types.MethodType(StudyPlanGUI._is_local_llm_auto_select_enabled, dummy)
+    dummy._estimate_local_llm_model_size_b = types.MethodType(StudyPlanGUI._estimate_local_llm_model_size_b, dummy)
+    dummy._heuristic_local_llm_model_prior = types.MethodType(StudyPlanGUI._heuristic_local_llm_model_prior, dummy)
+    dummy._score_local_llm_model = types.MethodType(StudyPlanGUI._score_local_llm_model, dummy)
+    dummy._rank_local_llm_models = lambda models, purpose="general": [
+        {"model": "best-8b:latest", "score": 0.93, "perf_score": 0.91, "quality_score": 0.95},
+        {"model": "steady-7b:latest", "score": 0.76, "perf_score": 0.78, "quality_score": 0.74},
+        {"model": "small-3b:latest", "score": 0.62, "perf_score": 0.88, "quality_score": 0.52},
+    ]
+    dummy._get_ai_tutor_latency_profile = lambda window=24: {"load_level": "normal"}
+    dummy._get_ai_tutor_latency_slo_status = lambda window=24: {"status": "pass"}
+    dummy._select_local_llm_model = types.MethodType(StudyPlanGUI._select_local_llm_model, dummy)
+    dummy._coerce_local_llm_model_failover_max = types.MethodType(
+        StudyPlanGUI._coerce_local_llm_model_failover_max, dummy
+    )
+    dummy._build_local_llm_model_failover_sequence = types.MethodType(
+        StudyPlanGUI._build_local_llm_model_failover_sequence, dummy
+    )
+    seq, err = StudyPlanGUI._build_local_llm_model_failover_sequence(
+        dummy,
+        purpose="tutor",
+        available_models=["best-8b:latest", "steady-7b:latest", "small-3b:latest"],
+        persist=False,
+    )
+    assert err is None
+    assert seq[0] == "best-8b:latest"
+    assert len(seq) == 2
+
+
 def test_sync_gpt4all_models_to_ollama_once_imports_missing_files(tmp_path, monkeypatch):
     dummy = _make_dummy()
     monkeypatch.setenv("STUDYPLAN_GPT4ALL_MODELS_DIR", str(tmp_path))
@@ -336,10 +393,59 @@ def test_build_ai_tutor_context_prompt_contains_history_and_current_request():
     )
     assert "Module: ACCA FM" in prompt
     assert "Current chapter: Investment Decisions" in prompt
+    assert "first-class local ACCA tutor" in prompt
+    assert "maximize exam readiness per minute" in prompt
     assert "USER: Explain NPV." in prompt
     assert "ASSISTANT: NPV discounts cash flows." in prompt
     assert "USER: Give me a 3-question drill." in prompt
     assert prompt.endswith("ASSISTANT:")
+
+
+def test_request_ai_tutor_action_plan_fails_over_to_next_model():
+    dummy = types.SimpleNamespace(
+        local_llm_enabled=True,
+    )
+    dummy._build_local_llm_model_failover_sequence = lambda **_kwargs: (
+        ["broken-3b:latest", "good-7b:latest"],
+        None,
+    )
+    dummy._build_ai_tutor_autopilot_prompt = lambda _snapshot: "prompt"
+
+    calls = {"count": 0}
+
+    def _fake_generate(model, _prompt):
+        calls["count"] += 1
+        if model == "broken-3b:latest":
+            return "", "HTTP 503: service unavailable"
+        return '{"action":"focus_start","topic":"Topic A","duration_minutes":25,"reason":"ok","confidence":0.91,"requires_confirmation":false}', None
+
+    dummy._ollama_generate_text = _fake_generate
+    dummy._extract_first_json_object = lambda text: text
+    dummy._normalize_ai_tutor_action_plan = lambda parsed, _snapshot: (
+        {
+            "action": str(parsed.get("action", "focus_start")),
+            "topic": str(parsed.get("topic", "Topic A")),
+            "duration_minutes": int(parsed.get("duration_minutes", 25)),
+            "reason": str(parsed.get("reason", "ok")),
+            "confidence": float(parsed.get("confidence", 0.8)),
+            "requires_confirmation": bool(parsed.get("requires_confirmation", False)),
+        },
+        None,
+    )
+    dummy._build_ai_tutor_fallback_action = types.MethodType(
+        StudyPlanGUI._build_ai_tutor_fallback_action, dummy
+    )
+    dummy._normalize_ollama_host = lambda: "http://127.0.0.1:11434"
+
+    plan, err = StudyPlanGUI._request_ai_tutor_action_plan(
+        dummy,
+        snapshot={"current_topic": "Topic A", "must_review_due": 0},
+    )
+    assert err is None
+    assert calls["count"] == 2
+    assert plan["model"] == "good-7b:latest"
+    assert plan["source"] == "ai"
+    assert int(plan.get("failover_attempt", 0)) == 1
 
 
 def test_build_ai_tutor_context_prompt_clamps_to_last_10_messages():
@@ -1052,6 +1158,39 @@ def test_should_keep_response_bottom_respects_auto_scroll_toggle():
     assert should_keep_response_bottom(auto_scroll_enabled=True, force_scroll=False, near_bottom=True) is True
 
 
+def test_should_force_stream_flush_when_render_lags_latest_chunk():
+    assert (
+        should_force_stream_flush(
+            last_chunk_monotonic=10.0,
+            last_render_monotonic=9.5,
+            now_monotonic=11.2,
+            stall_ms=900,
+        )
+        is True
+    )
+
+
+def test_should_force_stream_flush_false_when_render_is_caught_up():
+    assert (
+        should_force_stream_flush(
+            last_chunk_monotonic=10.0,
+            last_render_monotonic=10.0,
+            now_monotonic=12.0,
+            stall_ms=900,
+        )
+        is False
+    )
+    assert (
+        should_force_stream_flush(
+            last_chunk_monotonic=10.0,
+            last_render_monotonic=9.9,
+            now_monotonic=10.5,
+            stall_ms=900,
+        )
+        is False
+    )
+
+
 def test_normalize_tutor_timeout_seconds_clamps_bounds():
     assert normalize_tutor_timeout_seconds("bad", default=90, minimum=20, maximum=240) == 90
     assert normalize_tutor_timeout_seconds(5, default=90, minimum=20, maximum=240) == 20
@@ -1129,6 +1268,128 @@ def test_can_auto_execute_ai_tutor_action_respects_mode_and_confirmation():
     assert StudyPlanGUI._can_auto_execute_ai_tutor_action(dummy, "review_start", "cockpit", True) is True
 
 
+def test_effective_ai_tutor_autonomy_mode_forces_cockpit_when_enabled():
+    dummy = types.SimpleNamespace(
+        ai_tutor_autopilot_enabled=True,
+        ai_tutor_autonomy_mode="suggest",
+    )
+    dummy._coerce_ai_tutor_autonomy_mode = types.MethodType(StudyPlanGUI._coerce_ai_tutor_autonomy_mode, dummy)
+    dummy._effective_ai_tutor_autonomy_mode = types.MethodType(StudyPlanGUI._effective_ai_tutor_autonomy_mode, dummy)
+    assert StudyPlanGUI._effective_ai_tutor_autonomy_mode(dummy) == "cockpit"
+    dummy.ai_tutor_autopilot_enabled = False
+    assert StudyPlanGUI._effective_ai_tutor_autonomy_mode(dummy) == "suggest"
+
+
+def test_should_request_global_ai_tutor_decision_only_on_change_or_refresh():
+    dummy = types.SimpleNamespace(
+        _ai_tutor_global_last_event_sig="",
+        _ai_tutor_global_last_decision_at=0.0,
+        _ai_tutor_global_quiet_until=0.0,
+    )
+    dummy._ai_cache_sha1 = types.MethodType(StudyPlanGUI._ai_cache_sha1, dummy)
+    dummy._build_ai_tutor_autopilot_event_signature = types.MethodType(
+        StudyPlanGUI._build_ai_tutor_autopilot_event_signature, dummy
+    )
+    dummy._should_request_global_ai_tutor_decision = types.MethodType(
+        StudyPlanGUI._should_request_global_ai_tutor_decision, dummy
+    )
+    snapshot = {
+        "current_topic": "Topic A",
+        "coach_pick": "Topic A",
+        "must_review_due": 2,
+        "overdue_srs_count": 1,
+        "new_srs_count": 0,
+        "pomodoro_active": False,
+        "pomodoro_paused": False,
+        "pomodoro_remaining_sec": 0,
+        "focus_trend_14d": {"integrity_pct": 72.0},
+        "weak_topics_top3": ["Topic A"],
+        "risk_snapshot_top3": [],
+        "due_snapshot_top3": [],
+        "runtime_scope": "app_wide",
+    }
+    should1, reason1, sig1 = StudyPlanGUI._should_request_global_ai_tutor_decision(
+        dummy, snapshot, now_ts=100.0
+    )
+    assert should1 is True
+    assert reason1 == "first_run"
+    assert sig1
+    dummy._ai_tutor_global_last_event_sig = sig1
+    dummy._ai_tutor_global_last_decision_at = 100.0
+
+    should2, reason2, _sig2 = StudyPlanGUI._should_request_global_ai_tutor_decision(
+        dummy, snapshot, now_ts=160.0
+    )
+    assert should2 is False
+    assert reason2 == "no_material_change"
+
+    changed = dict(snapshot)
+    changed["must_review_due"] = 5
+    should3, reason3, _sig3 = StudyPlanGUI._should_request_global_ai_tutor_decision(
+        dummy, changed, now_ts=170.0
+    )
+    assert should3 is True
+    assert reason3 == "state_changed"
+
+
+def test_should_request_global_ai_tutor_decision_respects_quiet_window():
+    dummy = types.SimpleNamespace(
+        _ai_tutor_global_last_event_sig="",
+        _ai_tutor_global_last_decision_at=100.0,
+        _ai_tutor_global_quiet_until=260.0,
+    )
+    dummy._ai_cache_sha1 = types.MethodType(StudyPlanGUI._ai_cache_sha1, dummy)
+    dummy._build_ai_tutor_autopilot_event_signature = types.MethodType(
+        StudyPlanGUI._build_ai_tutor_autopilot_event_signature, dummy
+    )
+    dummy._should_request_global_ai_tutor_decision = types.MethodType(
+        StudyPlanGUI._should_request_global_ai_tutor_decision, dummy
+    )
+    snapshot = {
+        "current_topic": "Topic A",
+        "coach_pick": "Topic A",
+        "must_review_due": 2,
+        "overdue_srs_count": 1,
+        "new_srs_count": 0,
+        "pomodoro_active": False,
+        "pomodoro_paused": False,
+        "pomodoro_remaining_sec": 0,
+        "focus_trend_14d": {"integrity_pct": 72.0},
+        "weak_topics_top3": ["Topic A"],
+        "risk_snapshot_top3": [],
+        "due_snapshot_top3": [],
+        "runtime_scope": "app_wide",
+    }
+    _first, _reason_first, sig = StudyPlanGUI._should_request_global_ai_tutor_decision(
+        dummy, snapshot, now_ts=100.0
+    )
+    dummy._ai_tutor_global_last_event_sig = sig
+    should2, reason2, _sig2 = StudyPlanGUI._should_request_global_ai_tutor_decision(
+        dummy, snapshot, now_ts=200.0
+    )
+    assert should2 is False
+    assert reason2 == "quiet_window"
+
+
+def test_build_ai_tutor_autopilot_prompt_includes_runtime_contract():
+    dummy = _make_dummy()
+    prompt = StudyPlanGUI._build_ai_tutor_autopilot_prompt(
+        dummy,
+        {
+            "current_topic": "Topic A",
+            "coach_pick": "Topic A",
+            "days_to_exam": 18,
+            "must_review_due": 5,
+            "weak_topics_top3": ["Topic A"],
+            "learning_context": "Topic A weak",
+            "allowed_actions": ["focus_start", "review_start"],
+        },
+    )
+    assert "Runtime contract (autopilot):" in prompt
+    assert "first-class local model inside StudyPlan" in prompt
+    assert "Exam phase: final_push" in prompt
+
+
 def test_normalize_ai_tutor_action_plan_validates_action_and_topic():
     engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"])
     dummy = types.SimpleNamespace(engine=engine)
@@ -1152,6 +1413,36 @@ def test_normalize_ai_tutor_action_plan_validates_action_and_topic():
     )
     assert bad_plan is None
     assert bad_err is not None
+
+
+def test_normalize_ai_tutor_action_plan_accepts_tutor_open_action():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"])
+    dummy = types.SimpleNamespace(engine=engine)
+    dummy._coerce_ai_coach_duration = types.MethodType(StudyPlanGUI._coerce_ai_coach_duration, dummy)
+    snapshot = {"current_topic": "Topic B", "coach_pick": "Topic A"}
+    plan, err = StudyPlanGUI._normalize_ai_tutor_action_plan(
+        dummy,
+        {"action": "tutor_open", "topic": "", "duration_minutes": 20, "reason": "show cockpit"},
+        snapshot,
+    )
+    assert err is None
+    assert plan is not None
+    assert plan["action"] == "tutor_open"
+
+
+def test_normalize_ai_tutor_action_plan_accepts_coach_open_action():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"])
+    dummy = types.SimpleNamespace(engine=engine)
+    dummy._coerce_ai_coach_duration = types.MethodType(StudyPlanGUI._coerce_ai_coach_duration, dummy)
+    snapshot = {"current_topic": "Topic B", "coach_pick": "Topic A"}
+    plan, err = StudyPlanGUI._normalize_ai_tutor_action_plan(
+        dummy,
+        {"action": "coach_open", "topic": "", "duration_minutes": 20, "reason": "show coach"},
+        snapshot,
+    )
+    assert err is None
+    assert plan is not None
+    assert plan["action"] == "coach_open"
 
 
 def test_validate_generated_gap_questions_strict_gate():
@@ -1461,8 +1752,15 @@ def test_build_ai_coach_fallback_prefers_review_when_due_exists():
 
 def test_build_ai_coach_prompt_includes_learning_context_when_available():
     dummy = _make_local_context_dummy()
-    payload = {"recommended_topic": "Topic A", "action_topics": {"focus": "Topic A"}}
+    payload = {
+        "recommended_topic": "Topic A",
+        "action_topics": {"focus": "Topic A"},
+        "days_to_exam": 24,
+        "must_review_due": 6,
+    }
     prompt = StudyPlanGUI._build_ai_coach_prompt(dummy, payload)
+    assert "Runtime contract (coach):" in prompt
+    assert "first-class local model inside StudyPlan" in prompt
     assert "Learning context (aggregated app state):" in prompt
     assert "Payload JSON:" in prompt
 
@@ -1470,10 +1768,29 @@ def test_build_ai_coach_prompt_includes_learning_context_when_available():
 def test_build_ai_coach_prompt_omits_learning_context_when_packet_fails():
     dummy = _make_local_context_dummy()
     dummy._build_local_ai_context_packet = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
-    payload = {"recommended_topic": "Topic A", "action_topics": {"focus": "Topic A"}}
+    payload = {
+        "recommended_topic": "Topic A",
+        "action_topics": {"focus": "Topic A"},
+        "days_to_exam": 80,
+        "must_review_due": 0,
+    }
     prompt = StudyPlanGUI._build_ai_coach_prompt(dummy, payload)
+    assert "Runtime contract (coach):" in prompt
     assert "Learning context (aggregated app state):" not in prompt
     assert "Payload JSON:" in prompt
+
+
+def test_build_local_ai_runtime_contract_adapts_phase_and_pressure():
+    dummy = _make_dummy()
+    text = StudyPlanGUI._build_local_ai_runtime_contract(
+        dummy,
+        "coach",
+        days_to_exam=12,
+        must_review_due=9,
+    )
+    assert "Runtime contract (coach):" in text
+    assert "Exam phase: final_push" in text
+    assert "pressure state: due_pressure_high" in text
 
 
 def test_get_topic_must_review_due_count_ignores_out_of_range_indices():

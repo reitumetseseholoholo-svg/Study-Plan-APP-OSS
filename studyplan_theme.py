@@ -1189,19 +1189,296 @@ scrolledwindow {
 
 provider = Gtk.CssProvider()
 
+_THEME_RUNTIME_OPTIONS: dict[str, object] = {
+    "modern_enabled": False,
+    "density_mode": "progressive",
+    "reduce_motion": False,
+    "legacy_fallback_enabled": True,
+}
+
+_THEME_TOKEN_SYSTEM: dict[str, dict[str, str]] = {
+    "color": {
+        "accent": "alpha(@theme_selected_bg_color, 0.92)",
+        "text": "@theme_fg_color",
+        "muted": "alpha(@theme_fg_color, 0.84)",
+        "bg": "@theme_bg_color",
+    },
+    "surface": {
+        "panel": "alpha(@theme_bg_color, 0.94)",
+        "card": "alpha(@theme_bg_color, 0.90)",
+        "card_alt": "alpha(@theme_bg_color, 0.86)",
+    },
+    "border": {
+        "soft": "alpha(@theme_fg_color, 0.22)",
+        "strong": "alpha(@theme_fg_color, 0.34)",
+    },
+}
+
+_THEME_TOKEN_COACH: dict[str, dict[str, str]] = {
+    "color": {
+        "accent": "#8fb4ff",
+        "text": "#e8edf7",
+        "muted": "#d5def1",
+        "bg": "#121724",
+    },
+    "surface": {
+        "panel": "#1a2233",
+        "card": "#22324b",
+        "card_alt": "#1f2c42",
+    },
+    "border": {
+        "soft": "#5b74a3",
+        "strong": "#7c9ed7",
+    },
+}
+
+
+def set_theme_runtime_options(
+    *,
+    modern_enabled: bool,
+    density_mode: str = "progressive",
+    reduce_motion: bool = False,
+    legacy_fallback_enabled: bool = True,
+) -> None:
+    mode = str(density_mode or "progressive").strip().lower()
+    if mode != "progressive":
+        mode = "progressive"
+    _THEME_RUNTIME_OPTIONS["modern_enabled"] = bool(modern_enabled)
+    _THEME_RUNTIME_OPTIONS["density_mode"] = mode
+    _THEME_RUNTIME_OPTIONS["reduce_motion"] = bool(reduce_motion)
+    _THEME_RUNTIME_OPTIONS["legacy_fallback_enabled"] = bool(legacy_fallback_enabled)
+
+
+def _theme_tokens(use_system: bool) -> dict[str, dict[str, str]]:
+    return _THEME_TOKEN_SYSTEM if use_system else _THEME_TOKEN_COACH
+
+
+def _build_modern_overlay_css(use_system: bool) -> str:
+    tokens = _theme_tokens(use_system)
+    color = tokens["color"]
+    surface = tokens["surface"]
+    border = tokens["border"]
+    reduce_motion = bool(_THEME_RUNTIME_OPTIONS.get("reduce_motion", False))
+
+    motion_css = ""
+    if reduce_motion:
+        motion_css = """
+* {
+    transition: none;
+    animation: none;
+}
+"""
+
+    return f"""
+/* modern token overlay */
+window.study-window {{
+    color: {color["text"]};
+}}
+window.study-window .panel {{
+    background: {surface["panel"]};
+    border: 1px solid {border["soft"]};
+    box-shadow: 0 1px 6px alpha({color["text"]}, 0.10);
+}}
+window.study-window .card {{
+    background: {surface["card"]};
+    border: 1px solid {border["soft"]};
+    border-radius: 12px;
+    padding: 10px;
+    box-shadow: 0 1px 8px alpha({color["text"]}, 0.09);
+}}
+window.study-window .hero-card {{
+    border-color: {border["strong"]};
+    background: {surface["card_alt"]};
+    box-shadow: 0 1px 8px alpha({color["text"]}, 0.12);
+}}
+window.study-window .section-title {{
+    background: transparent;
+    border: 0;
+    color: {color["text"]};
+    font-weight: 740;
+    font-size: 12px;
+    letter-spacing: 0.42px;
+    padding: 0;
+    margin-top: 2px;
+    margin-bottom: 4px;
+}}
+window.study-window .muted {{
+    color: {color["muted"]};
+    line-height: 1.44;
+}}
+window.study-window .inline-toolbar {{
+    border-bottom: 1px solid {border["soft"]};
+    padding-bottom: 3px;
+    margin-bottom: 2px;
+}}
+window.study-window .workbench-shell {{
+    padding: 10px;
+    border-radius: 14px;
+}}
+window.study-window .workbench-header {{
+    border-bottom: 1px solid {border["soft"]};
+    padding-bottom: 6px;
+    margin-bottom: 2px;
+}}
+window.study-window .workbench-quick-scroll {{
+    background: transparent;
+    margin-top: 1px;
+}}
+window.study-window .workbench-quick-actions {{
+    border-bottom: 1px solid alpha({color["text"]}, 0.08);
+    padding-bottom: 3px;
+    margin-bottom: 0;
+}}
+window.study-window .workbench-quick-actions button {{
+    min-height: 30px;
+    padding: 4px 12px;
+    border-radius: 8px;
+}}
+window.study-window .workbench-title {{
+    margin-right: 6px;
+}}
+window.study-window .workspace-tabs {{
+    margin-left: 2px;
+}}
+window.study-window .workspace-tabs button {{
+    min-height: 30px;
+    padding: 4px 12px;
+    border-radius: 8px;
+    border: 1px solid alpha({color["text"]}, 0.14);
+    background: alpha({color["text"]}, 0.05);
+}}
+window.study-window .workspace-tabs button:checked {{
+    background: alpha({color["accent"]}, 0.22);
+    border-color: alpha({color["accent"]}, 0.56);
+    color: {color["text"]};
+    box-shadow: 0 1px 0 alpha({color["accent"]}, 0.26);
+}}
+window.study-window .workspace-tabs button:hover {{
+    background: alpha({color["text"]}, 0.10);
+}}
+window.study-window .workbench-stack {{
+    border-radius: 10px;
+}}
+window.study-window .workbench-page {{
+    background: transparent;
+}}
+window.study-window .workbench-page-card {{
+    border-radius: 12px;
+    border: 1px solid {border["soft"]};
+    background: {surface["card"]};
+}}
+window.study-window .dashboard-workbench-page {{
+    border-radius: 12px;
+}}
+window.study-window .dashboard-workbench-panel {{
+    padding-right: 2px;
+}}
+window.study-window .dashboard-workbench-panel > .card {{
+    border-radius: 13px;
+    border: 1px solid alpha({color["text"]}, 0.11);
+    background: linear-gradient(180deg, alpha({color["text"]}, 0.015), alpha({color["text"]}, 0.005));
+    box-shadow: 0 1px 10px alpha({color["text"]}, 0.07);
+}}
+window.study-window .dashboard-workbench-panel > .hero-card {{
+    border-color: alpha({color["accent"]}, 0.38);
+    box-shadow: 0 2px 12px alpha({color["accent"]}, 0.10);
+}}
+window.study-window .dashboard-workbench-panel .section-title {{
+    letter-spacing: 0.48px;
+    font-weight: 760;
+}}
+window.study-window .tutor-workbench {{
+    padding-top: 12px;
+}}
+window.study-window .tutor-workbench .tutor-prompt-scroll,
+window.study-window .tutor-workbench .tutor-response-scroll {{
+    border-radius: 10px;
+    border: 1px solid alpha({color["text"]}, 0.14);
+    background: alpha({color["text"]}, 0.02);
+}}
+window.study-window .tutor-workbench .tutor-prompt-view {{
+    font-size: 13px;
+    line-height: 1.45;
+}}
+window.study-window .tutor-workbench .tutor-response-view {{
+    font-size: 13px;
+    line-height: 1.50;
+}}
+window.study-window .tutor-workbench .inline-toolbar {{
+    border-bottom: 1px solid alpha({color["text"]}, 0.09);
+    padding-bottom: 4px;
+    margin-bottom: 4px;
+}}
+window.study-window .tutor-workbench .inline-toolbar button {{
+    min-height: 32px;
+    border-radius: 8px;
+}}
+window.study-window .tutor-workbench .tutor-cockpit-line,
+window.study-window .tutor-workbench .tutor-status-line,
+window.study-window .tutor-workbench .tutor-summary-line {{
+    border: 1px solid alpha({color["text"]}, 0.10);
+    border-radius: 8px;
+    background: alpha({color["text"]}, 0.03);
+    padding: 5px 8px;
+}}
+window.study-window .workbench-status {{
+    border: 1px solid alpha({color["text"]}, 0.10);
+    border-radius: 8px;
+    background: alpha({color["text"]}, 0.03);
+    padding: 5px 8px;
+    margin-top: 1px;
+    margin-bottom: 2px;
+}}
+window.study-window .workbench-heading {{
+    font-size: 13px;
+    font-weight: 780;
+    letter-spacing: 0.34px;
+}}
+window.study-window .workbench-text {{
+    font-family: "Iosevka Aile", "JetBrains Mono NL", "Noto Sans Mono", monospace;
+    font-size: 12px;
+}}
+window.study-window button.coach-action {{
+    background: alpha({color["accent"]}, 0.16);
+    border: 1px solid alpha({color["accent"]}, 0.42);
+}}
+window.study-window button.coach-action:hover {{
+    background: alpha({color["accent"]}, 0.24);
+}}
+window.study-window .study-room-actions button {{
+    min-height: 34px;
+}}
+window.study-window.compact .card {{
+    padding: 8px;
+}}
+window.study-window.compact .section-title {{
+    font-size: 11px;
+}}
+{motion_css}
+"""
+
+
+def _compose_theme_css(use_system: bool) -> str:
+    base_css = SYSTEM_THEME_CSS if use_system else COACH_THEME_CSS
+    base_text = base_css.decode("utf-8", errors="replace") if isinstance(base_css, (bytes, bytearray)) else str(base_css)
+    if not bool(_THEME_RUNTIME_OPTIONS.get("modern_enabled", False)):
+        return base_text
+    return base_text + "\n" + _build_modern_overlay_css(use_system)
+
+
 def apply_theme(use_system: bool) -> None:
-    css = SYSTEM_THEME_CSS if use_system else COACH_THEME_CSS
+    css_text = _compose_theme_css(bool(use_system))
+    css_data = css_text.encode("utf-8", errors="replace")
     try:
         # Gtk4 prefers load_from_string(str). Decode bytes constants explicitly.
         if hasattr(provider, "load_from_string"):
-            css_text = css.decode("utf-8", errors="replace") if isinstance(css, (bytes, bytearray)) else str(css)
             provider.load_from_string(css_text)
         else:
-            provider.load_from_data(css)
+            provider.load_from_data(css_data)
     except Exception:
         # Fallback path for bindings that may reject one API variant.
         try:
-            provider.load_from_data(css)
+            provider.load_from_data(css_data)
         except Exception:
             return
     display = Gdk.Display.get_default()
