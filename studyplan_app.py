@@ -1725,6 +1725,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.pomodoro_timer_id = None
         self.pomodoro_paused = False
         self._glib_sources: set[int] = set()
+        self._core_runtime_shutdown = False
         self._dashboard_debounce_id = None
         self._study_room_debounce_id = None
         self._rec_debounce_id = None
@@ -23453,23 +23454,169 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         GLib.timeout_add(450, self._run_next_dialog_smoke_step)
         return False
 
-    def on_close_request(self, *_args):
+    def _force_remove_glib_source(self, source_id: int | None) -> None:
+        try:
+            sid = int(source_id or 0)
+        except Exception:
+            sid = 0
+        if sid <= 0:
+            return
+        try:
+            remove = getattr(self, "_remove_glib_source", None)
+            if callable(remove):
+                remove(sid)
+        except Exception:
+            pass
+        try:
+            ctx = GLib.main_context_default()
+            if hasattr(ctx, "find_source_by_id"):
+                src = ctx.find_source_by_id(sid)
+                if src is None:
+                    sources = getattr(self, "_glib_sources", None)
+                    if isinstance(sources, set):
+                        sources.discard(sid)
+                    return
+        except Exception:
+            pass
+        try:
+            GLib.source_remove(sid)
+        except Exception:
+            pass
+        try:
+            sources = getattr(self, "_glib_sources", None)
+            if isinstance(sources, set):
+                sources.discard(sid)
+        except Exception:
+            pass
+
+    def _stop_tutor_workspace_runtime(self) -> None:
+        state = getattr(self, "_tutor_workspace_state", None)
+        if not isinstance(state, dict):
+            return
+        try:
+            state["active"] = False
+            state["job_id"] = int(state.get("job_id", 0) or 0) + 1
+        except Exception:
+            pass
+        try:
+            cancel_event = state.get("cancel_event")
+            if isinstance(cancel_event, threading.Event):
+                cancel_event.set()
+        except Exception:
+            pass
+        try:
+            model_name = str(state.get("model", "") or "").strip()
+            if model_name:
+                self._ollama_stop_model(model_name)
+        except Exception:
+            pass
+        for key in ("stream_watchdog_id", "model_poll_id"):
+            try:
+                source_id = int(state.get(key, 0) or 0)
+            except Exception:
+                source_id = 0
+            if source_id > 0:
+                self._force_remove_glib_source(source_id)
+                try:
+                    state[key] = 0
+                except Exception:
+                    pass
+        try:
+            set_running = state.get("set_running")
+            if callable(set_running):
+                set_running(False)
+        except Exception:
+            pass
+        try:
+            state["cancel_event"] = None
+            state["model"] = ""
+            state["draft_user"] = ""
+            state["draft_assistant"] = ""
+        except Exception:
+            pass
+
+    def _drain_registered_glib_sources(self) -> None:
+        source_ids = list(getattr(self, "_glib_sources", set()) or set())
+        for source_id in source_ids:
+            self._force_remove_glib_source(source_id)
+        try:
+            sources = getattr(self, "_glib_sources", None)
+            if isinstance(sources, set):
+                sources.clear()
+        except Exception:
+            pass
+
+    def _shutdown_core_runtime(self, finalize_timers: bool = True) -> None:
+        if bool(getattr(self, "_core_runtime_shutdown", False)):
+            return
+        self._core_runtime_shutdown = True
+        self._set_pomodoro_active_state(False)
         try:
             scheduler = getattr(self, "_ui_refresh_scheduler", None)
             if scheduler is not None:
                 scheduler.cancel_all()
         except Exception:
             pass
-        self._set_pomodoro_active_state(False)
+        try:
+            lifecycle = getattr(self, "_ui_dialog_lifecycle", None)
+            if lifecycle is not None:
+                lifecycle.close_all()
+        except Exception:
+            pass
+        try:
+            source_id = int(getattr(self, "_ai_tutor_global_autopilot_id", 0) or 0)
+        except Exception:
+            source_id = 0
+        if source_id > 0:
+            self._force_remove_glib_source(source_id)
+        self._ai_tutor_global_autopilot_id = 0
+        self._ai_tutor_global_autopilot_busy = False
+        try:
+            self._stop_tutor_workspace_runtime()
+        except Exception:
+            pass
+        try:
+            focus_id = int(getattr(self, "_focus_timer_id", 0) or 0)
+        except Exception:
+            focus_id = 0
+        if focus_id > 0:
+            self._force_remove_glib_source(focus_id)
+        self._focus_timer_id = None
+        try:
+            pomodoro_id = int(getattr(self, "pomodoro_timer_id", 0) or 0)
+        except Exception:
+            pomodoro_id = 0
+        if pomodoro_id > 0:
+            self._force_remove_glib_source(pomodoro_id)
+        self.pomodoro_timer_id = None
+        try:
+            stop_break = getattr(self, "_stop_break_timer", None)
+            if callable(stop_break):
+                stop_break()
+        except Exception:
+            pass
+        try:
+            stop_action = getattr(self, "_stop_action_timer", None)
+            if callable(stop_action):
+                stop_action(finalize=bool(finalize_timers))
+        except Exception:
+            pass
+        try:
+            self._drain_registered_glib_sources()
+        except Exception:
+            pass
+        try:
+            shutdown_runtime = getattr(self.engine, "shutdown_runtime", None)
+            if callable(shutdown_runtime):
+                shutdown_runtime(wait_for_workers=True)
+        except Exception:
+            pass
+
+    def on_close_request(self, *_args):
+        self._shutdown_core_runtime(finalize_timers=True)
         if self._closing_from_recap:
             try:
                 self.engine.save_data()
-            except Exception:
-                pass
-            try:
-                shutdown_runtime = getattr(self.engine, "shutdown_runtime", None)
-                if callable(shutdown_runtime):
-                    shutdown_runtime()
             except Exception:
                 pass
             self.update_save_status_display()

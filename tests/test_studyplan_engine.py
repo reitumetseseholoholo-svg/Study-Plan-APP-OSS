@@ -95,6 +95,24 @@ def test_cleanup_joblib_loky_runtime_skips_when_no_executor(monkeypatch):
     assert created["count"] == 0
 
 
+def test_shutdown_runtime_requests_blocking_loky_cleanup(monkeypatch):
+    captured: dict[str, bool] = {}
+
+    def _fake_cleanup(cls, wait_for_workers: bool = False):
+        captured["wait_for_workers"] = bool(wait_for_workers)
+
+    monkeypatch.setattr(
+        StudyPlanEngine,
+        "_cleanup_joblib_loky_runtime",
+        classmethod(_fake_cleanup),
+        raising=True,
+    )
+
+    engine = StudyPlanEngine.__new__(StudyPlanEngine)
+    StudyPlanEngine.shutdown_runtime(engine)
+    assert captured.get("wait_for_workers") is True
+
+
 def test_competence_initialization_covers_all_chapters(engine_no_io):
     eng = engine_no_io
     assert set(eng.competence.keys()) == set(StudyPlanEngine.CHAPTERS)

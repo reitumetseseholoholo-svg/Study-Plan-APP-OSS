@@ -3,6 +3,7 @@
 import datetime
 import json
 import os
+import threading
 import types
 import urllib.error
 import urllib.request
@@ -2007,6 +2008,110 @@ def test_stop_quiz_or_review_timer_if_active_ignores_non_quiz_kinds():
     stopped = StudyPlanGUI._stop_quiz_or_review_timer_if_active(dummy, finalize=True)
     assert stopped is False
     assert calls == []
+
+
+def test_stop_tutor_workspace_runtime_cancels_stream_and_poll_sources():
+    removed: list[int] = []
+    set_running_calls: list[bool] = []
+    stopped_models: list[str] = []
+    cancel_event = threading.Event()
+    state = {
+        "active": True,
+        "job_id": 4,
+        "cancel_event": cancel_event,
+        "model": "llama3:8b",
+        "stream_watchdog_id": 17,
+        "model_poll_id": 23,
+        "set_running": lambda running: set_running_calls.append(bool(running)),
+    }
+    dummy = types.SimpleNamespace(
+        _tutor_workspace_state=state,
+        _force_remove_glib_source=lambda source_id: removed.append(int(source_id)),
+        _ollama_stop_model=lambda model_name: stopped_models.append(str(model_name)),
+    )
+
+    StudyPlanGUI._stop_tutor_workspace_runtime(dummy)
+
+    assert cancel_event.is_set() is True
+    assert removed == [17, 23]
+    assert set_running_calls == [False]
+    assert stopped_models == ["llama3:8b"]
+    assert state["active"] is False
+    assert state["stream_watchdog_id"] == 0
+    assert state["model_poll_id"] == 0
+    assert state["cancel_event"] is None
+
+
+def test_shutdown_core_runtime_is_idempotent_and_calls_blocking_engine_shutdown():
+    calls: dict[str, int] = {
+        "pomodoro_state": 0,
+        "scheduler_cancel": 0,
+        "lifecycle_close": 0,
+        "stop_workspace": 0,
+        "stop_break": 0,
+        "drain_glib": 0,
+        "engine_shutdown": 0,
+    }
+    removed: list[int] = []
+    action_finalize: list[bool] = []
+    dummy = types.SimpleNamespace(
+        _core_runtime_shutdown=False,
+        _set_pomodoro_active_state=lambda active: calls.__setitem__("pomodoro_state", calls["pomodoro_state"] + (0 if active else 1)),
+        _ui_refresh_scheduler=types.SimpleNamespace(cancel_all=lambda: calls.__setitem__("scheduler_cancel", calls["scheduler_cancel"] + 1)),
+        _ui_dialog_lifecycle=types.SimpleNamespace(close_all=lambda: calls.__setitem__("lifecycle_close", calls["lifecycle_close"] + 1)),
+        _ai_tutor_global_autopilot_id=31,
+        _ai_tutor_global_autopilot_busy=True,
+        _stop_tutor_workspace_runtime=lambda: calls.__setitem__("stop_workspace", calls["stop_workspace"] + 1),
+        _focus_timer_id=41,
+        pomodoro_timer_id=51,
+        _stop_break_timer=lambda: calls.__setitem__("stop_break", calls["stop_break"] + 1),
+        _stop_action_timer=lambda finalize=True: action_finalize.append(bool(finalize)),
+        _drain_registered_glib_sources=lambda: calls.__setitem__("drain_glib", calls["drain_glib"] + 1),
+        _force_remove_glib_source=lambda source_id: removed.append(int(source_id)),
+        engine=types.SimpleNamespace(
+            shutdown_runtime=lambda wait_for_workers=True: calls.__setitem__(
+                "engine_shutdown",
+                calls["engine_shutdown"] + (1 if bool(wait_for_workers) else 0),
+            )
+        ),
+    )
+
+    StudyPlanGUI._shutdown_core_runtime(dummy, finalize_timers=True)
+    StudyPlanGUI._shutdown_core_runtime(dummy, finalize_timers=True)
+
+    assert calls["pomodoro_state"] == 1
+    assert calls["scheduler_cancel"] == 1
+    assert calls["lifecycle_close"] == 1
+    assert calls["stop_workspace"] == 1
+    assert calls["stop_break"] == 1
+    assert calls["drain_glib"] == 1
+    assert calls["engine_shutdown"] == 1
+    assert action_finalize == [True]
+    assert removed == [31, 41, 51]
+    assert dummy._ai_tutor_global_autopilot_id == 0
+    assert dummy._ai_tutor_global_autopilot_busy is False
+    assert dummy._focus_timer_id is None
+    assert dummy.pomodoro_timer_id is None
+
+
+def test_on_close_request_uses_runtime_shutdown_and_recap_flow():
+    calls: dict[str, int] = {"shutdown": 0, "recap": 0, "save_data": 0, "save_status": 0}
+    dummy = types.SimpleNamespace(
+        _closing_from_recap=False,
+        _shutdown_core_runtime=lambda finalize_timers=True: calls.__setitem__("shutdown", calls["shutdown"] + 1),
+        _show_daily_recap=lambda: calls.__setitem__("recap", calls["recap"] + 1),
+        engine=types.SimpleNamespace(save_data=lambda: calls.__setitem__("save_data", calls["save_data"] + 1)),
+        update_save_status_display=lambda: calls.__setitem__("save_status", calls["save_status"] + 1),
+    )
+
+    keep_open = StudyPlanGUI.on_close_request(dummy)
+    assert keep_open is True
+    assert calls == {"shutdown": 1, "recap": 1, "save_data": 0, "save_status": 0}
+
+    dummy._closing_from_recap = True
+    close_now = StudyPlanGUI.on_close_request(dummy)
+    assert close_now is False
+    assert calls == {"shutdown": 2, "recap": 1, "save_data": 1, "save_status": 1}
 
 
 def test_get_remaining_today_blocks_consumes_completed_blocks_progressively():

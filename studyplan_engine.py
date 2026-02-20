@@ -2776,7 +2776,7 @@ class StudyPlanEngine:
         self.test_methods()
 
     @classmethod
-    def _cleanup_joblib_loky_runtime(cls) -> None:
+    def _cleanup_joblib_loky_runtime(cls, wait_for_workers: bool = False) -> None:
         if bool(cls._LOKY_CLEANUP_DONE):
             return
         cls._LOKY_CLEANUP_DONE = True
@@ -2801,14 +2801,24 @@ class StudyPlanEngine:
             executor_any = cast(Any, executor)
         except Exception:
             return
-        # Handle joblib/loky signature differences across versions while
-        # preferring non-blocking shutdown on app exit paths.
-        for kwargs in (
-            {"wait": False, "kill_workers": True},
-            {"wait": False},
-            {"kill_workers": True},
-            {},
-        ):
+        # Handle joblib/loky signature differences across versions.
+        # Explicit shutdown calls may request blocking worker teardown to
+        # reduce semaphore/resource leak warnings on interpreter exit.
+        if bool(wait_for_workers):
+            shutdown_attempts = (
+                {"wait": True, "kill_workers": True},
+                {"wait": True},
+                {"kill_workers": True},
+                {},
+            )
+        else:
+            shutdown_attempts = (
+                {"wait": False, "kill_workers": True},
+                {"wait": False},
+                {"kill_workers": True},
+                {},
+            )
+        for kwargs in shutdown_attempts:
             try:
                 executor_any.shutdown(**kwargs)
                 break
@@ -2821,8 +2831,8 @@ class StudyPlanEngine:
         except Exception:
             pass
 
-    def shutdown_runtime(self) -> None:
-        self.__class__._cleanup_joblib_loky_runtime()
+    def shutdown_runtime(self, wait_for_workers: bool = True) -> None:
+        self.__class__._cleanup_joblib_loky_runtime(wait_for_workers=bool(wait_for_workers))
 
     def _parse_date(self, value):
         """Parse a date from iso string/datetime/date; return date or None."""
