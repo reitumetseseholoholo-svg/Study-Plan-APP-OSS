@@ -645,6 +645,46 @@ def test_import_data_snapshot_clamps_srs_to_question_count(tmp_path, monkeypatch
     assert len(eng.srs_data[chapter]) == q_count
 
 
+def test_restart_preserves_learning_cards_for_json_added_questions(tmp_path, monkeypatch):
+    chapter = "FM Function"
+    base_count = len(StudyPlanEngine.QUESTIONS_DEFAULT.get(chapter, []))
+    assert base_count > 0
+
+    data_file = tmp_path / "data.json"
+    questions_file = tmp_path / "questions.json"
+    monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "QUESTIONS_FILE", str(questions_file), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+
+    extra_questions = [
+        {"question": "Extra Q1", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""},
+        {"question": "Extra Q2", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""},
+    ]
+    questions_file.write_text(json.dumps({chapter: extra_questions}), encoding="utf-8")
+
+    srs_rows = [{"last_review": None, "interval": 1, "efactor": 2.5} for _ in range(base_count)]
+    srs_rows.extend(
+        [
+            {"last_review": "2026-02-01", "interval": 5, "efactor": 2.2},
+            {"last_review": "2026-02-02", "interval": 4, "efactor": 2.1},
+        ]
+    )
+    payload = {
+        "competence": {chapter: 55.0},
+        "pomodoro_log": {"total_minutes": 0.0, "by_chapter": {}},
+        "srs_data": {chapter: srs_rows},
+        "study_days": [],
+    }
+    data_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    eng = StudyPlanEngine(default_exam_date_to_today=False)
+    stats = eng.get_mastery_stats(chapter)
+    assert int(stats.get("total", 0) or 0) == base_count + 2
+    assert int(stats.get("learning", 0) or 0) == 2
+    assert int(stats.get("new", 0) or 0) == base_count
+    assert eng.srs_data.get(chapter, [])[-1].get("last_review") == "2026-02-02"
+
+
 def test_select_leech_questions_targets_low_accuracy_recent_items(engine_no_io):
     eng = engine_no_io
     chapter = "FM Function"
@@ -1247,7 +1287,7 @@ def test_syllabus_parser_extracts_capabilities_from_fm_text(engine_no_io):
 def test_syllabus_parser_extracts_chapters_and_flow(engine_no_io):
     eng = engine_no_io
     parsed = eng.parse_syllabus_pdf_text(SAMPLE_SYLLABUS_TEXT)
-    built = eng.build_module_config_from_syllabus(parsed, base_config={"title": "ACCA FM"})
+    built = eng.build_module_config_from_syllabus(parsed, base_config={"title": "FM"})
     chapter_flow = built.get("chapter_flow", {})
     chapters = built.get("chapters", [])
     assert isinstance(chapters, list)
@@ -1276,8 +1316,8 @@ def test_syllabus_parser_extracts_outcomes_and_levels(engine_no_io):
 def test_weight_derivation_is_deterministic_and_bounded(engine_no_io):
     eng = engine_no_io
     parsed = eng.parse_syllabus_pdf_text(SAMPLE_SYLLABUS_TEXT)
-    built_a = eng.build_module_config_from_syllabus(parsed, base_config={"title": "ACCA FM"})
-    built_b = eng.build_module_config_from_syllabus(parsed, base_config={"title": "ACCA FM"})
+    built_a = eng.build_module_config_from_syllabus(parsed, base_config={"title": "FM"})
+    built_b = eng.build_module_config_from_syllabus(parsed, base_config={"title": "FM"})
     w_a = built_a.get("importance_weights", {})
     w_b = built_b.get("importance_weights", {})
     assert w_a == w_b
@@ -1290,7 +1330,7 @@ def test_build_module_config_preserves_existing_questions(engine_no_io):
     eng = engine_no_io
     parsed = eng.parse_syllabus_pdf_text(SAMPLE_SYLLABUS_TEXT)
     base = {
-        "title": "ACCA FM",
+        "title": "FM",
         "questions": {
             "A. Discuss the role and purpose of the financial management function": [
                 {

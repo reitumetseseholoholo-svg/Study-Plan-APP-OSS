@@ -2042,7 +2042,8 @@ class StudyPlanEngine:
         if not isinstance(source_pdf, str) or not source_pdf.strip():
             source_pdf = ""
 
-        config["title"] = str(config.get("title") or f"ACCA {str(exam_code or 'Module').strip()}").strip()
+        fallback_title = str(exam_code or "Module").strip() or "Module"
+        config["title"] = str(config.get("title") or fallback_title).strip()
         config["chapters"] = chapters
         config["chapter_flow"] = chapter_flow
         config["importance_weights"] = importance if importance else config.get("importance_weights", {})
@@ -2276,7 +2277,7 @@ class StudyPlanEngine:
         parsed = self.parse_syllabus_pdf_text(pdf_text)
         t_parse_ms = (time.perf_counter() - t_parse_start) * 1000.0
         if not base_config:
-            base_config = {"title": f"ACCA {str(parsed.get('exam_code') or target_module_id).upper()}"}
+            base_config = {"title": str(parsed.get("exam_code") or target_module_id).upper()}
         else:
             def _looks_like_capabilities(chs: list[str]) -> bool:
                 if not chs:
@@ -2312,7 +2313,7 @@ class StudyPlanEngine:
                 fallback["chapter_flow"] = {}
                 fallback["importance_weights"] = {chapter_name: 10}
             fallback["title"] = str(
-                fallback.get("title") or f"ACCA {str(parsed.get('exam_code') or target_module_id).upper()}"
+                fallback.get("title") or str(parsed.get("exam_code") or target_module_id).upper()
             ).strip()
             fallback["capabilities"] = parsed.get("capabilities", {}) if isinstance(parsed.get("capabilities"), dict) else {}
             fallback["syllabus_structure"] = (
@@ -2509,7 +2510,7 @@ class StudyPlanEngine:
         This method also loads the data from the JSON file, populates missing chapters safely, checks for null pointer references, checks for unhandled exceptions, migrates the pomodoro log, saves the data, sets up the study days array and migrates the pomodoro log again.
         """
         self.module_id = self._sanitize_module_id(module_id or "acca_f9")
-        self.module_title = str(module_title or "ACCA F9")
+        self.module_title = str(module_title or "Study Module")
         self._init_module_defaults()
         if not bool(self.__class__._LOKY_CLEANUP_REGISTERED):
             try:
@@ -2698,6 +2699,7 @@ class StudyPlanEngine:
         self.outcome_cluster_meta = {}
         self.outcome_clusters = []
         self.outcome_cluster_edges = []
+        self._initial_load_in_progress: bool = False
 
         # Data health stats
         self.data_health = {
@@ -2710,6 +2712,7 @@ class StudyPlanEngine:
         }
 
         # Load data from JSON file
+        self._initial_load_in_progress = True
         try:
             self.load_data()
         except Exception as e:
@@ -2759,7 +2762,10 @@ class StudyPlanEngine:
             self.study_days = set(self.study_days or [])
 
         # Load questions (syncs SRS as part of load)
-        self.load_questions()
+        try:
+            self.load_questions()
+        finally:
+            self._initial_load_in_progress = False
         self._migrate_question_stats_to_qid()
         self._load_syllabus_import_cache_disk()
 
@@ -2868,7 +2874,47 @@ class StudyPlanEngine:
             "efactor": efactor,
         }
 
-    def _coerce_srs_data(self, raw):
+    def _question_count_hints_from_questions_file(self) -> Dict[str, int]:
+        """
+        Return expected merged question counts per chapter based on QUESTIONS_FILE.
+
+        Used during initial load normalization so SRS rows for JSON-added questions
+        are not truncated before load_questions() merges those additions.
+        """
+        counts: Dict[str, int] = {}
+        try:
+            if not os.path.exists(self.QUESTIONS_FILE):
+                return counts
+            raw = self._load_json_file_with_limit(
+                self.QUESTIONS_FILE,
+                getattr(self, "MAX_QUESTION_IMPORT_BYTES", 32 * 1024 * 1024),
+                "Questions",
+            )
+            if not isinstance(raw, dict):
+                return counts
+        except Exception:
+            return counts
+
+        for chapter in self.CHAPTERS:
+            try:
+                counts[chapter] = int(len(self.QUESTIONS_DEFAULT.get(chapter, []) or []))
+            except Exception:
+                counts[chapter] = 0
+
+        for key, value in raw.items():
+            if not isinstance(value, list):
+                continue
+            chapter = key if key in self.QUESTIONS_DEFAULT else self.CHAPTER_ALIASES.get(str(key).strip().lower())
+            if chapter not in self.QUESTIONS_DEFAULT:
+                continue
+            cleaned_count = 0
+            for item in value:
+                if isinstance(item, dict):
+                    cleaned_count += 1
+            counts[chapter] = int(max(0, counts.get(chapter, 0))) + int(cleaned_count)
+        return counts
+
+    def _coerce_srs_data(self, raw, question_count_hints: Dict[str, int] | None = None):
         """Return SRS data aligned to known chapters and question counts."""
         cleaned = {}
         if not isinstance(raw, dict):
@@ -2880,6 +2926,12 @@ class StudyPlanEngine:
                 raw_list = []
                 self.data_health["srs_fixed"] += 1
             question_len = len(self.QUESTIONS.get(chapter, []) or self.QUESTIONS_DEFAULT.get(chapter, []))
+            if isinstance(question_count_hints, dict):
+                try:
+                    hinted = int(question_count_hints.get(chapter, question_len) or question_len)
+                except Exception:
+                    hinted = question_len
+                question_len = max(question_len, hinted)
             if question_len < 0:
                 question_len = 0
             if len(raw_list) > question_len:
@@ -6203,7 +6255,7 @@ class StudyPlanEngine:
                 counts[chapter] = counts.get(chapter, 0) + 1
         return counts
 
-    def _normalize_loaded_data(self):
+    def _normalize_loaded_data(self, include_question_file_hints: bool = False):
         """Coerce all persisted data into safe, canonical formats."""
         # reset stats per normalization pass
         self.data_health["competence_fixed"] = 0
@@ -6213,8 +6265,11 @@ class StudyPlanEngine:
         self.data_health["exam_date_fixed"] = 0
         self.data_health["notes"] = []
 
+        question_count_hints: Dict[str, int] | None = None
+        if bool(include_question_file_hints):
+            question_count_hints = self._question_count_hints_from_questions_file()
         self.competence = self._coerce_competence(self.competence)
-        self.srs_data = self._coerce_srs_data(self.srs_data)
+        self.srs_data = self._coerce_srs_data(self.srs_data, question_count_hints=question_count_hints)
         self.study_days = self._coerce_study_days(self.study_days)
         self.exam_date = self._coerce_exam_date(self.exam_date)
         self._coerce_pomodoro_log(self.pomodoro_log)
@@ -10764,9 +10819,10 @@ class StudyPlanEngine:
         self.outcome_cluster_meta = data.get("outcome_cluster_meta", self.outcome_cluster_meta) or {}
         self.outcome_clusters = data.get("outcome_clusters", self.outcome_clusters) or []
         self.outcome_cluster_edges = data.get("outcome_cluster_edges", self.outcome_cluster_edges) or []
-        self._normalize_loaded_data()
+        self._normalize_loaded_data(include_question_file_hints=True)
         # Final cardinality guard after coercion.
-        self.sync_srs_with_questions()
+        if not bool(getattr(self, "_initial_load_in_progress", False)):
+            self.sync_srs_with_questions()
 
     def _secure_path_permissions(self, path: str, mode: int) -> None:
         secure_path_permissions(path, mode)

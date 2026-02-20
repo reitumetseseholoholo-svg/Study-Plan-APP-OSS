@@ -1,5 +1,5 @@
 {
-  "title": "ACCA FR (F7) Financial Reporting",
+  "title": "FR (F7) Financial Reporting",
   "chapters": [
     "A. Conceptual and Regulatory Framework for Financial Reporting",
     "B. Accounting for Transactions in Financial Statements",
@@ -69,7 +69,7 @@
           "IAASB",
           "IASB",
           "IFAC",
-          "ACCA"
+          "FRC"
         ],
         "correct": "IASB",
         "explanation": "The International Accounting Standards Board (IASB) issues IFRS standards."

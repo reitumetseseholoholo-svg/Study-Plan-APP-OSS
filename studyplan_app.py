@@ -48,6 +48,13 @@ from studyplan_ui_runtime import (
     DashboardController,
     PreferencesController,
 )
+from studyplan.app.action_registry import resolve_ui_action_bindings
+from studyplan.ai.recovery import (
+    build_recovery_sequence,
+    classify_failure_kind,
+    recovery_hint_text,
+)
+from studyplan.telemetry.slo import evaluate_latency_slo
 
 
 import datetime
@@ -190,8 +197,9 @@ SHORTCUTS_TEXT = (
 )
 
 APP_ID = "com.studyplan.assistant"
+APP_DISPLAY_NAME = os.environ.get("STUDYPLAN_APP_NAME", "Study Assistant")
 DEFAULT_MODULE_ID = os.environ.get("STUDYPLAN_MODULE_ID", "acca_f9")
-DEFAULT_MODULE_TITLE = os.environ.get("STUDYPLAN_MODULE_TITLE", "ACCA F9")
+DEFAULT_MODULE_TITLE = os.environ.get("STUDYPLAN_MODULE_TITLE", "")
 DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 DEFAULT_OLLAMA_MODEL = os.environ.get("STUDYPLAN_OLLAMA_MODEL", "")
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 300
@@ -200,6 +208,8 @@ DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS = 0.4
 DEFAULT_OLLAMA_AUTO_SELECT = True
 OLLAMA_MODEL_CACHE_TTL_SECONDS = 120
 DEFAULT_OLLAMA_CONTEXT = 2048
+OLLAMA_RECOVERY_PROMPT_MAX_CHARS = 5200
+OLLAMA_RECOVERY_REDUCED_NUM_CTX = 1536
 try:
     DEFAULT_OLLAMA_NUM_THREADS = max(
         1,
@@ -900,7 +910,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.set_default_size(1280, 768)
         self.module_id = DEFAULT_MODULE_ID
         self.module_title = DEFAULT_MODULE_TITLE
-        self.set_title(f"{self.module_title} Study Assistant")
+        self.set_title(str(APP_DISPLAY_NAME))
         self._left_panel_default_width = 250
         self._left_panel_tile_width = 228
         self._left_panel_width = self._left_panel_default_width
@@ -1197,6 +1207,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._settings_workspace_modern_toggle: Gtk.CheckButton | None = None
         self._settings_workspace_reduce_motion_toggle: Gtk.CheckButton | None = None
         self._settings_workspace_mode_dropdown: Gtk.DropDown | None = None
+        self._missing_ui_action_bindings: list[str] = []
         self.load_preferences()
         self._refresh_ui_style_runtime()
 
@@ -1224,7 +1235,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.exam_date = self.engine.exam_date
         try:
             self.module_title = getattr(self.engine, "module_title", self.module_title)
-            self.set_title(f"{self.module_title} Study Assistant")
+            self.set_title(str(APP_DISPLAY_NAME))
         except Exception:
             pass
 
@@ -1317,7 +1328,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         # Exam date picker button
         self.exam_date_btn = Gtk.Button(label="Set exam date…")
         self.exam_date_btn.connect("clicked", self.on_set_exam_date)
-        left_panel.append(self.exam_date_btn)
+        self.exam_date_btn.set_tooltip_text("Moved to Application menu: Set exam date…")
 
         # Availability section (expander for compact mode)
         avail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -1362,7 +1373,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.availability_expander.set_label_widget(avail_label)
         self.availability_expander.set_child(avail_box)
         self.availability_expander.set_expanded(True)
-        left_panel.append(self.availability_expander)
+        self.availability_expander.set_tooltip_text("Moved to Application menu: Set study availability…")
 
         # Topic dropdown (GTK4 DropDown)
         chapters = []
@@ -1706,52 +1717,57 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         tools_box.add_css_class("card")
         tools_box.add_css_class("tools-card")
 
-        # Import PDF button
+        # Keep the most-used action visible; move the rest into a compact menu.
+        tools_primary_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        tools_primary_row.set_halign(Gtk.Align.FILL)
+
+        # Import PDF button (secondary)
         self.import_btn = Gtk.Button(label="Import PDF scores")
         self.import_btn.connect("clicked", self.on_import_pdf)
-        tools_box.append(self.import_btn)
 
-        # Import AI Questions (JSON) button
+        # Import AI Questions (JSON) button (secondary)
         self.ai_questions_import_btn = Gtk.Button(label="Import AI questions (JSON)")
         self.ai_questions_import_btn.connect("clicked", self.on_import_ai_questions)
-        tools_box.append(self.ai_questions_import_btn)
 
-        # Local AI Tutor (Ollama) button
+        # Local AI Tutor (Ollama) button (primary)
         self.ai_tutor_btn = Gtk.Button(label="AI tutor (Ollama)")
         self.ai_tutor_btn.add_css_class("coach-action")
         self.ai_tutor_btn.connect("clicked", self.on_open_ai_tutor)
-        tools_box.append(self.ai_tutor_btn)
+        self.ai_tutor_btn.set_hexpand(True)
+        tools_primary_row.append(self.ai_tutor_btn)
 
-        # Export Data button
+        self.tools_more_btn = Gtk.MenuButton(label="More")
+        self.tools_more_btn.add_css_class("flat")
+        self.tools_more_btn.set_tooltip_text("Import/export, health, and cache utilities.")
+        try:
+            self.tools_more_btn.set_icon_name("open-menu-symbolic")
+        except Exception:
+            pass
+        self.tools_more_btn.set_menu_model(self._build_tools_overflow_menu())
+        tools_primary_row.append(self.tools_more_btn)
+        tools_box.append(tools_primary_row)
+
+        # Secondary controls kept as button objects for compatibility and shortcuts.
         self.export_btn = Gtk.Button(label="Export data (CSV)")
         self.export_btn.connect("clicked", self.on_export_data)
-        tools_box.append(self.export_btn)
 
-        # Export Import Template button
         self.template_btn = Gtk.Button(label="Export import template")
         self.template_btn.connect("clicked", self.on_export_template)
-        tools_box.append(self.template_btn)
 
-        # Reset Data button
         self.reset_btn = Gtk.Button(label="Reset Data")
         self.reset_btn.connect("clicked", self.on_reset_data)
-        tools_box.append(self.reset_btn)
 
-        # View Health Log button
         self.health_log_btn = Gtk.Button(label="View Health Log")
         self.health_log_btn.connect("clicked", self.on_view_health_log)
-        tools_box.append(self.health_log_btn)
 
-        # Run Data Health Check button
         self.health_check_btn = Gtk.Button(label="Run Data Health Check")
         self.health_check_btn.connect("clicked", self.on_run_health_check)
-        tools_box.append(self.health_check_btn)
+
         self.view_syllabus_cache_stats_btn = Gtk.Button(label="View Syllabus Cache Stats")
         self.view_syllabus_cache_stats_btn.connect("clicked", self.on_view_syllabus_cache_stats)
-        tools_box.append(self.view_syllabus_cache_stats_btn)
+
         self.clear_syllabus_cache_btn = Gtk.Button(label="Clear Syllabus Cache")
         self.clear_syllabus_cache_btn.connect("clicked", self.on_clear_syllabus_cache)
-        tools_box.append(self.clear_syllabus_cache_btn)
 
         left_panel.append(tools_box)
         self.tools_box = tools_box
@@ -1993,37 +2009,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.add_controller(shortcut_controller)
 
     def _create_actions(self) -> None:
-        self._add_action("import_pdf", self.on_menu_import_pdf)
-        self._add_action("import_syllabus_pdf", self.on_menu_import_syllabus_pdf)
-        self._add_action("import_ai", self.on_menu_import_ai)
-        self._add_action("import_snapshot", self.on_menu_import_snapshot)
-        self._add_action("recover_snapshot", self.on_menu_recover_snapshot)
-        self._add_action("restore_latest_snapshot", self.on_menu_restore_latest_snapshot)
-        self._add_action("export_csv", self.on_menu_export_csv)
-        self._add_action("export_template", self.on_menu_export_template)
-        self._add_action("export_question_stats", self.on_menu_export_question_stats)
-        self._add_action("weekly_report", self.on_view_weekly_report)
-        self._add_action("reset_data", self.on_menu_reset_data)
-        self._add_action("preferences", self.on_open_preferences)
-        self._add_action("debug_info", self.on_debug_info)
-        self._add_action("view_logs", self.on_view_logs)
-        self._add_action("view_reflections", self.on_view_reflections)
-        self._add_action("open_ai_tutor", self.on_open_ai_tutor)
-        self._add_action("open_ai_coach", self.on_open_ai_coach)
-        self._add_action("train_ml_models", self.on_train_ml_models)
-        self._add_action("toggle_menu", self.on_toggle_menu_action)
-        self._add_action("edit_focus_allowlist", self.on_edit_focus_allowlist)
-        self._add_action("set_confidence_note", self.on_set_confidence_note)
-        self._add_action("competence_table", self.on_show_competence_table)
-        self._add_action("reset_competence", self.on_reset_chapter_competence)
-        self._add_action("reset_all_competence", self.on_reset_all_competence)
-        self._add_action("about", self.on_about)
-        self._add_action("quit_app", self.on_quit_app)
-        self._add_action("shortcuts", self.on_show_shortcuts)
-        self._add_action("switch_module", self.on_switch_module)
-        self._add_action("first_run_tour", self.on_first_run_tour)
-        self._add_action("manage_modules", self.on_manage_modules)
-        self._add_action("edit_module", self.on_edit_module)
+        resolved, missing = resolve_ui_action_bindings(self)
+        for action_name, handler in resolved:
+            self._add_action(action_name, handler)
+        # Keep visibility of action wiring gaps during refactors without crashing startup.
+        self._missing_ui_action_bindings = list(missing)
         self._add_bool_action("semantic_enabled", bool(self.semantic_enabled), self.on_toggle_semantic_action)
 
     def _add_action(self, name: str, handler) -> None:
@@ -2035,6 +2025,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         action = Gio.SimpleAction.new_stateful(name, None, GLib.Variant.new_boolean(bool(initial)))
         action.connect("change-state", handler)
         self.add_action(action)
+
+    def _build_tools_overflow_menu(self) -> Gio.Menu:
+        tools_menu = Gio.Menu()
+        tools_menu.append("Import PDF scores…", "win.import_pdf")
+        tools_menu.append("Import AI questions…", "win.import_ai")
+        tools_menu.append("Export data (CSV)…", "win.export_csv")
+        tools_menu.append("Export import template…", "win.export_template")
+        tools_menu.append("View Health Log…", "win.view_health_log")
+        tools_menu.append("Run Data Health Check…", "win.run_health_check")
+        tools_menu.append("View Syllabus Cache Stats…", "win.view_syllabus_cache_stats")
+        tools_menu.append("Clear Syllabus Cache…", "win.clear_syllabus_cache")
+        tools_menu.append("Reset Data…", "win.reset_data")
+        return tools_menu
 
     def _build_menu_bar(self) -> Gtk.Widget:
         file_menu = Gio.Menu()
@@ -2065,6 +2068,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         app_menu = Gio.Menu()
         app_menu.append("Preferences…", "win.preferences")
+        app_menu.append("Set exam date…", "win.set_exam_date")
+        app_menu.append("Set study availability…", "win.set_availability")
         app_menu.append("AI Tutor…", "win.open_ai_tutor")
         app_menu.append("AI Coach…", "win.open_ai_coach")
         app_menu.append("Debug Info…", "win.debug_info")
@@ -2073,6 +2078,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         app_menu.append("Train ML Models…", "win.train_ml_models")
         app_menu.append("Enable semantic routing", "win.semantic_enabled")
         app_menu.append("Toggle Menu Bar", "win.toggle_menu")
+
+        tools_menu = self._build_tools_overflow_menu()
 
         help_menu = Gio.Menu()
         help_menu.append("Keyboard Shortcuts…", "win.shortcuts")
@@ -2083,6 +2090,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         top_menu.append_submenu("File", file_menu)
         top_menu.append_submenu("Edit", edit_menu)
         top_menu.append_submenu("Module", module_menu)
+        top_menu.append_submenu("Tools", tools_menu)
         top_menu.append_submenu("Application", app_menu)
         top_menu.append_submenu("Help", help_menu)
 
@@ -2421,7 +2429,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         prompt_buf.set_text(
             build_ai_tutor_seed_prompt(
                 topic=str(getattr(self, "current_topic", "") or "").strip(),
-                module_title=str(getattr(self, "module_title", "ACCA") or "ACCA").strip(),
+                module_title=str(getattr(self, "module_title", "") or "").strip() or "selected module",
             )
         )
         prompt_scroller.set_child(prompt_view)
@@ -3008,7 +3016,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if bool(run_state.get("active", False)):
                 return
             topic = str(getattr(self, "current_topic", "") or "").strip() or "the current topic"
-            module = str(getattr(self, "module_title", "ACCA") or "ACCA").strip()
+            module = str(getattr(self, "module_title", "") or "").strip() or "selected module"
             try:
                 resolved = str(template or "").format(topic=topic, module=module)
             except Exception:
@@ -3196,7 +3204,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
             turn_requested_at = float(time.monotonic())
             prompt_stage_started_at = float(time.monotonic())
-            module_title = str(getattr(self, "module_title", "ACCA") or "ACCA").strip()
+            module_title = str(getattr(self, "module_title", "") or "").strip() or "selected module"
             chapter = str(getattr(self, "current_topic", "") or "").strip()
             full_prompt, prompt_meta = build_ai_tutor_context_prompt_details(
                 history=history,
@@ -4258,6 +4266,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def on_menu_import_pdf(self, _action, _param):
         self.on_import_pdf(None)
 
+    def on_menu_set_exam_date(self, _action, _param):
+        self.on_set_exam_date(None)
+
+    def on_menu_set_availability(self, _action, _param):
+        self.on_open_availability_dialog()
+
     def on_menu_import_syllabus_pdf(self, _action, _param):
         self.on_import_syllabus_pdf(None)
 
@@ -4281,6 +4295,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_menu_export_question_stats(self, _action, _param):
         self.on_export_question_stats(None)
+
+    def on_menu_view_health_log(self, _action, _param):
+        self.on_view_health_log(None)
+
+    def on_menu_run_health_check(self, _action, _param):
+        self.on_run_health_check(None)
+
+    def on_menu_view_syllabus_cache_stats(self, _action, _param):
+        self.on_view_syllabus_cache_stats(None)
+
+    def on_menu_clear_syllabus_cache(self, _action, _param):
+        self.on_clear_syllabus_cache(None)
 
     def on_open_ai_tutor(self, *_args):
         if bool(getattr(self, "ui_modern_enabled", False)) and self._open_workspace_tab("tutor"):
@@ -4870,15 +4896,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_about(self, _action, _param):
         about = self._new_about_dialog(transient_for=self, modal=True)
-        about.set_program_name(f"{self.module_title} Study Assistant")
+        about.set_program_name(str(APP_DISPLAY_NAME))
         about.set_version(getattr(StudyPlanEngine, "VERSION", "1.0.0"))
         about.set_comments(
-            "A focused ACCA study coach with mission-driven Pomodoros, spaced repetition, "
-            "and performance analytics."
+            "A focused study coach with mission-driven Pomodoros, spaced repetition, "
+            "and performance analytics.\nIndependent app; not affiliated with or endorsed by any exam body."
         )
         about.set_authors(
             [
-                "ACCA Study Coach (Lereko Ernest Seholoholo)",
+                "Study Coach (Lereko Ernest Seholoholo)",
                 "Coach + UX enhancements: OpenAI Codex (assistant)",
             ]
         )
@@ -4931,7 +4957,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         welcome.add_css_class("card")
         welcome_label = Gtk.Label(
             label=(
-                f"Welcome to {self.module_title} Study Assistant.\n"
+                f"Welcome to {APP_DISPLAY_NAME}.\n"
+                f"Current module: {self.module_title}\n"
                 "We’ll set your essentials in 3 quick steps."
             )
         )
@@ -4943,7 +4970,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         # Page 2: Module selection
         module_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         module_page.add_css_class("card")
-        module_label = Gtk.Label(label="Choose your ACCA module")
+        module_label = Gtk.Label(label="Choose your module")
         module_label.set_halign(Gtk.Align.START)
         module_label.add_css_class("section-title")
         module_page.append(module_label)
@@ -8880,7 +8907,68 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return False
         return True
 
-    def _ollama_generate_text(self, model: str, prompt: str) -> tuple[str, str | None]:
+    def _reduce_prompt_for_recovery(self, prompt_text: str, max_chars: int | None = None) -> str:
+        text = str(prompt_text or "").strip()
+        if not text:
+            return ""
+        budget_raw: Any = max_chars if max_chars is not None else os.environ.get(
+            "STUDYPLAN_OLLAMA_RECOVERY_PROMPT_MAX_CHARS",
+            OLLAMA_RECOVERY_PROMPT_MAX_CHARS,
+        )
+        try:
+            budget = int(budget_raw)
+        except Exception:
+            budget = int(OLLAMA_RECOVERY_PROMPT_MAX_CHARS)
+        budget = max(800, min(12000, budget))
+        if len(text) <= budget:
+            return text
+        trimmed = text[: max(300, budget - 32)].rstrip()
+        return f"{trimmed}\n\n[Context reduced for recovery.]"
+
+    def _coerce_ollama_reduced_num_ctx(self, value: Any = None) -> int:
+        raw = value if value is not None else os.environ.get(
+            "STUDYPLAN_OLLAMA_RECOVERY_NUM_CTX",
+            OLLAMA_RECOVERY_REDUCED_NUM_CTX,
+        )
+        try:
+            parsed = int(raw)
+        except Exception:
+            parsed = int(OLLAMA_RECOVERY_REDUCED_NUM_CTX)
+        return max(512, min(int(DEFAULT_OLLAMA_CONTEXT), parsed))
+
+    def _classify_ollama_failure_kind(self, err: str) -> tuple[str, str, str]:
+        code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
+        failure_kind = classify_failure_kind(code, err)
+        return failure_kind, code, friendly
+
+    def _compose_ollama_recovery_status(
+        self,
+        err: str,
+        *,
+        model: str = "",
+        attempted_models: list[str] | None = None,
+    ) -> str:
+        failure_kind, _code, friendly = self._classify_ollama_failure_kind(err)
+        sequence = build_recovery_sequence(failure_kind)
+        hint = recovery_hint_text(failure_kind, sequence, model=str(model or "").strip())
+        attempted = [str(item or "").strip() for item in list(attempted_models or []) if str(item or "").strip()]
+        if attempted:
+            return f"{friendly} {hint} Attempted: {', '.join(attempted[:4])}."
+        return f"{friendly} {hint}"
+
+    def _should_compact_recovery_retry(self, err: str) -> bool:
+        failure_kind, _code, _friendly = self._classify_ollama_failure_kind(err)
+        return failure_kind in {"timeout", "stream_stall", "context_overflow"}
+
+    def _ollama_generate_text_with_options(
+        self,
+        model: str,
+        prompt: str,
+        *,
+        num_ctx: int,
+        temperature: float = 0.2,
+        use_response_cache: bool = True,
+    ) -> tuple[str, str | None]:
         model_name = str(model or "").strip()
         prompt_text = str(prompt or "").strip()
         if not model_name:
@@ -8888,20 +8976,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if not prompt_text:
             return "", "prompt is empty"
         cache_allowed_fn = getattr(self, "_can_use_response_cache", None)
-        use_response_cache = bool(cache_allowed_fn(prompt_text)) if callable(cache_allowed_fn) else False
+        can_cache = bool(
+            use_response_cache
+            and callable(cache_allowed_fn)
+            and bool(cache_allowed_fn(prompt_text))
+        )
         cache_hash = getattr(self, "_ai_cache_sha1", None)
         cache_get_response = getattr(self, "_ai_cache_get_response", None)
         cache_put_response = getattr(self, "_ai_cache_put_response", None)
+        ctx_value = max(512, min(8192, int(num_ctx)))
+        temp_value = max(0.0, min(1.0, float(temperature)))
         response_cache_key = ""
-        if use_response_cache and callable(cache_hash):
+        if can_cache and callable(cache_hash):
             response_cache_key = cache_hash(
                 json.dumps(
                     {
                         "model": model_name,
                         "prompt": prompt_text,
-                        "num_ctx": int(DEFAULT_OLLAMA_CONTEXT),
+                        "num_ctx": int(ctx_value),
                         "num_thread": int(DEFAULT_OLLAMA_NUM_THREADS),
-                        "temperature": 0.2,
+                        "temperature": float(temp_value),
                     },
                     ensure_ascii=True,
                     sort_keys=True,
@@ -8920,9 +9014,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "prompt": prompt_text,
             "stream": False,
             "options": {
-                "num_ctx": int(DEFAULT_OLLAMA_CONTEXT),
+                "num_ctx": int(ctx_value),
                 "num_thread": int(DEFAULT_OLLAMA_NUM_THREADS),
-                "temperature": 0.2,
+                "temperature": float(temp_value),
             },
         }
         retries = int(self._get_ollama_retry_limit())
@@ -8944,7 +9038,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return "", "invalid Ollama response"
             response_text = str(data.get("response", "") or "").strip()
             if response_text:
-                if use_response_cache and response_cache_key and callable(cache_put_response):
+                if can_cache and response_cache_key and callable(cache_put_response):
                     cache_put_response(response_cache_key, model_name, response_text)
                 return response_text, None
             api_err = str(data.get("error", "") or "").strip()
@@ -8956,6 +9050,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return "", api_err
             return "", "empty response"
         return "", (last_err or "Ollama request failed")
+
+    def _ollama_generate_text(self, model: str, prompt: str) -> tuple[str, str | None]:
+        return StudyPlanGUI._ollama_generate_text_with_options(
+            self,
+            model=model,
+            prompt=prompt,
+            num_ctx=int(DEFAULT_OLLAMA_CONTEXT),
+            temperature=0.2,
+            use_response_cache=True,
+        )
 
     def _ollama_generate_text_stream(
         self,
@@ -9389,7 +9493,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if content:
                 recent_user_lines.append(content)
         query_parts = [
-            str(getattr(self, "module_title", "ACCA") or "ACCA").strip(),
+            str(getattr(self, "module_title", "") or "").strip() or "selected module",
             str(getattr(self, "current_topic", "") or "").strip(),
             str(user_prompt or "").strip(),
             " ".join(recent_user_lines).strip(),
@@ -10144,7 +10248,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         engine = getattr(self, "engine", None)
         chapters = [ch for ch in list(getattr(engine, "CHAPTERS", []) or []) if isinstance(ch, str) and ch]
-        module_title = str(getattr(self, "module_title", "ACCA") or "ACCA").strip() or "ACCA"
+        module_title = str(getattr(self, "module_title", "") or "").strip() or "selected module"
         current_topic = str(getattr(self, "current_topic", "") or "").strip()
         coach_pick = ""
         try:
@@ -11239,6 +11343,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         last_request_err = ""
         last_structural_err = ""
         attempted_models: list[str] = []
+        coerce_reduced_ctx = getattr(self, "_coerce_ollama_reduced_num_ctx", None)
+        if callable(coerce_reduced_ctx):
+            try:
+                reduced_ctx = int(cast(Any, coerce_reduced_ctx)(None))
+            except Exception:
+                reduced_ctx = int(OLLAMA_RECOVERY_REDUCED_NUM_CTX)
+        else:
+            reduced_ctx = int(OLLAMA_RECOVERY_REDUCED_NUM_CTX)
+        compact_retry_check = getattr(self, "_should_compact_recovery_retry", None)
+        reduce_prompt = getattr(self, "_reduce_prompt_for_recovery", None)
+        generate_with_options = getattr(self, "_ollama_generate_text_with_options", None)
         for attempt_idx, candidate in enumerate(model_names):
             candidate_name = str(candidate or "").strip()
             if not candidate_name:
@@ -11246,8 +11361,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             attempted_models.append(candidate_name)
             text, err = self._ollama_generate_text(candidate_name, prompt)
             if err:
-                last_request_err = str(err)
-                continue
+                should_compact = bool(callable(compact_retry_check) and compact_retry_check(err))
+                if should_compact and callable(reduce_prompt) and callable(generate_with_options):
+                    compact_prompt = str(reduce_prompt(prompt))
+                    text, err = cast(Any, generate_with_options)(
+                        candidate_name,
+                        compact_prompt,
+                        num_ctx=int(reduced_ctx),
+                        temperature=0.2,
+                        use_response_cache=False,
+                    )
+                if err:
+                    last_request_err = str(err)
+                    continue
             json_text = self._extract_first_json_object(text)
             if not json_text:
                 last_structural_err = "Model response did not contain valid JSON."
@@ -11270,8 +11396,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         if last_request_err:
             issue = "ollama request failed"
-            _code, friendly = classify_ollama_error(last_request_err, host=self._normalize_ollama_host())
-            err_text = f"Ollama request failed: {friendly}"
+            compose_status = getattr(self, "_compose_ollama_recovery_status", None)
+            if callable(compose_status):
+                err_text = str(
+                    compose_status(
+                        last_request_err,
+                        model=model_name,
+                        attempted_models=attempted_models,
+                    )
+                )
+            else:
+                _code, friendly = classify_ollama_error(last_request_err, host=self._normalize_ollama_host())
+                err_text = f"Ollama request failed: {friendly}"
         elif last_structural_err:
             issue = "invalid model output"
             err_text = str(last_structural_err)
@@ -11303,7 +11439,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         payload = {
             "topic": str(topic or ""),
             "count": int(count),
-            "module": str(getattr(self, "module_title", "ACCA") or "ACCA"),
+            "module": str(getattr(self, "module_title", "") or "").strip() or "selected module",
             "current_topic": str(snapshot.get("current_topic", "") or ""),
             "weak_topics_top3": list(snapshot.get("weak_topics_top3", []) or []),
             "risk_snapshot_top3": list(snapshot.get("risk_snapshot_top3", []) or []),
@@ -11758,11 +11894,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         }
 
     def _get_ai_tutor_latency_slo_status(self, window: int = AI_TUTOR_LATENCY_ADAPT_WINDOW) -> dict[str, Any]:
-        profile = self._get_ai_tutor_latency_profile(window=window)
-        samples = int(max(0, profile.get("samples", 0) or 0))
-        p50_latency = float(max(0.0, profile.get("p50_latency_ms", 0.0) or 0.0))
-        p90_latency = float(max(0.0, profile.get("p90_latency_ms", 0.0) or 0.0))
-        spread_ratio = float(max(1.0, profile.get("latency_spread_ratio", 1.0) or 1.0))
+        events = [row for row in list(getattr(self, "_ai_tutor_telemetry_events", []) or []) if isinstance(row, dict)]
+        try:
+            limit = max(1, min(500, int(window or AI_TUTOR_LATENCY_ADAPT_WINDOW)))
+        except Exception:
+            limit = int(AI_TUTOR_LATENCY_ADAPT_WINDOW)
+        sample = events[-limit:]
+        latencies: list[int] = []
+        for row in sample:
+            try:
+                value = int(row.get("latency_ms", 0) or 0)
+            except Exception:
+                value = 0
+            if value > 0:
+                latencies.append(int(value))
         try:
             p50_target = max(5000, min(180000, int(os.environ.get("STUDYPLAN_AI_TUTOR_SLO_P50_MS", AI_TUTOR_LATENCY_SLO_P50_MS) or AI_TUTOR_LATENCY_SLO_P50_MS)))
         except Exception:
@@ -11779,29 +11924,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             min_samples = max(3, min(120, int(os.environ.get("STUDYPLAN_AI_TUTOR_SLO_MIN_SAMPLES", AI_TUTOR_LATENCY_SLO_MIN_SAMPLES) or AI_TUTOR_LATENCY_SLO_MIN_SAMPLES)))
         except Exception:
             min_samples = int(AI_TUTOR_LATENCY_SLO_MIN_SAMPLES)
-        status = "insufficient"
-        if samples >= min_samples:
-            if (p50_latency <= float(p50_target)) and (p90_latency <= float(p90_target)) and (spread_ratio <= float(spread_target)):
-                status = "pass"
-            elif (
-                (p50_latency <= float(p50_target) * 1.20)
-                and (p90_latency <= float(p90_target) * 1.25)
-                and (spread_ratio <= float(spread_target) * 1.20)
-            ):
-                status = "warn"
-            else:
-                status = "fail"
-        return {
-            "status": str(status),
-            "samples": int(samples),
-            "p50_latency_ms": float(p50_latency),
-            "p90_latency_ms": float(p90_latency),
-            "latency_spread_ratio": float(spread_ratio),
-            "p50_target_ms": int(p50_target),
-            "p90_target_ms": int(p90_target),
-            "spread_target_ratio": float(spread_target),
-            "min_samples": int(min_samples),
-        }
+        return evaluate_latency_slo(
+            latencies,
+            p50_target_ms=int(p50_target),
+            p90_target_ms=int(p90_target),
+            spread_target_ratio=float(spread_target),
+            min_samples=int(min_samples),
+        )
 
     def _compute_ai_tutor_adaptive_limits(
         self,
@@ -12471,7 +12600,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         return {
             "date": today.isoformat(),
-            "module_title": str(getattr(self, "module_title", "ACCA") or "ACCA"),
+            "module_title": str(getattr(self, "module_title", "") or "").strip() or "selected module",
             "current_topic": str(self.current_topic or ""),
             "recommended_topic": str(recommended_topic or ""),
             "pick_source": str(pick_source or "unknown"),
@@ -12701,56 +12830,102 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     ) -> tuple[dict[str, Any], str | None]:
         payload = self._build_ai_coach_payload()
         self._ai_coach_last_payload = payload
-        model_name, model_err = self._select_local_llm_model(
+        model_names, model_err = self._build_local_llm_model_failover_sequence(
             model_override=model_override,
             purpose="coach",
             available_models=None,
             persist=True,
         )
+        model_name = str(model_names[0] if model_names else "").strip()
         if not bool(self.local_llm_enabled):
             rec = self._build_ai_coach_fallback_recommendation(payload, "local LLM disabled")
             rec["model"] = model_name
             rec["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
             return rec, "Local LLM is disabled in Preferences."
-        if not model_name:
+        if not model_names:
             issue = "no local models found"
             if model_err and "lookup failed" in str(model_err or "").lower():
                 issue = "Ollama model lookup failed"
             rec = self._build_ai_coach_fallback_recommendation(payload, issue)
             rec["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
             return rec, str(model_err or "No local Ollama models found.")
-        payload["model"] = model_name
-        prompt = self._build_ai_coach_prompt(payload)
-        text, err = self._ollama_generate_text(model_name, prompt)
-        if err:
-            rec = self._build_ai_coach_fallback_recommendation(payload, "Ollama request failed")
-            rec["model"] = model_name
-            rec["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-            code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
-            return rec, f"Ollama request failed: {friendly}"
-        json_text = self._extract_first_json_object(text)
-        if not json_text:
-            rec = self._build_ai_coach_fallback_recommendation(payload, "non-JSON response")
-            rec["model"] = model_name
-            rec["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-            return rec, "Model response did not contain valid JSON."
-        try:
-            parsed = json.loads(json_text)
-        except Exception as exc:
-            rec = self._build_ai_coach_fallback_recommendation(payload, "invalid JSON parse")
-            rec["model"] = model_name
-            rec["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-            return rec, f"Model JSON parse failed: {exc}"
-        normalized, norm_err = self._normalize_ai_coach_recommendation(parsed, payload)
-        if norm_err or not normalized:
-            rec = self._build_ai_coach_fallback_recommendation(payload, "guardrail validation fallback")
-            rec["model"] = model_name
-            rec["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-            return rec, f"Guardrail validation failed: {norm_err or 'unknown error'}"
-        normalized["source"] = "ai"
-        normalized["model"] = model_name
-        normalized["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-        return normalized, None
+        coerce_reduced_ctx = getattr(self, "_coerce_ollama_reduced_num_ctx", None)
+        if callable(coerce_reduced_ctx):
+            try:
+                reduced_ctx = int(cast(Any, coerce_reduced_ctx)(None))
+            except Exception:
+                reduced_ctx = int(OLLAMA_RECOVERY_REDUCED_NUM_CTX)
+        else:
+            reduced_ctx = int(OLLAMA_RECOVERY_REDUCED_NUM_CTX)
+        compact_retry_check = getattr(self, "_should_compact_recovery_retry", None)
+        reduce_prompt = getattr(self, "_reduce_prompt_for_recovery", None)
+        generate_with_options = getattr(self, "_ollama_generate_text_with_options", None)
+        attempted_models: list[str] = []
+        last_err = ""
+        last_parse_err = ""
+        for idx, candidate in enumerate(model_names):
+            candidate_name = str(candidate or "").strip()
+            if not candidate_name:
+                continue
+            attempted_models.append(candidate_name)
+            payload["model"] = candidate_name
+            prompt = self._build_ai_coach_prompt(payload)
+            text, err = self._ollama_generate_text(candidate_name, prompt)
+            should_compact = bool(err and callable(compact_retry_check) and compact_retry_check(err))
+            if should_compact and callable(reduce_prompt) and callable(generate_with_options):
+                compact_prompt = str(reduce_prompt(prompt))
+                text, err = cast(Any, generate_with_options)(
+                    candidate_name,
+                    compact_prompt,
+                    num_ctx=int(reduced_ctx),
+                    temperature=0.2,
+                    use_response_cache=False,
+                )
+            if err:
+                last_err = str(err)
+                continue
+            json_text = self._extract_first_json_object(text)
+            if not json_text:
+                last_parse_err = "Model response did not contain valid JSON."
+                continue
+            try:
+                parsed = json.loads(json_text)
+            except Exception as exc:
+                last_parse_err = f"Model JSON parse failed: {exc}"
+                continue
+            normalized, norm_err = self._normalize_ai_coach_recommendation(parsed, payload)
+            if norm_err or not normalized:
+                last_parse_err = f"Guardrail validation failed: {norm_err or 'unknown error'}"
+                continue
+            normalized["source"] = "ai"
+            normalized["model"] = candidate_name
+            normalized["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            if idx > 0:
+                normalized["failover_attempt"] = int(idx)
+            if attempted_models:
+                normalized["attempted_models"] = list(attempted_models)
+            return normalized, None
+        rec = self._build_ai_coach_fallback_recommendation(payload, "Ollama request failed")
+        rec["model"] = model_name
+        rec["attempted_models"] = list(attempted_models)
+        rec["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        if last_err:
+            compose_status = getattr(self, "_compose_ollama_recovery_status", None)
+            if callable(compose_status):
+                guidance = str(
+                    compose_status(
+                        last_err,
+                        model=model_name,
+                        attempted_models=attempted_models,
+                    )
+                )
+            else:
+                _code, friendly = classify_ollama_error(last_err, host=self._normalize_ollama_host())
+                guidance = f"Ollama request failed: {friendly}"
+            return rec, guidance
+        if last_parse_err:
+            return rec, last_parse_err
+        return rec, str(model_err or "No usable model output.")
 
     def _format_ai_coach_recommendation_text(
         self,
@@ -13063,7 +13238,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _build_ai_tutor_seed_prompt(self) -> str:
         topic = str(getattr(self, "current_topic", "") or "").strip()
-        module_title = str(getattr(self, "module_title", "ACCA") or "ACCA").strip()
+        module_title = str(getattr(self, "module_title", "") or "").strip() or "selected module"
         return build_ai_tutor_seed_prompt(topic=topic, module_title=module_title)
 
     def _open_ai_tutor_dialog(self) -> None:
@@ -13923,6 +14098,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if self._is_quiz_session_running() or self._is_focus_session_running():
             return True
         return False
+
+    def _is_quiz_or_review_timer_kind(self, kind: str | None = None) -> bool:
+        value = str(kind if kind is not None else getattr(self, "_action_timer_kind", "") or "").strip().lower()
+        return value in {"quiz", "review", "drill", "leech", "interleave"}
+
+    def _stop_quiz_or_review_timer_if_active(self, finalize: bool = True) -> bool:
+        if not self._is_quiz_or_review_timer_kind():
+            return False
+        self._stop_action_timer(finalize=bool(finalize))
+        return True
 
     def _action_timer_tick(self) -> bool:
         if not self._action_timer_kind:
@@ -14907,6 +15092,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             blocks = list(schedule[0].get("blocks", []) or [])
             if not blocks:
                 return []
+            blocks, _done_blocks, _total_blocks = self._get_remaining_today_blocks(blocks)
+            if not blocks:
+                return []
             today_iso = datetime.date.today().isoformat()
             if self._preview_swap_date != today_iso:
                 self._preview_swap = False
@@ -14925,6 +15113,112 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return blocks
         except Exception:
             return []
+
+    def _get_today_block_completion_counts(self, topics: list[str]) -> dict[tuple[str, str], int]:
+        topic_list = [str(topic).strip() for topic in topics if isinstance(topic, str) and str(topic).strip()]
+        if not topic_list:
+            return {}
+        unique_topics = sorted(set(topic_list))
+        counts: dict[tuple[str, str], int] = {}
+        try:
+            focus_map = getattr(self, "daily_pomodoros_by_chapter", {}) or {}
+        except Exception:
+            focus_map = {}
+        for topic in unique_topics:
+            focus_done = 0
+            if isinstance(focus_map, dict):
+                try:
+                    focus_done = int(focus_map.get(topic, 0) or 0)
+                except Exception:
+                    focus_done = 0
+            if focus_done > 0:
+                counts[(topic, "focus")] = focus_done
+            try:
+                recall_done = int(self._count_action_sessions_today("pomodoro_recall", topic=topic))
+            except Exception:
+                recall_done = 0
+            if recall_done > 0:
+                counts[(topic, "recall")] = recall_done
+            quiz_done = 0
+            for kind in ("quiz", "drill", "interleave", "leech"):
+                try:
+                    quiz_done += int(self._count_action_sessions_today(kind, topic=topic))
+                except Exception:
+                    continue
+            if quiz_done > 0:
+                counts[(topic, "quiz")] = quiz_done
+            review_done = 0
+            for kind in ("review", "quiz", "drill", "interleave", "leech"):
+                try:
+                    review_done += int(self._count_action_sessions_today(kind, topic=topic))
+                except Exception:
+                    continue
+            if review_done > 0:
+                counts[(topic, "review")] = review_done
+        return counts
+
+    def _get_remaining_today_blocks(self, blocks: list[dict]) -> tuple[list[dict], int, int]:
+        if not isinstance(blocks, list):
+            return [], 0, 0
+        actionable_blocks: list[dict] = []
+        topics: list[str] = []
+        for raw_block in blocks:
+            if not isinstance(raw_block, dict):
+                continue
+            kind = str(raw_block.get("kind", "") or "").strip() or "Focus"
+            if kind.lower() == "break":
+                continue
+            topic = str(raw_block.get("topic", "") or "").strip()
+            mins = 0
+            try:
+                mins = int(raw_block.get("minutes", 0) or 0)
+            except Exception:
+                mins = 0
+            normalized = {"kind": kind, "topic": topic, "minutes": mins}
+            actionable_blocks.append(normalized)
+            if topic:
+                topics.append(topic)
+        total_blocks = len(actionable_blocks)
+        if total_blocks == 0:
+            return [], 0, 0
+        counters = self._get_today_block_completion_counts(topics)
+        pending_blocks: list[dict] = []
+        for block in actionable_blocks:
+            topic = str(block.get("topic", "") or "").strip()
+            kind_key = str(block.get("kind", "") or "").strip().lower()
+            if topic and kind_key in {"focus", "recall", "quiz", "review"}:
+                key = (topic, kind_key)
+                available = int(counters.get(key, 0) or 0)
+                if available > 0:
+                    counters[key] = available - 1
+                    continue
+            pending_blocks.append(block)
+        completed_blocks = max(0, total_blocks - len(pending_blocks))
+        return pending_blocks, completed_blocks, total_blocks
+
+    def _get_today_next_study_block(self) -> dict[str, Any] | None:
+        try:
+            preview = self._get_today_blocks_preview()
+        except Exception:
+            preview = []
+        if not isinstance(preview, list):
+            return None
+        for block in preview:
+            if isinstance(block, dict):
+                return block
+        return None
+
+    def _sync_current_topic_with_today_plan(self) -> None:
+        next_block = self._get_today_next_study_block()
+        if not isinstance(next_block, dict):
+            return
+        next_topic = str(next_block.get("topic", "") or "").strip()
+        if not next_topic or next_topic == self.current_topic:
+            return
+        try:
+            self._set_current_topic(next_topic)
+        except Exception:
+            pass
 
     def _toggle_preview_swap(self) -> None:
         today_iso = datetime.date.today().isoformat()
@@ -17352,7 +17646,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 _add(mod_id, title.strip(), folder)
 
         if not modules:
-            modules.append({"id": "acca_f9", "title": "ACCA F9", "source": "default"})
+            modules.append({"id": "acca_f9", "title": "Default module", "source": "default"})
         modules.sort(key=lambda m: m["title"])
         return modules
 
@@ -18086,8 +18380,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         exam_btn.connect("clicked", self.on_set_exam_date)
         avail_btn = Gtk.Button(label="Set Availability")
         def _open_avail(_btn):
-            if getattr(self, "availability_expander", None):
-                self.availability_expander.set_expanded(True)
+            self.on_open_availability_dialog()
         avail_btn.connect("clicked", _open_avail)
         import_pdf_btn = Gtk.Button(label="Import PDF scores")
         import_pdf_btn.connect("clicked", self.on_import_pdf)
@@ -18494,7 +18787,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._focus_coach_pick_if_needed()
         if self.pomodoro_timer_id and self.pomodoro_remaining > 0 and not self.pomodoro_paused:
             return
-        block_kind = self._get_next_block_kind()
+        next_block = self._get_today_next_study_block()
+        if isinstance(next_block, dict):
+            try:
+                planned_topic = str(next_block.get("topic", "") or "").strip()
+            except Exception:
+                planned_topic = ""
+            if planned_topic and planned_topic != self.current_topic:
+                try:
+                    self._set_current_topic(planned_topic)
+                except Exception:
+                    pass
+            try:
+                block_kind = str(next_block.get("kind", "Focus") or "Focus")
+            except Exception:
+                block_kind = self._get_next_block_kind()
+        else:
+            block_kind = self._get_next_block_kind()
         action_kind = "pomodoro_focus"
         if block_kind.lower().startswith("recall"):
             action_kind = "pomodoro_recall"
@@ -18586,6 +18895,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.pomodoro_paused = False
 
         message = self._finalize_pomodoro_session(minutes_spent, focus_report, session_label="Pomodoro stopped")
+        if getattr(self, "_last_pomodoro_counted", False):
+            try:
+                self._sync_current_topic_with_today_plan()
+            except Exception:
+                pass
         self.send_notification("Pomodoro Stopped", message)
         self.update_dashboard()
         self.update_recommendations()
@@ -18673,6 +18987,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if getattr(self, "_last_pomodoro_counted", False):
             try:
                 self._auto_advance_daily_focus(completed_topic)
+            except Exception:
+                pass
+            try:
+                self._sync_current_topic_with_today_plan()
             except Exception:
                 pass
         self.update_dashboard()
@@ -18991,7 +19309,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
             self._title_flash_id = None
-        original = self.get_title() or f"{self.module_title} Study Assistant"
+        original = self.get_title() or str(APP_DISPLAY_NAME)
         flash_title = "✅ Pomodoro Complete"
         self.set_title(flash_title)
         ticks = {"count": 0}
@@ -19479,12 +19797,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         session_topic = str(self.quiz_session.get("topic") or self.current_topic or "").strip()
         self._start_action_timer(kind, topic=session_topic or self.current_topic)
         try:
-            def _on_close(_w, *_args):
+            cleanup_state = {"done": False}
+
+            def _cleanup_quiz_dialog_state() -> None:
+                if bool(cleanup_state.get("done", False)):
+                    return
+                cleanup_state["done"] = True
                 self._quiz_reason_job_token += 1
                 self.quiz_dialog = None
-                self._stop_action_timer(finalize=True)
+                self._stop_quiz_or_review_timer_if_active(finalize=True)
+
+            def _on_close(_w, *_args):
+                _cleanup_quiz_dialog_state()
                 return False
+
+            def _on_response(_d, _r):
+                _cleanup_quiz_dialog_state()
+
             dialog.connect("close-request", _on_close)
+            dialog.connect("response", _on_response)
         except Exception:
             pass
         dialog.present()
@@ -20106,6 +20437,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         self._maybe_mark_topic_completed(session_topic)
                     except Exception:
                         pass
+                    try:
+                        self._sync_current_topic_with_today_plan()
+                    except Exception:
+                        pass
             except Exception:
                 pass
             try:
@@ -20179,7 +20514,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     pass
             result_dialog.connect("response", _on_result_close)
             result_dialog.present()
-            self._stop_action_timer(finalize=True)
+            self._stop_quiz_or_review_timer_if_active(finalize=True)
             self._quiz_reason_job_token += 1
             self.quiz_dialog = None
             dialog.destroy()
@@ -21829,6 +22164,75 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def show_notification(self, title, message):
         self._show_text_dialog(title, message, Gtk.MessageType.INFO)
+
+    def on_open_availability_dialog(self, *_args):
+        dialog = self._new_dialog(title="Set Study Availability", transient_for=self, modal=True)
+        dialog.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Save", Gtk.ResponseType.OK)
+        content_area = dialog.get_content_area()
+        content_area.set_spacing(8)
+
+        hint = Gtk.Label(
+            label="Set your average available study minutes for weekdays and weekends."
+        )
+        hint.set_halign(Gtk.Align.START)
+        hint.set_wrap(True)
+        hint.add_css_class("muted")
+        content_area.append(hint)
+
+        grid = Gtk.Grid(column_spacing=8, row_spacing=6)
+        grid.add_css_class("settings-grid")
+        weekday_label = Gtk.Label(label="Weekday")
+        weekday_label.set_halign(Gtk.Align.START)
+        weekend_label = Gtk.Label(label="Weekend")
+        weekend_label.set_halign(Gtk.Align.START)
+
+        weekday_spin = Gtk.SpinButton()
+        weekday_spin.set_adjustment(Gtk.Adjustment(lower=0, upper=600, step_increment=15, page_increment=30))
+        weekday_spin.set_digits(0)
+        weekday_spin.set_numeric(True)
+
+        weekend_spin = Gtk.SpinButton()
+        weekend_spin.set_adjustment(Gtk.Adjustment(lower=0, upper=600, step_increment=15, page_increment=30))
+        weekend_spin.set_digits(0)
+        weekend_spin.set_numeric(True)
+
+        avail = getattr(self.engine, "availability", {}) or {}
+        try:
+            weekday_spin.set_value(int(avail.get("weekday", 0) or 0))
+        except Exception:
+            weekday_spin.set_value(0)
+        try:
+            weekend_spin.set_value(int(avail.get("weekend", 0) or 0))
+        except Exception:
+            weekend_spin.set_value(0)
+
+        grid.attach(weekday_label, 0, 0, 1, 1)
+        grid.attach(weekday_spin, 1, 0, 1, 1)
+        grid.attach(weekend_label, 0, 1, 1, 1)
+        grid.attach(weekend_spin, 1, 1, 1, 1)
+        content_area.append(grid)
+
+        def _on_response(_dialog, response):
+            if response == Gtk.ResponseType.OK:
+                try:
+                    weekday_val = int(weekday_spin.get_value())
+                    weekend_val = int(weekend_spin.get_value())
+                except Exception:
+                    weekday_val = 0
+                    weekend_val = 0
+                self.engine.set_availability(weekday_val, weekend_val)
+                try:
+                    self.engine.save_data()
+                except Exception:
+                    pass
+                self.update_availability_display()
+                self.update_daily_plan()
+                self.update_dashboard()
+                self.update_recommendations()
+            _dialog.destroy()
+
+        dialog.connect("response", _on_response)
+        dialog.present()
 
     def on_set_exam_date(self, _button):
         dialog = self._new_dialog(title="Set Exam Date", transient_for=self, modal=True)
@@ -24966,6 +25370,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 schedule_text = "Set availability minutes to generate a schedule."
             else:
                 lines = []
+                today_iso = datetime.date.today().isoformat()
                 for item in schedule:
                     date_str = item.get("date", "")
                     minutes = int(item.get("minutes", 0) or 0)
@@ -24974,8 +25379,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if minutes <= 0:
                         lines.append(f"{date_str}: 0 min (no availability)")
                     elif item.get("blocks"):
+                        raw_blocks = list(item.get("blocks", []) or [])
+                        blocks_for_display = raw_blocks
+                        completed_blocks = 0
+                        total_blocks = 0
+                        if date_str == today_iso:
+                            try:
+                                blocks_for_display, completed_blocks, total_blocks = self._get_remaining_today_blocks(raw_blocks)
+                            except Exception:
+                                blocks_for_display = raw_blocks
+                                completed_blocks = 0
+                                total_blocks = 0
                         block_lines = []
-                        for blk in item.get("blocks", []):
+                        for blk in blocks_for_display:
                             kind = blk.get("kind", "Focus")
                             topic = blk.get("topic", "")
                             mins = int(blk.get("minutes", 0) or 0)
@@ -24983,7 +25399,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 block_lines.append(f"- {kind} {mins}m: {topic}")
                             else:
                                 block_lines.append(f"- {kind} {mins}m")
-                        lines.append(f"{date_str}: {minutes} min\n  " + "\n  ".join(block_lines))
+                        if date_str == today_iso and total_blocks > 0:
+                            header = (
+                                f"{date_str}: {minutes} min"
+                                f" • blocks done {completed_blocks}/{total_blocks}"
+                            )
+                            if block_lines:
+                                lines.append(header + "\n  " + "\n  ".join(block_lines))
+                            else:
+                                lines.append(f"{header}\n  - All planned study blocks completed.")
+                        else:
+                            lines.append(f"{date_str}: {minutes} min\n  " + "\n  ".join(block_lines))
                     elif topics:
                         topic_str = ", ".join(topics)
                         lines.append(f"{date_str}: {minutes} min (~{per_topic} min/topic) — {topic_str}")
@@ -25299,9 +25725,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     categories = hub.get("category_totals") if isinstance(hub, dict) else None
                     if isinstance(categories, dict) and categories:
                         category_items: list[tuple[str, float]] = []
-                        for name, v in categories.items():
-                            total_val = float(v.get("total", 0) or 0)
-                            taken_val = float(v.get("taken", 0) or 0)
+                        for name, raw_val in categories.items():
+                            if not isinstance(name, str) or not isinstance(raw_val, dict):
+                                continue
+                            try:
+                                total_val = float(raw_val.get("total", 0) or 0)
+                            except Exception:
+                                total_val = 0.0
+                            try:
+                                taken_val = float(raw_val.get("taken", 0) or 0)
+                            except Exception:
+                                taken_val = 0.0
                             if total_val <= 0:
                                 continue
                             pct = (taken_val / total_val) * 100.0
@@ -25318,7 +25752,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
                     chapter_comp = hub.get("chapter_completion") if isinstance(hub, dict) else None
                     if isinstance(chapter_comp, dict) and chapter_comp:
-                        chapter_items = sorted(chapter_comp.items(), key=lambda x: x[1])
+                        chapter_items: list[tuple[str, float]] = []
+                        for name, raw_pct in chapter_comp.items():
+                            if not isinstance(name, str):
+                                continue
+                            try:
+                                pct_val = float(raw_pct or 0)
+                            except Exception:
+                                pct_val = 0.0
+                            chapter_items.append((name, pct_val))
+                        chapter_items.sort(key=lambda x: x[1])
                         weakest = chapter_items[:5]
                         lines_text = "\n".join([f"- {name}: {pct:.0f}%" for name, pct in weakest])
                         ch_label = Gtk.Label(label=f"By Chapter (weakest):\n{lines_text}")

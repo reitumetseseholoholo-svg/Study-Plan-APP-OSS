@@ -1,6 +1,6 @@
-# ACCA Study Assistant (FM default)
+# Study Assistant (module default)
 
-A focused ACCA study coach built around Pomodoro discipline, SRS‑based quizzes, and a mission‑driven dashboard. Defaults to ACCA FM/F9 unless you switch modules.
+A focused module-aware study coach built around Pomodoro discipline, SRS‑based quizzes, and a mission‑driven dashboard. It adapts to whichever module you load.
 
 ## Quick start
 
@@ -13,7 +13,7 @@ python studyplan_app.py 2026-12-01
 Optional module override (env vars):
 
 ```bash
-STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_app.py
+STUDYPLAN_MODULE_TITLE="Your Module" python studyplan_app.py
 ```
 
 ## Requirements
@@ -58,9 +58,9 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 - **Data Health Check**: one‑click normalization + health summary in Tools
 - **Syllabus cache tools**: view cache stats and clear parse/import caches
 - **Weekly summary export**: auto writes `~/.config/studyplan/weekly_report.txt`
-- **Study Hub import**: parse ACCA Study Hub PDFs (practice/quiz reports)
-- **Syllabus import (draft-first)**: parse ACCA syllabus PDFs into module intelligence
-- **Modules**: switch or edit ACCA modules via JSON configs
+- **Study Hub import**: parse Study Hub PDFs (practice/quiz reports)
+- **Syllabus import (draft-first)**: parse syllabus PDFs into module intelligence
+- **Modules**: switch or edit modules via JSON configs
 - **Snapshot recovery**: auto-recovery on load failure + manual snapshot import/restore
 
 ## ML training (optional)
@@ -101,7 +101,7 @@ STUDYPLAN_MODULE_ID=acca_f9 STUDYPLAN_MODULE_TITLE="ACCA FM" python studyplan_ap
 
 ## Data locations
 
-Data is stored per module (defaults to `acca_f9`):
+Data is stored per module (defaults to the active module id):
 
 - `~/.config/studyplan/<module_id>/data.json`
 - `~/.config/studyplan/<module_id>/questions.json`
@@ -140,7 +140,7 @@ Global app files:
 
 ```json
 {
-  "title": "ACCA FM",
+  "title": "Your Module",
   "chapters": ["Topic 1", "Topic 2"],
   "chapter_flow": {
     "Topic 1": ["Topic 2"]
@@ -166,8 +166,8 @@ Global app files:
     }
   },
   "syllabus_meta": {
-    "source_pdf": "FM S25-J26 syllabus and study guide.pdf",
-    "exam_code": "FM",
+    "source_pdf": "module syllabus and study guide.pdf",
+    "exam_code": "MODULE",
     "effective_window": "Sep 2025 - Jun 2026",
     "parsed_at": "2026-02-06T20:30:00",
     "parse_confidence": 0.83
@@ -199,7 +199,7 @@ Global app files:
 
 ## Study Hub PDF import
 
-Use **Import PDF Scores** to ingest ACCA Study Hub reports (practice/quiz). The app parses chapter and category performance to update competence and analytics.
+Use **Import PDF Scores** to ingest Study Hub reports (practice/quiz). The app parses chapter and category performance to update competence and analytics.
 
 OCR behavior:
 - native text extraction first

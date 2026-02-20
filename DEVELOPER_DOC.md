@@ -1,4 +1,4 @@
-# ACCA Study Assistant — Developer Notes
+# Study Assistant — Developer Notes
 
 ## Architecture overview
 
@@ -7,6 +7,15 @@
 - **modules/*.json** — module configs (chapters, weights, flow, questions)
 
 The UI stays responsive and defers planning/scoring logic to the engine.
+
+## Maintainability baseline
+
+- **Action wiring is declarative**: GTK window actions are registered via `studyplan/app/action_registry.py`.
+- Add new menu/window actions by editing the registry first, then adding handlers on `StudyPlanGUI`.
+- Startup should not crash on missing handlers during refactors; missing bindings are tracked in
+  `StudyPlanGUI._missing_ui_action_bindings`.
+- **Migration rule**: new feature logic should land in `studyplan/` modules first, then be called
+  from `studyplan_app.py` adapters.
 
 ## Data model (engine)
 
@@ -80,7 +89,7 @@ Global app data:
 ### Config format
 ```json
 {
-  "title": "ACCA FM",
+  "title": "Your Module",
   "chapters": ["Topic 1", "Topic 2"],
   "chapter_flow": {"Topic 1": ["Topic 2"]},
   "importance_weights": {"Topic 1": 20, "Topic 2": 10},
@@ -95,7 +104,7 @@ Global app data:
 ```
 
 ### Load order
-1. Default engine config (FM)
+1. Default engine config
 2. Optional module JSON override
 3. Module‑scoped data paths resolve (legacy fallback if needed)
 

@@ -1,4 +1,4 @@
-# ACCA Study Assistant — Quick Start Cheat Sheet
+# Study Assistant — Quick Start Cheat Sheet
 
 ## 60‑Second Setup
 

@@ -484,18 +484,15 @@ def compute_tutor_control_state(
     }
 
 
-def build_ai_tutor_seed_prompt(topic: str, module_title: str = "ACCA") -> str:
+def build_ai_tutor_seed_prompt(topic: str, module_title: str = "selected module") -> str:
     topic_val = str(topic or "").strip()
-    module_val = str(module_title or "ACCA").strip() or "ACCA"
+    module_val = str(module_title or "selected module").strip() or "selected module"
     if topic_val:
         return (
             f"Explain '{topic_val}' for {module_val} in exam-focused terms. "
             "Include: key rules/formulas, common mistakes, and 3 practice questions with short answers."
         )
-    return (
-        "Help me revise ACCA efficiently. Give a concise explanation, key formulas, "
-        "and a short practice drill."
-    )
+    return f"Help me revise {module_val} efficiently. Give a concise explanation, key formulas, and a short practice drill."
 
 
 def _summarize_older_tutor_messages(
@@ -564,7 +561,7 @@ def build_ai_tutor_context_prompt_details(
     coverage_targets = extract_tutor_coverage_targets(user_prompt, max_targets=6)
     lines = [
         "You are a first-class local ACCA tutor embedded inside the StudyPlan app.",
-        f"Module: {module_title or 'ACCA'}",
+        f"Module: {module_title or 'selected module'}",
         f"Current chapter: {chapter or 'not selected'}",
         "Mission: maximize exam readiness per minute using the learner state and current syllabus context.",
         "Priority order: must-review pressure -> weak-topic repair -> retrieval practice -> formula accuracy -> exam-style clarity.",
@@ -805,7 +802,7 @@ class AITutorDialogController:
         prompt_buf.set_text(
             build_ai_tutor_seed_prompt(
                 topic=str(getattr(app, "current_topic", "") or "").strip(),
-                module_title=str(getattr(app, "module_title", "ACCA") or "ACCA").strip(),
+                module_title=str(getattr(app, "module_title", "") or "").strip() or "selected module",
             )
         )
         prompt_scroller.set_child(prompt_view)
@@ -1538,7 +1535,7 @@ class AITutorDialogController:
             if bool(run_state.get("active", False)):
                 return
             topic = str(getattr(app, "current_topic", "") or "").strip() or "the current topic"
-            module = str(getattr(app, "module_title", "ACCA") or "ACCA").strip()
+            module = str(getattr(app, "module_title", "") or "").strip() or "selected module"
             try:
                 resolved = str(template or "").format(topic=topic, module=module)
             except Exception:
@@ -1662,7 +1659,7 @@ class AITutorDialogController:
                 return
             turn_requested_at = float(time.monotonic())
             prompt_stage_started_at = float(time.monotonic())
-            module_title = str(getattr(app, "module_title", "ACCA") or "ACCA").strip()
+            module_title = str(getattr(app, "module_title", "") or "").strip() or "selected module"
             chapter = str(getattr(app, "current_topic", "") or "").strip()
             full_prompt, prompt_meta = build_ai_tutor_context_prompt_details(
                 history=history,
@@ -2238,12 +2235,25 @@ class AITutorDialogController:
                         return False
                     if err:
                         _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
+                        recovery_status = ""
+                        recovery_builder = getattr(app, "_compose_ollama_recovery_status", None)
+                        if callable(recovery_builder):
+                            try:
+                                recovery_status = str(
+                                    recovery_builder(
+                                        err,
+                                        model=str(model_name or ""),
+                                        attempted_models=[str(item or "") for item in list(model_candidates or []) if str(item or "").strip()],
+                                    )
+                                ).strip()
+                            except Exception:
+                                recovery_status = ""
                         _record_turn_telemetry(
                             outcome="error",
                             error_class=_code,
                             response_text=final_text,
                         )
-                        status_label.set_text(friendly)
+                        status_label.set_text(recovery_status or friendly)
                         _render_transcript()
                         return False
                     if draft_user and final_text:

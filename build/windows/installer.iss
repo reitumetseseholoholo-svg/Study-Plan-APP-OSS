@@ -1,5 +1,5 @@
 #ifndef AppName
-  #define AppName "ACCA Study Assistant"
+  #define AppName "Study Assistant"
 #endif
 #ifndef AppVersion
   #define AppVersion "0.1.0"

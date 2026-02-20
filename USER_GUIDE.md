@@ -1,10 +1,10 @@
-# ACCA Study Assistant — User Guide
+# Study Assistant — User Guide
 
 This guide focuses on day‑to‑day use as a disciplined study coach.
 
 ## 1) First run
 
-1. **Choose module** (default is ACCA FM/F9).
+1. **Choose module** (default is your selected module).
 2. **Set exam date** and **availability**.
 3. (Optional) **Import Study Hub scores** and **question JSON**.
 4. Start your mission.
@@ -97,7 +97,7 @@ Toggle in **Preferences** or from the **Coach‑only** button in the plan header
 
 ## 8) Importing Study Hub PDFs
 
-Use **Import PDF scores** to parse ACCA Study Hub reports. This updates competence, quiz stats, and analytics.
+Use **Import PDF scores** to parse Study Hub reports. This updates competence, quiz stats, and analytics.
 
 Import pipeline:
 - native PDF text extraction first

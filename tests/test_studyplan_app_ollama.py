@@ -93,7 +93,7 @@ def _make_local_context_dummy():
     )
     dummy = types.SimpleNamespace(
         engine=engine,
-        module_title="ACCA FM",
+        module_title="FM",
         current_topic="Topic B",
         action_time_sessions=[
             {
@@ -388,10 +388,10 @@ def test_build_ai_tutor_context_prompt_contains_history_and_current_request():
         dummy,
         history=history,
         user_prompt="Give me a 3-question drill.",
-        module_title="ACCA FM",
+        module_title="FM",
         chapter="Investment Decisions",
     )
-    assert "Module: ACCA FM" in prompt
+    assert "Module: FM" in prompt
     assert "Current chapter: Investment Decisions" in prompt
     assert "first-class local ACCA tutor" in prompt
     assert "maximize exam readiness per minute" in prompt
@@ -448,6 +448,64 @@ def test_request_ai_tutor_action_plan_fails_over_to_next_model():
     assert int(plan.get("failover_attempt", 0)) == 1
 
 
+def test_compose_ollama_recovery_status_includes_actions():
+    dummy = _make_dummy()
+    dummy._classify_ollama_failure_kind = types.MethodType(StudyPlanGUI._classify_ollama_failure_kind, dummy)
+    dummy._compose_ollama_recovery_status = types.MethodType(StudyPlanGUI._compose_ollama_recovery_status, dummy)
+    msg = StudyPlanGUI._compose_ollama_recovery_status(
+        dummy,
+        "Connection refused",
+        model="small-3b:latest",
+        attempted_models=["small-3b:latest", "mid-7b:latest"],
+    )
+    assert "Cannot reach Ollama" in msg
+    assert "Recovery (" in msg
+    assert "Attempted:" in msg
+
+
+def test_request_ai_coach_recommendation_fails_over_to_next_model():
+    dummy = types.SimpleNamespace(
+        local_llm_enabled=True,
+    )
+    dummy._build_ai_coach_payload = lambda: {"recommended_topic": "Topic A"}
+    dummy._build_local_llm_model_failover_sequence = lambda **_kwargs: (
+        ["broken-3b:latest", "good-7b:latest"],
+        None,
+    )
+    dummy._build_ai_coach_prompt = lambda _payload: "coach-prompt"
+
+    def _fake_generate(model, _prompt):
+        if model == "broken-3b:latest":
+            return "", "HTTP 503: service unavailable"
+        return '{"action":"focus","topic":"Topic A","duration_minutes":25,"reason":"ok","confidence":0.8}', None
+
+    dummy._ollama_generate_text = _fake_generate
+    dummy._should_compact_recovery_retry = lambda _err: False
+    dummy._coerce_ollama_reduced_num_ctx = lambda _v=None: 1536
+    dummy._reduce_prompt_for_recovery = lambda prompt: prompt
+    dummy._ollama_generate_text_with_options = lambda model, prompt, **_kwargs: _fake_generate(model, prompt)
+    dummy._extract_first_json_object = lambda text: text
+    dummy._normalize_ai_coach_recommendation = lambda parsed, _payload: (
+        {
+            "action": str(parsed.get("action", "focus")),
+            "topic": str(parsed.get("topic", "Topic A")),
+            "duration_minutes": int(parsed.get("duration_minutes", 25)),
+            "reason": str(parsed.get("reason", "ok")),
+            "confidence": float(parsed.get("confidence", 0.8)),
+        },
+        None,
+    )
+    dummy._build_ai_coach_fallback_recommendation = types.MethodType(
+        StudyPlanGUI._build_ai_coach_fallback_recommendation, dummy
+    )
+    dummy._compose_ollama_recovery_status = lambda err, **_kwargs: err
+    rec, err = StudyPlanGUI._request_ai_coach_recommendation(dummy)
+    assert err is None
+    assert rec["model"] == "good-7b:latest"
+    assert int(rec.get("failover_attempt", 0)) == 1
+    assert rec.get("attempted_models") == ["broken-3b:latest", "good-7b:latest"]
+
+
 def test_build_ai_tutor_context_prompt_clamps_to_last_10_messages():
     dummy = _make_dummy()
     history = []
@@ -457,7 +515,7 @@ def test_build_ai_tutor_context_prompt_clamps_to_last_10_messages():
         dummy,
         history=history,
         user_prompt="latest",
-        module_title="ACCA FM",
+        module_title="FM",
         chapter="Cost of Capital",
     )
     lines = set(prompt.splitlines())
@@ -476,7 +534,7 @@ def test_build_ai_tutor_context_prompt_summarizes_older_messages():
         dummy,
         history=history,
         user_prompt="latest",
-        module_title="ACCA FM",
+        module_title="FM",
         chapter="Cost of Capital",
     )
     assert "Earlier context summary (older turns condensed):" in prompt
@@ -518,7 +576,7 @@ def test_build_rag_context_block_formats_snippet_ids():
 
 def test_build_ai_tutor_rag_prompt_context_returns_snippets_for_relevant_query():
     dummy = types.SimpleNamespace(
-        module_title="ACCA FM",
+        module_title="FM",
         current_topic="Cost of Capital",
         semantic_enabled=False,
         engine=types.SimpleNamespace(),
@@ -550,7 +608,7 @@ def test_build_ai_tutor_rag_prompt_context_returns_snippets_for_relevant_query()
 
 def _make_rag_dummy(docs_by_path: dict[str, dict[str, object]]) -> types.SimpleNamespace:
     dummy = types.SimpleNamespace(
-        module_title="ACCA FM",
+        module_title="FM",
         current_topic="Cost of Capital",
         semantic_enabled=False,
         engine=types.SimpleNamespace(),
@@ -798,7 +856,7 @@ def test_rag_prompt_context_relevance_floor_with_fallback(monkeypatch):
 def test_build_local_ai_context_packet_returns_required_fields():
     dummy = _make_local_context_dummy()
     packet = StudyPlanGUI._build_local_ai_context_packet(dummy, kind="tutor", horizon_days=14)
-    assert packet["module"] == "ACCA FM"
+    assert packet["module"] == "FM"
     assert packet["current_topic"] == "Topic B"
     assert packet["coach_pick"] == "Topic A"
     assert "weak_topics_top3" in packet
@@ -1917,3 +1975,101 @@ def test_validate_selected_file_size_rejects_directory(tmp_path):
     dummy = types.SimpleNamespace()
     with pytest.raises(ValueError):
         StudyPlanGUI._validate_selected_file_size(dummy, str(tmp_path), 1024, "Import")
+
+
+def test_stop_quiz_or_review_timer_if_active_stops_supported_kinds():
+    calls: list[bool] = []
+    dummy = types.SimpleNamespace(
+        _action_timer_kind="review",
+        _stop_action_timer=lambda finalize=True: calls.append(bool(finalize)),
+    )
+    dummy._is_quiz_or_review_timer_kind = types.MethodType(StudyPlanGUI._is_quiz_or_review_timer_kind, dummy)
+    dummy._stop_quiz_or_review_timer_if_active = types.MethodType(
+        StudyPlanGUI._stop_quiz_or_review_timer_if_active,
+        dummy,
+    )
+    stopped = StudyPlanGUI._stop_quiz_or_review_timer_if_active(dummy, finalize=True)
+    assert stopped is True
+    assert calls == [True]
+
+
+def test_stop_quiz_or_review_timer_if_active_ignores_non_quiz_kinds():
+    calls: list[bool] = []
+    dummy = types.SimpleNamespace(
+        _action_timer_kind="pomodoro_focus",
+        _stop_action_timer=lambda finalize=True: calls.append(bool(finalize)),
+    )
+    dummy._is_quiz_or_review_timer_kind = types.MethodType(StudyPlanGUI._is_quiz_or_review_timer_kind, dummy)
+    dummy._stop_quiz_or_review_timer_if_active = types.MethodType(
+        StudyPlanGUI._stop_quiz_or_review_timer_if_active,
+        dummy,
+    )
+    stopped = StudyPlanGUI._stop_quiz_or_review_timer_if_active(dummy, finalize=True)
+    assert stopped is False
+    assert calls == []
+
+
+def test_get_remaining_today_blocks_consumes_completed_blocks_progressively():
+    now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+    blocks = [
+        {"kind": "Focus", "topic": "Topic A", "minutes": 25},
+        {"kind": "Break", "topic": "", "minutes": 5},
+        {"kind": "Focus", "topic": "Topic A", "minutes": 25},
+        {"kind": "Recall", "topic": "Topic A", "minutes": 25},
+        {"kind": "Quiz", "topic": "Topic A", "minutes": 10},
+        {"kind": "Focus", "topic": "Topic B", "minutes": 25},
+    ]
+    dummy = types.SimpleNamespace(
+        daily_pomodoros_by_chapter={"Topic A": 2},
+        action_time_sessions=[
+            {"kind": "pomodoro_recall", "topic": "Topic A", "seconds": 600.0, "timestamp": now_iso},
+        ],
+    )
+    dummy._count_action_sessions_today = types.MethodType(StudyPlanGUI._count_action_sessions_today, dummy)
+    dummy._get_today_block_completion_counts = types.MethodType(StudyPlanGUI._get_today_block_completion_counts, dummy)
+
+    pending, done_count, total_count = StudyPlanGUI._get_remaining_today_blocks(dummy, blocks)
+
+    assert done_count == 3
+    assert total_count == 5  # break blocks are informational and excluded from progression matching
+    assert [blk.get("kind") for blk in pending] == ["Quiz", "Focus"]
+    assert [blk.get("topic") for blk in pending] == ["Topic A", "Topic B"]
+
+
+def test_get_today_blocks_preview_returns_next_pending_block_for_today_schedule():
+    now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+    engine = types.SimpleNamespace(
+        exam_date=datetime.date.today(),
+        has_availability=lambda: True,
+        generate_study_schedule=lambda days=1: [
+            {
+                "date": datetime.date.today().isoformat(),
+                "minutes": 120,
+                "blocks": [
+                    {"kind": "Focus", "topic": "Topic A", "minutes": 25},
+                    {"kind": "Focus", "topic": "Topic A", "minutes": 25},
+                    {"kind": "Recall", "topic": "Topic A", "minutes": 25},
+                    {"kind": "Quiz", "topic": "Topic A", "minutes": 10},
+                    {"kind": "Focus", "topic": "Topic B", "minutes": 25},
+                ],
+            }
+        ],
+    )
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        daily_pomodoros_by_chapter={"Topic A": 2},
+        action_time_sessions=[
+            {"kind": "pomodoro_recall", "topic": "Topic A", "seconds": 600.0, "timestamp": now_iso},
+            {"kind": "quiz", "topic": "Topic A", "seconds": 300.0, "timestamp": now_iso},
+        ],
+        _preview_swap=False,
+        _preview_swap_date="",
+    )
+    dummy._count_action_sessions_today = types.MethodType(StudyPlanGUI._count_action_sessions_today, dummy)
+    dummy._get_today_block_completion_counts = types.MethodType(StudyPlanGUI._get_today_block_completion_counts, dummy)
+    dummy._get_remaining_today_blocks = types.MethodType(StudyPlanGUI._get_remaining_today_blocks, dummy)
+
+    preview = StudyPlanGUI._get_today_blocks_preview(dummy)
+    assert preview
+    assert preview[0].get("kind") == "Focus"
+    assert preview[0].get("topic") == "Topic B"
