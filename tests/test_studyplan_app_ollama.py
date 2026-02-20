@@ -747,6 +747,7 @@ def test_get_ai_tutor_rag_source_pdfs_respects_preferences_and_limit(tmp_path):
         ai_tutor_rag_max_sources=2,
         engine=types.SimpleNamespace(syllabus_meta={"source_pdf": str(pdf_c)}),
     )
+    dummy._get_ai_tutor_rag_max_pdf_bytes = types.MethodType(StudyPlanGUI._get_ai_tutor_rag_max_pdf_bytes, dummy)
     sources = StudyPlanGUI._get_ai_tutor_rag_source_pdfs(dummy)
     assert len(sources) == 2
     assert sources[0] == os.path.realpath(str(pdf_a))
@@ -766,8 +767,28 @@ def test_get_ai_tutor_rag_source_pdfs_env_max_overrides_preference(tmp_path, mon
         ai_tutor_rag_max_sources=1,
         engine=types.SimpleNamespace(syllabus_meta={}),
     )
+    dummy._get_ai_tutor_rag_max_pdf_bytes = types.MethodType(StudyPlanGUI._get_ai_tutor_rag_max_pdf_bytes, dummy)
     sources = StudyPlanGUI._get_ai_tutor_rag_source_pdfs(dummy)
     assert len(sources) == 3
+
+
+def test_get_ai_tutor_rag_source_pdfs_respects_pdf_size_limit_env(tmp_path, monkeypatch):
+    small_pdf = tmp_path / "small.pdf"
+    large_pdf = tmp_path / "large.pdf"
+    small_pdf.write_bytes(b"%PDF-1.4\nsmall")
+    with open(large_pdf, "wb") as f:
+        f.truncate(2 * 1024 * 1024)
+
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_MAX_PDF_MB", "1")
+    dummy = types.SimpleNamespace(
+        ai_tutor_rag_pdfs=f"{small_pdf}\n{large_pdf}",
+        ai_tutor_rag_max_sources=4,
+        engine=types.SimpleNamespace(syllabus_meta={}),
+    )
+    dummy._get_ai_tutor_rag_max_pdf_bytes = types.MethodType(StudyPlanGUI._get_ai_tutor_rag_max_pdf_bytes, dummy)
+    sources = StudyPlanGUI._get_ai_tutor_rag_source_pdfs(dummy)
+    assert os.path.realpath(str(small_pdf)) in sources
+    assert os.path.realpath(str(large_pdf)) not in sources
 
 
 def test_rag_prompt_context_dynamic_target_and_budget(monkeypatch):
@@ -980,6 +1001,7 @@ def test_build_local_ai_context_packet_returns_required_fields():
     assert "risk_snapshot_top3" in packet
     assert "due_snapshot_top3" in packet
     assert "recent_action_mix" in packet
+    assert "working_memory" in packet
 
 
 def test_format_local_ai_context_block_enforces_budget_and_degrade_order():
@@ -1022,6 +1044,17 @@ def test_assemble_ai_tutor_turn_prompt_includes_learning_context_and_rag():
     assert "Learning context (aggregated app state):" in prompt
     assert "Reference snippets" in prompt
     assert "Use snippets when relevant" in prompt
+
+
+def test_assemble_ai_tutor_turn_prompt_includes_planner_brief():
+    prompt = assemble_ai_tutor_turn_prompt(
+        "BASE PROMPT",
+        learning_context="Topic: Topic A",
+        rag_context="",
+        planner_brief="- Coverage order: Topic A -> Topic B",
+    )
+    assert "Planner brief (deterministic guidance):" in prompt
+    assert "Coverage order: Topic A -> Topic B" in prompt
 
 
 def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
@@ -1603,6 +1636,32 @@ def test_normalize_ai_tutor_action_plan_accepts_tutor_open_action():
     assert plan["action"] == "tutor_open"
 
 
+def test_normalize_ai_tutor_action_plan_adds_evidence_when_missing():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"])
+    dummy = types.SimpleNamespace(engine=engine)
+    dummy._coerce_ai_coach_duration = types.MethodType(StudyPlanGUI._coerce_ai_coach_duration, dummy)
+    dummy._derive_ai_tutor_action_evidence = types.MethodType(
+        StudyPlanGUI._derive_ai_tutor_action_evidence, dummy
+    )
+    snapshot = {
+        "current_topic": "Topic A",
+        "coach_pick": "Topic A",
+        "must_review_due": 4,
+        "focus_trend_14d": {"integrity_pct": 68},
+        "weak_topics_top3": [{"chapter": "Topic A"}],
+        "due_snapshot_top3": [{"chapter": "Topic A", "due": 4}],
+    }
+    plan, err = StudyPlanGUI._normalize_ai_tutor_action_plan(
+        dummy,
+        {"action": "review_start", "topic": "Topic A", "duration_minutes": 20, "reason": "due pressure"},
+        snapshot,
+    )
+    assert err is None
+    assert plan is not None
+    assert isinstance(plan.get("evidence"), list)
+    assert any(str(item).startswith("must_review_due=") for item in list(plan["evidence"]))
+
+
 def test_normalize_ai_tutor_action_plan_accepts_coach_open_action():
     engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"])
     dummy = types.SimpleNamespace(engine=engine)
@@ -1658,6 +1717,201 @@ def test_validate_generated_gap_questions_strict_gate():
     )
     assert len(valid) == 1
     assert "duplicate_options" in reasons
+
+
+def test_validate_generated_gap_questions_non_strict_allows_shorter_rows():
+    engine = types.SimpleNamespace(
+        CHAPTERS=["Topic A"],
+        QUESTIONS={"Topic A": []},
+        _question_dedupe_key=lambda row: (
+            str(row.get("question", "")).strip().lower(),
+            tuple(str(v).strip().lower() for v in list(row.get("options", []) or [])),
+            str(row.get("correct", "")).strip().lower(),
+        ),
+    )
+    dummy = types.SimpleNamespace(engine=engine, ai_tutor_gap_autosave_strict_gate=False)
+    sample = [
+        {
+            "question": "CAPM?",
+            "options": ["Return", "Tax", "Audit", "Sales"],
+            "correct": "Return",
+            "explanation": "",
+        }
+    ]
+    strict_valid, strict_reasons = StudyPlanGUI._validate_generated_gap_questions(
+        dummy,
+        "Topic A",
+        sample,
+        strict_gate=True,
+    )
+    basic_valid, basic_reasons = StudyPlanGUI._validate_generated_gap_questions(
+        dummy,
+        "Topic A",
+        sample,
+        strict_gate=False,
+    )
+    assert len(strict_valid) == 0
+    assert "question_too_short" in strict_reasons
+    assert len(basic_valid) == 1
+    assert "question_too_short" not in basic_reasons
+
+
+def test_normalize_ai_tutor_action_plan_section_c_requires_confirmation():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"])
+    dummy = types.SimpleNamespace(engine=engine)
+    dummy._coerce_ai_coach_duration = types.MethodType(StudyPlanGUI._coerce_ai_coach_duration, dummy)
+    snapshot = {"current_topic": "Topic A", "coach_pick": "Topic A"}
+    plan, err = StudyPlanGUI._normalize_ai_tutor_action_plan(
+        dummy,
+        {"action": "section_c_start", "topic": "Topic B", "duration_minutes": 30, "reason": "long-form practice"},
+        snapshot,
+    )
+    assert err is None
+    assert isinstance(plan, dict)
+    assert plan["action"] == "section_c_start"
+    assert plan["topic"] == "Topic B"
+    assert plan["requires_confirmation"] is True
+
+
+def test_parse_generated_section_c_question_accepts_valid_json():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    dummy = types.SimpleNamespace(engine=engine)
+    dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
+    dummy._section_c_question_id = types.MethodType(StudyPlanGUI._section_c_question_id, dummy)
+    dummy._normalize_section_c_question = types.MethodType(StudyPlanGUI._normalize_section_c_question, dummy)
+    parsed, err = StudyPlanGUI._parse_generated_section_c_question(
+        dummy,
+        json.dumps(
+            {
+                "chapter": "Topic A",
+                "prompt": "Advise on working capital funding policy under changing rates.",
+                "exhibits": ["Given cash-flow forecast and financing options."],
+                "required_tasks": ["Evaluate alternatives.", "Recommend with justification."],
+                "marking_rubric": [
+                    {"criterion": "Technical accuracy", "max_marks": 8},
+                    {"criterion": "Recommendation quality", "max_marks": 6},
+                ],
+                "model_answer_outline": ["Framework", "Workings", "Conclusion"],
+                "time_budget_minutes": 45,
+            },
+            ensure_ascii=True,
+        ),
+        "Topic A",
+    )
+    assert err is None
+    assert isinstance(parsed, dict)
+    assert parsed["chapter"] == "Topic A"
+    assert parsed["time_budget_minutes"] == 45
+
+
+def test_section_c_bank_upsert_and_reload_roundtrip(tmp_path, monkeypatch):
+    bank_path = tmp_path / "section_c_questions.json"
+    monkeypatch.setenv("STUDYPLAN_SECTION_C_BANK_PATH", str(bank_path))
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        _section_c_question_bank={},
+        _section_c_question_bank_loaded=False,
+    )
+    dummy._section_c_question_bank_path = types.MethodType(StudyPlanGUI._section_c_question_bank_path, dummy)
+    dummy._section_c_question_id = types.MethodType(StudyPlanGUI._section_c_question_id, dummy)
+    dummy._normalize_section_c_question = types.MethodType(StudyPlanGUI._normalize_section_c_question, dummy)
+    dummy._load_section_c_question_bank = types.MethodType(StudyPlanGUI._load_section_c_question_bank, dummy)
+    dummy._save_section_c_question_bank = types.MethodType(StudyPlanGUI._save_section_c_question_bank, dummy)
+    dummy._upsert_section_c_question = types.MethodType(StudyPlanGUI._upsert_section_c_question, dummy)
+    dummy._get_section_c_questions = types.MethodType(StudyPlanGUI._get_section_c_questions, dummy)
+
+    def _atomic_write(path, text, mode=0o600):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(text or ""))
+        try:
+            os.chmod(path, int(mode))
+        except Exception:
+            pass
+
+    dummy._atomic_write_text_file = _atomic_write
+    dummy._secure_user_path = lambda *_args, **_kwargs: None
+
+    saved = StudyPlanGUI._upsert_section_c_question(
+        dummy,
+        "Topic A",
+        {
+            "chapter": "Topic A",
+            "prompt": "Evaluate whether changing credit terms improves NPV.",
+            "required_tasks": ["Compute impact.", "Recommend policy."],
+            "marking_rubric": [
+                {"criterion": "Method", "max_marks": 8},
+                {"criterion": "Conclusion", "max_marks": 6},
+            ],
+            "model_answer_outline": ["Set up assumptions", "Compute", "Conclude"],
+            "time_budget_minutes": 40,
+        },
+        persist=True,
+    )
+    assert isinstance(saved, dict)
+    assert bank_path.exists()
+
+    dummy._section_c_question_bank = {}
+    dummy._section_c_question_bank_loaded = False
+    rows = StudyPlanGUI._get_section_c_questions(dummy, "Topic A")
+    assert len(rows) == 1
+    assert rows[0]["prompt"].startswith("Evaluate whether changing credit terms")
+
+
+def test_parse_section_c_evaluation_payload_clamps_scores():
+    dummy = types.SimpleNamespace()
+    dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
+    question = {
+        "marking_rubric": [
+            {"criterion": "Technical accuracy", "max_marks": 8},
+            {"criterion": "Recommendation", "max_marks": 6},
+        ]
+    }
+    payload = json.dumps(
+        {
+            "total_mark": 99,
+            "max_mark": 99,
+            "criterion_scores": [
+                {"criterion": "Technical accuracy", "score": 12, "max_mark": 8, "feedback": "Good."},
+                {"criterion": "Recommendation", "score": -2, "max_mark": 6, "feedback": "Weak."},
+            ],
+            "strengths": ["Clear method"],
+            "improvements": ["Stronger recommendation linkage"],
+            "next_drill": "Rework recommendation paragraph.",
+        },
+        ensure_ascii=True,
+    )
+    parsed, err = StudyPlanGUI._parse_section_c_evaluation_payload(dummy, payload, question)
+    assert err is None
+    assert isinstance(parsed, dict)
+    assert parsed["max_mark"] == 14
+    assert parsed["total_mark"] <= 14
+    rows = list(parsed.get("criterion_scores", []) or [])
+    assert rows[0]["score"] == 8
+    assert rows[1]["score"] == 0
+
+
+def test_evaluate_section_c_response_falls_back_when_llm_disabled():
+    dummy = types.SimpleNamespace(local_llm_enabled=False)
+    dummy._evaluate_section_c_response_deterministic = types.MethodType(
+        StudyPlanGUI._evaluate_section_c_response_deterministic,
+        dummy,
+    )
+    evaluation, warn = StudyPlanGUI._evaluate_section_c_response(
+        dummy,
+        {
+            "required_tasks": ["Compute", "Recommend"],
+            "marking_rubric": [
+                {"criterion": "Technical accuracy", "max_marks": 8},
+                {"criterion": "Recommendation", "max_marks": 6},
+            ],
+        },
+        "Compute NPV with assumptions and provide recommendation.",
+    )
+    assert isinstance(evaluation, dict)
+    assert evaluation.get("method") == "deterministic"
+    assert "Local AI disabled" in str(warn or "")
 
 
 def test_format_ai_tutor_transcript_labels_roles():
@@ -1873,6 +2127,44 @@ def test_ollama_generate_text_stream_retries_transient_error_before_chunks(monke
     assert text == "retry success"
     assert seen == ["retry ", "success"]
     assert calls["count"] == 2
+
+
+def test_ollama_generate_text_stream_recovers_with_compact_non_stream_fallback(monkeypatch):
+    dummy = _make_dummy()
+    outcomes: list[tuple[str, bool, str]] = []
+    released = {"count": 0}
+    dummy._is_local_llm_model_on_cooldown = lambda _model: (False, 0, "")
+    dummy._acquire_ollama_request_slot = lambda wait_seconds=None: (True, 0)
+    dummy._release_ollama_request_slot = lambda: released.__setitem__("count", int(released["count"]) + 1)
+    dummy._record_local_llm_model_outcome = (
+        lambda model_name, success=False, err="": outcomes.append((str(model_name), bool(success), str(err)))
+    )
+    dummy._get_ollama_retry_limit = lambda: 0
+    dummy._should_compact_recovery_retry = lambda _err: True
+    dummy._reduce_prompt_for_recovery = lambda prompt: f"compact::{str(prompt)[:18]}"
+    dummy._coerce_ollama_reduced_num_ctx = lambda _value=None: 1024
+    dummy._ollama_generate_text_with_options = (
+        lambda model, prompt, *, num_ctx, temperature=0.2, use_response_cache=False: ("Recovered text", None)
+    )
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(urllib.error.URLError("connection reset by peer")),
+    )
+    monkeypatch.setattr("time.sleep", lambda *_args, **_kwargs: None)
+    seen: list[str] = []
+    text, err = StudyPlanGUI._ollama_generate_text_stream(
+        dummy,
+        model="demo:latest",
+        prompt="Long prompt requiring fallback",
+        on_chunk=lambda piece: seen.append(piece),
+    )
+    assert err is None
+    assert text == "Recovered text"
+    assert seen == ["Recovered text"]
+    assert released["count"] == 1
+    assert outcomes and outcomes[-1][0] == "demo:latest" and outcomes[-1][1] is True
 
 
 def test_extract_first_json_object_handles_markdown_wrappers():
@@ -2187,6 +2479,7 @@ def test_append_ai_tutor_rag_pdf_path_adds_and_clears_runtime_cache(tmp_path):
     dummy._normalize_user_file_path = types.MethodType(StudyPlanGUI._normalize_user_file_path, dummy)
     dummy._validate_import_source_path = types.MethodType(StudyPlanGUI._validate_import_source_path, dummy)
     dummy._validate_selected_file_size = types.MethodType(StudyPlanGUI._validate_selected_file_size, dummy)
+    dummy._get_ai_tutor_rag_max_pdf_bytes = types.MethodType(StudyPlanGUI._get_ai_tutor_rag_max_pdf_bytes, dummy)
 
     added, message = StudyPlanGUI._append_ai_tutor_rag_pdf_path(dummy, str(second_pdf))
 
@@ -2215,6 +2508,7 @@ def test_append_ai_tutor_rag_pdf_path_rejects_duplicate(tmp_path):
     dummy._normalize_user_file_path = types.MethodType(StudyPlanGUI._normalize_user_file_path, dummy)
     dummy._validate_import_source_path = types.MethodType(StudyPlanGUI._validate_import_source_path, dummy)
     dummy._validate_selected_file_size = types.MethodType(StudyPlanGUI._validate_selected_file_size, dummy)
+    dummy._get_ai_tutor_rag_max_pdf_bytes = types.MethodType(StudyPlanGUI._get_ai_tutor_rag_max_pdf_bytes, dummy)
 
     added, message = StudyPlanGUI._append_ai_tutor_rag_pdf_path(dummy, str(first_pdf))
 

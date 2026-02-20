@@ -405,11 +405,15 @@ def assemble_ai_tutor_turn_prompt(
     base_prompt: str,
     learning_context: str = "",
     rag_context: str = "",
+    planner_brief: str = "",
 ) -> str:
     parts: list[str] = [str(base_prompt or "").strip()]
     context_text = str(learning_context or "").strip()
     if context_text:
         parts.append("\n".join(["Learning context (aggregated app state):", context_text]).strip())
+    planner_text = str(planner_brief or "").strip()
+    if planner_text:
+        parts.append("\n".join(["Planner brief (deterministic guidance):", planner_text]).strip())
     rag_text = str(rag_context or "").strip()
     if rag_text:
         parts.append(rag_text)
@@ -1832,10 +1836,28 @@ class AITutorDialogController:
                     "errors": [str(exc)],
                 }
             rag_ms = int(max(0.0, (float(time.monotonic()) - float(rag_stage_started_at)) * 1000.0))
+            planner_brief = ""
+            planner_builder = getattr(app, "_build_ai_tutor_planner_brief", None)
+            if callable(planner_builder):
+                try:
+                    planner_brief = str(
+                        cast(
+                            Any,
+                            planner_builder(
+                                user_prompt=user_prompt,
+                                coverage_targets=coverage_targets,
+                                context_block=context_block,
+                            ),
+                        )
+                        or ""
+                    ).strip()
+                except Exception:
+                    planner_brief = ""
             full_prompt = assemble_ai_tutor_turn_prompt(
                 full_prompt,
                 learning_context=context_block,
                 rag_context=rag_context,
+                planner_brief=planner_brief,
             )
             turn_timeout_seconds = normalize_tutor_timeout_seconds(
                 getattr(app, "local_llm_timeout_seconds", AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS),
@@ -1902,7 +1924,8 @@ class AITutorDialogController:
                 queue_ms_reader = getattr(app, "_consume_last_ollama_queue_ms", None)
                 if callable(queue_ms_reader):
                     try:
-                        queue_ms = int(max(0, int(queue_ms_reader() or 0)))
+                        queue_raw = cast(Any, queue_ms_reader)()
+                        queue_ms = int(max(0, int(queue_raw or 0)))
                     except Exception:
                         queue_ms = 0
                 else:
@@ -2267,6 +2290,21 @@ class AITutorDialogController:
                         return False
                     if draft_user and final_text:
                         final_text = clean_ai_tutor_text(final_text) or final_text
+                        updater = getattr(app, "_update_ai_tutor_working_memory", None)
+                        if callable(updater):
+                            try:
+                                cast(
+                                    Any,
+                                    updater(
+                                        user_prompt=draft_user,
+                                        tutor_response=final_text,
+                                        current_topic=chapter,
+                                        coverage_targets=coverage_targets,
+                                        persist=False,
+                                    ),
+                                )
+                            except Exception:
+                                pass
                         history.append({"role": "user", "content": draft_user})
                         history.append({"role": "assistant", "content": final_text})
                         _persist_history()
