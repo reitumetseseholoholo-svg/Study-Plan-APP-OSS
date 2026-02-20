@@ -519,6 +519,19 @@ def test_compose_ollama_recovery_status_includes_actions():
     assert "Attempted:" in msg
 
 
+def test_compose_ollama_recovery_status_handles_model_cooldown():
+    dummy = _make_dummy()
+    dummy._classify_ollama_failure_kind = types.MethodType(StudyPlanGUI._classify_ollama_failure_kind, dummy)
+    dummy._compose_ollama_recovery_status = types.MethodType(StudyPlanGUI._compose_ollama_recovery_status, dummy)
+    msg = StudyPlanGUI._compose_ollama_recovery_status(
+        dummy,
+        "model cooldown active (45s)",
+        model="cooling-7b:latest",
+    )
+    assert "cooling down" in msg.lower()
+    assert "Recovery (" in msg
+
+
 def test_request_ai_coach_recommendation_fails_over_to_next_model():
     dummy = types.SimpleNamespace(
         local_llm_enabled=True,
@@ -560,6 +573,52 @@ def test_request_ai_coach_recommendation_fails_over_to_next_model():
     assert rec["model"] == "good-7b:latest"
     assert int(rec.get("failover_attempt", 0)) == 1
     assert rec.get("attempted_models") == ["broken-3b:latest", "good-7b:latest"]
+
+
+def test_request_ai_tutor_action_plan_invalid_output_returns_guided_recovery():
+    dummy = types.SimpleNamespace(
+        local_llm_enabled=True,
+    )
+    dummy._build_local_llm_model_failover_sequence = lambda **_kwargs: (["good-7b:latest"], None)
+    dummy._build_ai_tutor_autopilot_prompt = lambda _snapshot: "prompt"
+    dummy._ollama_generate_text = lambda _model, _prompt: ("no-json-here", None)
+    dummy._extract_first_json_object = lambda _text: ""
+    dummy._build_ai_tutor_fallback_action = types.MethodType(StudyPlanGUI._build_ai_tutor_fallback_action, dummy)
+    dummy._compose_ollama_guardrail_status = types.MethodType(StudyPlanGUI._compose_ollama_guardrail_status, dummy)
+
+    plan, err = StudyPlanGUI._request_ai_tutor_action_plan(
+        dummy,
+        snapshot={"current_topic": "Topic A", "must_review_due": 0},
+    )
+    assert plan["source"] == "deterministic_fallback"
+    assert isinstance(err, str)
+    assert "deterministic fallback" in str(err).lower()
+    assert "Recovery (invalid_output" in str(err)
+
+
+def test_request_ai_coach_recommendation_invalid_output_returns_guided_recovery():
+    dummy = types.SimpleNamespace(
+        local_llm_enabled=True,
+    )
+    dummy._build_ai_coach_payload = lambda: {"recommended_topic": "Topic A"}
+    dummy._build_local_llm_model_failover_sequence = lambda **_kwargs: (["good-7b:latest"], None)
+    dummy._build_ai_coach_prompt = lambda _payload: "coach-prompt"
+    dummy._ollama_generate_text = lambda _model, _prompt: ("no-json-here", None)
+    dummy._extract_first_json_object = lambda _text: ""
+    dummy._build_ai_coach_fallback_recommendation = lambda _payload, issue: {
+        "action": "focus",
+        "topic": "Topic A",
+        "duration_minutes": 25,
+        "reason": str(issue),
+        "source": "deterministic_fallback",
+    }
+    dummy._compose_ollama_guardrail_status = types.MethodType(StudyPlanGUI._compose_ollama_guardrail_status, dummy)
+
+    rec, err = StudyPlanGUI._request_ai_coach_recommendation(dummy)
+    assert rec["source"] == "deterministic_fallback"
+    assert isinstance(err, str)
+    assert "deterministic fallback" in str(err).lower()
+    assert "Recovery (invalid_output" in str(err)
 
 
 def test_build_ai_tutor_context_prompt_clamps_to_last_10_messages():

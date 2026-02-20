@@ -9675,8 +9675,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return max(512, min(int(DEFAULT_OLLAMA_CONTEXT), parsed))
 
     def _classify_ollama_failure_kind(self, err: str) -> tuple[str, str, str]:
-        code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
-        failure_kind = classify_failure_kind(code, err)
+        raw = str(err or "").strip()
+        lower = raw.lower()
+        if "cooldown active" in lower:
+            failure_kind = classify_failure_kind("busy", raw)
+            return failure_kind, "busy", "Selected model is cooling down after recent failures. Trying alternatives."
+        code, friendly = classify_ollama_error(raw, host=self._normalize_ollama_host())
+        failure_kind = classify_failure_kind(code, raw)
         return failure_kind, code, friendly
 
     def _compose_ollama_recovery_status(
@@ -9693,6 +9698,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if attempted:
             return f"{friendly} {hint} Attempted: {', '.join(attempted[:4])}."
         return f"{friendly} {hint}"
+
+    def _compose_ollama_guardrail_status(
+        self,
+        detail: str,
+        *,
+        model: str = "",
+        attempted_models: list[str] | None = None,
+    ) -> str:
+        sequence = build_recovery_sequence("invalid_output")
+        hint = recovery_hint_text("invalid_output", sequence, model=str(model or "").strip())
+        attempted = [str(item or "").strip() for item in list(attempted_models or []) if str(item or "").strip()]
+        safe_detail = str(detail or "").strip()
+        if len(safe_detail) > 160:
+            safe_detail = safe_detail[:157].rstrip() + "..."
+        prefix = "Model output failed validation. Using deterministic fallback this turn."
+        if safe_detail:
+            prefix = f"{prefix} ({safe_detail})"
+        if attempted:
+            return f"{prefix} {hint} Attempted: {', '.join(attempted[:4])}."
+        return f"{prefix} {hint}"
 
     def _should_compact_recovery_retry(self, err: str) -> bool:
         failure_kind, _code, _friendly = self._classify_ollama_failure_kind(err)
@@ -12310,10 +12335,30 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 err_text = f"Ollama request failed: {friendly}"
         elif last_structural_err:
             issue = "invalid model output"
-            err_text = str(last_structural_err)
+            compose_guardrail_status = getattr(self, "_compose_ollama_guardrail_status", None)
+            if callable(compose_guardrail_status):
+                err_text = str(
+                    compose_guardrail_status(
+                        last_structural_err,
+                        model=model_name,
+                        attempted_models=attempted_models,
+                    )
+                )
+            else:
+                err_text = str(last_structural_err)
         else:
             issue = "no usable model output"
-            err_text = "No usable model output."
+            compose_guardrail_status = getattr(self, "_compose_ollama_guardrail_status", None)
+            if callable(compose_guardrail_status):
+                err_text = str(
+                    compose_guardrail_status(
+                        "no usable model output",
+                        model=model_name,
+                        attempted_models=attempted_models,
+                    )
+                )
+            else:
+                err_text = "No usable model output."
         fallback = self._build_ai_tutor_fallback_action(snapshot, issue)
         fallback["model"] = model_name
         fallback["attempted_models"] = list(attempted_models)
@@ -13852,8 +13897,30 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 guidance = f"Ollama request failed: {friendly}"
             return rec, guidance
         if last_parse_err:
-            return rec, last_parse_err
-        return rec, str(model_err or "No usable model output.")
+            compose_guardrail_status = getattr(self, "_compose_ollama_guardrail_status", None)
+            if callable(compose_guardrail_status):
+                guidance = str(
+                    compose_guardrail_status(
+                        last_parse_err,
+                        model=model_name,
+                        attempted_models=attempted_models,
+                    )
+                )
+            else:
+                guidance = str(last_parse_err)
+            return rec, guidance
+        compose_guardrail_status = getattr(self, "_compose_ollama_guardrail_status", None)
+        if callable(compose_guardrail_status):
+            guidance = str(
+                compose_guardrail_status(
+                    str(model_err or "no usable model output"),
+                    model=model_name,
+                    attempted_models=attempted_models,
+                )
+            )
+        else:
+            guidance = str(model_err or "No usable model output.")
+        return rec, guidance
 
     def _format_ai_coach_recommendation_text(
         self,

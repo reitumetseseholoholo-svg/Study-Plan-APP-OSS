@@ -12,6 +12,10 @@ def classify_failure_kind(error_code: str, message: str) -> str:
         return "model_unavailable"
     if code in {"timeout", "busy"}:
         return "timeout"
+    if "cooldown active" in lower or "runtime busy" in lower or "queue wait exceeded" in lower:
+        return "timeout"
+    if "json parse failed" in lower or "guardrail validation failed" in lower or "valid json" in lower:
+        return "invalid_output"
     if "context" in lower and ("overflow" in lower or "length" in lower or "token" in lower):
         return "context_overflow"
     if "stall" in lower:
@@ -22,6 +26,8 @@ def classify_failure_kind(error_code: str, message: str) -> str:
 def build_recovery_sequence(kind: str) -> list[str]:
     failure = str(kind or "unknown").strip().lower()
     steps = ["retry_same_model"]
+    if failure == "invalid_output":
+        steps.append("retry_strict_json")
     if failure in {"timeout", "stream_stall", "context_overflow"}:
         steps.append("reduce_context")
     if failure in {"timeout", "context_overflow"}:
@@ -34,6 +40,7 @@ def build_recovery_sequence(kind: str) -> list[str]:
 def recovery_hint_text(kind: str, sequence: list[str], model: str = "") -> str:
     action_lines: dict[str, str] = {
         "retry_same_model": "Retrying once on the same model.",
+        "retry_strict_json": "Retrying with stricter JSON guardrails.",
         "reduce_context": "Reducing context budget for this turn.",
         "disable_semantic": "Temporarily disabling semantic retrieval for this turn.",
         "switch_model": "Switching to the next ranked local model.",
