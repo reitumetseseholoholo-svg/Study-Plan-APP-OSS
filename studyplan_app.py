@@ -202,7 +202,38 @@ APP_DISPLAY_NAME = os.environ.get("STUDYPLAN_APP_NAME", "Study Assistant")
 DEFAULT_MODULE_ID = os.environ.get("STUDYPLAN_MODULE_ID", "acca_f9")
 DEFAULT_MODULE_TITLE = os.environ.get("STUDYPLAN_MODULE_TITLE", "")
 DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-DEFAULT_OLLAMA_MODEL = os.environ.get("STUDYPLAN_OLLAMA_MODEL", "")
+DEFAULT_OLLAMA_MODEL_TUTOR = str(
+    os.environ.get(
+        "STUDYPLAN_OLLAMA_MODEL_TUTOR",
+        "gpt4all-llama-3-2-3b-instruct-q4-0:latest",
+    )
+    or "gpt4all-llama-3-2-3b-instruct-q4-0:latest"
+).strip()
+DEFAULT_OLLAMA_MODEL_COACH = str(
+    os.environ.get(
+        "STUDYPLAN_OLLAMA_MODEL_COACH",
+        "gpt4all-qwen2-1-5b-instruct-q4-0:latest",
+    )
+    or "gpt4all-qwen2-1-5b-instruct-q4-0:latest"
+).strip()
+DEFAULT_OLLAMA_MODEL_AUTOPILOT = str(
+    os.environ.get(
+        "STUDYPLAN_OLLAMA_MODEL_AUTOPILOT",
+        DEFAULT_OLLAMA_MODEL_COACH,
+    )
+    or DEFAULT_OLLAMA_MODEL_COACH
+).strip()
+DEFAULT_OLLAMA_MODEL_FALLBACK = str(
+    os.environ.get(
+        "STUDYPLAN_OLLAMA_MODEL_FALLBACK",
+        "gpt4all-phi-3-mini-4k-instruct-q4-0:latest",
+    )
+    or "gpt4all-phi-3-mini-4k-instruct-q4-0:latest"
+).strip()
+DEFAULT_OLLAMA_MODEL = str(
+    os.environ.get("STUDYPLAN_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL_TUTOR)
+    or DEFAULT_OLLAMA_MODEL_TUTOR
+).strip()
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 300
 DEFAULT_OLLAMA_TRANSIENT_RETRIES = 1
 DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS = 0.4
@@ -1001,6 +1032,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.ui_reduce_motion = bool(DEFAULT_UI_REDUCE_MOTION)
         self.ui_legacy_fallback_enabled = bool(DEFAULT_UI_LEGACY_FALLBACK_ENABLED)
         self.ui_sidebar_visible = bool(DEFAULT_UI_SIDEBAR_VISIBLE)
+        self._tiling_wm_hint = self._detect_tiling_wm_hint()
+        self._sidebar_auto_hidden = False
+        self._stack_layout_active = False
         self.coach_only_view = False
         self.sticky_coach_pick = True
         self.adaptive_quiz_prioritization = True
@@ -2422,11 +2456,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         autopilot_enabled = bool(getattr(self, "ai_tutor_autopilot_enabled", True))
         autopilot_mode = self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", "assist"))
         semantic_enabled = bool(getattr(self, "semantic_enabled", False))
+        if bool(getattr(self, "_sidebar_auto_hidden", False)):
+            sidebar_state = "auto-hidden"
+        else:
+            sidebar_state = "shown" if self._is_sidebar_effectively_visible() else "hidden"
         status_text = (
             f"{page_title} • Topic: {topic} • Model: {model_label} • "
             f"Tutor autopilot: {'on' if autopilot_enabled else 'off'} ({autopilot_mode}) • "
             f"Semantic: {'on' if semantic_enabled else 'off'} • "
-            f"Sidebar: {'shown' if bool(getattr(self, 'ui_sidebar_visible', True)) else 'hidden'}"
+            f"Sidebar: {sidebar_state}"
         )
         self._set_label_text_if_changed(label, status_text)
 
@@ -4648,7 +4686,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.save_preferences()
 
     def _apply_sidebar_visibility(self, *, persist: bool = False, announce: bool = False) -> None:
-        visible = bool(getattr(self, "ui_sidebar_visible", True))
+        visible = self._is_sidebar_effectively_visible()
+        auto_hidden = bool(getattr(self, "_sidebar_auto_hidden", False))
         revealer = getattr(self, "left_sidebar_revealer", None)
         left_scroll = getattr(self, "left_scroll", None)
         if revealer is not None:
@@ -4668,7 +4707,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         button = getattr(self, "workbench_sidebar_btn", None)
         if button is not None:
             try:
-                button.set_label("Hide Sidebar" if visible else "Show Sidebar")
+                if auto_hidden:
+                    button.set_label("Sidebar Auto")
+                    button.set_tooltip_text("Sidebar is auto-collapsed in narrow/tile layout.")
+                    button.set_sensitive(False)
+                else:
+                    button.set_label("Hide Sidebar" if visible else "Show Sidebar")
+                    button.set_tooltip_text("Toggle left sidebar (Ctrl+B).")
+                    button.set_sensitive(True)
             except Exception:
                 pass
         try:
@@ -4698,6 +4744,49 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _toggle_sidebar_visibility(self, *, persist: bool = True) -> None:
         self.ui_sidebar_visible = not bool(getattr(self, "ui_sidebar_visible", True))
         self._apply_sidebar_visibility(persist=persist, announce=False)
+
+    def _detect_tiling_wm_hint(self) -> bool:
+        markers = ("HYPRLAND_INSTANCE_SIGNATURE", "SWAYSOCK", "I3SOCK")
+        for name in markers:
+            if str(os.environ.get(name, "") or "").strip():
+                return True
+        session_name = str(os.environ.get("XDG_CURRENT_DESKTOP", "") or "").strip().lower()
+        return session_name in {"hyprland", "sway", "i3"}
+
+    def _is_sidebar_effectively_visible(self) -> bool:
+        return bool(getattr(self, "ui_sidebar_visible", True)) and not bool(
+            getattr(self, "_sidebar_auto_hidden", False)
+        )
+
+    def _should_auto_hide_sidebar(self, width: int, height: int, *, stack_layout: bool, tile_mode: bool) -> bool:
+        if bool(stack_layout):
+            return True
+        if bool(tile_mode) and int(width) <= 1360:
+            return True
+        return int(width) <= 980 or int(height) <= 700
+
+    def _set_main_box_child_order(self, stack_layout: bool) -> None:
+        box = getattr(self, "main_box", None)
+        sidebar = getattr(self, "left_sidebar_revealer", None)
+        shell = getattr(self, "workbench_shell", None)
+        if box is None or sidebar is None or shell is None:
+            return
+        try:
+            if bool(stack_layout):
+                box.reorder_child_after(shell, None)
+                box.reorder_child_after(sidebar, shell)
+            else:
+                box.reorder_child_after(sidebar, None)
+                box.reorder_child_after(shell, sidebar)
+        except Exception:
+            pass
+
+    def _apply_sidebar_adaptive_policy(self, width: int, height: int, *, stack_layout: bool, tile_mode: bool) -> None:
+        auto_hide = self._should_auto_hide_sidebar(width, height, stack_layout=stack_layout, tile_mode=tile_mode)
+        previous = bool(getattr(self, "_sidebar_auto_hidden", False))
+        self._sidebar_auto_hidden = bool(auto_hide)
+        if previous != bool(auto_hide):
+            self._apply_sidebar_visibility(persist=False, announce=False)
 
     def on_menu_import_pdf(self, _action, _param):
         self.on_import_pdf(None)
@@ -9085,13 +9174,74 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return None
         return float(value)
 
+    def _resolve_local_llm_default_for_purpose(
+        self,
+        purpose: str,
+        candidates: list[str],
+    ) -> str:
+        purpose_key = str(purpose or "").strip().lower()
+        ordered_candidates = [str(item or "").strip() for item in list(candidates or []) if str(item or "").strip()]
+        if not ordered_candidates:
+            return ""
+
+        if purpose_key in {"coach", "autopilot", "gap_generation"}:
+            preferred = [
+                str(DEFAULT_OLLAMA_MODEL_COACH or "").strip(),
+                str(DEFAULT_OLLAMA_MODEL_AUTOPILOT or "").strip(),
+                str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
+                str(DEFAULT_OLLAMA_MODEL or "").strip(),
+            ]
+        elif purpose_key in {"tutor", "section_c_generation"}:
+            preferred = [
+                str(DEFAULT_OLLAMA_MODEL_TUTOR or "").strip(),
+                str(DEFAULT_OLLAMA_MODEL or "").strip(),
+                str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
+            ]
+        else:
+            preferred = [
+                str(DEFAULT_OLLAMA_MODEL or "").strip(),
+                str(DEFAULT_OLLAMA_MODEL_COACH or "").strip(),
+                str(DEFAULT_OLLAMA_MODEL_TUTOR or "").strip(),
+                str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
+            ]
+        preferred = [item for item in preferred if item]
+        if not preferred:
+            return ""
+
+        for pref in preferred:
+            if pref in ordered_candidates:
+                return pref
+
+        normalized: list[tuple[str, str]] = []
+        for item in ordered_candidates:
+            base = str(item.split(":", 1)[0] or "").strip()
+            normalized.append((item, base))
+
+        for pref in preferred:
+            pref_base = str(pref.split(":", 1)[0] or "").strip()
+            if not pref_base:
+                continue
+            for full_name, base in normalized:
+                if base == pref_base:
+                    return full_name
+            for full_name, base in normalized:
+                if pref_base in base or base in pref_base:
+                    return full_name
+        return ""
+
     def _heuristic_local_llm_model_prior(self, model_name: str, purpose: str = "general") -> float:
         name = str(model_name or "").strip().lower()
+        purpose_key = str(purpose or "").strip().lower()
         size_b = self._estimate_local_llm_model_size_b(name)
         if size_b is None:
             score = 0.56
         else:
-            center = 8.0 if str(purpose or "").strip().lower() == "tutor" else 7.0
+            if purpose_key in {"coach", "autopilot", "gap_generation"}:
+                center = 1.5
+            elif purpose_key in {"tutor", "section_c_generation"}:
+                center = 5.0
+            else:
+                center = 3.5
             try:
                 dist = abs(math.log(max(size_b, 0.35), 2.0) - math.log(center, 2.0))
             except Exception:
@@ -9112,6 +9262,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             quant_adjust = -0.05
         if "instruct" in name:
             quant_adjust += 0.03
+        if purpose_key in {"coach", "autopilot", "gap_generation"}:
+            if "qwen2-1-5b" in name or "qwen2-5-1-5b" in name or "qwen2.5-1.5b" in name:
+                quant_adjust += 0.14
+            if "phi-3-mini" in name:
+                quant_adjust += 0.08
+        elif purpose_key in {"tutor", "section_c_generation"}:
+            if "llama-3-2-3b" in name:
+                quant_adjust += 0.14
+            if "phi-3-mini" in name:
+                quant_adjust += 0.05
         score += quant_adjust
         return max(0.05, min(1.0, float(score)))
 
@@ -9392,6 +9552,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         candidate_models = healthy_models if healthy_models else list(models)
         configured = str(getattr(self, "local_llm_model", "") or "").strip()
         auto_select = bool(self._is_local_llm_auto_select_enabled())
+        purpose_default = ""
+        resolver = getattr(self, "_resolve_local_llm_default_for_purpose", None)
+        if callable(resolver):
+            try:
+                purpose_default = str(cast(Any, resolver(purpose, candidate_models)) or "").strip()
+            except Exception:
+                purpose_default = ""
+        if not purpose_default:
+            purpose_key = str(purpose or "").strip().lower()
+            if purpose_key in {"coach", "autopilot", "gap_generation"}:
+                fallback_defaults = [
+                    str(DEFAULT_OLLAMA_MODEL_COACH or "").strip(),
+                    str(DEFAULT_OLLAMA_MODEL_AUTOPILOT or "").strip(),
+                    str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
+                    str(DEFAULT_OLLAMA_MODEL or "").strip(),
+                ]
+            elif purpose_key in {"tutor", "section_c_generation"}:
+                fallback_defaults = [
+                    str(DEFAULT_OLLAMA_MODEL_TUTOR or "").strip(),
+                    str(DEFAULT_OLLAMA_MODEL or "").strip(),
+                    str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
+                ]
+            else:
+                fallback_defaults = [
+                    str(DEFAULT_OLLAMA_MODEL or "").strip(),
+                    str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
+                ]
+            for preferred_name in fallback_defaults:
+                preferred = str(preferred_name or "").strip()
+                if preferred and preferred in candidate_models:
+                    purpose_default = preferred
+                    break
         selected = ""
         if auto_select:
             ranked = self._rank_local_llm_models(candidate_models, purpose=purpose)
@@ -9470,6 +9662,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 # During cooldown only switch if improvement is clearly material.
                                 if (selected_score - current_score) < float(switch_margin * 2.0):
                                     selected = configured
+                if purpose_default:
+                    try:
+                        sample_total = sum(
+                            max(0, int(row.get("sample_count", 0) or 0))
+                            for row in ranked_pick
+                            if isinstance(row, dict)
+                        )
+                    except Exception:
+                        sample_total = 0
+                    if sample_total <= 0:
+                        selected = purpose_default
+            elif purpose_default:
+                selected = purpose_default
+        if auto_select and not selected and purpose_default:
+            selected = purpose_default
         if not selected:
             if configured and configured in candidate_models:
                 selected = configured
@@ -18932,6 +19139,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         compact = width <= 1366 or height <= 900
         stack_layout = width <= 1180 or height <= 760
         tile_mode = width <= 1120 or (width <= 1280 and height <= 820)
+        if bool(getattr(self, "_tiling_wm_hint", False)):
+            compact = compact or width <= 1440
+            stack_layout = stack_layout or (width <= 1260 and height <= 900)
+            tile_mode = tile_mode or width <= 1320
         return compact, stack_layout, tile_mode
 
     def _apply_tile_mode(self, tile_mode: bool) -> None:
@@ -18973,6 +19184,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _handle_window_size(self, width: int, height: int) -> None:
         """Adapt layout for smaller screens, including a 1024x768 baseline."""
         compact, stack_layout, tile_mode = self._compute_layout_mode(width, height)
+        self._set_main_box_child_order(stack_layout)
+        self._apply_sidebar_adaptive_policy(width, height, stack_layout=stack_layout, tile_mode=tile_mode)
+        if bool(stack_layout):
+            self.add_css_class("stack-layout")
+        else:
+            self.remove_css_class("stack-layout")
+        self._stack_layout_active = bool(stack_layout)
         if stack_layout:
             if self.main_box.get_orientation() != Gtk.Orientation.VERTICAL:
                 self.main_box.set_orientation(Gtk.Orientation.VERTICAL)

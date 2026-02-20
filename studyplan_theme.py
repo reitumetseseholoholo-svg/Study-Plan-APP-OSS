@@ -1333,6 +1333,10 @@ window.study-window .workbench-shell {{
     padding: 10px;
     border-radius: 14px;
 }}
+window.study-window.stack-layout .workbench-shell {{
+    padding: 8px;
+    border-radius: 11px;
+}}
 window.study-window.sidebar-collapsed .workbench-shell {{
     margin-left: 0;
     border-left: 1px solid {border["soft"]};
@@ -1380,6 +1384,31 @@ window.study-window .workspace-tabs button:hover {{
 }}
 window.study-window .workbench-stack {{
     border-radius: 10px;
+}}
+window.study-window.stack-layout .workbench-header {{
+    padding-bottom: 4px;
+    margin-bottom: 1px;
+}}
+window.study-window.stack-layout .workspace-tabs button {{
+    min-height: 28px;
+    padding: 3px 9px;
+}}
+window.study-window.stack-layout .workbench-quick-actions {{
+    padding-bottom: 1px;
+    margin-bottom: 0;
+}}
+window.study-window.stack-layout .workbench-quick-actions button {{
+    min-height: 28px;
+    padding: 3px 9px;
+}}
+window.study-window.stack-layout .workbench-status {{
+    padding: 4px 7px;
+    margin-top: 0;
+    margin-bottom: 1px;
+}}
+window.study-window.stack-layout .sidebar-toggle {{
+    min-height: 28px;
+    padding: 3px 9px;
 }}
 window.study-window .workbench-page {{
     background: transparent;

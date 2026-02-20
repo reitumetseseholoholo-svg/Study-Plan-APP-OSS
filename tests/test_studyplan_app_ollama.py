@@ -27,7 +27,11 @@ from studyplan_ai_tutor import (
 )
 
 try:
-    from studyplan_app import StudyPlanGUI
+    from studyplan_app import (
+        DEFAULT_OLLAMA_MODEL_COACH,
+        DEFAULT_OLLAMA_MODEL_TUTOR,
+        StudyPlanGUI,
+    )
 except Exception as exc:  # pragma: no cover - environment-dependent import gate
     pytest.skip(f"studyplan_app import unavailable: {exc}", allow_module_level=True)
 
@@ -152,6 +156,46 @@ def test_coerce_ui_toggle_accepts_common_truthy_and_falsy():
     assert StudyPlanGUI._coerce_ui_toggle(dummy, "on", False) is True
     assert StudyPlanGUI._coerce_ui_toggle(dummy, "0", True) is False
     assert StudyPlanGUI._coerce_ui_toggle(dummy, "", True) is True
+
+
+def test_detect_tiling_wm_hint_from_env(monkeypatch):
+    dummy = types.SimpleNamespace()
+    monkeypatch.setenv("HYPRLAND_INSTANCE_SIGNATURE", "abc123")
+    assert StudyPlanGUI._detect_tiling_wm_hint(dummy) is True
+    monkeypatch.delenv("HYPRLAND_INSTANCE_SIGNATURE", raising=False)
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "sway")
+    assert StudyPlanGUI._detect_tiling_wm_hint(dummy) is True
+
+
+def test_is_sidebar_effectively_visible_respects_auto_hidden():
+    dummy = types.SimpleNamespace(ui_sidebar_visible=True, _sidebar_auto_hidden=True)
+    assert StudyPlanGUI._is_sidebar_effectively_visible(dummy) is False
+    dummy._sidebar_auto_hidden = False
+    assert StudyPlanGUI._is_sidebar_effectively_visible(dummy) is True
+
+
+def test_should_auto_hide_sidebar_on_stack_or_tight_window():
+    dummy = types.SimpleNamespace()
+    assert (
+        StudyPlanGUI._should_auto_hide_sidebar(dummy, 1400, 900, stack_layout=True, tile_mode=False)
+        is True
+    )
+    assert (
+        StudyPlanGUI._should_auto_hide_sidebar(dummy, 1320, 860, stack_layout=False, tile_mode=True)
+        is True
+    )
+    assert (
+        StudyPlanGUI._should_auto_hide_sidebar(dummy, 1500, 940, stack_layout=False, tile_mode=False)
+        is False
+    )
+
+
+def test_compute_layout_mode_extends_thresholds_for_tiling_hint():
+    dummy = types.SimpleNamespace(_tiling_wm_hint=True)
+    compact, stack_layout, tile_mode = StudyPlanGUI._compute_layout_mode(dummy, 1240, 900)
+    assert compact is True
+    assert stack_layout is True
+    assert tile_mode is True
 
 
 def test_normalize_ollama_host_adds_scheme_and_trims_slash():
@@ -337,6 +381,62 @@ def test_select_local_llm_model_auto_skips_cooling_model():
     )
     assert err is None
     assert picked == "steady-7b:latest"
+
+
+def test_select_local_llm_model_cold_start_prefers_tutor_default_when_available():
+    dummy = types.SimpleNamespace(
+        local_llm_model="",
+        local_llm_auto_select=True,
+        _ai_tutor_telemetry_events=[],
+        _local_llm_last_switch_at=0.0,
+        save_preferences=lambda: None,
+    )
+    dummy._coerce_local_llm_auto_select = types.MethodType(StudyPlanGUI._coerce_local_llm_auto_select, dummy)
+    dummy._is_local_llm_auto_select_enabled = types.MethodType(StudyPlanGUI._is_local_llm_auto_select_enabled, dummy)
+    dummy._estimate_local_llm_model_size_b = types.MethodType(StudyPlanGUI._estimate_local_llm_model_size_b, dummy)
+    dummy._resolve_local_llm_default_for_purpose = types.MethodType(
+        StudyPlanGUI._resolve_local_llm_default_for_purpose, dummy
+    )
+    dummy._heuristic_local_llm_model_prior = types.MethodType(StudyPlanGUI._heuristic_local_llm_model_prior, dummy)
+    dummy._score_local_llm_model = types.MethodType(StudyPlanGUI._score_local_llm_model, dummy)
+    dummy._rank_local_llm_models = types.MethodType(StudyPlanGUI._rank_local_llm_models, dummy)
+    picked, err = StudyPlanGUI._select_local_llm_model(
+        dummy,
+        model_override=None,
+        purpose="tutor",
+        available_models=[DEFAULT_OLLAMA_MODEL_TUTOR, "other-7b:latest"],
+        persist=False,
+    )
+    assert err is None
+    assert picked == str(DEFAULT_OLLAMA_MODEL_TUTOR)
+
+
+def test_select_local_llm_model_cold_start_prefers_coach_default_when_available():
+    dummy = types.SimpleNamespace(
+        local_llm_model="",
+        local_llm_auto_select=True,
+        _ai_tutor_telemetry_events=[],
+        _local_llm_last_switch_at=0.0,
+        save_preferences=lambda: None,
+    )
+    dummy._coerce_local_llm_auto_select = types.MethodType(StudyPlanGUI._coerce_local_llm_auto_select, dummy)
+    dummy._is_local_llm_auto_select_enabled = types.MethodType(StudyPlanGUI._is_local_llm_auto_select_enabled, dummy)
+    dummy._estimate_local_llm_model_size_b = types.MethodType(StudyPlanGUI._estimate_local_llm_model_size_b, dummy)
+    dummy._resolve_local_llm_default_for_purpose = types.MethodType(
+        StudyPlanGUI._resolve_local_llm_default_for_purpose, dummy
+    )
+    dummy._heuristic_local_llm_model_prior = types.MethodType(StudyPlanGUI._heuristic_local_llm_model_prior, dummy)
+    dummy._score_local_llm_model = types.MethodType(StudyPlanGUI._score_local_llm_model, dummy)
+    dummy._rank_local_llm_models = types.MethodType(StudyPlanGUI._rank_local_llm_models, dummy)
+    picked, err = StudyPlanGUI._select_local_llm_model(
+        dummy,
+        model_override=None,
+        purpose="coach",
+        available_models=[DEFAULT_OLLAMA_MODEL_COACH, "other-7b:latest", DEFAULT_OLLAMA_MODEL_TUTOR],
+        persist=False,
+    )
+    assert err is None
+    assert picked == str(DEFAULT_OLLAMA_MODEL_COACH)
 
 
 def test_build_local_llm_model_failover_sequence_orders_selected_then_alternatives(monkeypatch):
