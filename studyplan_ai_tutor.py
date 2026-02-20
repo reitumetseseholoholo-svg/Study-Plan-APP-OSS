@@ -1899,6 +1899,14 @@ class AITutorDialogController:
                     latency_ms = int(max(0.0, (float(time.monotonic()) - float(turn_started_at)) * 1000.0))
                 except Exception:
                     latency_ms = 0
+                queue_ms_reader = getattr(app, "_consume_last_ollama_queue_ms", None)
+                if callable(queue_ms_reader):
+                    try:
+                        queue_ms = int(max(0, int(queue_ms_reader() or 0)))
+                    except Exception:
+                        queue_ms = 0
+                else:
+                    queue_ms = 0
                 try:
                     generation_started_at = float(guard_state.get("generation_started_at", 0.0) or 0.0)
                 except Exception:
@@ -1931,7 +1939,7 @@ class AITutorDialogController:
                     "nudge_warning_count": int(autopilot_stats.get("nudge_warning_count", 0) or 0),
                     "nudge_intervention_count": int(autopilot_stats.get("nudge_intervention_count", 0) or 0),
                     "latency_ms": int(latency_ms),
-                    "queue_ms": 0,
+                    "queue_ms": int(queue_ms),
                     "prompt_build_ms": int(max(0, prompt_build_ms)),
                     "rag_ms": int(max(0, rag_ms)),
                     "generation_ms": int(max(0, generation_ms)),

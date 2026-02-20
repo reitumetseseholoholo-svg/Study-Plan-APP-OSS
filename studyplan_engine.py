@@ -154,6 +154,7 @@ class StudyPlanEngine:
         "relevant cash flows ": "Relevant Cash Flows",
         "relevant cash flows.": "Relevant Cash Flows",
     }
+    LOW_CONFIDENCE_MATCH_LOG_MAX_UNIQUE = 12
     # Expanded with more questions from available sources, including explanations
     QUESTIONS = {
         "FM Function": [
@@ -2511,6 +2512,8 @@ class StudyPlanEngine:
         """
         self.module_id = self._sanitize_module_id(module_id or "acca_f9")
         self.module_title = str(module_title or "Study Module")
+        self._low_confidence_match_counts: Dict[str, int] = {}
+        self._low_confidence_match_log_suppressed = False
         self._init_module_defaults()
         if not bool(self.__class__._LOKY_CLEANUP_REGISTERED):
             try:
@@ -6825,6 +6828,35 @@ class StudyPlanEngine:
 
 
 
+    def _note_low_confidence_chapter_match(self, title: str, chapter: str, similarity: float) -> None:
+        """Log low-confidence chapter matching once per unique mapping and cap noisy output."""
+        key_title = re.sub(r"\s+", " ", str(title or "")).strip()
+        key_chapter = re.sub(r"\s+", " ", str(chapter or "")).strip()
+        if not key_title or not key_chapter:
+            return
+        key = f"{key_title.lower()}->{key_chapter.lower()}"
+        counts = getattr(self, "_low_confidence_match_counts", None)
+        if not isinstance(counts, dict):
+            counts = {}
+            self._low_confidence_match_counts = counts
+        counts[key] = int(counts.get(key, 0) or 0) + 1
+        # Emit first occurrence per unique mapping only, with a global unique cap.
+        if counts[key] > 1:
+            return
+        try:
+            unique_cap = max(0, min(200, int(self.LOW_CONFIDENCE_MATCH_LOG_MAX_UNIQUE)))
+        except Exception:
+            unique_cap = 12
+        unique_seen = len(counts)
+        if unique_cap <= 0:
+            return
+        if unique_seen > unique_cap:
+            if not bool(getattr(self, "_low_confidence_match_log_suppressed", False)):
+                self._low_confidence_match_log_suppressed = True
+                print(" Low confidence chapter-match logs suppressed (too many unique mappings).")
+            return
+        print(f" Low confidence match ({similarity:.0%}): '{key_title}' -> '{key_chapter}'")
+
     def _match_chapter(self, title):
         """Match extracted title to closest chapter."""
         if title is None or title.strip() == "":
@@ -6855,7 +6887,7 @@ class StudyPlanEngine:
         similarity = difflib.SequenceMatcher(None, best_match[0], title_lower).ratio()
 
         if similarity < 0.4:
-            print(f" Low confidence match ({similarity:.0%}): '{title}' → '{best_match[1]}'")
+            self._note_low_confidence_chapter_match(str(title), str(best_match[1]), float(similarity))
 
         return best_match[1]
 

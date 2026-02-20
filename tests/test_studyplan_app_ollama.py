@@ -33,6 +33,22 @@ except Exception as exc:  # pragma: no cover - environment-dependent import gate
 
 
 def _make_dummy(host: str = "127.0.0.1:11434"):
+/*************  ✨ Windsurf Command ⭐  *************/
+    """
+    Creates a dummy StudyPlanGUI object with the given host.
+
+    This function is used to create a mock StudyPlanGUI object for testing
+    purposes. The created object has the same attributes as a real StudyPlanGUI
+    object but the methods are replaced with dummy methods that return None.
+
+    Parameters:
+    host (str): The host to use for the dummy StudyPlanGUI object. Defaults to
+        "127.0.0.1:11434".
+
+    Returns:
+    types.SimpleNamespace: A dummy StudyPlanGUI object with the given host.
+    """
+/*******  4401c667-571c-420c-80b5-6b462cf8be3c  *******/
     dummy = types.SimpleNamespace(
         local_llm_host=host,
         local_llm_timeout_seconds=30,
@@ -307,6 +323,38 @@ def test_select_local_llm_model_auto_mode_avoids_switch_for_small_score_gap():
     assert picked == "steady-7b:latest"
 
 
+def test_select_local_llm_model_auto_skips_cooling_model():
+    dummy = types.SimpleNamespace(
+        local_llm_model="",
+        local_llm_auto_select=True,
+        _ai_tutor_telemetry_events=[],
+        _local_llm_last_switch_at=0.0,
+        save_preferences=lambda: None,
+    )
+    dummy._coerce_local_llm_auto_select = types.MethodType(StudyPlanGUI._coerce_local_llm_auto_select, dummy)
+    dummy._is_local_llm_auto_select_enabled = types.MethodType(StudyPlanGUI._is_local_llm_auto_select_enabled, dummy)
+    dummy._estimate_local_llm_model_size_b = types.MethodType(StudyPlanGUI._estimate_local_llm_model_size_b, dummy)
+    dummy._heuristic_local_llm_model_prior = types.MethodType(StudyPlanGUI._heuristic_local_llm_model_prior, dummy)
+    dummy._score_local_llm_model = types.MethodType(StudyPlanGUI._score_local_llm_model, dummy)
+    dummy._rank_local_llm_models = types.MethodType(StudyPlanGUI._rank_local_llm_models, dummy)
+    dummy._is_local_llm_model_on_cooldown = lambda model_name: (
+        str(model_name or "").startswith("best-"),
+        45,
+        "recent failures",
+    )
+    dummy._get_ai_tutor_latency_profile = lambda window=24: {"load_level": "normal"}
+    dummy._get_ai_tutor_latency_slo_status = lambda window=24: {"status": "pass"}
+    picked, err = StudyPlanGUI._select_local_llm_model(
+        dummy,
+        model_override=None,
+        purpose="tutor",
+        available_models=["best-8b:latest", "steady-7b:latest"],
+        persist=False,
+    )
+    assert err is None
+    assert picked == "steady-7b:latest"
+
+
 def test_build_local_llm_model_failover_sequence_orders_selected_then_alternatives(monkeypatch):
     monkeypatch.setenv("STUDYPLAN_AI_TUTOR_MODEL_FAILOVER_MAX", "2")
     dummy = types.SimpleNamespace(
@@ -344,6 +392,29 @@ def test_build_local_llm_model_failover_sequence_orders_selected_then_alternativ
     assert err is None
     assert seq[0] == "best-8b:latest"
     assert len(seq) == 2
+
+
+def test_record_local_llm_model_outcome_sets_cooldown_after_threshold(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_AI_MODEL_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("STUDYPLAN_AI_MODEL_FAILURE_WINDOW_SECONDS", "600")
+    monkeypatch.setenv("STUDYPLAN_AI_MODEL_COOLDOWN_SECONDS", "60")
+    dummy = types.SimpleNamespace(
+        _llm_model_health={},
+    )
+    dummy._coerce_ai_model_failure_threshold = types.MethodType(StudyPlanGUI._coerce_ai_model_failure_threshold, dummy)
+    dummy._coerce_ai_model_failure_window_seconds = types.MethodType(
+        StudyPlanGUI._coerce_ai_model_failure_window_seconds, dummy
+    )
+    dummy._coerce_ai_model_cooldown_seconds = types.MethodType(StudyPlanGUI._coerce_ai_model_cooldown_seconds, dummy)
+    dummy._record_local_llm_model_outcome = types.MethodType(StudyPlanGUI._record_local_llm_model_outcome, dummy)
+    dummy._is_local_llm_model_on_cooldown = types.MethodType(StudyPlanGUI._is_local_llm_model_on_cooldown, dummy)
+
+    StudyPlanGUI._record_local_llm_model_outcome(dummy, "demo:latest", success=False, err="HTTP 503")
+    StudyPlanGUI._record_local_llm_model_outcome(dummy, "demo:latest", success=False, err="HTTP 503")
+    cooling, remaining, reason = StudyPlanGUI._is_local_llm_model_on_cooldown(dummy, "demo:latest")
+    assert cooling is True
+    assert remaining > 0
+    assert "HTTP 503" in reason
 
 
 def test_sync_gpt4all_models_to_ollama_once_imports_missing_files(tmp_path, monkeypatch):
@@ -1694,6 +1765,27 @@ def test_ollama_generate_text_retries_transient_error(monkeypatch):
     assert calls["count"] == 2
 
 
+def test_ollama_generate_text_returns_busy_when_runtime_slot_unavailable():
+    dummy = _make_dummy()
+    calls: list[tuple[str, bool, str]] = []
+    dummy._is_local_llm_model_on_cooldown = lambda _model: (False, 0, "")
+    dummy._acquire_ollama_request_slot = lambda wait_seconds=None: (False, 180)
+    dummy._record_local_llm_model_outcome = (
+        lambda model_name, success=False, err="": calls.append((str(model_name), bool(success), str(err)))
+    )
+    text, err = StudyPlanGUI._ollama_generate_text_with_options(
+        dummy,
+        model="demo:latest",
+        prompt="ping",
+        num_ctx=2048,
+        temperature=0.2,
+        use_response_cache=False,
+    )
+    assert text == ""
+    assert isinstance(err, str) and "runtime busy" in err.lower()
+    assert calls and calls[-1][0] == "demo:latest" and calls[-1][1] is False
+
+
 def test_ollama_generate_text_stream_retries_transient_error_before_chunks(monkeypatch):
     dummy = _make_dummy()
     calls = {"count": 0}
@@ -2008,6 +2100,84 @@ def test_stop_quiz_or_review_timer_if_active_ignores_non_quiz_kinds():
     stopped = StudyPlanGUI._stop_quiz_or_review_timer_if_active(dummy, finalize=True)
     assert stopped is False
     assert calls == []
+
+
+def test_cleanup_quiz_dialog_runtime_stops_timer_and_clears_dialog():
+    calls: list[bool] = []
+    dummy = types.SimpleNamespace(
+        _quiz_reason_job_token=7,
+        quiz_dialog=object(),
+        _stop_quiz_or_review_timer_if_active=lambda finalize=True: calls.append(bool(finalize)),
+    )
+    StudyPlanGUI._cleanup_quiz_dialog_runtime(dummy, finalize_timer=True)
+    assert dummy.quiz_dialog is None
+    assert dummy._quiz_reason_job_token == 8
+    assert calls == [True]
+
+
+def test_cleanup_quiz_dialog_runtime_tolerates_missing_token_and_finalize_false():
+    calls: list[bool] = []
+    dummy = types.SimpleNamespace(
+        quiz_dialog=object(),
+        _stop_quiz_or_review_timer_if_active=lambda finalize=True: calls.append(bool(finalize)),
+    )
+    StudyPlanGUI._cleanup_quiz_dialog_runtime(dummy, finalize_timer=False)
+    assert dummy.quiz_dialog is None
+    assert calls == [False]
+
+
+def test_append_ai_tutor_rag_pdf_path_adds_and_clears_runtime_cache(tmp_path):
+    first_pdf = tmp_path / "first.pdf"
+    second_pdf = tmp_path / "second.pdf"
+    first_pdf.write_bytes(b"%PDF-1.4\nfirst")
+    second_pdf.write_bytes(b"%PDF-1.4\nsecond")
+
+    calls = {"saved": 0, "tutor_refresh": 0, "settings_refresh": 0}
+    dummy = types.SimpleNamespace(
+        ai_tutor_rag_pdfs=str(first_pdf),
+        _ai_tutor_rag_cache={"stale": {"chunks": []}},
+        _ai_tutor_rag_cache_order=["stale"],
+        save_preferences=lambda: calls.__setitem__("saved", calls["saved"] + 1),
+        _refresh_tutor_workspace_page=lambda: calls.__setitem__("tutor_refresh", calls["tutor_refresh"] + 1),
+        _refresh_settings_workspace_page=lambda: calls.__setitem__("settings_refresh", calls["settings_refresh"] + 1),
+    )
+    dummy._normalize_user_file_path = types.MethodType(StudyPlanGUI._normalize_user_file_path, dummy)
+    dummy._validate_import_source_path = types.MethodType(StudyPlanGUI._validate_import_source_path, dummy)
+    dummy._validate_selected_file_size = types.MethodType(StudyPlanGUI._validate_selected_file_size, dummy)
+
+    added, message = StudyPlanGUI._append_ai_tutor_rag_pdf_path(dummy, str(second_pdf))
+
+    assert added is True
+    assert "Added Tutor RAG PDF" in message
+    paths = [row.strip() for row in str(dummy.ai_tutor_rag_pdfs or "").splitlines() if row.strip()]
+    assert paths == [str(first_pdf), str(second_pdf)]
+    assert dummy._ai_tutor_rag_cache == {}
+    assert dummy._ai_tutor_rag_cache_order == []
+    assert calls == {"saved": 1, "tutor_refresh": 1, "settings_refresh": 1}
+
+
+def test_append_ai_tutor_rag_pdf_path_rejects_duplicate(tmp_path):
+    first_pdf = tmp_path / "first.pdf"
+    first_pdf.write_bytes(b"%PDF-1.4\nfirst")
+
+    calls = {"saved": 0}
+    dummy = types.SimpleNamespace(
+        ai_tutor_rag_pdfs=str(first_pdf),
+        _ai_tutor_rag_cache={},
+        _ai_tutor_rag_cache_order=[],
+        save_preferences=lambda: calls.__setitem__("saved", calls["saved"] + 1),
+        _refresh_tutor_workspace_page=lambda: None,
+        _refresh_settings_workspace_page=lambda: None,
+    )
+    dummy._normalize_user_file_path = types.MethodType(StudyPlanGUI._normalize_user_file_path, dummy)
+    dummy._validate_import_source_path = types.MethodType(StudyPlanGUI._validate_import_source_path, dummy)
+    dummy._validate_selected_file_size = types.MethodType(StudyPlanGUI._validate_selected_file_size, dummy)
+
+    added, message = StudyPlanGUI._append_ai_tutor_rag_pdf_path(dummy, str(first_pdf))
+
+    assert added is False
+    assert "already in Tutor RAG sources" in message
+    assert calls["saved"] == 0
 
 
 def test_stop_tutor_workspace_runtime_cancels_stream_and_poll_sources():

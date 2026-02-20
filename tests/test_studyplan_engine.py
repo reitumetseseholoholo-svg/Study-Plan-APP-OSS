@@ -134,6 +134,20 @@ def test_get_questions_known_and_unknown(engine_no_io):
     assert unknown_qs == []
 
 
+def test_match_chapter_low_confidence_logging_is_deduplicated(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    logs: list[str] = []
+    monkeypatch.setattr(
+        builtins,
+        "print",
+        lambda *args, **_kwargs: logs.append(" ".join(str(a) for a in args)),
+    )
+    for _ in range(5):
+        StudyPlanEngine._match_chapter(eng, "G")
+    low_conf = [row for row in logs if "Low confidence match" in row]
+    assert len(low_conf) == 1
+
+
 def test_update_competence_applies_delta(engine_no_io):
     eng = engine_no_io
     chapter = StudyPlanEngine.CHAPTERS[0]

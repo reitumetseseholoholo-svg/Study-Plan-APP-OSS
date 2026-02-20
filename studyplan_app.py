@@ -207,10 +207,17 @@ DEFAULT_OLLAMA_TIMEOUT_SECONDS = 300
 DEFAULT_OLLAMA_TRANSIENT_RETRIES = 1
 DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS = 0.4
 DEFAULT_OLLAMA_AUTO_SELECT = True
+DEFAULT_OLLAMA_MAX_CONCURRENT_REQUESTS = 1
+DEFAULT_OLLAMA_QUEUE_WAIT_SECONDS = 1.5
 OLLAMA_MODEL_CACHE_TTL_SECONDS = 120
 DEFAULT_OLLAMA_CONTEXT = 2048
 OLLAMA_RECOVERY_PROMPT_MAX_CHARS = 5200
 OLLAMA_RECOVERY_REDUCED_NUM_CTX = 1536
+AI_MODEL_FAILURE_THRESHOLD = 2
+AI_MODEL_FAILURE_WINDOW_SECONDS = 240
+AI_MODEL_COOLDOWN_SECONDS = 90
+AI_MODEL_COOLDOWN_MAX_SECONDS = 600
+AI_MODEL_HEALTH_MAX_TRACKED = 64
 try:
     DEFAULT_OLLAMA_NUM_THREADS = max(
         1,
@@ -336,6 +343,13 @@ SMOKE_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
     "coach_only_toggle_integrity_rate": {"op": "==", "value": 1.0},
     "coach_next_burst_integrity_rate": {"op": "==", "value": 1.0},
     "ui_trigger_integrity_rate": {"op": "==", "value": 1.0},
+}
+SOAK_REPORT_PATH = os.path.expanduser("~/.config/studyplan/soak_last.json")
+SOAK_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
+    "samples": {"op": ">=", "value": float(AI_TUTOR_LATENCY_SLO_MIN_SAMPLES)},
+    "p50_latency_ms": {"op": "<=", "value": float(AI_TUTOR_LATENCY_SLO_P50_MS)},
+    "p90_latency_ms": {"op": "<=", "value": float(AI_TUTOR_LATENCY_SLO_P90_MS)},
+    "latency_spread_ratio": {"op": "<=", "value": float(AI_TUTOR_LATENCY_SLO_SPREAD_RATIO)},
 }
 UI_DENSITY_MODES = ("progressive",)
 DEFAULT_UI_DENSITY_MODE = "progressive"
@@ -504,6 +518,54 @@ def _compute_strict_smoke_exit_code(report_path: str = SMOKE_REPORT_PATH) -> int
     if status != "passed":
         return 1
     failures = _evaluate_smoke_kpi_thresholds(report.get("kpi", {}))
+    return 0 if not failures else 1
+
+
+def _evaluate_soak_kpi_thresholds(kpi: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return threshold failures for latency soak KPI metrics."""
+    failures: list[dict[str, Any]] = []
+    metrics = kpi if isinstance(kpi, dict) else {}
+    for metric, rule in SOAK_KPI_THRESHOLDS.items():
+        try:
+            actual = float(metrics.get(metric, 0.0) or 0.0)
+        except Exception:
+            actual = 0.0
+        op = str(rule.get("op", "<=") or "<=").strip()
+        try:
+            expected = float(rule.get("value", 0.0) or 0.0)
+        except Exception:
+            expected = 0.0
+        if op == "==":
+            passed = abs(actual - expected) <= 1e-9
+        elif op == ">=":
+            passed = actual >= expected
+        else:
+            passed = actual <= expected
+        if not passed:
+            failures.append(
+                {
+                    "metric": metric,
+                    "actual": actual,
+                    "op": op,
+                    "threshold": expected,
+                }
+            )
+    return failures
+
+
+def _compute_strict_soak_exit_code(report_path: str = SOAK_REPORT_PATH) -> int:
+    """Return process exit code for strict soak mode."""
+    try:
+        with open(report_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+    except Exception:
+        return 1
+    if not isinstance(report, dict):
+        return 1
+    status = str(report.get("status", "") or "").strip().lower()
+    if status != "passed":
+        return 1
+    failures = _evaluate_soak_kpi_thresholds(report.get("kpi", {}))
     return 0 if not failures else 1
 
 DEFAULT_FOCUS_ALLOWLIST = [
@@ -1042,6 +1104,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._smoke_metrics = {}
         self._smoke_last_mismatch_sample = None
         self._smoke_sync_retry_base = 0
+        self._latency_soak_mode = False
+        self._soak_report = None
+        self._soak_report_finalized = False
+        self._soak_telemetry_start_count = 0
+        self._soak_duration_seconds = 0
         self.risk_baselines = {}
         self._perf_dashboard_renders = 0
         self._perf_last_dashboard_ms = 0.0
@@ -1072,6 +1139,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.local_llm_auto_select = bool(DEFAULT_OLLAMA_AUTO_SELECT)
         self._local_llm_last_switch_at = 0.0
         self.local_llm_timeout_seconds = int(DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+        self._ollama_runtime_lock = threading.RLock()
+        self._ollama_active_requests = 0
+        self._ollama_request_context = threading.local()
+        self._llm_model_health: dict[str, dict[str, Any]] = {}
+        self._configure_ollama_runtime_limits()
         self.ai_tutor_rag_pdfs = ""
         self.ai_tutor_rag_max_sources = int(DEFAULT_AI_TUTOR_RAG_MAX_SOURCES)
         self._gpt4all_auto_import_started = False
@@ -1577,6 +1649,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_summary = Gtk.Label()
         self.study_room_summary.set_halign(Gtk.Align.START)
         self.study_room_summary.set_wrap(True)
+        self.study_room_summary.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.study_room_summary.add_css_class("allow-wrap")
         self.study_room_summary.add_css_class("muted")
         self.study_room_summary.add_css_class("study-summary")
         self.study_room_details_label = Gtk.Label()
@@ -1584,6 +1658,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_details_label.set_wrap(True)
         self.study_room_details_label.set_max_width_chars(110)
         self.study_room_details_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.study_room_details_label.add_css_class("allow-wrap")
         self.study_room_details_label.add_css_class("muted")
         self.study_room_details_label.add_css_class("study-summary")
         self.study_room_details_expander = Gtk.Expander()
@@ -1598,8 +1673,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_blocks_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.study_room_blocks_label = Gtk.Label()
         self.study_room_blocks_label.set_halign(Gtk.Align.START)
-        self.study_room_blocks_label.set_wrap(False)
-        self.study_room_blocks_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.study_room_blocks_label.set_wrap(True)
+        self.study_room_blocks_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.study_room_blocks_label.add_css_class("allow-wrap")
         self.study_room_blocks_label.add_css_class("muted")
         self.study_room_blocks_label.add_css_class("study-summary")
         self.study_room_blocks_box.append(self.study_room_blocks_label)
@@ -1615,6 +1691,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_leitner_label = Gtk.Label(label="Leitner: —")
         self.study_room_leitner_label.set_halign(Gtk.Align.START)
         self.study_room_leitner_label.set_wrap(True)
+        self.study_room_leitner_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.study_room_leitner_label.add_css_class("allow-wrap")
         self.study_room_leitner_label.add_css_class("muted")
         self.study_room_leitner_label.add_css_class("study-summary")
         self.study_room_leitner_box.append(self.study_room_leitner_label)
@@ -1639,6 +1717,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_error_stats_label = Gtk.Label()
         self.study_room_error_stats_label.set_halign(Gtk.Align.START)
         self.study_room_error_stats_label.set_wrap(True)
+        self.study_room_error_stats_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.study_room_error_stats_label.add_css_class("allow-wrap")
         self.study_room_error_stats_label.add_css_class("muted")
         self.study_room_error_stats_label.add_css_class("study-summary")
         study_room_card.append(self.study_room_error_stats_label)
@@ -1647,13 +1727,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_next_due_label = Gtk.Label()
         self.study_room_next_due_label.set_halign(Gtk.Align.START)
         self.study_room_next_due_label.set_wrap(True)
+        self.study_room_next_due_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.study_room_next_due_label.add_css_class("allow-wrap")
         self.study_room_next_due_label.add_css_class("muted")
         study_room_card.append(self.study_room_next_due_label)
 
         self.study_room_mission_label = Gtk.Label()
         self.study_room_mission_label.set_halign(Gtk.Align.START)
-        self.study_room_mission_label.set_wrap(False)
-        self.study_room_mission_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.study_room_mission_label.set_wrap(True)
+        self.study_room_mission_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.study_room_mission_label.add_css_class("allow-wrap")
         self.study_room_mission_label.add_css_class("muted")
         study_room_card.append(self.study_room_mission_label)
 
@@ -2066,6 +2149,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _build_tools_overflow_menu(self) -> Gio.Menu:
         tools_menu = Gio.Menu()
         tools_menu.append("Import PDF scores…", "win.import_pdf")
+        tools_menu.append("Add Tutor RAG PDF…", "win.add_tutor_rag_pdf")
         tools_menu.append("Import AI questions…", "win.import_ai")
         tools_menu.append("Export data (CSV)…", "win.export_csv")
         tools_menu.append("Export import template…", "win.export_template")
@@ -2948,9 +3032,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 summary = self._summarize_ai_tutor_telemetry(window=AI_TUTOR_TELEMETRY_SUMMARY_WINDOW)
             except Exception:
                 summary = {}
-            total = int(summary.get("total", 0) or 0) if isinstance(summary, dict) else 0
+            total = 0
+            if isinstance(summary, dict):
+                total = int(summary.get("total_turns", summary.get("total", 0)) or 0)
             if total <= 0:
-                summary_text = "Telemetry: no tutor turns yet."
+                summary_text = "Telemetry: no tutor turns yet. Send your first prompt to start latency/SLO tracking."
             else:
                 avg_ms = float(summary.get("avg_latency_ms", 0.0) or 0.0)
                 p90_ms = float(summary.get("p90_latency_ms", 0.0) or 0.0)
@@ -3132,6 +3218,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 latency_ms = int(max(0.0, (float(time.monotonic()) - float(turn_started_at)) * 1000.0))
             except Exception:
                 latency_ms = 0
+            queue_ms_reader = getattr(self, "_consume_last_ollama_queue_ms", None)
+            if callable(queue_ms_reader):
+                try:
+                    queue_ms = int(max(0, int(queue_ms_reader() or 0)))
+                except Exception:
+                    queue_ms = 0
+            else:
+                queue_ms = 0
             autopilot_stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
             payload = {
                 "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -3149,7 +3243,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "nudge_warning_count": int(autopilot_stats.get("nudge_warning_count", 0) or 0),
                 "nudge_intervention_count": int(autopilot_stats.get("nudge_intervention_count", 0) or 0),
                 "latency_ms": int(latency_ms),
-                "queue_ms": 0,
+                "queue_ms": int(queue_ms),
                 "prompt_build_ms": int(max(0, prompt_build_ms)),
                 "rag_ms": int(max(0, rag_ms)),
                 "generation_ms": int(max(0, latency_ms - prompt_build_ms - rag_ms)),
@@ -4467,6 +4561,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def on_menu_import_pdf(self, _action, _param):
         self.on_import_pdf(None)
 
+    def on_menu_add_tutor_rag_pdf(self, _action, _param):
+        self.on_add_tutor_rag_pdf(None)
+
     def on_menu_set_exam_date(self, _action, _param):
         self.on_set_exam_date(None)
 
@@ -4475,6 +4572,118 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_menu_import_syllabus_pdf(self, _action, _param):
         self.on_import_syllabus_pdf(None)
+
+    def _append_ai_tutor_rag_pdf_path(self, file_path: str) -> tuple[bool, str]:
+        path = self._validate_import_source_path(file_path, "Tutor RAG PDF", (".pdf",))
+        self._validate_selected_file_size(path, MAX_IMPORT_PDF_BYTES, "Tutor RAG PDF")
+        normalized = os.path.abspath(os.path.expanduser(path))
+        real_new = os.path.realpath(normalized)
+        existing_paths: list[str] = []
+        seen_real: set[str] = set()
+        raw_paths = str(getattr(self, "ai_tutor_rag_pdfs", "") or "")
+        for token in re.split(r"[,\n;]+", raw_paths):
+            row = str(token or "").strip()
+            if not row:
+                continue
+            abs_row = os.path.abspath(os.path.expanduser(row))
+            real_row = os.path.realpath(abs_row)
+            if real_row in seen_real:
+                continue
+            seen_real.add(real_row)
+            existing_paths.append(abs_row)
+        if real_new in seen_real:
+            return False, "PDF is already in Tutor RAG sources."
+        if len(existing_paths) >= 96:
+            return False, "Tutor RAG path list is full (96). Remove an entry in Preferences."
+        existing_paths.append(normalized)
+        self.ai_tutor_rag_pdfs = "\n".join(existing_paths).strip()
+        try:
+            self._ai_tutor_rag_cache.clear()
+            self._ai_tutor_rag_cache_order.clear()
+        except Exception:
+            pass
+        self.save_preferences()
+        try:
+            self._refresh_tutor_workspace_page()
+            self._refresh_settings_workspace_page()
+        except Exception:
+            pass
+        return True, f"Added Tutor RAG PDF: {os.path.basename(normalized)}"
+
+    def on_add_tutor_rag_pdf(self, _button) -> None:
+        if getattr(self, "_dialog_smoke_mode", False):
+            dialog = self._harden_window(Gtk.FileChooserDialog(  # gtk4_lint:ignore
+                title="Add Tutor RAG PDF",
+                transient_for=self,
+                action=Gtk.FileChooserAction.OPEN,
+            ))
+            dialog.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Add", Gtk.ResponseType.ACCEPT)
+            dialog.connect("response", self.on_add_tutor_rag_pdf_response)
+            dialog.present()
+            return
+        dialog = Gtk.FileChooserNative(
+            title="Add Tutor RAG PDF",
+            transient_for=self,
+            action=Gtk.FileChooserAction.OPEN,
+            accept_label="_Add",
+            cancel_label="_Cancel",
+        )
+        self._active_native_dialog = dialog
+        dialog.connect("response", self.on_add_tutor_rag_pdf_response)
+        dialog.connect("response", lambda *_args: setattr(self, "_active_native_dialog", None))
+        dialog.show()
+
+    def on_add_tutor_rag_pdf_response(self, dialog, response) -> None:
+        if response != Gtk.ResponseType.ACCEPT:
+            try:
+                dialog.destroy()
+            except Exception:
+                pass
+            return
+        file_path = self._get_file_path(dialog)
+        try:
+            dialog.destroy()
+        except Exception:
+            pass
+        if not file_path:
+            self._show_text_dialog("Add Tutor RAG PDF", "No file selected.", Gtk.MessageType.ERROR)
+            return
+        try:
+            validated = self._validate_import_source_path(file_path, "Tutor RAG PDF", (".pdf",))
+            self._validate_selected_file_size(validated, MAX_IMPORT_PDF_BYTES, "Tutor RAG PDF")
+        except Exception as exc:
+            self._show_text_dialog("Add Tutor RAG PDF", str(exc), Gtk.MessageType.ERROR)
+            return
+        confirm = self._new_message_dialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text=f"Add '{os.path.basename(validated)}' to Tutor RAG?",
+            secondary_text=(
+                "If semantic retrieval is enabled, embeddings are generated lazily on first Tutor use "
+                "for this PDF and then cached to disk.\n\n"
+                f"PDF: {validated}\n\n"
+                "Continue?"
+            ),
+        )
+
+        def _on_confirm(_dlg, resp):
+            _dlg.destroy()
+            if resp != Gtk.ResponseType.YES:
+                return
+            try:
+                added, message = self._append_ai_tutor_rag_pdf_path(validated)
+            except Exception as exc:
+                self._show_text_dialog("Add Tutor RAG PDF", str(exc), Gtk.MessageType.ERROR)
+                return
+            if added:
+                self.send_notification("Tutor RAG", message)
+                return
+            self._show_text_dialog("Add Tutor RAG PDF", message, Gtk.MessageType.INFO)
+
+        confirm.connect("response", _on_confirm)
+        confirm.present()
 
     def on_menu_import_ai(self, _action, _param):
         self.on_import_ai_questions(None)
@@ -8239,6 +8448,211 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         val = str(os.environ.get("STUDYPLAN_ALLOW_REMOTE_OLLAMA", "") or "").strip().lower()
         return val in {"1", "true", "yes", "on"}
 
+    def _coerce_ollama_max_concurrent_requests(self, value: Any = None) -> int:
+        raw = value if value is not None else os.environ.get(
+            "STUDYPLAN_OLLAMA_MAX_CONCURRENT_REQUESTS",
+            DEFAULT_OLLAMA_MAX_CONCURRENT_REQUESTS,
+        )
+        try:
+            parsed = int(raw)
+        except Exception:
+            parsed = int(DEFAULT_OLLAMA_MAX_CONCURRENT_REQUESTS)
+        return max(1, min(4, int(parsed)))
+
+    def _coerce_ollama_queue_wait_seconds(self, value: Any = None) -> float:
+        raw = value if value is not None else os.environ.get(
+            "STUDYPLAN_OLLAMA_QUEUE_WAIT_SECONDS",
+            DEFAULT_OLLAMA_QUEUE_WAIT_SECONDS,
+        )
+        try:
+            parsed = float(raw)
+        except Exception:
+            parsed = float(DEFAULT_OLLAMA_QUEUE_WAIT_SECONDS)
+        return max(0.1, min(10.0, float(parsed)))
+
+    def _coerce_ai_model_failure_threshold(self, value: Any = None) -> int:
+        raw = value if value is not None else os.environ.get(
+            "STUDYPLAN_AI_MODEL_FAILURE_THRESHOLD",
+            AI_MODEL_FAILURE_THRESHOLD,
+        )
+        try:
+            parsed = int(raw)
+        except Exception:
+            parsed = int(AI_MODEL_FAILURE_THRESHOLD)
+        return max(1, min(8, int(parsed)))
+
+    def _coerce_ai_model_failure_window_seconds(self, value: Any = None) -> int:
+        raw = value if value is not None else os.environ.get(
+            "STUDYPLAN_AI_MODEL_FAILURE_WINDOW_SECONDS",
+            AI_MODEL_FAILURE_WINDOW_SECONDS,
+        )
+        try:
+            parsed = int(raw)
+        except Exception:
+            parsed = int(AI_MODEL_FAILURE_WINDOW_SECONDS)
+        return max(30, min(3600, int(parsed)))
+
+    def _coerce_ai_model_cooldown_seconds(self, value: Any = None) -> int:
+        raw = value if value is not None else os.environ.get(
+            "STUDYPLAN_AI_MODEL_COOLDOWN_SECONDS",
+            AI_MODEL_COOLDOWN_SECONDS,
+        )
+        try:
+            parsed = int(raw)
+        except Exception:
+            parsed = int(AI_MODEL_COOLDOWN_SECONDS)
+        return max(10, min(int(AI_MODEL_COOLDOWN_MAX_SECONDS), int(parsed)))
+
+    def _configure_ollama_runtime_limits(self) -> None:
+        max_concurrency = self._coerce_ollama_max_concurrent_requests()
+        queue_wait = self._coerce_ollama_queue_wait_seconds()
+        with self._ollama_runtime_lock:
+            self._ollama_max_concurrent_requests = int(max_concurrency)
+            self._ollama_queue_wait_seconds = float(queue_wait)
+            # Recreate semaphore when limits change; current active workers finish naturally.
+            self._ollama_request_semaphore = threading.BoundedSemaphore(int(max_concurrency))
+
+    def _set_last_ollama_queue_ms(self, value: Any) -> None:
+        ctx = getattr(self, "_ollama_request_context", None)
+        if ctx is None:
+            return
+        try:
+            ctx.last_queue_ms = max(0, int(value or 0))
+        except Exception:
+            ctx.last_queue_ms = 0
+
+    def _consume_last_ollama_queue_ms(self) -> int:
+        ctx = getattr(self, "_ollama_request_context", None)
+        if ctx is None:
+            return 0
+        try:
+            value = max(0, int(getattr(ctx, "last_queue_ms", 0) or 0))
+        except Exception:
+            value = 0
+        try:
+            ctx.last_queue_ms = 0
+        except Exception:
+            pass
+        return int(value)
+
+    def _acquire_ollama_request_slot(self, wait_seconds: float | None = None) -> tuple[bool, int]:
+        semaphore = getattr(self, "_ollama_request_semaphore", None)
+        if semaphore is None:
+            self._set_last_ollama_queue_ms(0)
+            return True, 0
+        if wait_seconds is None:
+            try:
+                wait_value = float(getattr(self, "_ollama_queue_wait_seconds", DEFAULT_OLLAMA_QUEUE_WAIT_SECONDS) or DEFAULT_OLLAMA_QUEUE_WAIT_SECONDS)
+            except Exception:
+                wait_value = float(DEFAULT_OLLAMA_QUEUE_WAIT_SECONDS)
+        else:
+            try:
+                wait_value = float(wait_seconds)
+            except Exception:
+                wait_value = float(DEFAULT_OLLAMA_QUEUE_WAIT_SECONDS)
+        wait_value = max(0.05, min(10.0, wait_value))
+        started = float(time.monotonic())
+        try:
+            acquired = bool(semaphore.acquire(timeout=float(wait_value)))
+        except Exception:
+            acquired = True
+        queue_ms = int(max(0.0, (float(time.monotonic()) - started) * 1000.0))
+        if acquired:
+            with self._ollama_runtime_lock:
+                self._ollama_active_requests = int(max(0, int(getattr(self, "_ollama_active_requests", 0) or 0)) + 1)
+        self._set_last_ollama_queue_ms(queue_ms)
+        return bool(acquired), int(queue_ms)
+
+    def _release_ollama_request_slot(self) -> None:
+        semaphore = getattr(self, "_ollama_request_semaphore", None)
+        with self._ollama_runtime_lock:
+            active_now = int(getattr(self, "_ollama_active_requests", 0) or 0)
+            self._ollama_active_requests = max(0, active_now - 1)
+        try:
+            if semaphore is not None:
+                semaphore.release()
+        except Exception:
+            pass
+
+    def _is_local_llm_model_on_cooldown(self, model_name: str) -> tuple[bool, int, str]:
+        model = str(model_name or "").strip()
+        if not model:
+            return False, 0, ""
+        health = getattr(self, "_llm_model_health", {})
+        if not isinstance(health, dict):
+            return False, 0, ""
+        row = health.get(model)
+        if not isinstance(row, dict):
+            return False, 0, ""
+        try:
+            until_ts = float(row.get("cooldown_until", 0.0) or 0.0)
+        except Exception:
+            until_ts = 0.0
+        now_ts = float(time.monotonic())
+        if until_ts <= now_ts:
+            return False, 0, ""
+        remaining = int(max(1.0, until_ts - now_ts))
+        reason = str(row.get("last_error", "") or "").strip()
+        return True, int(remaining), reason
+
+    def _record_local_llm_model_outcome(self, model_name: str, *, success: bool, err: str = "") -> None:
+        model = str(model_name or "").strip()
+        if not model:
+            return
+        now_ts = float(time.monotonic())
+        threshold = self._coerce_ai_model_failure_threshold()
+        window_seconds = self._coerce_ai_model_failure_window_seconds()
+        base_cooldown = self._coerce_ai_model_cooldown_seconds()
+        health = getattr(self, "_llm_model_health", None)
+        if not isinstance(health, dict):
+            health = {}
+            self._llm_model_health = health
+        row = health.get(model)
+        if not isinstance(row, dict):
+            row = {}
+            health[model] = row
+        failures = row.get("failure_times")
+        if not isinstance(failures, list):
+            failures = []
+        failure_times: list[float] = []
+        for raw in failures:
+            try:
+                ts = float(raw)
+            except Exception:
+                continue
+            if (now_ts - ts) <= float(window_seconds):
+                failure_times.append(ts)
+        if success:
+            row["failure_times"] = []
+            row["consecutive_failures"] = 0
+            row["cooldown_until"] = 0.0
+            row["last_success_at"] = now_ts
+            row["last_error"] = ""
+            row["updated_at"] = now_ts
+        else:
+            failure_times.append(now_ts)
+            consecutive = max(0, int(row.get("consecutive_failures", 0) or 0)) + 1
+            row["failure_times"] = failure_times[-32:]
+            row["consecutive_failures"] = consecutive
+            row["last_error"] = str(err or "").strip()[:240]
+            row["last_error_at"] = now_ts
+            row["updated_at"] = now_ts
+            if consecutive >= int(threshold) or len(failure_times) >= int(threshold):
+                step = max(0, consecutive - int(threshold))
+                cooldown = min(int(AI_MODEL_COOLDOWN_MAX_SECONDS), int(base_cooldown) * (1 + step))
+                row["cooldown_until"] = now_ts + float(cooldown)
+        # Keep map bounded.
+        if len(health) > int(AI_MODEL_HEALTH_MAX_TRACKED):
+            items = sorted(
+                health.items(),
+                key=lambda pair: float((pair[1] or {}).get("updated_at", 0.0) or 0.0),
+            )
+            overflow = len(items) - int(AI_MODEL_HEALTH_MAX_TRACKED)
+            for idx in range(max(0, overflow)):
+                stale_key = str(items[idx][0] or "")
+                if stale_key and stale_key in health:
+                    health.pop(stale_key, None)
+
     def _is_local_or_private_host(self, hostname: str) -> bool:
         host = str(hostname or "").strip().lower().strip(".")
         if not host:
@@ -8603,6 +9017,33 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         combined = (sample_weight * ((0.62 * quality_score) + (0.38 * perf_score))) + (
             (1.0 - sample_weight) * ((0.55 * prior_score) + (0.45 * perf_score))
         )
+        cooldown_reader = getattr(self, "_is_local_llm_model_on_cooldown", None)
+        if callable(cooldown_reader):
+            try:
+                cooling, cooldown_remaining, _cooldown_reason = cooldown_reader(model)
+            except Exception:
+                cooling, cooldown_remaining = False, 0
+        else:
+            cooling, cooldown_remaining = False, 0
+        health = getattr(self, "_llm_model_health", {}) or {}
+        row_health = health.get(model, {}) if isinstance(health, dict) else {}
+        if isinstance(row_health, dict):
+            try:
+                failures_recent = len(list(row_health.get("failure_times", []) or []))
+            except Exception:
+                failures_recent = 0
+            try:
+                consecutive_failures = int(row_health.get("consecutive_failures", 0) or 0)
+            except Exception:
+                consecutive_failures = 0
+        else:
+            failures_recent = 0
+            consecutive_failures = 0
+        if failures_recent > 0 or consecutive_failures > 0:
+            penalty = min(0.35, (0.05 * failures_recent) + (0.07 * consecutive_failures))
+            combined = max(0.0, combined - penalty)
+        if cooling:
+            combined = max(0.0, combined * 0.05)
         purpose_key = str(purpose or "").strip().lower()
         if purpose_key in {"coach", "autopilot", "gap_generation"}:
             combined = (0.55 * combined) + (0.45 * perf_score)
@@ -8616,6 +9057,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "success_rate": float(success_rate),
             "latency_ms_avg": float(latency_avg),
             "tokens_per_sec_avg": float(tps_avg),
+            "cooling_down": bool(cooling),
+            "cooldown_remaining_s": int(cooldown_remaining),
+            "recent_failures": int(failures_recent),
+            "consecutive_failures": int(consecutive_failures),
         }
 
     def _rank_local_llm_models(
@@ -8749,11 +9194,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return "", f"Ollama model lookup failed: {list_err}"
         if not models:
             return "", "No local Ollama models found."
+        healthy_models: list[str] = []
+        cooling_models: list[str] = []
+        cooldown_reader = getattr(self, "_is_local_llm_model_on_cooldown", None)
+        for item in list(models):
+            if callable(cooldown_reader):
+                try:
+                    is_cooling, _remain, _reason = cooldown_reader(item)
+                except Exception:
+                    is_cooling = False
+            else:
+                is_cooling = False
+            if is_cooling:
+                cooling_models.append(str(item))
+            else:
+                healthy_models.append(str(item))
+        candidate_models = healthy_models if healthy_models else list(models)
         configured = str(getattr(self, "local_llm_model", "") or "").strip()
         auto_select = bool(self._is_local_llm_auto_select_enabled())
         selected = ""
         if auto_select:
-            ranked = self._rank_local_llm_models(models, purpose=purpose)
+            ranked = self._rank_local_llm_models(candidate_models, purpose=purpose)
             if ranked:
                 ranked_pick = list(ranked)
                 latency_profile_get = getattr(self, "_get_ai_tutor_latency_profile", None)
@@ -8784,7 +9245,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         )
                     )
                 selected = str(ranked_pick[0].get("model", "") or "").strip()
-                if configured and configured in models and selected and selected != configured:
+                if configured and configured in candidate_models and selected and selected != configured:
                     row_map = {
                         str(row.get("model", "") or ""): row
                         for row in ranked
@@ -8830,10 +9291,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 if (selected_score - current_score) < float(switch_margin * 2.0):
                                     selected = configured
         if not selected:
-            if configured and configured in models:
+            if configured and configured in candidate_models:
                 selected = configured
             else:
-                selected = str(models[0]).strip()
+                selected = str(candidate_models[0]).strip()
+        if not selected and cooling_models:
+            selected = str(cooling_models[0]).strip()
         if selected and selected != configured:
             self.local_llm_model = selected
             self._local_llm_last_switch_at = float(time.monotonic())
@@ -8906,6 +9369,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         _append(configured)
         for item in list(models or []):
             _append(item)
+
+        if ordered:
+            healthy_ordered: list[str] = []
+            cooling_ordered: list[str] = []
+            cooldown_reader = getattr(self, "_is_local_llm_model_on_cooldown", None)
+            for candidate in ordered:
+                if callable(cooldown_reader):
+                    try:
+                        cooling, _remaining, _reason = cooldown_reader(candidate)
+                    except Exception:
+                        cooling = False
+                else:
+                    cooling = False
+                if cooling:
+                    cooling_ordered.append(candidate)
+                else:
+                    healthy_ordered.append(candidate)
+            ordered = healthy_ordered + cooling_ordered
 
         errors: list[str] = []
         if selected_err:
@@ -9232,6 +9713,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return "", "model is required"
         if not prompt_text:
             return "", "prompt is empty"
+        cooldown_reader = getattr(self, "_is_local_llm_model_on_cooldown", None)
+        if callable(cooldown_reader):
+            try:
+                cooling, cooldown_remaining, _cooldown_reason = cooldown_reader(model_name)
+            except Exception:
+                cooling, cooldown_remaining = False, 0
+        else:
+            cooling, cooldown_remaining = False, 0
+        if cooling:
+            set_queue = getattr(self, "_set_last_ollama_queue_ms", None)
+            if callable(set_queue):
+                try:
+                    set_queue(0)
+                except Exception:
+                    pass
+            return "", f"model cooldown active ({cooldown_remaining}s)"
+        acquire_slot = getattr(self, "_acquire_ollama_request_slot", None)
+        if callable(acquire_slot):
+            try:
+                acquired, queue_ms = acquire_slot()
+            except Exception:
+                acquired, queue_ms = True, 0
+        else:
+            acquired, queue_ms = True, 0
+        if not acquired:
+            record_outcome = getattr(self, "_record_local_llm_model_outcome", None)
+            if callable(record_outcome):
+                try:
+                    record_outcome(model_name, success=False, err="runtime_busy_queue_timeout")
+                except Exception:
+                    pass
+            return "", "Ollama runtime busy. Retry shortly."
         cache_allowed_fn = getattr(self, "_can_use_response_cache", None)
         can_cache = bool(
             use_response_cache
@@ -9279,34 +9792,79 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         retries = int(self._get_ollama_retry_limit())
         max_attempts = retries + 1
         last_err = ""
-        for attempt in range(max_attempts):
-            data, err = self._ollama_request_json(
-                "/api/generate",
-                payload=payload,
-                timeout_seconds=self.local_llm_timeout_seconds,
-            )
-            if err:
-                last_err = err
-                if attempt < retries and self._is_transient_ollama_error(err):
-                    time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
-                    continue
-                return "", err
-            if not isinstance(data, dict):
-                return "", "invalid Ollama response"
-            response_text = str(data.get("response", "") or "").strip()
-            if response_text:
-                if can_cache and response_cache_key and callable(cache_put_response):
-                    cache_put_response(response_cache_key, model_name, response_text)
-                return response_text, None
-            api_err = str(data.get("error", "") or "").strip()
-            if api_err:
-                last_err = api_err
-                if attempt < retries and self._is_transient_ollama_error(api_err):
-                    time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
-                    continue
-                return "", api_err
-            return "", "empty response"
-        return "", (last_err or "Ollama request failed")
+        record_outcome = getattr(self, "_record_local_llm_model_outcome", None)
+        set_queue = getattr(self, "_set_last_ollama_queue_ms", None)
+        try:
+            if callable(set_queue):
+                try:
+                    set_queue(int(queue_ms))
+                except Exception:
+                    pass
+            for attempt in range(max_attempts):
+                data, err = self._ollama_request_json(
+                    "/api/generate",
+                    payload=payload,
+                    timeout_seconds=self.local_llm_timeout_seconds,
+                )
+                if err:
+                    last_err = err
+                    if attempt < retries and self._is_transient_ollama_error(err):
+                        time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
+                        continue
+                    if callable(record_outcome):
+                        try:
+                            record_outcome(model_name, success=False, err=str(err))
+                        except Exception:
+                            pass
+                    return "", err
+                if not isinstance(data, dict):
+                    if callable(record_outcome):
+                        try:
+                            record_outcome(model_name, success=False, err="invalid Ollama response")
+                        except Exception:
+                            pass
+                    return "", "invalid Ollama response"
+                response_text = str(data.get("response", "") or "").strip()
+                if response_text:
+                    if can_cache and response_cache_key and callable(cache_put_response):
+                        cache_put_response(response_cache_key, model_name, response_text)
+                    if callable(record_outcome):
+                        try:
+                            record_outcome(model_name, success=True)
+                        except Exception:
+                            pass
+                    return response_text, None
+                api_err = str(data.get("error", "") or "").strip()
+                if api_err:
+                    last_err = api_err
+                    if attempt < retries and self._is_transient_ollama_error(api_err):
+                        time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
+                        continue
+                    if callable(record_outcome):
+                        try:
+                            record_outcome(model_name, success=False, err=str(api_err))
+                        except Exception:
+                            pass
+                    return "", api_err
+                if callable(record_outcome):
+                    try:
+                        record_outcome(model_name, success=False, err="empty response")
+                    except Exception:
+                        pass
+                return "", "empty response"
+            if callable(record_outcome):
+                try:
+                    record_outcome(model_name, success=False, err=(last_err or "Ollama request failed"))
+                except Exception:
+                    pass
+            return "", (last_err or "Ollama request failed")
+        finally:
+            release_slot = getattr(self, "_release_ollama_request_slot", None)
+            if callable(release_slot):
+                try:
+                    release_slot()
+                except Exception:
+                    pass
 
     def _ollama_generate_text(self, model: str, prompt: str) -> tuple[str, str | None]:
         return StudyPlanGUI._ollama_generate_text_with_options(
@@ -9331,6 +9889,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return "", "model is required"
         if not prompt_text:
             return "", "prompt is empty"
+        cooldown_reader = getattr(self, "_is_local_llm_model_on_cooldown", None)
+        if callable(cooldown_reader):
+            try:
+                cooling, cooldown_remaining, _cooldown_reason = cooldown_reader(model_name)
+            except Exception:
+                cooling, cooldown_remaining = False, 0
+        else:
+            cooling, cooldown_remaining = False, 0
+        if cooling:
+            set_queue = getattr(self, "_set_last_ollama_queue_ms", None)
+            if callable(set_queue):
+                try:
+                    set_queue(0)
+                except Exception:
+                    pass
+            return "", f"model cooldown active ({cooldown_remaining}s)"
+        acquire_slot = getattr(self, "_acquire_ollama_request_slot", None)
+        if callable(acquire_slot):
+            try:
+                acquired, queue_ms = acquire_slot()
+            except Exception:
+                acquired, queue_ms = True, 0
+        else:
+            acquired, queue_ms = True, 0
+        if not acquired:
+            record_outcome = getattr(self, "_record_local_llm_model_outcome", None)
+            if callable(record_outcome):
+                try:
+                    record_outcome(model_name, success=False, err="runtime_busy_queue_timeout")
+                except Exception:
+                    pass
+            return "", "Ollama runtime busy. Retry shortly."
         host = self._normalize_ollama_host()
         url = f"{host}/api/generate"
         payload = {
@@ -9358,72 +9948,113 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         retries = int(self._get_ollama_retry_limit())
         max_attempts = retries + 1
         last_err = ""
-        for attempt in range(max_attempts):
-            should_retry = False
-            try:
-                with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
-                    while True:
-                        if callable(cancel_check) and bool(cancel_check()):
-                            return "".join(chunks), "cancelled"
-                        raw_line = resp.readline()
-                        if not raw_line:
-                            break
-                        line = raw_line.decode("utf-8", "replace").strip()
-                        if not line:
-                            continue
-                        if line.startswith("data:"):
-                            line = line[5:].strip()
-                        try:
-                            item = json.loads(line)
-                        except Exception:
-                            continue
-                        if not isinstance(item, dict):
-                            continue
-                        err = str(item.get("error", "") or "").strip()
-                        if err:
-                            last_err = err
-                            if attempt < retries and not chunks and self._is_transient_ollama_error(err):
-                                time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
-                                should_retry = True
-                                break
-                            return "".join(chunks), err
-                        piece = str(item.get("response", "") or "")
-                        if piece:
-                            chunks.append(piece)
-                            if callable(on_chunk):
-                                try:
-                                    on_chunk(piece)
-                                except Exception:
-                                    pass
-                        if bool(item.get("done", False)):
-                            return "".join(chunks), None
-                if should_retry:
-                    continue
-                return "".join(chunks), None
-            except urllib.error.HTTPError as exc:
-                detail = ""
+        record_outcome = getattr(self, "_record_local_llm_model_outcome", None)
+        set_queue = getattr(self, "_set_last_ollama_queue_ms", None)
+        try:
+            if callable(set_queue):
                 try:
-                    detail = exc.read().decode("utf-8", "replace").strip()
+                    set_queue(int(queue_ms))
                 except Exception:
+                    pass
+            for attempt in range(max_attempts):
+                should_retry = False
+                try:
+                    with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
+                        while True:
+                            if callable(cancel_check) and bool(cancel_check()):
+                                return "".join(chunks), "cancelled"
+                            raw_line = resp.readline()
+                            if not raw_line:
+                                break
+                            line = raw_line.decode("utf-8", "replace").strip()
+                            if not line:
+                                continue
+                            if line.startswith("data:"):
+                                line = line[5:].strip()
+                            try:
+                                item = json.loads(line)
+                            except Exception:
+                                continue
+                            if not isinstance(item, dict):
+                                continue
+                            err = str(item.get("error", "") or "").strip()
+                            if err:
+                                last_err = err
+                                if attempt < retries and not chunks and self._is_transient_ollama_error(err):
+                                    time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
+                                    should_retry = True
+                                    break
+                                self._record_local_llm_model_outcome(model_name, success=False, err=str(err))
+                                return "".join(chunks), err
+                            piece = str(item.get("response", "") or "")
+                            if piece:
+                                chunks.append(piece)
+                                if callable(on_chunk):
+                                    try:
+                                        on_chunk(piece)
+                                    except Exception:
+                                        pass
+                            if bool(item.get("done", False)):
+                                if callable(record_outcome):
+                                    try:
+                                        record_outcome(model_name, success=True)
+                                    except Exception:
+                                        pass
+                                return "".join(chunks), None
+                    if should_retry:
+                        continue
+                    if callable(record_outcome):
+                        try:
+                            record_outcome(model_name, success=True)
+                        except Exception:
+                            pass
+                    return "".join(chunks), None
+                except urllib.error.HTTPError as exc:
                     detail = ""
-                msg = f"HTTP {exc.code}"
-                if detail:
-                    msg = f"{msg}: {detail}"
-                elif exc.reason:
-                    msg = f"{msg}: {exc.reason}"
-                last_err = msg
-                if attempt < retries and not chunks and self._is_transient_ollama_error(msg):
-                    time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
-                    continue
-                return "".join(chunks), msg
-            except Exception as exc:
-                msg = str(exc)
-                last_err = msg
-                if attempt < retries and not chunks and self._is_transient_ollama_error(msg):
-                    time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
-                    continue
-                return "".join(chunks), msg
-        return "".join(chunks), (last_err or "Ollama request failed")
+                    try:
+                        detail = exc.read().decode("utf-8", "replace").strip()
+                    except Exception:
+                        detail = ""
+                    msg = f"HTTP {exc.code}"
+                    if detail:
+                        msg = f"{msg}: {detail}"
+                    elif exc.reason:
+                        msg = f"{msg}: {exc.reason}"
+                    last_err = msg
+                    if attempt < retries and not chunks and self._is_transient_ollama_error(msg):
+                        time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
+                        continue
+                    if callable(record_outcome):
+                        try:
+                            record_outcome(model_name, success=False, err=str(msg))
+                        except Exception:
+                            pass
+                    return "".join(chunks), msg
+                except Exception as exc:
+                    msg = str(exc)
+                    last_err = msg
+                    if attempt < retries and not chunks and self._is_transient_ollama_error(msg):
+                        time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
+                        continue
+                    if callable(record_outcome):
+                        try:
+                            record_outcome(model_name, success=False, err=str(msg))
+                        except Exception:
+                            pass
+                    return "".join(chunks), msg
+            if callable(record_outcome):
+                try:
+                    record_outcome(model_name, success=False, err=(last_err or "Ollama request failed"))
+                except Exception:
+                    pass
+            return "".join(chunks), (last_err or "Ollama request failed")
+        finally:
+            release_slot = getattr(self, "_release_ollama_request_slot", None)
+            if callable(release_slot):
+                try:
+                    release_slot()
+                except Exception:
+                    pass
 
     def _get_ai_tutor_rag_source_pdfs(self) -> list[str]:
         def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -11616,6 +12247,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             candidate_name = str(candidate or "").strip()
             if not candidate_name:
                 continue
+            cooldown_reader = getattr(self, "_is_local_llm_model_on_cooldown", None)
+            if callable(cooldown_reader):
+                try:
+                    cooling, cooldown_remaining, _reason = cooldown_reader(candidate_name)
+                except Exception:
+                    cooling, cooldown_remaining = False, 0
+            else:
+                cooling, cooldown_remaining = False, 0
+            if cooling:
+                last_request_err = f"model cooldown active ({cooldown_remaining}s)"
+                continue
             attempted_models.append(candidate_name)
             text, err = self._ollama_generate_text(candidate_name, prompt)
             if err:
@@ -12213,7 +12855,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if load_level not in {"normal", "warn", "critical"}:
             load_level = "normal"
         slo_status = str(slo.get("status", "insufficient") or "insufficient").strip().lower()
+        try:
+            active_requests = max(0, int(getattr(self, "_ollama_active_requests", 0) or 0))
+        except Exception:
+            active_requests = 0
+        try:
+            max_concurrency = max(1, int(getattr(self, "_ollama_max_concurrent_requests", DEFAULT_OLLAMA_MAX_CONCURRENT_REQUESTS) or DEFAULT_OLLAMA_MAX_CONCURRENT_REQUESTS))
+        except Exception:
+            max_concurrency = int(DEFAULT_OLLAMA_MAX_CONCURRENT_REQUESTS)
+        queue_pressure = float(active_requests / float(max_concurrency)) if max_concurrency > 0 else 0.0
         hardening_applied = False
+        if queue_pressure >= 1.0:
+            load_level = "critical"
+            hardening_applied = True
+        elif queue_pressure >= 0.5 and load_level == "normal":
+            load_level = "warn"
+            hardening_applied = True
         if load_level == "critical":
             ctx_scale = 0.70
             rag_scale = 0.72
@@ -12255,6 +12912,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "rag_char_budget": int(rag_char),
             "profile": dict(profile),
             "slo": dict(slo),
+            "queue_pressure": float(queue_pressure),
+            "active_requests": int(active_requests),
         }
 
     def _sanitize_ai_tutor_telemetry_event(self, event: Any) -> dict[str, Any] | None:
@@ -13124,6 +13783,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         for idx, candidate in enumerate(model_names):
             candidate_name = str(candidate or "").strip()
             if not candidate_name:
+                continue
+            cooldown_reader = getattr(self, "_is_local_llm_model_on_cooldown", None)
+            if callable(cooldown_reader):
+                try:
+                    cooling, cooldown_remaining, _reason = cooldown_reader(candidate_name)
+                except Exception:
+                    cooling, cooldown_remaining = False, 0
+            else:
+                cooling, cooldown_remaining = False, 0
+            if cooling:
+                last_err = f"model cooldown active ({cooldown_remaining}s)"
                 continue
             attempted_models.append(candidate_name)
             payload["model"] = candidate_name
@@ -14358,6 +15028,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return f"{hrs:d}:{mins:02d}:{secs:02d}"
         return f"{mins:02d}:{secs:02d}"
 
+    def _format_single_line_ui_text(self, value: Any, fallback: str = "—", max_chars: int = 120) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not text:
+            text = str(fallback or "—").strip() or "—"
+        try:
+            limit = max(8, int(max_chars or 120))
+        except Exception:
+            limit = 120
+        if len(text) > limit:
+            if limit <= 3:
+                return text[:limit]
+            return text[: limit - 3].rstrip() + "..."
+        return text
+
     def _update_action_timer_label(self) -> None:
         label = getattr(self, "action_timer_label", None)
         if not label:
@@ -14386,6 +15070,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         dialog = getattr(self, "quiz_dialog", None)
         if dialog is None:
             return False
+        try:
+            getter = getattr(dialog, "get_visible", None)
+            if callable(getter) and not bool(getter()):
+                return False
+        except Exception:
+            return False
         session = getattr(self, "quiz_session", None)
         if not isinstance(session, dict):
             return False
@@ -14411,6 +15101,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return False
         self._stop_action_timer(finalize=bool(finalize))
         return True
+
+    def _cleanup_quiz_dialog_runtime(self, finalize_timer: bool = True) -> None:
+        try:
+            self._quiz_reason_job_token = int(getattr(self, "_quiz_reason_job_token", 0) or 0) + 1
+        except Exception:
+            pass
+        try:
+            self.quiz_dialog = None
+        except Exception:
+            pass
+        try:
+            self._stop_quiz_or_review_timer_if_active(finalize=bool(finalize_timer))
+        except Exception:
+            pass
 
     def _action_timer_tick(self) -> bool:
         if not self._action_timer_kind:
@@ -15776,6 +16480,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             source = str(forced_source or getattr(self, "_last_coach_pick_source", "forced"))
         else:
             topic, source = self._get_coach_pick_snapshot()
+        topic_display = self._format_single_line_ui_text(topic, fallback="—", max_chars=92)
         if not topic:
             self.coach_pick_label.set_text("Coach pick: —")
             return
@@ -15791,8 +16496,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
         self._set_label_text_if_changed(
             self.coach_pick_label,
-            f"Coach pick: {topic}",
+            f"Coach pick: {topic_display}",
         )
+        try:
+            self.coach_pick_label.set_tooltip_text(f"Coach pick: {str(topic or '').strip()}")
+        except Exception:
+            pass
         try:
             if getattr(self, "coach_pick_why_label", None):
                 self._set_label_text_if_changed(
@@ -18324,7 +19033,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if daily_plan:
             lines.append(f"Plan: {completed}/{len(daily_plan)} done")
         try:
-            lines.append(f"Session: {int(self.study_streak or 0)}d streak • XP {int(self.xp_total)} (Lv {int(self.level)})")
+            lines.append(f"Session streak: {int(self.study_streak or 0)}d")
+            lines.append(f"XP: {int(self.xp_total)} (Level {int(self.level)})")
         except Exception:
             pass
         try:
@@ -18339,13 +19049,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         if has_questions and not quiz_done:
             lines.append(f"Quiz target: {quiz_target} q")
-        if must_review_due or due_count:
-            review_bits = []
-            if must_review_due:
-                review_bits.append(f"must-review {must_review_due}")
-            if due_count:
-                review_bits.append(f"topic due {due_count}")
-            lines.append("Reviews: " + " • ".join(review_bits))
+        if must_review_due:
+            lines.append(f"Must-review due: {must_review_due}")
+        if due_count:
+            lines.append(f"Topic due now: {due_count}")
         if next_block:
             lines.append(next_block)
         if quiz_summary:
@@ -18364,10 +19071,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         mins = int(blk.get("minutes", 0) or 0)
                         topic = blk.get("topic") or recommended
                         if kind.lower() == "break":
-                            preview.append(f"{kind} {mins}m")
+                            preview.append(f"- {kind} {mins}m")
                         else:
-                            preview.append(f"{kind} {mins}m — {topic}")
-                    self.study_room_blocks_label.set_text("Upcoming: " + " • ".join(preview))
+                            preview.append(f"- {kind} {mins}m — {topic}")
+                    self.study_room_blocks_label.set_text("Upcoming blocks:\n" + "\n".join(preview))
                     self.study_room_blocks_box.set_visible(True)
                 else:
                     self.study_room_blocks_label.set_text("")
@@ -18380,7 +19087,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 b1 = int(counts.get(1, 0))
                 b2 = int(counts.get(2, 0))
                 b3 = int(counts.get(3, 0))
-                self.study_room_leitner_label.set_text(f"Leitner: B1 {b1} • B2 {b2} • B3 {b3}")
+                self.study_room_leitner_label.set_text(
+                    "Leitner boxes:\n"
+                    f"- Box 1: {b1}\n"
+                    f"- Box 2: {b2}\n"
+                    f"- Box 3: {b3}"
+                )
                 if getattr(self, "study_room_leitner_btn", None):
                     self.study_room_leitner_btn.set_visible(b1 > 0)
                 if getattr(self, "study_room_error_btn", None):
@@ -18425,7 +19137,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     except Exception:
                         stats_text = ""
                     if stats_text:
-                        self.study_room_error_stats_label.set_text(f"Errors this week: {stats_text}")
+                        stats_lines = [f"- {row}" for row in stats_text.split(" • ") if str(row).strip()]
+                        if not stats_lines:
+                            stats_lines = [f"- {stats_text}"]
+                        self.study_room_error_stats_label.set_text("Errors this week:\n" + "\n".join(stats_lines))
                         self.study_room_error_stats_label.set_visible(True)
                     else:
                         self.study_room_error_stats_label.set_text("")
@@ -18515,11 +19230,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if getattr(self.engine, "difficulty_model", None) is not None
                 else "heuristic"
             )
-            model_line = f"Models: recall {recall_active} • difficulty {diff_active}"
+            model_line = f"Models: recall {recall_active}, difficulty {diff_active}"
             last_trained = getattr(self, "_last_ml_train_at", None) or getattr(self, "_last_ml_train_date", None)
-            if last_trained:
-                model_line += f" • trained {last_trained}"
             detail_lines.append(model_line)
+            if last_trained:
+                detail_lines.append(f"Models trained: {last_trained}")
             semantic_line, semantic_warn = self._get_semantic_status_line()
             if semantic_line:
                 detail_lines.append(semantic_line + (" • warning" if semantic_warn else ""))
@@ -20130,9 +20845,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if bool(cleanup_state.get("done", False)):
                     return
                 cleanup_state["done"] = True
-                self._quiz_reason_job_token += 1
-                self.quiz_dialog = None
-                self._stop_quiz_or_review_timer_if_active(finalize=True)
+                self._cleanup_quiz_dialog_runtime(finalize_timer=True)
 
             def _on_close(_w, *_args):
                 _cleanup_quiz_dialog_state()
@@ -20141,8 +20854,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             def _on_response(_d, _r):
                 _cleanup_quiz_dialog_state()
 
+            def _on_destroy(_d):
+                _cleanup_quiz_dialog_state()
+
             dialog.connect("close-request", _on_close)
             dialog.connect("response", _on_response)
+            dialog.connect("destroy", _on_destroy)
         except Exception:
             pass
         dialog.present()
@@ -23454,6 +24171,165 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         GLib.timeout_add(450, self._run_next_dialog_smoke_step)
         return False
 
+    def run_ai_tutor_soak_test(self, duration_seconds: int = 300) -> bool:
+        self._latency_soak_mode = True
+        self._start_soak_report(duration_seconds=duration_seconds)
+        try:
+            timeout_ms = int(max(30, min(1800, int(duration_seconds))) * 1000)
+        except Exception:
+            timeout_ms = 300000
+        GLib.timeout_add(timeout_ms, self._finish_latency_soak_test)
+        return False
+
+    def _start_soak_report(self, duration_seconds: int) -> None:
+        self._soak_report_finalized = False
+        self._soak_telemetry_start_count = len(
+            [row for row in list(getattr(self, "_ai_tutor_telemetry_events", []) or []) if isinstance(row, dict)]
+        )
+        self._soak_duration_seconds = max(30, min(1800, int(duration_seconds or 300)))
+        self._soak_report = {
+            "started_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "duration_seconds": int(self._soak_duration_seconds),
+            "status": "running",
+            "reason": "",
+        }
+
+    def _write_soak_report(self, status: str, reason: str = "") -> None:
+        if self._soak_report_finalized:
+            return
+        self._soak_report_finalized = True
+        if not isinstance(self._soak_report, dict):
+            return
+        events = [row for row in list(getattr(self, "_ai_tutor_telemetry_events", []) or []) if isinstance(row, dict)]
+        start_count = max(0, int(getattr(self, "_soak_telemetry_start_count", 0) or 0))
+        sample = events[start_count:] if start_count <= len(events) else events
+        latencies: list[int] = []
+        for row in sample:
+            try:
+                value = int(row.get("latency_ms", 0) or 0)
+            except Exception:
+                value = 0
+            if value > 0:
+                latencies.append(int(value))
+        try:
+            p50_target = max(
+                5000,
+                min(
+                    180000,
+                    int(
+                        os.environ.get("STUDYPLAN_AI_TUTOR_SLO_P50_MS", AI_TUTOR_LATENCY_SLO_P50_MS)
+                        or AI_TUTOR_LATENCY_SLO_P50_MS
+                    ),
+                ),
+            )
+        except Exception:
+            p50_target = int(AI_TUTOR_LATENCY_SLO_P50_MS)
+        try:
+            p90_target = max(
+                10000,
+                min(
+                    240000,
+                    int(
+                        os.environ.get("STUDYPLAN_AI_TUTOR_SLO_P90_MS", AI_TUTOR_LATENCY_SLO_P90_MS)
+                        or AI_TUTOR_LATENCY_SLO_P90_MS
+                    ),
+                ),
+            )
+        except Exception:
+            p90_target = int(AI_TUTOR_LATENCY_SLO_P90_MS)
+        try:
+            spread_target = max(
+                1.1,
+                min(
+                    10.0,
+                    float(
+                        os.environ.get(
+                            "STUDYPLAN_AI_TUTOR_SLO_SPREAD_RATIO",
+                            AI_TUTOR_LATENCY_SLO_SPREAD_RATIO,
+                        )
+                        or AI_TUTOR_LATENCY_SLO_SPREAD_RATIO
+                    ),
+                ),
+            )
+        except Exception:
+            spread_target = float(AI_TUTOR_LATENCY_SLO_SPREAD_RATIO)
+        try:
+            min_samples = max(
+                3,
+                min(
+                    120,
+                    int(
+                        os.environ.get(
+                            "STUDYPLAN_AI_TUTOR_SLO_MIN_SAMPLES",
+                            AI_TUTOR_LATENCY_SLO_MIN_SAMPLES,
+                        )
+                        or AI_TUTOR_LATENCY_SLO_MIN_SAMPLES
+                    ),
+                ),
+            )
+        except Exception:
+            min_samples = int(AI_TUTOR_LATENCY_SLO_MIN_SAMPLES)
+        slo = evaluate_latency_slo(
+            latencies,
+            p50_target_ms=int(p50_target),
+            p90_target_ms=int(p90_target),
+            spread_target_ratio=float(spread_target),
+            min_samples=int(min_samples),
+        )
+        kpi = {
+            "samples": int(slo.get("samples", 0) or 0),
+            "p50_latency_ms": float(slo.get("p50_latency_ms", 0.0) or 0.0),
+            "p90_latency_ms": float(slo.get("p90_latency_ms", 0.0) or 0.0),
+            "latency_spread_ratio": float(slo.get("latency_spread_ratio", 1.0) or 1.0),
+            "slo_status": str(slo.get("status", "insufficient") or "insufficient"),
+        }
+        self._soak_report["status"] = str(status or "unknown")
+        self._soak_report["reason"] = str(reason or "")
+        self._soak_report["finished_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        self._soak_report["kpi"] = kpi
+        self._soak_report["kpi_thresholds"] = dict(SOAK_KPI_THRESHOLDS)
+        self._soak_report["kpi_failures"] = _evaluate_soak_kpi_thresholds(kpi)
+        self._soak_report["samples_collected"] = int(len(latencies))
+        self._soak_report["slo"] = dict(slo)
+        if bool(self._soak_report["kpi_failures"]):
+            current_status = str(self._soak_report.get("status", "") or "").strip().lower()
+            if current_status == "passed":
+                self._soak_report["status"] = "failed"
+                self._soak_report["reason"] = "kpi_threshold_failure"
+            elif not str(self._soak_report.get("reason", "") or "").strip():
+                self._soak_report["reason"] = "kpi_threshold_failure"
+        path = SOAK_REPORT_PATH
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._soak_report, f, ensure_ascii=True, indent=2)
+        except Exception as exc:
+            self._log_error("write_soak_report", exc)
+
+    def _finish_latency_soak_test(self) -> bool:
+        if not bool(getattr(self, "_latency_soak_mode", False)):
+            return False
+        self._latency_soak_mode = False
+        self._write_soak_report("passed", "")
+        GLib.timeout_add(200, self._close_aux_windows)
+
+        def _close_main() -> bool:
+            self._closing_from_recap = True
+            try:
+                self.close()
+            except Exception:
+                pass
+            try:
+                app = self.get_application()
+                if app is not None:
+                    app.quit()
+            except Exception:
+                pass
+            return False
+
+        GLib.timeout_add(500, _close_main)
+        return False
+
     def _force_remove_glib_source(self, source_id: int | None) -> None:
         try:
             sid = int(source_id or 0)
@@ -23550,6 +24426,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if bool(getattr(self, "_core_runtime_shutdown", False)):
             return
         self._core_runtime_shutdown = True
+        if bool(getattr(self, "_latency_soak_mode", False)):
+            self._latency_soak_mode = False
+            self._write_soak_report("failed", "shutdown")
         self._set_pomodoro_active_state(False)
         try:
             scheduler = getattr(self, "_ui_refresh_scheduler", None)
@@ -24001,8 +24880,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         try:
             reasons = self._compose_coach_reasons(recommended_topic)
             reason_text = ", ".join(reasons[:3]) if reasons else "—"
-            pick_label = Gtk.Label(label=f"Coach pick: {recommended_topic}")
+            pick_topic = self._format_single_line_ui_text(recommended_topic, fallback="—", max_chars=92)
+            pick_label = Gtk.Label(label=f"Coach pick: {pick_topic}")
             pick_label.set_halign(Gtk.Align.START)
+            pick_label.set_wrap(False)
+            pick_label.set_ellipsize(Pango.EllipsizeMode.END)
+            pick_label.set_max_width_chars(92)
+            pick_label.add_css_class("single-line-lock")
+            pick_label.set_tooltip_text(f"Coach pick: {str(recommended_topic or '').strip()}")
             pick_label.add_css_class("muted")
             coach_box.append(pick_label)
             source_label = Gtk.Label(label=f"Pick source: {pick_source}")
@@ -24420,8 +25305,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
-        today_label = Gtk.Label(label=f"Today focus: {recommended_topic or '—'}")
+        today_focus = self._format_single_line_ui_text(recommended_topic, fallback="—", max_chars=92)
+        today_label = Gtk.Label(label=f"Today focus: {today_focus}")
         today_label.set_halign(Gtk.Align.START)
+        today_label.set_wrap(False)
+        today_label.set_ellipsize(Pango.EllipsizeMode.END)
+        today_label.set_max_width_chars(92)
+        today_label.add_css_class("single-line-lock")
+        today_label.set_tooltip_text(f"Today focus: {str(recommended_topic or '').strip()}")
         today_label.add_css_class("coach-title")
         today_label.add_css_class("today-focus-chip")
         coach_box.append(today_label)
@@ -26745,10 +27636,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.study_streak = 0
 
 class StudyApp(Gtk.Application):
-    def __init__(self, exam_date=None, dialog_smoke_test: bool = False):
+    def __init__(
+        self,
+        exam_date=None,
+        dialog_smoke_test: bool = False,
+        latency_soak_test: bool = False,
+        latency_soak_seconds: int = 300,
+    ):
         super().__init__(application_id=APP_ID)
         self.exam_date = exam_date
         self.dialog_smoke_test = bool(dialog_smoke_test)
+        self.latency_soak_test = bool(latency_soak_test)
+        try:
+            self.latency_soak_seconds = max(30, min(1800, int(latency_soak_seconds)))
+        except Exception:
+            self.latency_soak_seconds = 300
 
     def do_activate(self):
         try:
@@ -26756,6 +27658,8 @@ class StudyApp(Gtk.Application):
             win.present()
             if self.dialog_smoke_test:
                 GLib.idle_add(win.run_dialog_smoke_test)
+            elif self.latency_soak_test:
+                GLib.idle_add(lambda: win.run_ai_tutor_soak_test(duration_seconds=self.latency_soak_seconds))
         except Exception as exc:
             import traceback
             try:
@@ -26800,6 +27704,15 @@ if __name__ == "__main__":
     exam_date = None
     dialog_smoke_test = False
     dialog_smoke_strict = False
+    latency_soak_test = False
+    latency_soak_strict = False
+    try:
+        latency_soak_seconds = max(
+            30,
+            min(1800, int(str(os.environ.get("STUDYPLAN_LATENCY_SOAK_SECONDS", "300") or "300").strip())),
+        )
+    except Exception:
+        latency_soak_seconds = 300
     for arg in sys.argv[1:]:
         if arg in ("--smoke-dialogs", "--dialog-smoke-test"):
             dialog_smoke_test = True
@@ -26808,6 +27721,20 @@ if __name__ == "__main__":
             dialog_smoke_test = True
             dialog_smoke_strict = True
             continue
+        if arg in ("--soak-test", "--latency-soak-test"):
+            latency_soak_test = True
+            continue
+        if arg == "--soak-strict":
+            latency_soak_test = True
+            latency_soak_strict = True
+            continue
+        if arg.startswith("--soak-seconds="):
+            raw = str(arg.split("=", 1)[1] or "").strip()
+            try:
+                latency_soak_seconds = max(30, min(1800, int(raw)))
+            except Exception:
+                pass
+            continue
         if arg.startswith("-"):
             continue
         try:
@@ -26815,10 +27742,23 @@ if __name__ == "__main__":
         except ValueError:
             print("Invalid date format. Use YYYY-MM-DD.")
             sys.exit(1)
-    app = StudyApp(exam_date, dialog_smoke_test=dialog_smoke_test)
+    if dialog_smoke_test and latency_soak_test:
+        print("Choose only one mode: dialog smoke or latency soak.")
+        sys.exit(1)
+    app = StudyApp(
+        exam_date,
+        dialog_smoke_test=dialog_smoke_test,
+        latency_soak_test=latency_soak_test,
+        latency_soak_seconds=latency_soak_seconds,
+    )
     app.run()
     if dialog_smoke_strict:
         strict_code = _compute_strict_smoke_exit_code()
         if strict_code != 0:
             print("Dialog smoke strict failed. See ~/.config/studyplan/smoke_last.json")
+        sys.exit(strict_code)
+    if latency_soak_strict:
+        strict_code = _compute_strict_soak_exit_code()
+        if strict_code != 0:
+            print("Latency soak strict failed. See ~/.config/studyplan/soak_last.json")
         sys.exit(strict_code)
