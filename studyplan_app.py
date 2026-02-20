@@ -27812,6 +27812,9 @@ if __name__ == "__main__":
     if dialog_smoke_test and latency_soak_test:
         print("Choose only one mode: dialog smoke or latency soak.")
         sys.exit(1)
+    if dialog_smoke_test:
+        # Keep strict smoke output compact and deterministic.
+        os.environ.setdefault("STUDYPLAN_LOW_CONFIDENCE_MATCH_LOGS", "0")
     app = StudyApp(
         exam_date,
         dialog_smoke_test=dialog_smoke_test,

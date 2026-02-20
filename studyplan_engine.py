@@ -6830,6 +6830,9 @@ class StudyPlanEngine:
 
     def _note_low_confidence_chapter_match(self, title: str, chapter: str, similarity: float) -> None:
         """Log low-confidence chapter matching once per unique mapping and cap noisy output."""
+        raw = str(os.environ.get("STUDYPLAN_LOW_CONFIDENCE_MATCH_LOGS", "1") or "1").strip().lower()
+        if raw in {"0", "false", "off", "no"}:
+            return
         key_title = re.sub(r"\s+", " ", str(title or "")).strip()
         key_chapter = re.sub(r"\s+", " ", str(chapter or "")).strip()
         if not key_title or not key_chapter:

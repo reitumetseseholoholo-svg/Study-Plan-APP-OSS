@@ -148,6 +148,21 @@ def test_match_chapter_low_confidence_logging_is_deduplicated(engine_no_io, monk
     assert len(low_conf) == 1
 
 
+def test_match_chapter_low_confidence_logging_can_be_disabled(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    logs: list[str] = []
+    monkeypatch.setenv("STUDYPLAN_LOW_CONFIDENCE_MATCH_LOGS", "0")
+    monkeypatch.setattr(
+        builtins,
+        "print",
+        lambda *args, **_kwargs: logs.append(" ".join(str(a) for a in args)),
+    )
+    for _ in range(5):
+        StudyPlanEngine._match_chapter(eng, "G")
+    low_conf = [row for row in logs if "Low confidence match" in row]
+    assert len(low_conf) == 0
+
+
 def test_update_competence_applies_delta(engine_no_io):
     eng = engine_no_io
     chapter = StudyPlanEngine.CHAPTERS[0]
