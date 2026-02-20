@@ -47,13 +47,18 @@ def test_constructor_sets_today_and_initial_structures(monkeypatch):
 
 def test_cleanup_joblib_loky_runtime_is_idempotent(monkeypatch):
     calls = {"count": 0, "kwargs": []}
+    created = {"count": 0}
 
     class _Executor:
         def shutdown(self, **kwargs):
             calls["count"] += 1
             calls["kwargs"].append(dict(kwargs))
 
-    fake_module = types.SimpleNamespace(get_reusable_executor=lambda: _Executor())
+    def _get_reusable_executor():
+        created["count"] += 1
+        return _Executor()
+
+    fake_module = types.SimpleNamespace(_executor=_Executor(), get_reusable_executor=_get_reusable_executor)
     monkeypatch.setitem(sys.modules, "joblib.externals.loky.reusable_executor", fake_module)
 
     original_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_DONE", False))
@@ -65,8 +70,29 @@ def test_cleanup_joblib_loky_runtime_is_idempotent(monkeypatch):
         StudyPlanEngine._LOKY_CLEANUP_DONE = original_done
 
     assert calls["count"] == 1
+    assert created["count"] == 0
     assert calls["kwargs"]
-    assert calls["kwargs"][0].get("wait") is True
+    assert calls["kwargs"][0].get("wait") is False
+
+
+def test_cleanup_joblib_loky_runtime_skips_when_no_executor(monkeypatch):
+    created = {"count": 0}
+
+    def _get_reusable_executor():
+        created["count"] += 1
+        return object()
+
+    fake_module = types.SimpleNamespace(_executor=None, get_reusable_executor=_get_reusable_executor)
+    monkeypatch.setitem(sys.modules, "joblib.externals.loky.reusable_executor", fake_module)
+
+    original_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_DONE", False))
+    try:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = False
+        StudyPlanEngine._cleanup_joblib_loky_runtime()
+    finally:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = original_done
+
+    assert created["count"] == 0
 
 
 def test_competence_initialization_covers_all_chapters(engine_no_io):

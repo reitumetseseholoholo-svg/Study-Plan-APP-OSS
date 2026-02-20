@@ -2780,29 +2780,32 @@ class StudyPlanEngine:
         if bool(cls._LOKY_CLEANUP_DONE):
             return
         cls._LOKY_CLEANUP_DONE = True
-        get_reusable_executor = None
+        reusable_module = None
         try:
-            from joblib.externals.loky.reusable_executor import get_reusable_executor as _get_reusable_executor  # type: ignore
-            get_reusable_executor = _get_reusable_executor
+            import importlib
+            reusable_module = importlib.import_module("joblib.externals.loky.reusable_executor")
         except Exception:
             try:
-                from loky.reusable_executor import get_reusable_executor as _get_reusable_executor  # type: ignore
-                get_reusable_executor = _get_reusable_executor
+                import importlib
+                reusable_module = importlib.import_module("loky.reusable_executor")
             except Exception:
-                get_reusable_executor = None
-        if not callable(get_reusable_executor):
+                reusable_module = None
+        if reusable_module is None:
             return
-        try:
-            executor = get_reusable_executor()
-        except Exception:
-            executor = None
+        # Never create a new reusable executor during shutdown.
+        # Access module internals only if an executor already exists.
+        executor = getattr(reusable_module, "_executor", None)
         if executor is None:
             return
-        executor_any = cast(Any, executor)
-        # Handle joblib/loky signature differences across versions.
+        try:
+            executor_any = cast(Any, executor)
+        except Exception:
+            return
+        # Handle joblib/loky signature differences across versions while
+        # preferring non-blocking shutdown on app exit paths.
         for kwargs in (
-            {"wait": True, "kill_workers": True},
-            {"wait": True},
+            {"wait": False, "kill_workers": True},
+            {"wait": False},
             {"kill_workers": True},
             {},
         ):
@@ -2813,6 +2816,10 @@ class StudyPlanEngine:
                 continue
             except Exception:
                 break
+        try:
+            setattr(reusable_module, "_executor", None)
+        except Exception:
+            pass
 
     def shutdown_runtime(self) -> None:
         self.__class__._cleanup_joblib_loky_runtime()

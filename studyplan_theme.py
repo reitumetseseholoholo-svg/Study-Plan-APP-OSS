@@ -43,6 +43,15 @@ window {
     margin-left: 8px;
     box-shadow: -2px 0 0 alpha(@theme_fg_color, 0.16);
 }
+window.sidebar-collapsed .panel-right {
+    margin-left: 0;
+    border-left: 1px solid app_border;
+    box-shadow: none;
+}
+.sidebar-toggle {
+    min-height: 30px;
+    padding: 4px 10px;
+}
 .card {
     background-color: alpha(@theme_bg_color, 0.88);
     background-image: linear-gradient(
@@ -627,6 +636,15 @@ window {
     border-bottom-left-radius: 14px;
     margin-left: 8px;
     box-shadow: -2px 0 0 rgba(155, 184, 239, 0.24);
+}
+window.sidebar-collapsed .panel-right {
+    margin-left: 0;
+    border-left: 1px solid coach_border;
+    box-shadow: none;
+}
+.sidebar-toggle {
+    min-height: 30px;
+    padding: 4px 10px;
 }
 .card {
     background: #23314a;
@@ -1314,6 +1332,10 @@ window.study-window .inline-toolbar {{
 window.study-window .workbench-shell {{
     padding: 10px;
     border-radius: 14px;
+}}
+window.study-window.sidebar-collapsed .workbench-shell {{
+    margin-left: 0;
+    border-left: 1px solid {border["soft"]};
 }}
 window.study-window .workbench-header {{
     border-bottom: 1px solid {border["soft"]};

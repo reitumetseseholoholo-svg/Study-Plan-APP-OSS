@@ -567,6 +567,7 @@ def build_ai_tutor_context_prompt_details(
         "Priority order: must-review pressure -> weak-topic repair -> retrieval practice -> formula accuracy -> exam-style clarity.",
         "Operate as the session pilot: diagnose gaps, prescribe actions, drill, and finish with a concrete next move.",
         "Use short sections, bullets, formulas when relevant, and exam-focused tips.",
+        "Be concise, but include brief reasoning so the learner understands why each step or formula applies.",
         "Avoid generic motivation; be operational and exam-hard.",
         "When useful, end with one concrete next step (topic + mode + duration).",
         "If assumptions are required, state them explicitly.",

@@ -185,6 +185,7 @@ SHORTCUTS_TEXT = (
     "\n"
     "F1       Show shortcuts\n"
     "Ctrl+M   Toggle menu bar\n"
+    "Ctrl+B   Toggle sidebar\n"
     "Ctrl+Q   Quit\n"
     "Ctrl+,   Preferences\n"
     "Ctrl+E   Set exam date\n"
@@ -355,6 +356,12 @@ DEFAULT_UI_REDUCE_MOTION = str(os.environ.get("STUDYPLAN_UI_REDUCE_MOTION", "0")
     "on",
 }
 DEFAULT_UI_LEGACY_FALLBACK_ENABLED = False if UI_MODERN_HARD_LOCK else True
+DEFAULT_UI_SIDEBAR_VISIBLE = str(os.environ.get("STUDYPLAN_UI_SIDEBAR_VISIBLE", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def _merge_gap_and_srs_indices(gap_indices: list[int], srs_indices: list[int], total: int) -> list[int]:
@@ -926,6 +933,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.ui_density_mode = str(DEFAULT_UI_DENSITY_MODE)
         self.ui_reduce_motion = bool(DEFAULT_UI_REDUCE_MOTION)
         self.ui_legacy_fallback_enabled = bool(DEFAULT_UI_LEGACY_FALLBACK_ENABLED)
+        self.ui_sidebar_visible = bool(DEFAULT_UI_SIDEBAR_VISIBLE)
         self.coach_only_view = False
         self.sticky_coach_pick = True
         self.adaptive_quiz_prioritization = True
@@ -1163,6 +1171,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.workbench_stack: Gtk.Stack | None = None
         self.workbench_switcher: Gtk.StackSwitcher | None = None
         self.workbench_status_label: Gtk.Label | None = None
+        self.workbench_sidebar_btn: Gtk.Button | None = None
         self._workbench_page_names: set[str] = set()
         self._workbench_aliases: dict[str, str] = {
             "dashboard": "dashboard",
@@ -1205,6 +1214,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._settings_workspace_notifications_toggle: Gtk.CheckButton | None = None
         self._settings_workspace_auto_select_toggle: Gtk.CheckButton | None = None
         self._settings_workspace_modern_toggle: Gtk.CheckButton | None = None
+        self._settings_workspace_sidebar_toggle: Gtk.CheckButton | None = None
         self._settings_workspace_reduce_motion_toggle: Gtk.CheckButton | None = None
         self._settings_workspace_mode_dropdown: Gtk.DropDown | None = None
         self._missing_ui_action_bindings: list[str] = []
@@ -1295,6 +1305,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         left_panel.add_css_class("panel")
         left_panel.add_css_class("panel-left")
         left_panel.add_css_class("panel-stack")
+        left_panel.add_css_class("single-line-scope")
 
         left_scroll = Gtk.ScrolledWindow()
         left_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -1311,10 +1322,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         left_scroll.set_margin_end(0)
         left_scroll.add_css_class("panel-scroll")
         left_scroll.set_child(left_panel)
-        hbox.append(left_scroll)
+        left_sidebar_revealer = Gtk.Revealer()
+        left_sidebar_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_RIGHT)
+        left_sidebar_revealer.set_reveal_child(bool(self.ui_sidebar_visible))
+        left_sidebar_revealer.set_child(left_scroll)
+        hbox.append(left_sidebar_revealer)
 
         self.left_panel = left_panel
         self.left_scroll = left_scroll
+        self.left_sidebar_revealer = left_sidebar_revealer
 
         left_panel.append(self.days_label)
 
@@ -1417,7 +1433,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         coach_card.append(coach_title)
         self.coach_pick_label = Gtk.Label(label="Coach pick: —")
         self.coach_pick_label.set_halign(Gtk.Align.START)
-        self.coach_pick_label.set_wrap(True)
+        self.coach_pick_label.set_wrap(False)
+        self.coach_pick_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.coach_pick_label.set_max_width_chars(72)
+        self.coach_pick_label.add_css_class("single-line-lock")
         self.coach_pick_label.add_css_class("muted")
         coach_btn = Gtk.Button()
         coach_btn.add_css_class("flat")
@@ -1426,14 +1445,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         coach_card.append(coach_btn)
         self.coach_pick_why_label = Gtk.Label(label="Why: —")
         self.coach_pick_why_label.set_halign(Gtk.Align.START)
-        self.coach_pick_why_label.set_wrap(True)
+        self.coach_pick_why_label.set_wrap(False)
+        self.coach_pick_why_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.coach_pick_why_label.set_max_width_chars(72)
+        self.coach_pick_why_label.add_css_class("single-line-lock")
         self.coach_pick_why_label.add_css_class("muted")
         self.coach_pick_why_label.add_css_class("nudge-info")
         self.coach_pick_why_label.set_visible(False)
         coach_card.append(self.coach_pick_why_label)
         self.coach_pick_why_history = Gtk.Label(label="Recent reasons:")
         self.coach_pick_why_history.set_halign(Gtk.Align.START)
-        self.coach_pick_why_history.set_wrap(True)
+        self.coach_pick_why_history.set_wrap(False)
+        self.coach_pick_why_history.set_ellipsize(Pango.EllipsizeMode.END)
+        self.coach_pick_why_history.set_max_width_chars(72)
+        self.coach_pick_why_history.add_css_class("single-line-lock")
         self.coach_pick_why_history.add_css_class("muted")
         self.coach_pick_why_history.add_css_class("nudge-info")
         self.coach_pick_why_history.set_visible(False)
@@ -1454,7 +1479,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         coach_card.append(self.ai_coach_btn)
         self.ai_coach_last_label = Gtk.Label(label="")
         self.ai_coach_last_label.set_halign(Gtk.Align.START)
-        self.ai_coach_last_label.set_wrap(True)
+        self.ai_coach_last_label.set_wrap(False)
+        self.ai_coach_last_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.ai_coach_last_label.set_max_width_chars(72)
+        self.ai_coach_last_label.add_css_class("single-line-lock")
         self.ai_coach_last_label.add_css_class("muted")
         self.ai_coach_last_label.set_visible(False)
         coach_card.append(self.ai_coach_last_label)
@@ -1917,6 +1945,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.workbench_shell = self._build_workbench_shell(dash_scroll)
         hbox.append(self.workbench_shell)
         self.dash_scroll = dash_scroll
+        self._apply_sidebar_visibility(persist=False, announce=False)
 
         self.update_exam_date_display()
         self.update_availability_display()
@@ -2006,7 +2035,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 Gtk.CallbackAction.new(self.on_open_preferences_shortcut),
             )
         )
+        shortcut_controller.add_shortcut(
+            Gtk.Shortcut.new(
+                Gtk.ShortcutTrigger.parse_string("<Control>b"),
+                Gtk.CallbackAction.new(self.on_toggle_sidebar_shortcut),
+            )
+        )
         self.add_controller(shortcut_controller)
+        GLib.idle_add(self._apply_global_non_wrapping_text, cast(Gtk.Widget, self), 96)
 
     def _create_actions(self) -> None:
         resolved, missing = resolve_ui_action_bindings(self)
@@ -2076,7 +2112,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         app_menu.append("View Logs…", "win.view_logs")
         app_menu.append("Review Reflections…", "win.view_reflections")
         app_menu.append("Train ML Models…", "win.train_ml_models")
+        app_menu.append("Stability Repair", "win.stability_repair")
+        app_menu.append("Close Transient Dialogs", "win.close_transient_dialogs")
         app_menu.append("Enable semantic routing", "win.semantic_enabled")
+        app_menu.append("Toggle Sidebar", "win.toggle_sidebar")
         app_menu.append("Toggle Menu Bar", "win.toggle_menu")
 
         tools_menu = self._build_tools_overflow_menu()
@@ -2127,6 +2166,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         switcher.set_hexpand(True)
         header.append(switcher)
 
+        sidebar_btn = Gtk.Button(label="Hide Sidebar")
+        sidebar_btn.add_css_class("flat")
+        sidebar_btn.add_css_class("sidebar-toggle")
+        sidebar_btn.set_tooltip_text("Toggle left sidebar (Ctrl+B).")
+        sidebar_btn.connect("clicked", lambda *_args: self._toggle_sidebar_visibility())
+        header.append(sidebar_btn)
+        self.workbench_sidebar_btn = sidebar_btn
+
         quick_actions_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         quick_actions_row.add_css_class("inline-toolbar")
         quick_actions_row.add_css_class("workbench-quick-actions")
@@ -2143,9 +2190,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ("Quiz 8", lambda: self.on_quick_quiz(None), "Start a quick quiz session.", False),
             ("Review Due", lambda: self.on_clear_must_review(None), "Run due-review cleanup/apply action.", False),
             ("Coach Next", lambda: self.on_do_coach_next(None), "Apply the next coach action.", False),
-            ("Tutor", lambda: self._open_workspace_tab("tutor", present=False), "Open Tutor workspace.", False),
-            ("Coach", lambda: self._open_workspace_tab("coach", present=False), "Open Coach workspace.", False),
-            ("Insights", lambda: self._open_workspace_tab("insights", present=False), "Open Insights workspace.", False),
         ]
         for label_text, callback, tooltip, primary in quick_actions:
             btn = Gtk.Button(label=label_text)
@@ -2166,7 +2210,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         status_label = Gtk.Label(label="")
         status_label.set_halign(Gtk.Align.START)
-        status_label.set_wrap(True)
+        status_label.set_wrap(False)
+        status_label.set_ellipsize(Pango.EllipsizeMode.END)
+        status_label.add_css_class("single-line-lock")
         status_label.add_css_class("muted")
         status_label.add_css_class("workbench-status")
         self.workbench_status_label = status_label
@@ -2271,7 +2317,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         status_text = (
             f"{page_title} • Topic: {topic} • Model: {model_label} • "
             f"Tutor autopilot: {'on' if autopilot_enabled else 'off'} ({autopilot_mode}) • "
-            f"Semantic: {'on' if semantic_enabled else 'off'}"
+            f"Semantic: {'on' if semantic_enabled else 'off'} • "
+            f"Sidebar: {'shown' if bool(getattr(self, 'ui_sidebar_visible', True)) else 'hidden'}"
         )
         self._set_label_text_if_changed(label, status_text)
 
@@ -4063,6 +4110,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         autopilot_enabled = Gtk.CheckButton(label="Enable tutor autopilot")
         notifications = Gtk.CheckButton(label="Enable desktop notifications")
         modern_toggle = Gtk.CheckButton(label="Enable modern tabbed workspace")
+        sidebar_toggle = Gtk.CheckButton(label="Show left sidebar")
         reduce_motion = Gtk.CheckButton(label="Reduce motion")
         self._settings_workspace_llm_enabled_toggle = llm_enabled
         self._settings_workspace_auto_select_toggle = llm_auto_select
@@ -4070,6 +4118,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._settings_workspace_autopilot_toggle = autopilot_enabled
         self._settings_workspace_notifications_toggle = notifications
         self._settings_workspace_modern_toggle = modern_toggle
+        self._settings_workspace_sidebar_toggle = sidebar_toggle
         self._settings_workspace_reduce_motion_toggle = reduce_motion
         page_box.append(llm_enabled)
         page_box.append(llm_auto_select)
@@ -4077,6 +4126,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         page_box.append(autopilot_enabled)
         page_box.append(notifications)
         page_box.append(modern_toggle)
+        page_box.append(sidebar_toggle)
         page_box.append(reduce_motion)
 
         mode_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -4111,6 +4161,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._settings_workspace_status_label = status_label
         page_box.append(status_label)
 
+        stability_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        stability_row.add_css_class("inline-toolbar")
+        stability_repair_btn = Gtk.Button(label="Stability Repair")
+        stability_repair_btn.add_css_class("suggested-action")
+        close_dialogs_btn = Gtk.Button(label="Close Transient Dialogs")
+        health_check_btn = Gtk.Button(label="Run Health Check")
+        stability_row.append(stability_repair_btn)
+        stability_row.append(close_dialogs_btn)
+        stability_row.append(health_check_btn)
+        page_box.append(stability_row)
+
+        def _run_stability_repair(*_args) -> None:
+            ok, message = self._run_ui_stability_repair()
+            self._set_label_text_if_changed(status_label, message)
+            if ok:
+                try:
+                    self.send_notification("UI Stability", message)
+                except Exception:
+                    pass
+
+        def _close_transient_dialogs(*_args) -> None:
+            closed = self._close_tracked_ui_dialogs()
+            msg = f"Closed {int(max(0, closed))} transient dialog(s)."
+            self._set_label_text_if_changed(status_label, msg)
+
+        stability_repair_btn.connect("clicked", _run_stability_repair)
+        close_dialogs_btn.connect("clicked", _close_transient_dialogs)
+        health_check_btn.connect("clicked", lambda *_: self.on_run_health_check(None))
+
         self._refresh_settings_workspace_page()
         return page_scroll
 
@@ -4121,6 +4200,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         autopilot_enabled = getattr(self, "_settings_workspace_autopilot_toggle", None)
         notifications = getattr(self, "_settings_workspace_notifications_toggle", None)
         modern_toggle = getattr(self, "_settings_workspace_modern_toggle", None)
+        sidebar_toggle = getattr(self, "_settings_workspace_sidebar_toggle", None)
         reduce_motion = getattr(self, "_settings_workspace_reduce_motion_toggle", None)
         mode_dropdown = getattr(self, "_settings_workspace_mode_dropdown", None)
         if (
@@ -4130,6 +4210,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             or autopilot_enabled is None
             or notifications is None
             or modern_toggle is None
+            or sidebar_toggle is None
             or reduce_motion is None
             or mode_dropdown is None
         ):
@@ -4146,6 +4227,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             modern_toggle.set_tooltip_text("Modern workspace is locked on in this build.")
         else:
             modern_toggle.set_tooltip_text(None)
+        sidebar_toggle.set_active(bool(getattr(self, "ui_sidebar_visible", DEFAULT_UI_SIDEBAR_VISIBLE)))
         reduce_motion.set_active(bool(getattr(self, "ui_reduce_motion", DEFAULT_UI_REDUCE_MOTION)))
         mode = self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))
         mapping = {"suggest": 0, "assist": 1, "cockpit": 2}
@@ -4159,6 +4241,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         autopilot_enabled = getattr(self, "_settings_workspace_autopilot_toggle", None)
         notifications = getattr(self, "_settings_workspace_notifications_toggle", None)
         modern_toggle = getattr(self, "_settings_workspace_modern_toggle", None)
+        sidebar_toggle = getattr(self, "_settings_workspace_sidebar_toggle", None)
         reduce_motion = getattr(self, "_settings_workspace_reduce_motion_toggle", None)
         mode_dropdown = getattr(self, "_settings_workspace_mode_dropdown", None)
         status_label = getattr(self, "_settings_workspace_status_label", None)
@@ -4169,6 +4252,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             or autopilot_enabled is None
             or notifications is None
             or modern_toggle is None
+            or sidebar_toggle is None
             or reduce_motion is None
             or mode_dropdown is None
         ):
@@ -4183,6 +4267,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.ui_legacy_fallback_enabled = False
         else:
             self.ui_modern_enabled = bool(modern_toggle.get_active())
+        self.ui_sidebar_visible = bool(sidebar_toggle.get_active())
         self.ui_reduce_motion = bool(reduce_motion.get_active())
         mode_idx = int(mode_dropdown.get_selected())
         mode_map = {0: "suggest", 1: "assist", 2: "cockpit"}
@@ -4206,12 +4291,75 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         finally:
             self._force_preferences_dialog_open = previous
 
+    def _close_tracked_ui_dialogs(self) -> int:
+        lifecycle = getattr(self, "_ui_dialog_lifecycle", None)
+        if lifecycle is None:
+            return 0
+        try:
+            count = int(getattr(lifecycle, "count", lambda: 0)() or 0)
+        except Exception:
+            count = 0
+        try:
+            lifecycle.close_all()
+        except Exception:
+            pass
+        return max(0, count)
+
+    def _run_ui_stability_repair(self) -> tuple[bool, str]:
+        failed_steps: list[str] = []
+
+        scheduler = getattr(self, "_ui_refresh_scheduler", None)
+        if scheduler is not None:
+            try:
+                scheduler.cancel_all()
+            except Exception:
+                failed_steps.append("refresh-queue")
+
+        try:
+            self._refresh_ui_style_runtime()
+        except Exception:
+            failed_steps.append("theme-runtime")
+        try:
+            self._apply_current_layout_mode()
+        except Exception:
+            failed_steps.append("layout-mode")
+        try:
+            self._apply_sidebar_visibility(persist=False, announce=False)
+        except Exception:
+            failed_steps.append("sidebar-state")
+        try:
+            self._refresh_tutor_workspace_page()
+            self._refresh_coach_workspace_page()
+            self._refresh_insights_workspace_page()
+            self._refresh_settings_workspace_page()
+        except Exception:
+            failed_steps.append("workspace-refresh")
+        try:
+            self.update_study_room_card()
+            self.update_dashboard()
+        except Exception:
+            failed_steps.append("dashboard-refresh")
+
+        if failed_steps:
+            steps = ", ".join(failed_steps[:4])
+            if len(failed_steps) > 4:
+                steps += ", …"
+            return False, f"Stability repair partial: {steps}"
+        return True, "Stability repair complete."
+
     def on_toggle_menu_shortcut(self, *_args):
         self.toggle_menu_bar()
         return True
 
     def on_toggle_menu_action(self, _action, _param):
         self.toggle_menu_bar()
+
+    def on_toggle_sidebar_shortcut(self, *_args):
+        self._toggle_sidebar_visibility()
+        return True
+
+    def on_toggle_sidebar_action(self, _action, _param):
+        self._toggle_sidebar_visibility()
 
     def _sync_semantic_action_state(self) -> None:
         try:
@@ -4263,6 +4411,58 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.menu_bar.set_visible(self.menu_bar_visible)
         self.save_preferences()
 
+    def _apply_sidebar_visibility(self, *, persist: bool = False, announce: bool = False) -> None:
+        visible = bool(getattr(self, "ui_sidebar_visible", True))
+        revealer = getattr(self, "left_sidebar_revealer", None)
+        left_scroll = getattr(self, "left_scroll", None)
+        if revealer is not None:
+            try:
+                revealer.set_reveal_child(visible)
+            except Exception:
+                pass
+            try:
+                revealer.set_visible(True)
+            except Exception:
+                pass
+        if left_scroll is not None:
+            try:
+                left_scroll.set_visible(visible)
+            except Exception:
+                pass
+        button = getattr(self, "workbench_sidebar_btn", None)
+        if button is not None:
+            try:
+                button.set_label("Hide Sidebar" if visible else "Show Sidebar")
+            except Exception:
+                pass
+        try:
+            shell = getattr(self, "workbench_shell", None)
+            if visible:
+                if shell is not None:
+                    shell.remove_css_class("sidebar-collapsed")
+                self.remove_css_class("sidebar-collapsed")
+            else:
+                if shell is not None:
+                    shell.add_css_class("sidebar-collapsed")
+                self.add_css_class("sidebar-collapsed")
+        except Exception:
+            pass
+        try:
+            self._refresh_workbench_shell_status()
+        except Exception:
+            pass
+        if persist:
+            try:
+                self.save_preferences()
+            except Exception:
+                pass
+        if announce:
+            self.send_notification("Workspace Sidebar", "Shown." if visible else "Hidden.")
+
+    def _toggle_sidebar_visibility(self, *, persist: bool = True) -> None:
+        self.ui_sidebar_visible = not bool(getattr(self, "ui_sidebar_visible", True))
+        self._apply_sidebar_visibility(persist=persist, announce=False)
+
     def on_menu_import_pdf(self, _action, _param):
         self.on_import_pdf(None)
 
@@ -4301,6 +4501,32 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_menu_run_health_check(self, _action, _param):
         self.on_run_health_check(None)
+
+    def on_stability_repair_action(self, _action, _param):
+        ok, message = self._run_ui_stability_repair()
+        status_label = getattr(self, "_settings_workspace_status_label", None)
+        if status_label is not None:
+            self._set_label_text_if_changed(status_label, message)
+        try:
+            self.send_notification("UI Stability", message)
+        except Exception:
+            pass
+        if ok:
+            try:
+                self._refresh_workbench_shell_status()
+            except Exception:
+                pass
+
+    def on_close_transient_dialogs_action(self, _action, _param):
+        closed = self._close_tracked_ui_dialogs()
+        msg = f"Closed {int(max(0, closed))} transient dialog(s)."
+        status_label = getattr(self, "_settings_workspace_status_label", None)
+        if status_label is not None:
+            self._set_label_text_if_changed(status_label, msg)
+        try:
+            self.send_notification("UI Stability", msg)
+        except Exception:
+            pass
 
     def on_menu_view_syllabus_cache_stats(self, _action, _param):
         self.on_view_syllabus_cache_stats(None)
@@ -5468,6 +5694,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             )
         )
+        ui_sidebar_visible = Gtk.CheckButton(label="Show left sidebar")
+        ui_sidebar_visible.set_active(
+            bool(
+                self._coerce_ui_toggle(
+                    getattr(self, "ui_sidebar_visible", DEFAULT_UI_SIDEBAR_VISIBLE),
+                    bool(DEFAULT_UI_SIDEBAR_VISIBLE),
+                )
+            )
+        )
         if modern_locked:
             ui_modern_enabled.set_active(True)
             ui_modern_enabled.set_sensitive(False)
@@ -5505,6 +5740,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         content.append(ui_modern_enabled)
         content.append(ui_reduce_motion)
         content.append(ui_legacy_fallback)
+        content.append(ui_sidebar_visible)
         content.append(ui_density_row)
         content.append(ui_fallback_now_btn)
         content.append(ui_state_info)
@@ -5897,13 +6133,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.ui_modern_enabled = bool(ui_modern_enabled.get_active())
                 self.ui_legacy_fallback_enabled = bool(ui_legacy_fallback.get_active())
             self.ui_reduce_motion = bool(ui_reduce_motion.get_active())
+            self.ui_sidebar_visible = bool(ui_sidebar_visible.get_active())
             self.ui_density_mode = str(DEFAULT_UI_DENSITY_MODE)
             self._refresh_ui_style_runtime()
             modern_state = "modern" if bool(self.ui_modern_enabled) else "legacy"
             fallback_state = "on" if bool(self.ui_legacy_fallback_enabled) else "off"
             motion_state = "reduced" if bool(self.ui_reduce_motion) else "standard"
+            sidebar_state = "shown" if bool(self.ui_sidebar_visible) else "hidden"
             ui_state_info.set_text(
-                f"UI state: {modern_state} • fallback {fallback_state} • motion {motion_state}"
+                f"UI state: {modern_state} • fallback {fallback_state} • motion {motion_state} • sidebar {sidebar_state}"
             )
             ui_fallback_now_btn.set_sensitive(
                 (not modern_locked) and bool(ui_legacy_fallback.get_active()) and bool(ui_modern_enabled.get_active())
@@ -5922,6 +6160,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         ui_modern_enabled.connect("toggled", lambda *_a: _apply_ui_runtime_preview())
         ui_reduce_motion.connect("toggled", lambda *_a: _apply_ui_runtime_preview())
         ui_legacy_fallback.connect("toggled", lambda *_a: _apply_ui_runtime_preview())
+        ui_sidebar_visible.connect("toggled", lambda *_a: _apply_ui_runtime_preview())
         ui_fallback_now_btn.connect("clicked", _on_ui_fallback_now)
         _apply_ui_runtime_preview()
 
@@ -6008,6 +6247,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.ui_legacy_fallback_enabled = bool(ui_legacy_fallback.get_active())
             self.ui_density_mode = str(DEFAULT_UI_DENSITY_MODE)
             self.ui_reduce_motion = bool(ui_reduce_motion.get_active())
+            self.ui_sidebar_visible = bool(ui_sidebar_visible.get_active())
             self.coach_only_view = bool(coach_only.get_active())
             self.sticky_coach_pick = bool(sticky_pick.get_active())
             self.adaptive_quiz_prioritization = bool(adaptive_quiz.get_active())
@@ -7675,6 +7915,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             bool(DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
                         )
                     )
+                    self.ui_sidebar_visible = bool(
+                        self._coerce_ui_toggle(
+                            data.get("ui_sidebar_visible", DEFAULT_UI_SIDEBAR_VISIBLE),
+                            bool(DEFAULT_UI_SIDEBAR_VISIBLE),
+                        )
+                    )
                     self.coach_only_view = bool(data.get("coach_only_view", False))
                     self.sticky_coach_pick = bool(data.get("sticky_coach_pick", True))
                     self.adaptive_quiz_prioritization = bool(
@@ -7899,6 +8145,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self._coerce_ui_toggle(
                         getattr(self, "ui_legacy_fallback_enabled", DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
                         bool(DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
+                    )
+                ),
+                "ui_sidebar_visible": bool(
+                    self._coerce_ui_toggle(
+                        getattr(self, "ui_sidebar_visible", DEFAULT_UI_SIDEBAR_VISIBLE),
+                        bool(DEFAULT_UI_SIDEBAR_VISIBLE),
                     )
                 ),
                 "coach_only_view": bool(self.coach_only_view),
@@ -8134,6 +8386,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     stack.set_transition_duration(140)
                 if not modern_enabled:
                     stack.set_visible_child_name("dashboard")
+        except Exception:
+            pass
+        try:
+            self._apply_sidebar_visibility(persist=False, announce=False)
         except Exception:
             pass
 
@@ -11219,6 +11475,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "- Optimization policy: clear due reviews first, then weak topics, then mixed retrieval reinforcement.",
             f"- Exam phase: {phase}; pressure state: {load_state}.",
             "- Keep recommendations operational: specific topic, mode, and timebox.",
+            "- Communication style: concise and clear, with brief rationale to aid learner understanding.",
             "- Be proactive when the next high-value action is clear; do not wait for explicit prompting.",
             "- If a preferred action is blocked, return the nearest safe alternative immediately.",
             "- Optimize hard; avoid generic encouragement and filler.",
@@ -12709,7 +12966,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "Choose only one action from: focus, quiz, drill, interleave, review.",
             "If unsure, pick the safest deterministic action from the payload action_topics map.",
             "Do not invent topics; use only payload.action_topics values or payload.recommended_topic.",
-            "Keep reason concise and practical (max 220 chars).",
+            "Keep reason concise, practical, and lightly explanatory (max 220 chars).",
             "Schema:",
             '{"action":"focus|quiz|drill|interleave|review","topic":"chapter","duration_minutes":25,"reason":"short explanation","confidence":0.0}',
         ]
@@ -12983,7 +13240,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             label_text += f" — {topic}"
         label_text += f" ({source})"
         if reason:
-            label_text += f"\n{reason[:90]}"
+            label_text += f" • {reason[:80]}"
         if getattr(self, "ai_coach_last_label", None):
             self._set_label_text_if_changed(self.ai_coach_last_label, label_text)
             self.ai_coach_last_label.set_visible(True)
@@ -13464,15 +13721,63 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _set_label_text_if_changed(self, label: Gtk.Label | None, text: str) -> None:
         if not label:
             return
+        raw_text = str(text or "")
+        single_line = self._label_should_stay_single_line(label)
+        display_text = " ".join(raw_text.split()) if single_line else raw_text
+        if single_line:
+            self._enforce_label_single_line(label)
         try:
             current = label.get_text()
         except Exception:
             current = None
-        self._sync_single_line_label_tooltip(label, text)
-        if current == text:
+        self._sync_single_line_label_tooltip(label, raw_text)
+        if current == display_text:
             return
-        label.set_text(text)
-        self._sync_single_line_label_tooltip(label, text)
+        label.set_text(display_text)
+        if single_line:
+            self._enforce_label_single_line(label)
+        self._sync_single_line_label_tooltip(label, raw_text)
+
+    def _label_should_stay_single_line(self, label: Gtk.Label | None) -> bool:
+        if label is None:
+            return False
+        try:
+            if label.has_css_class("allow-wrap"):
+                return False
+        except Exception:
+            pass
+        try:
+            if label.has_css_class("single-line-lock"):
+                return True
+        except Exception:
+            pass
+        current: Gtk.Widget | None = label
+        for _depth in range(10):
+            if current is None:
+                break
+            try:
+                if current.has_css_class("single-line-scope"):
+                    return True
+            except Exception:
+                pass
+            try:
+                current = current.get_parent()
+            except Exception:
+                current = None
+        return False
+
+    def _enforce_label_single_line(self, label: Gtk.Label | None, max_chars: int = 96) -> None:
+        if label is None:
+            return
+        try:
+            label.set_wrap(False)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            if int(max_chars) > 0:
+                label.set_max_width_chars(int(max_chars))
+            label.add_css_class("single-line-lock")
+            self._sync_single_line_label_tooltip(label, label.get_text() or "")
+        except Exception:
+            pass
 
     def _sync_single_line_label_tooltip(self, label: Gtk.Label | None, text: str) -> None:
         if not label:
@@ -13490,7 +13795,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
 
     def _ellipsize_labels(self, root: Gtk.Widget | None, max_chars: int = 96) -> None:
-        """Force single-line ellipsis for labels without explicit newlines."""
+        """Force single-line ellipsis for scoped labels in the widget subtree."""
         if root is None:
             return
 
@@ -13499,16 +13804,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return
             try:
                 if isinstance(node, Gtk.Label):
-                    text = ""
-                    try:
-                        text = node.get_text() or ""
-                    except Exception:
-                        text = ""
-                    if "\n" not in text:
-                        node.set_wrap(False)
-                        node.set_ellipsize(Pango.EllipsizeMode.END)
-                        node.set_max_width_chars(int(max_chars))
-                        self._sync_single_line_label_tooltip(node, text)
+                    if self._label_should_stay_single_line(node):
+                        self._enforce_label_single_line(node, max_chars=max_chars)
             except Exception:
                 pass
             try:
@@ -13520,6 +13817,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
 
         _walk(root)
+
+    def _apply_global_non_wrapping_text(self, root: Gtk.Widget | None = None, max_chars: int = 96) -> bool:
+        target = root if isinstance(root, Gtk.Widget) else cast(Gtk.Widget, self)
+        self._ellipsize_labels(target, max_chars=max_chars)
+        return False
 
     def _log_coach_decision(self, topic: str, plan: list[str], release: bool | None, release_reason: str | None) -> None:
         try:
@@ -15488,7 +15790,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
         self._set_label_text_if_changed(
             self.coach_pick_label,
-            f"Coach pick: {topic}\nFocus reason: {reason_text}",
+            f"Coach pick: {topic}",
         )
         try:
             if getattr(self, "coach_pick_why_label", None):
@@ -15504,9 +15806,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.coach_reason_history = history[-3:]
             self.save_preferences()
             if getattr(self, "coach_pick_why_history", None):
+                compact_history: list[str] = []
+                for row in self.coach_reason_history:
+                    text_row = str(row or "").strip()
+                    if not text_row:
+                        continue
+                    if ": " in text_row:
+                        _head, _sep, tail = text_row.partition(": ")
+                        text_row = tail or text_row
+                    compact_history.append(text_row)
                 self._set_label_text_if_changed(
                     self.coach_pick_why_history,
-                    "Recent reasons:\n" + "\n".join(self.coach_reason_history),
+                    "Recent reasons: " + " | ".join(compact_history[-3:]),
                 )
         except Exception:
             pass
@@ -17573,6 +17884,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             window.connect("close-request", _on_close)
         except Exception:
             pass
+        try:
+            window.connect(
+                "map",
+                lambda w, *_args: self._apply_global_non_wrapping_text(cast(Gtk.Widget, w), 96),
+            )
+        except Exception:
+            pass
         return window
 
     def _register_ui_dialog(self, dialog_obj: Any) -> Any:
@@ -17586,6 +17904,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         try:
             if hasattr(dialog_obj, "connect"):
                 dialog_obj.connect("destroy", lambda d: lifecycle.unregister(d))
+        except Exception:
+            pass
+        try:
+            if hasattr(dialog_obj, "connect"):
+                dialog_obj.connect(
+                    "map",
+                    lambda d, *_args: self._apply_global_non_wrapping_text(cast(Gtk.Widget, d), 96),
+                )
         except Exception:
             pass
         return dialog_obj
@@ -23711,6 +24037,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if log_summary:
                 log_label = Gtk.Label(label=log_summary)
                 log_label.set_halign(Gtk.Align.START)
+                _mark_single_line(log_label)
                 log_label.add_css_class("muted")
                 coach_box.append(log_label)
         except Exception:
@@ -26011,12 +26338,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         title = Gtk.Label()
         title.set_halign(Gtk.Align.START)
         title.set_xalign(0.0)
-        title.set_wrap(True)
+        title.set_wrap(False)
+        title.set_ellipsize(Pango.EllipsizeMode.END)
+        title.set_max_width_chars(92)
         title.add_css_class("plan-title")
         meta = Gtk.Label()
         meta.set_halign(Gtk.Align.START)
         meta.set_xalign(0.0)
-        meta.set_wrap(True)
+        meta.set_wrap(False)
+        meta.set_ellipsize(Pango.EllipsizeMode.END)
+        meta.set_max_width_chars(92)
         meta.add_css_class("muted")
         meta.add_css_class("plan-meta")
         meta.set_visible(False)
@@ -26144,11 +26475,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 markup = f"🎯 {markup}"
 
             title.set_markup(markup)
+            self._sync_single_line_label_tooltip(title, chapter)
             if status_bits:
-                meta.set_text(" • ".join(status_bits))
+                meta_text = " • ".join(status_bits)
+                meta.set_text(meta_text)
+                self._sync_single_line_label_tooltip(meta, meta_text)
                 meta.set_visible(True)
             else:
                 meta.set_text("")
+                self._sync_single_line_label_tooltip(meta, "")
                 meta.set_visible(False)
 
             tooltip_lines = []
