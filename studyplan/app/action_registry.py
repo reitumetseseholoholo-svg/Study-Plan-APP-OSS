@@ -14,6 +14,7 @@ DEFAULT_UI_ACTION_BINDINGS: tuple[ActionBinding, ...] = (
     ActionBinding("set_exam_date", "on_menu_set_exam_date"),
     ActionBinding("set_availability", "on_menu_set_availability"),
     ActionBinding("import_pdf", "on_menu_import_pdf"),
+    ActionBinding("add_tutor_rag_pdf", "on_menu_add_tutor_rag_pdf"),
     ActionBinding("import_syllabus_pdf", "on_menu_import_syllabus_pdf"),
     ActionBinding("import_ai", "on_menu_import_ai"),
     ActionBinding("import_snapshot", "on_menu_import_snapshot"),

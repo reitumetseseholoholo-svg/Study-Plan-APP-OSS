@@ -33,22 +33,6 @@ except Exception as exc:  # pragma: no cover - environment-dependent import gate
 
 
 def _make_dummy(host: str = "127.0.0.1:11434"):
-/*************  ✨ Windsurf Command ⭐  *************/
-    """
-    Creates a dummy StudyPlanGUI object with the given host.
-
-    This function is used to create a mock StudyPlanGUI object for testing
-    purposes. The created object has the same attributes as a real StudyPlanGUI
-    object but the methods are replaced with dummy methods that return None.
-
-    Parameters:
-    host (str): The host to use for the dummy StudyPlanGUI object. Defaults to
-        "127.0.0.1:11434".
-
-    Returns:
-    types.SimpleNamespace: A dummy StudyPlanGUI object with the given host.
-    """
-/*******  4401c667-571c-420c-80b5-6b462cf8be3c  *******/
     dummy = types.SimpleNamespace(
         local_llm_host=host,
         local_llm_timeout_seconds=30,

@@ -28,10 +28,16 @@ def test_resolve_ui_action_bindings_reports_missing_handlers():
 def test_resolve_ui_action_bindings_returns_callables_for_present_handlers():
     owner = types.SimpleNamespace(
         on_menu_import_pdf=lambda *_args: None,
+        on_menu_add_tutor_rag_pdf=lambda *_args: None,
         on_menu_import_syllabus_pdf=lambda *_args: None,
         on_menu_import_ai=lambda *_args: None,
     )
-    subset = tuple(DEFAULT_UI_ACTION_BINDINGS[2:5])
+    subset = tuple(DEFAULT_UI_ACTION_BINDINGS[2:6])
     resolved, missing = resolve_ui_action_bindings(owner, bindings=subset)
     assert not missing
-    assert [name for name, _handler in resolved] == ["import_pdf", "import_syllabus_pdf", "import_ai"]
+    assert [name for name, _handler in resolved] == [
+        "import_pdf",
+        "add_tutor_rag_pdf",
+        "import_syllabus_pdf",
+        "import_ai",
+    ]
