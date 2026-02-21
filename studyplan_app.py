@@ -1295,6 +1295,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.workbench_shell: Gtk.Box | None = None
         self.workbench_stack: Gtk.Stack | None = None
         self.workbench_switcher: Gtk.StackSwitcher | None = None
+        self.workbench_tabs_scroll: Gtk.ScrolledWindow | None = None
+        self.workbench_tabs_left_spacer: Gtk.Box | None = None
+        self.workbench_tabs_right_spacer: Gtk.Box | None = None
         self.workbench_status_label: Gtk.Label | None = None
         self.workbench_sidebar_btn: Gtk.Button | None = None
         self._workbench_page_names: set[str] = set()
@@ -2336,8 +2339,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         tabs_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         tabs_row.set_hexpand(True)
-        tabs_row.set_halign(Gtk.Align.START)
+        tabs_row.set_halign(Gtk.Align.FILL)
+        tabs_left_spacer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        tabs_left_spacer.set_hexpand(False)
+        tabs_left_spacer.set_visible(False)
+        tabs_row.append(tabs_left_spacer)
         tabs_row.append(switcher)
+        tabs_right_spacer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        tabs_right_spacer.set_hexpand(True)
+        tabs_row.append(tabs_right_spacer)
 
         tabs_scroll = Gtk.ScrolledWindow()
         tabs_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
@@ -2414,6 +2424,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             stack.set_transition_duration(140)
         switcher.set_stack(stack)
         self.workbench_switcher = switcher
+        self.workbench_tabs_scroll = tabs_scroll
+        self.workbench_tabs_left_spacer = tabs_left_spacer
+        self.workbench_tabs_right_spacer = tabs_right_spacer
         self.workbench_stack = stack
 
         for css_class in ("panel", "panel-right", "panel-scroll"):
@@ -2454,6 +2467,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         shell.append(status_label)
         shell.append(stack)
         self._refresh_workbench_shell_status()
+        self._refresh_workbench_tabs_alignment()
         return shell
 
     def _on_workbench_visible_page_changed(self, _stack: Gtk.Stack, _pspec: Any) -> None:
@@ -4753,11 +4767,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         left_scroll = getattr(self, "left_scroll", None)
         if revealer is not None:
             try:
-                revealer.set_reveal_child(visible)
+                revealer.set_visible(True if visible else False)
             except Exception:
                 pass
             try:
-                revealer.set_visible(True)
+                revealer.set_reveal_child(visible)
             except Exception:
                 pass
         if left_scroll is not None:
@@ -4793,6 +4807,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.add_css_class("sidebar-collapsed")
         except Exception:
             pass
+        self._refresh_workspace_split_spacing()
+        self._refresh_workbench_tabs_alignment()
         try:
             self._refresh_workbench_shell_status()
         except Exception:
@@ -4821,6 +4837,57 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return bool(getattr(self, "ui_sidebar_visible", True)) and not bool(
             getattr(self, "_sidebar_auto_hidden", False)
         )
+
+    def _refresh_workspace_split_spacing(self) -> None:
+        box = getattr(self, "main_box", None)
+        if box is None:
+            return
+        try:
+            if box.get_orientation() != Gtk.Orientation.HORIZONTAL:
+                return
+        except Exception:
+            return
+        base_spacing = 10 if bool(getattr(self, "_tile_mode", False)) else 12
+        effective_visible = self._is_sidebar_effectively_visible()
+        try:
+            box.set_spacing(base_spacing if effective_visible else 0)
+        except Exception:
+            pass
+
+    def _refresh_workbench_tabs_alignment(self) -> None:
+        switcher = getattr(self, "workbench_switcher", None)
+        left_spacer = getattr(self, "workbench_tabs_left_spacer", None)
+        right_spacer = getattr(self, "workbench_tabs_right_spacer", None)
+        tabs_scroll = getattr(self, "workbench_tabs_scroll", None)
+        if switcher is None:
+            return
+        center_tabs = not self._is_sidebar_effectively_visible()
+        try:
+            switcher.set_halign(Gtk.Align.CENTER if center_tabs else Gtk.Align.START)
+        except Exception:
+            pass
+        if left_spacer is not None:
+            try:
+                left_spacer.set_visible(center_tabs)
+            except Exception:
+                pass
+            try:
+                left_spacer.set_hexpand(center_tabs)
+            except Exception:
+                pass
+        if right_spacer is not None:
+            try:
+                right_spacer.set_hexpand(True)
+            except Exception:
+                pass
+        if tabs_scroll is not None:
+            try:
+                if center_tabs:
+                    tabs_scroll.add_css_class("tabs-centered")
+                else:
+                    tabs_scroll.remove_css_class("tabs-centered")
+            except Exception:
+                pass
 
     def _should_auto_hide_sidebar(self, width: int, height: int, *, stack_layout: bool, tile_mode: bool) -> bool:
         if bool(stack_layout):
@@ -19779,7 +19846,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if tile_mode:
             self.add_css_class("tile")
             self._left_panel_width = self._left_panel_tile_width
-            self.main_box.set_spacing(10)
             self.main_box.set_margin_start(8)
             self.main_box.set_margin_end(8)
             self.main_box.set_margin_top(8)
@@ -19795,7 +19861,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         else:
             self.remove_css_class("tile")
             self._left_panel_width = self._left_panel_default_width
-            self.main_box.set_spacing(12)
             self.main_box.set_margin_start(16)
             self.main_box.set_margin_end(16)
             self.main_box.set_margin_top(16)
@@ -19807,6 +19872,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.left_panel.set_size_request(self._left_panel_width, -1)
             if getattr(self, "left_scroll", None):
                 self.left_scroll.set_size_request(self._left_panel_width, -1)
+        self._refresh_workspace_split_spacing()
 
     def _handle_window_size(self, width: int, height: int) -> None:
         """Adapt layout for smaller screens, including a 1024x768 baseline."""
@@ -19852,6 +19918,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.left_panel.set_hexpand(True)
             self.left_panel.set_halign(Gtk.Align.FILL)
             self.left_panel.set_vexpand(False)
+        self._refresh_workspace_split_spacing()
         self.apply_compact_mode(compact)
         self._apply_tile_mode(tile_mode)
 
