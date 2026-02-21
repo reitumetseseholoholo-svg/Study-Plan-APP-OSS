@@ -2772,8 +2772,14 @@ class StudyPlanEngine:
         self._migrate_question_stats_to_qid()
         self._load_syllabus_import_cache_disk()
 
-        # Save data (do this after all inits/loads)
-        self.save_data()
+        # Save data (do this after all inits/loads).
+        # Startup must not crash if the configured data directory is not writable
+        # (tests/sandboxes/restricted environments). Runtime writes remain available
+        # once permissions are corrected.
+        try:
+            self.save_data()
+        except Exception as exc:
+            print(f"Initial save skipped: {exc}")
 
         # Quick test that all required methods exist (call it here)
         self.test_methods()

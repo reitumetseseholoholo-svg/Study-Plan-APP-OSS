@@ -1346,6 +1346,14 @@ window.study-window .workbench-header {{
     padding-bottom: 6px;
     margin-bottom: 2px;
 }}
+window.study-window .workbench-header-primary {{
+    min-height: 30px;
+}}
+window.study-window .workspace-tabs-scroll {{
+    background: transparent;
+    border: none;
+    margin-top: 1px;
+}}
 window.study-window .workbench-quick-scroll {{
     background: transparent;
     margin-top: 1px;
@@ -1364,7 +1372,8 @@ window.study-window .workbench-title {{
     margin-right: 6px;
 }}
 window.study-window .workspace-tabs {{
-    margin-left: 2px;
+    margin-left: 0;
+    margin-right: 2px;
 }}
 window.study-window .workspace-tabs button {{
     min-height: 30px;
@@ -1388,6 +1397,12 @@ window.study-window .workbench-stack {{
 window.study-window.stack-layout .workbench-header {{
     padding-bottom: 4px;
     margin-bottom: 1px;
+}}
+window.study-window.stack-layout .workbench-header-primary {{
+    min-height: 28px;
+}}
+window.study-window.stack-layout .workspace-tabs-scroll {{
+    margin-top: 0;
 }}
 window.study-window.stack-layout .workspace-tabs button {{
     min-height: 28px;
@@ -1437,6 +1452,14 @@ window.study-window .dashboard-workbench-panel > .hero-card {{
 window.study-window .dashboard-workbench-panel .section-title {{
     letter-spacing: 0.48px;
     font-weight: 760;
+}}
+window.study-window .coach-diagnostics-expander {{
+    margin-top: 2px;
+}}
+window.study-window .coach-diagnostics-box {{
+    border-top: 1px solid alpha({color["text"]}, 0.10);
+    margin-top: 4px;
+    padding-top: 4px;
 }}
 window.study-window .tutor-workbench {{
     padding-top: 12px;
