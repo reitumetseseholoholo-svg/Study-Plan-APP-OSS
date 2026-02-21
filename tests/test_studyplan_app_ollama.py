@@ -1397,6 +1397,51 @@ def test_build_debug_info_message_handles_missing_tutor_summary():
     assert "AI Tutor top error classes: none" in msg
 
 
+def test_build_debug_info_message_includes_rag_embedding_insights_lines():
+    dummy = types.SimpleNamespace(
+        exam_date="2026-06-01",
+        engine=types.SimpleNamespace(CHAPTERS=["A", "B"], competence={"A": 70.0}, SEMANTIC_MODEL_NAME="all-minilm"),
+        _get_rag_embedding_insights=lambda: {
+            "active_pdf_count": 2,
+            "configured_max_sources": 6,
+            "active_pdf_total_mb": 143.8,
+            "max_pdf_mb": 512.0,
+            "active_pdf_names": ["fm_notes.pdf", "question_kit.pdf"],
+            "cache_enabled": True,
+            "cache_db_path": "/tmp/ai_runtime_cache_v1.sqlite3",
+            "memory_rag_docs": 2,
+            "memory_rag_chunks": 244,
+            "disk_rag_docs": 2,
+            "disk_rag_chunks": 244,
+            "disk_postings": 5000,
+            "disk_query_cache_rows": 12,
+            "disk_embedding_rows": 320,
+            "semantic_model_name": "all-minilm",
+            "embedding_rows_for_model": 240,
+            "embedding_covered_chunk_hashes": 180,
+            "embedding_total_chunk_hashes": 244,
+            "embedding_coverage_pct": 73.8,
+            "cache_debug_rag_doc_hit": 4,
+            "cache_debug_rag_query_hit": 2,
+            "cache_debug_embedding_hits": 31,
+            "cache_debug_embedding_misses": 5,
+        },
+    )
+    msg = StudyPlanGUI._build_debug_info_message(
+        dummy,
+        hub={},
+        graph_status={},
+        drift={},
+        perf={},
+        tutor_summary={},
+    )
+    assert "RAG PDFs active/configured: 2/6" in msg
+    assert "RAG cache enabled/db: True (ai_runtime_cache_v1.sqlite3)" in msg
+    assert "Embeddings rows total/model: 320/240 (all-minilm)" in msg
+    assert "Embeddings coverage active chunks: 180/244 (73.8%)" in msg
+    assert "Cache debug doc/query/emb-hit/emb-miss: 4/2/31/5" in msg
+
+
 def test_compute_tutor_control_state_enables_send_and_copy_last_when_ready():
     state = compute_tutor_control_state(
         running=False,
@@ -1990,6 +2035,80 @@ def test_parse_section_c_evaluation_payload_clamps_scores():
     rows = list(parsed.get("criterion_scores", []) or [])
     assert rows[0]["score"] == 8
     assert rows[1]["score"] == 0
+
+
+def test_parse_section_c_evaluation_payload_backfills_missing_rubric_rows():
+    dummy = types.SimpleNamespace()
+    dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
+    question = {
+        "marking_rubric": [
+            {"criterion": "Technical application to case facts", "max_marks": 8},
+            {"criterion": "Method and workings", "max_marks": 6},
+            {"criterion": "Recommendation", "max_marks": 6},
+        ]
+    }
+    payload = json.dumps(
+        {
+            "total_mark": 7,
+            "criterion_scores": [
+                {"criterion": "Technical application to case facts", "score": 7, "max_mark": 8, "feedback": "Good case linkage."}
+            ],
+            "strengths": ["Applied to case"],
+            "improvements": ["Add recommendation"],
+            "next_drill": "Add a conclusion paragraph.",
+        },
+        ensure_ascii=True,
+    )
+    parsed, err = StudyPlanGUI._parse_section_c_evaluation_payload(dummy, payload, question)
+    assert err is None
+    assert isinstance(parsed, dict)
+    rows = list(parsed.get("criterion_scores", []) or [])
+    assert len(rows) == 3
+    assert rows[0]["criterion"] == "Technical application to case facts"
+    assert rows[0]["score"] == 7
+    assert rows[1]["score"] == 0
+    assert rows[2]["score"] == 0
+
+
+def test_section_c_deterministic_examiner_style_rewards_applied_answer():
+    dummy = types.SimpleNamespace()
+    dummy._evaluate_section_c_response_deterministic = types.MethodType(
+        StudyPlanGUI._evaluate_section_c_response_deterministic,
+        dummy,
+    )
+    question = {
+        "prompt": "Advise on receivables policy where sales are 2.4m and discount terms are under review.",
+        "exhibits": ["Cost of funding 11%. Bad debts expected to move by 0.7%."],
+        "required_tasks": [
+            "Calculate the net benefit of the proposed discount.",
+            "State assumptions and discuss risks.",
+            "Recommend a policy with justification.",
+        ],
+        "marking_rubric": [
+            {"criterion": "Technical application to case facts", "max_marks": 8},
+            {"criterion": "Method, workings, and assumptions", "max_marks": 6},
+            {"criterion": "Evaluation and recommendation", "max_marks": 4},
+            {"criterion": "Structure and exam communication", "max_marks": 2},
+        ],
+        "time_budget_minutes": 45,
+    }
+    strong_response = (
+        "Objective: decide whether the early-settlement discount improves value.\n\n"
+        "Workings: incremental discount cost is 2.4m x 2% x uptake. Funding release is days reduced/365 x 2.4m x 11%. "
+        "Assume uptake rises to 60% and collection days drop from 52 to 39.\n\n"
+        "Evaluation: base case gives a positive net benefit, but sensitivity to uptake and bad debt change is material. "
+        "Risk: if uptake is below 45%, value turns negative.\n\n"
+        "Recommendation: adopt with a monitored threshold and review after one quarter."
+    )
+    weak_response = "Discount policy can be useful. Companies should manage receivables and be careful."
+    strong_eval = StudyPlanGUI._evaluate_section_c_response_deterministic(dummy, question, strong_response)
+    weak_eval = StudyPlanGUI._evaluate_section_c_response_deterministic(dummy, question, weak_response)
+    strong_total = int(strong_eval.get("total_mark", 0) or 0)
+    weak_total = int(weak_eval.get("total_mark", 0) or 0)
+    assert strong_total > weak_total
+    assert (strong_total - weak_total) >= 4
+    strong_rows = list(strong_eval.get("criterion_scores", []) or [])
+    assert any(int(row.get("score", 0) or 0) >= 2 for row in strong_rows)
 
 
 def test_evaluate_section_c_response_falls_back_when_llm_disabled():
@@ -2701,24 +2820,134 @@ def test_shutdown_core_runtime_is_idempotent_and_calls_blocking_engine_shutdown(
     assert dummy.pomodoro_timer_id is None
 
 
-def test_on_close_request_uses_runtime_shutdown_and_recap_flow():
-    calls: dict[str, int] = {"shutdown": 0, "recap": 0, "save_data": 0, "save_status": 0}
+def test_start_stop_core_housekeeping_timers_registers_and_cleans_sources(monkeypatch):
+    import studyplan_app as appmod
+
+    timer_calls: list[tuple[int, int]] = []
+    registered: list[int] = []
+    removed: list[int] = []
+    next_id = {"value": 101}
+
+    def _fake_timeout_add(delay_ms, _cb):
+        source_id = int(next_id["value"])
+        next_id["value"] = source_id + 1
+        timer_calls.append((int(delay_ms), source_id))
+        return source_id
+
+    monkeypatch.setattr(appmod.GLib, "timeout_add", _fake_timeout_add)
+
+    dummy = types.SimpleNamespace(
+        _core_runtime_shutdown=False,
+        _auto_train_timer_id=0,
+        _semantic_warmup_timer_id=0,
+        _window_poll_timer_id=0,
+        _auto_train_ml_tick=lambda: True,
+        _semantic_warmup_tick=lambda: False,
+        _poll_window_size=lambda: True,
+        _register_glib_source=lambda source_id: registered.append(int(source_id)),
+        _force_remove_glib_source=lambda source_id: removed.append(int(source_id)),
+    )
+
+    StudyPlanGUI._start_core_housekeeping_timers(dummy)
+
+    assert [row[0] for row in timer_calls] == [30000, 4000, 700]
+    assert registered == [101, 102, 103]
+    assert int(dummy._auto_train_timer_id) == 101
+    assert int(dummy._semantic_warmup_timer_id) == 102
+    assert int(dummy._window_poll_timer_id) == 103
+
+    StudyPlanGUI._stop_core_housekeeping_timers(dummy)
+
+    assert removed == [101, 102, 103]
+    assert int(dummy._auto_train_timer_id) == 0
+    assert int(dummy._semantic_warmup_timer_id) == 0
+    assert int(dummy._window_poll_timer_id) == 0
+
+
+def test_single_instance_lock_acquire_release_with_existing_lock(tmp_path):
+    import fcntl
+    import studyplan_app as appmod
+
+    lock_path = str(tmp_path / "app_instance.lock")
+    appmod._release_single_instance_lock()
+    try:
+        assert appmod._acquire_single_instance_lock(lock_path) is True
+        assert appmod._acquire_single_instance_lock(lock_path) is True
+        appmod._release_single_instance_lock()
+
+        blocker_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(blocker_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert appmod._acquire_single_instance_lock(lock_path) is False
+        finally:
+            try:
+                fcntl.flock(blocker_fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            os.close(blocker_fd)
+    finally:
+        appmod._release_single_instance_lock()
+
+
+def test_cleanup_quiz_dialog_runtime_ignores_stale_session_token():
+    calls: dict[str, int] = {"stop": 0}
+    active_dialog = object()
+    dummy = types.SimpleNamespace(
+        _quiz_reason_job_token=9,
+        quiz_dialog=active_dialog,
+        quiz_session={"session_token": 22},
+        _stop_quiz_or_review_timer_if_active=lambda finalize=True: calls.__setitem__("stop", calls["stop"] + 1),
+    )
+
+    StudyPlanGUI._cleanup_quiz_dialog_runtime(dummy, finalize_timer=True, session_token=21, dialog=active_dialog)
+
+    assert calls["stop"] == 0
+    assert int(dummy._quiz_reason_job_token) == 9
+    assert dummy.quiz_dialog is active_dialog
+
+
+def test_cleanup_quiz_dialog_runtime_applies_for_matching_session_token():
+    calls: dict[str, int] = {"stop": 0}
+    active_dialog = object()
+    dummy = types.SimpleNamespace(
+        _quiz_reason_job_token=9,
+        quiz_dialog=active_dialog,
+        quiz_session={"session_token": 22},
+        _stop_quiz_or_review_timer_if_active=lambda finalize=True: calls.__setitem__("stop", calls["stop"] + 1),
+    )
+
+    StudyPlanGUI._cleanup_quiz_dialog_runtime(dummy, finalize_timer=True, session_token=22, dialog=active_dialog)
+
+    assert calls["stop"] == 1
+    assert int(dummy._quiz_reason_job_token) == 10
+    assert dummy.quiz_dialog is None
+
+
+def test_on_close_request_uses_runtime_shutdown_and_non_blocking_recap_notification():
+    calls: dict[str, int] = {"shutdown": 0, "notify": 0, "save_data": 0, "save_status": 0}
     dummy = types.SimpleNamespace(
         _closing_from_recap=False,
         _shutdown_core_runtime=lambda finalize_timers=True: calls.__setitem__("shutdown", calls["shutdown"] + 1),
-        _show_daily_recap=lambda: calls.__setitem__("recap", calls["recap"] + 1),
+        _build_daily_recap_text=lambda: (
+            "Daily Recap • 2026-03-06\n"
+            "Pomodoros: 3\n"
+            "Quiz questions: 18  •  Quiz sessions: 2\n"
+            "Daily plan: 2/3 completed"
+        ),
+        send_notification=lambda _title, _body: calls.__setitem__("notify", calls["notify"] + 1),
         engine=types.SimpleNamespace(save_data=lambda: calls.__setitem__("save_data", calls["save_data"] + 1)),
         update_save_status_display=lambda: calls.__setitem__("save_status", calls["save_status"] + 1),
+        get_application=lambda: None,
     )
 
-    keep_open = StudyPlanGUI.on_close_request(dummy)
-    assert keep_open is True
-    assert calls == {"shutdown": 1, "recap": 1, "save_data": 0, "save_status": 0}
-
-    dummy._closing_from_recap = True
     close_now = StudyPlanGUI.on_close_request(dummy)
     assert close_now is False
-    assert calls == {"shutdown": 2, "recap": 1, "save_data": 1, "save_status": 1}
+    assert calls == {"shutdown": 1, "notify": 1, "save_data": 1, "save_status": 1}
+    assert dummy._closing_from_recap is True
+
+    close_again = StudyPlanGUI.on_close_request(dummy)
+    assert close_again is False
+    assert calls == {"shutdown": 2, "notify": 1, "save_data": 2, "save_status": 2}
 
 
 def test_get_remaining_today_blocks_consumes_completed_blocks_progressively():
