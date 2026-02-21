@@ -1142,6 +1142,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._force_message_dialog_fallback = False
         self._active_native_dialog = None
         self._dialog_smoke_mode = False
+        self._smoke_quit_in_progress = False
+        self._smoke_hard_exit_source_id = 0
+        self._close_hard_exit_source_id = 0
         self._smoke_report = None
         self._smoke_report_finalized = False
         self._smoke_step_outcomes = []
@@ -26129,6 +26132,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def run_dialog_smoke_test(self) -> bool:
         self._force_message_dialog_fallback = True
         self._dialog_smoke_mode = True
+        self._smoke_quit_in_progress = False
         self._closing_from_recap = True
         self._start_smoke_report()
         self._dialog_smoke_steps = [
@@ -26719,7 +26723,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return False
         self._force_message_dialog_fallback = False
         self._dialog_smoke_mode = False
+        self._smoke_quit_in_progress = True
         self._write_smoke_report("failed", "timeout")
+        self._schedule_smoke_hard_exit(1)
         self._close_aux_windows()
         try:
             self._closing_from_recap = True
@@ -26734,11 +26740,81 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         return False
 
+    def _schedule_smoke_hard_exit(self, code: int) -> None:
+        try:
+            existing = int(getattr(self, "_smoke_hard_exit_source_id", 0) or 0)
+        except Exception:
+            existing = 0
+        if existing > 0:
+            try:
+                self._force_remove_glib_source(existing)
+            except Exception:
+                pass
+            self._smoke_hard_exit_source_id = 0
+        try:
+            delay_s = int(str(os.environ.get("STUDYPLAN_DIALOG_SMOKE_HARD_EXIT_SECONDS", "8") or "8").strip())
+        except Exception:
+            delay_s = 8
+        delay_ms = max(2000, min(30000, int(delay_s) * 1000))
+
+        def _hard_exit() -> bool:
+            # Safety valve for test mode only: if GTK teardown lingers after
+            # smoke completion, exit with deterministic status instead of
+            # relying on external timeout termination.
+            try:
+                os._exit(int(code))
+            except Exception:
+                pass
+            return False
+
+        try:
+            source_id = int(GLib.timeout_add(delay_ms, _hard_exit) or 0)
+        except Exception:
+            source_id = 0
+        self._smoke_hard_exit_source_id = int(source_id)
+
+    def _schedule_close_hard_exit(self, code: int = 0) -> None:
+        enabled_raw = str(os.environ.get("STUDYPLAN_CLOSE_HARD_EXIT_ENABLED", "1") or "1").strip().lower()
+        if enabled_raw in {"0", "false", "no", "off"}:
+            return
+        try:
+            existing = int(getattr(self, "_close_hard_exit_source_id", 0) or 0)
+        except Exception:
+            existing = 0
+        if existing > 0:
+            try:
+                self._force_remove_glib_source(existing)
+            except Exception:
+                pass
+            self._close_hard_exit_source_id = 0
+        try:
+            delay_s = int(str(os.environ.get("STUDYPLAN_CLOSE_HARD_EXIT_SECONDS", "12") or "12").strip())
+        except Exception:
+            delay_s = 12
+        delay_ms = max(4000, min(60000, int(delay_s) * 1000))
+
+        def _hard_exit() -> bool:
+            # Safety valve for normal close: if GTK teardown hangs despite quit,
+            # force process exit to prevent lingering background CPU usage.
+            try:
+                os._exit(int(code))
+            except Exception:
+                pass
+            return False
+
+        try:
+            source_id = int(GLib.timeout_add(delay_ms, _hard_exit) or 0)
+        except Exception:
+            source_id = 0
+        self._close_hard_exit_source_id = int(source_id)
+
     def _run_next_dialog_smoke_step(self) -> bool:
         if self._dialog_smoke_index >= len(self._dialog_smoke_steps):
             self._force_message_dialog_fallback = False
             self._dialog_smoke_mode = False
+            self._smoke_quit_in_progress = True
             self._write_smoke_report("passed", "")
+            self._schedule_smoke_hard_exit(0)
             GLib.timeout_add(200, self._close_aux_windows)
             def _close_main():
                 self._closing_from_recap = True
@@ -27089,13 +27165,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         try:
             shutdown_runtime = getattr(self.engine, "shutdown_runtime", None)
             if callable(shutdown_runtime):
-                shutdown_runtime(wait_for_workers=True)
+                # Do not block GTK close on loky worker teardown. A blocking wait
+                # here can keep smoke runs alive far beyond completion and force
+                # external timeout termination.
+                shutdown_runtime(wait_for_workers=False)
         except Exception:
             pass
 
     def on_close_request(self, *_args):
+        smoke_quit = bool(getattr(self, "_smoke_quit_in_progress", False))
         self._shutdown_core_runtime(finalize_timers=True)
-        if not self._closing_from_recap:
+        if not self._closing_from_recap and not smoke_quit:
             # Keep recap informative but never block close with a modal flow.
             try:
                 recap_text = str(self._build_daily_recap_text() or "").strip()
@@ -27105,10 +27185,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.send_notification("Daily Recap", summary[:220] if summary else "Session complete.")
             except Exception:
                 pass
-        try:
-            self.engine.save_data()
-        except Exception:
-            pass
+        if not smoke_quit:
+            try:
+                self.engine.save_data()
+            except Exception:
+                pass
+            self._schedule_close_hard_exit(0)
         self.update_save_status_display()
         self._closing_from_recap = True
         try:
