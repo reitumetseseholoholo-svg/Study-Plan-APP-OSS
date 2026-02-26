@@ -9,10 +9,12 @@ import urllib.error
 import urllib.request
 
 import pytest
+from studyplan.cognitive_state import CognitiveState, CompetencyPosterior
 from studyplan_ai_tutor import (
     AI_TUTOR_RAG_USAGE_HINT,
     assess_tutor_coverage,
     assemble_ai_tutor_turn_prompt,
+    build_ai_tutor_context_prompt_details,
     build_tutor_coverage_checklist_note,
     build_targeted_rag_queries,
     build_rag_context_block,
@@ -1157,6 +1159,30 @@ def test_assemble_ai_tutor_turn_prompt_includes_planner_brief():
     assert "Coverage order: Topic A -> Topic B" in prompt
 
 
+def test_build_ai_tutor_context_prompt_details_includes_practice_first_contract():
+    prompt, meta = build_ai_tutor_context_prompt_details(
+        history=[],
+        user_prompt="Explain working capital policy and give me something to practice.",
+        module_title="FM",
+        chapter="Working Capital Management",
+    )
+    assert "Default learning-loop response contract" in prompt
+    assert "Micro-check (1-3 practical checks or prompts)" in prompt
+    assert bool(meta.get("practice_first_contract", False)) is True
+
+
+def test_build_ai_tutor_context_prompt_details_adds_retrieval_mode_hint():
+    prompt, meta = build_ai_tutor_context_prompt_details(
+        history=[],
+        user_prompt="Quiz me on WACC and CAPM with rapid fire retrieval practice.",
+        module_title="FM",
+        chapter="Cost of Capital",
+    )
+    assert "Mode hint (adapt response style): retrieval_drill" in prompt
+    assert "Use retrieval mode" in prompt
+    assert str(meta.get("mode_hint", "")) == "retrieval_drill"
+
+
 def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
     save_calls = {"count": 0}
     dummy = types.SimpleNamespace(
@@ -1183,6 +1209,10 @@ def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
             "ctx_tokens_est": "222",
             "ctx_dropped_sections_count": 999,
             "ctx_horizon_days": 999,
+            "rag_target_count": 5000,
+            "rag_target_hit_count": -2,
+            "rag_insufficient_flag": 99,
+            "rag_source_mix": "SYLLABUS:1|NOTES:2|SUPPLEMENTAL:1" * 10,
         },
         persist=False,
     )
@@ -1198,6 +1228,11 @@ def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
     assert cleaned["ctx_tokens_est"] == 222
     assert cleaned["ctx_dropped_sections_count"] == 50
     assert cleaned["ctx_horizon_days"] == 90
+    assert cleaned["rag_target_count"] == 1000
+    assert cleaned["rag_target_hit_count"] == 0
+    assert cleaned["rag_insufficient_flag"] == 1
+    assert cleaned["rag_source_mix"].startswith("syllabus:1|notes:2|supplemental:1")
+    assert len(cleaned["rag_source_mix"]) <= 120
     assert cleaned["ts_utc"]
 
     for idx in range(4):
@@ -1230,6 +1265,10 @@ def test_summarize_ai_tutor_telemetry_computes_rates_and_error_breakdown():
                 "response_chars": 300,
                 "prompt_tokens_est": 30,
                 "response_tokens_est": 75,
+                "rag_target_count": 2,
+                "rag_target_hit_count": 1,
+                "rag_insufficient_flag": 0,
+                "rag_source_mix": "syllabus:1",
             },
             {
                 "outcome": "cancelled",
@@ -1239,6 +1278,10 @@ def test_summarize_ai_tutor_telemetry_computes_rates_and_error_breakdown():
                 "response_chars": 150,
                 "prompt_tokens_est": 25,
                 "response_tokens_est": 38,
+                "rag_target_count": 2,
+                "rag_target_hit_count": 0,
+                "rag_insufficient_flag": 1,
+                "rag_source_mix": "notes:1",
             },
             {
                 "outcome": "error",
@@ -1273,6 +1316,10 @@ def test_summarize_ai_tutor_telemetry_computes_rates_and_error_breakdown():
     assert summary["p95_latency_ms"] == pytest.approx(1200.0)
     assert summary["avg_prompt_chars"] == pytest.approx((120 + 100 + 80 + 60) / 4.0)
     assert summary["error_classes"] == {"busy": 2, "timeout": 1}
+    assert summary["rag_target_count"] == 2
+    assert summary["rag_target_hit_count"] == 1
+    assert summary["rag_insufficient_flag"] == 1
+    assert summary["rag_source_mix"] == "notes:1"
 
 
 def test_get_ai_tutor_latency_profile_and_adaptive_limits_under_load():
@@ -1397,6 +1444,44 @@ def test_build_debug_info_message_handles_missing_tutor_summary():
     assert "AI Tutor top error classes: none" in msg
 
 
+def test_build_debug_info_message_includes_tutor_loop_thresholds_lines():
+    dummy = types.SimpleNamespace(
+        exam_date="2026-06-01",
+        engine=types.SimpleNamespace(CHAPTERS=["A"], competence={}),
+        _get_tutor_learning_loop_observability_summary=lambda: {
+            "available": True,
+            "checks": 9,
+            "effective_accuracy_pct": 66.7,
+            "score_ema_pct": 58.0,
+            "recurrence": 2,
+            "streak_correct": 0,
+            "streak_incorrect": 1,
+            "confidence_bias_abs_ema": 1.3,
+            "calibration_bias": 0.4,
+            "transfer_score": 0.1,
+            "fragility_score": 48.0,
+            "mode": "error_clinic",
+            "phase": "reinforce",
+            "topic": "Risk Management",
+            "misconceptions_top": ("risk_application",),
+            "policy_thresholds": {
+                "min_assessments_for_metrics": 4,
+                "error_incorrect_rate_threshold": 0.44,
+                "retrieval_correct_rate_threshold": 0.78,
+                "retrieval_min_streak": 3,
+                "retrieval_score_ema_min": 0.61,
+                "calibration_bias_guard": 1.25,
+            },
+            "policy_tuning": {"status": "tuned", "reason": "error_pressure"},
+        },
+    )
+    msg = StudyPlanGUI._build_debug_info_message(dummy, hub={}, graph_status={}, drift={}, perf={}, tutor_summary={})
+    assert "Tutor loop thresholds (active):" in msg
+    assert "err>=0.44" in msg
+    assert "ret>=0.78" in msg
+    assert "Tutor loop tuning status/reason: tuned/error_pressure" in msg
+
+
 def test_build_debug_info_message_includes_rag_embedding_insights_lines():
     dummy = types.SimpleNamespace(
         exam_date="2026-06-01",
@@ -1407,6 +1492,25 @@ def test_build_debug_info_message_includes_rag_embedding_insights_lines():
             "active_pdf_total_mb": 143.8,
             "max_pdf_mb": 512.0,
             "active_pdf_names": ["fm_notes.pdf", "question_kit.pdf"],
+            "active_pdf_tier_counts": {"syllabus": 1, "notes": 1, "supplemental": 0},
+            "active_pdf_details": [
+                {
+                    "name": "syllabus.pdf",
+                    "tier": "syllabus",
+                    "size_mb": 3.2,
+                    "memory_loaded": True,
+                    "disk_doc": True,
+                    "embedding_coverage_pct": 100.0,
+                },
+                {
+                    "name": "fm_notes.pdf",
+                    "tier": "notes",
+                    "size_mb": 143.8,
+                    "memory_loaded": False,
+                    "disk_doc": True,
+                    "embedding_coverage_pct": 73.8,
+                },
+            ],
             "cache_enabled": True,
             "cache_db_path": "/tmp/ai_runtime_cache_v1.sqlite3",
             "memory_rag_docs": 2,
@@ -1433,13 +1537,95 @@ def test_build_debug_info_message_includes_rag_embedding_insights_lines():
         graph_status={},
         drift={},
         perf={},
-        tutor_summary={},
+        tutor_summary={"rag_target_count": 2, "rag_target_hit_count": 1, "rag_insufficient_flag": 0, "rag_source_mix": "syllabus:1|notes:1"},
     )
     assert "RAG PDFs active/configured: 2/6" in msg
+    assert "RAG PDF tiers: syllabus:1 | notes:1" in msg
+    assert "RAG PDF details:" in msg
     assert "RAG cache enabled/db: True (ai_runtime_cache_v1.sqlite3)" in msg
     assert "Embeddings rows total/model: 320/240 (all-minilm)" in msg
     assert "Embeddings coverage active chunks: 180/244 (73.8%)" in msg
     assert "Cache debug doc/query/emb-hit/emb-miss: 4/2/31/5" in msg
+    assert "Tutor RAG teaching hits/targets/insufficient: 1/2/0" in msg
+    assert "Tutor RAG source mix (latest): syllabus:1|notes:1" in msg
+
+
+def test_build_debug_info_message_includes_cognitive_observability_lines():
+    cog = CognitiveState()
+    cog.quiz_active = True
+    cog.struggle_mode = True
+    cog.last_persist_ok = False
+    cog.last_persist_error = "disk write failed due to permissions"
+    cog.working_memory.socratic_state = "PRODUCTIVE_STRUGGLE"
+    cog.working_memory.active_chapter = "Risk Management"
+    cog.working_memory.active_question_id = "q-17"
+    cog.working_memory.context_chunks = ["x", "y", "z"]
+    cog.working_memory.struggle_flags["latency_spike"] = True
+    cog.working_memory.struggle_flags["error_streak"] = True
+    cog.working_memory.struggle_flags["hint_dependency"] = False
+    cog.posteriors["Risk Management"] = CompetencyPosterior(alpha=3.0, beta=5.0)
+    cog.claim_confidence = {"a": 0.2, "b": 0.8, "c": 0.4}
+
+    dummy = types.SimpleNamespace(
+        exam_date="2026-06-01",
+        engine=types.SimpleNamespace(CHAPTERS=["Risk Management"], competence={}),
+        current_topic="Risk Management",
+        _cognitive_state=lambda: cog,
+    )
+    msg = StudyPlanGUI._build_debug_info_message(dummy, hub={}, graph_status={}, drift={}, perf={}, tutor_summary={})
+    assert "Cognitive observability: fsm=PRODUCTIVE_STRUGGLE topic=Risk Management" in msg
+    assert "Cognitive struggle flags latency/error_streak/hint_dep: 1/1/0" in msg
+    assert "Cognitive claim confidence count/avg/low: 3/" in msg
+    assert "Cognitive snapshot persist health/error: error/disk write failed due to permissions" in msg
+
+
+def test_build_tutor_loop_cognitive_runtime_meta_reports_posterior_and_flags(monkeypatch):
+    cog = CognitiveState()
+    cog.quiz_active = True
+    cog.struggle_mode = True
+    cog.working_memory.socratic_state = "SCAFFOLD"
+    cog.working_memory.active_chapter = "WACC"
+    cog.working_memory.context_chunks = ["a", "b"]
+    cog.posteriors["WACC"] = CompetencyPosterior(alpha=8.0, beta=2.0)
+    dummy = types.SimpleNamespace()
+    dummy._is_cognitive_runtime_enabled = lambda: True
+    dummy._cognitive_state = lambda: cog
+    dummy.current_topic = "WACC"
+    meta = StudyPlanGUI._build_tutor_loop_cognitive_runtime_meta(dummy, chapter="WACC")
+    assert bool(meta.get("enabled", False)) is True
+    assert str(meta.get("topic", "")) == "WACC"
+    assert str(meta.get("fsm_state", "")) == "SCAFFOLD"
+    assert bool(meta.get("quiz_active", False)) is True
+    assert bool(meta.get("struggle_mode", False)) is True
+    assert int(meta.get("wm_chunks", 0) or 0) == 2
+    assert float(meta.get("posterior_mean", 0.0) or 0.0) > 0.75
+    assert float(meta.get("posterior_variance", 1.0) or 1.0) >= 0.0
+
+
+def test_get_rag_embedding_insights_includes_per_pdf_details_and_tiers(tmp_path):
+    pdf1 = tmp_path / "syllabus.pdf"
+    pdf2 = tmp_path / "course_notes.pdf"
+    pdf1.write_bytes(b"x" * 1024)
+    pdf2.write_bytes(b"y" * 2048)
+    dummy = types.SimpleNamespace(
+        engine=types.SimpleNamespace(SEMANTIC_MODEL_NAME="all-minilm"),
+        _ai_tutor_rag_cache={},
+        _ai_cache_debug_last={},
+        ai_tutor_rag_max_sources=6,
+    )
+    dummy._get_ai_tutor_rag_source_pdfs = lambda: [str(pdf1), str(pdf2)]
+    dummy._get_ai_tutor_rag_max_pdf_bytes = lambda: 10 * 1024 * 1024
+    dummy._ai_cache_enabled = lambda: False
+    dummy._ai_tutor_rag_doc_cache_key = types.MethodType(StudyPlanGUI._ai_tutor_rag_doc_cache_key, dummy)
+    dummy._classify_ai_tutor_rag_source_tier = types.MethodType(StudyPlanGUI._classify_ai_tutor_rag_source_tier, dummy)
+    insights = StudyPlanGUI._get_rag_embedding_insights(dummy)
+    details = list(insights.get("active_pdf_details", []) or [])
+    assert insights["active_pdf_count"] == 2
+    assert insights["active_pdf_tier_counts"]["syllabus"] == 1
+    assert insights["active_pdf_tier_counts"]["notes"] == 1
+    assert len(details) == 2
+    assert {row["tier"] for row in details} == {"syllabus", "notes"}
+    assert all("memory_loaded" in row for row in details)
 
 
 def test_compute_tutor_control_state_enables_send_and_copy_last_when_ready():
@@ -1457,6 +1643,229 @@ def test_compute_tutor_control_state_enables_send_and_copy_last_when_ready():
     assert state["copy_last_enabled"] is True
     assert state["copy_transcript_enabled"] is True
     assert state["jump_latest_enabled"] is True
+
+
+def test_format_ui_info_block_lines_splits_long_status_rows_for_readability():
+    dummy = types.SimpleNamespace()
+    text = StudyPlanGUI._format_ui_info_block_lines(
+        dummy,
+        ["Intervention: extra topic + shorter breaks until on pace."],
+        split_threshold=40,
+    )
+    assert "Intervention:" in text
+    assert "\n" in text
+    assert "  extra topic + shorter breaks until on pace." in text
+
+
+def test_refresh_workbench_header_compact_layout_compacts_without_stacking_in_very_narrow_mode():
+    class _FakeButton:
+        def __init__(self):
+            self.label = ""
+
+        def set_label(self, value):
+            self.label = str(value)
+
+    class _FakeRow:
+        def __init__(self):
+            self.orientation = None
+            self.spacing = None
+
+        def set_orientation(self, value):
+            self.orientation = value
+
+        def set_spacing(self, value):
+            self.spacing = int(value)
+
+    class _FakeScroll:
+        def __init__(self):
+            self.min_h = None
+            self.policy = None
+
+        def set_min_content_height(self, value):
+            self.min_h = int(value)
+
+        def set_policy(self, h, v):
+            self.policy = (h, v)
+
+    btn = _FakeButton()
+    row = _FakeRow()
+    scroll = _FakeScroll()
+    dummy = types.SimpleNamespace(
+        _tile_mode=False,
+        _stack_layout_active=False,
+        _workbench_quick_actions_row=row,
+        _workbench_quick_actions_scroll=scroll,
+        _workbench_quick_action_button_labels={btn: ("Focus 25m", "Focus", "F25")},
+        get_width=lambda: 1000,
+    )
+    StudyPlanGUI._refresh_workbench_header_compact_layout(dummy)
+    assert btn.label == "F25"
+    assert row.orientation is not None
+    assert row.spacing == 4
+    assert scroll.min_h == 40
+    assert scroll.policy is not None
+
+
+def test_label_readability_helpers_preserve_critical_and_wrapping_behavior():
+    class _FakeLabel:
+        def __init__(self):
+            self._css: set[str] = set()
+            self.wrap = None
+            self.ellipsize = None
+            self.wrap_mode = None
+            self.xalign = None
+            self.max_width_chars = None
+
+        def add_css_class(self, name):
+            self._css.add(str(name))
+
+        def remove_css_class(self, name):
+            self._css.discard(str(name))
+
+        def has_css_class(self, name):
+            return str(name) in self._css
+
+        def set_wrap(self, value):
+            self.wrap = bool(value)
+
+        def set_ellipsize(self, value):
+            self.ellipsize = value
+
+        def set_wrap_mode(self, value):
+            self.wrap_mode = value
+
+        def set_xalign(self, value):
+            self.xalign = float(value)
+
+        def set_max_width_chars(self, value):
+            self.max_width_chars = int(value)
+
+        def get_parent(self):
+            return None
+
+    dummy = types.SimpleNamespace()
+    critical = _FakeLabel()
+    wrapped = _FakeLabel()
+
+    StudyPlanGUI._mark_critical_label(dummy, critical, no_wrap=True)
+    StudyPlanGUI._mark_wrapping_label(dummy, wrapped, max_width_chars=77)
+
+    assert critical.has_css_class("no-global-ellipsize") is True
+    assert critical.wrap is False
+    assert StudyPlanGUI._label_should_stay_single_line(dummy, critical) is False
+
+    assert wrapped.has_css_class("allow-wrap") is True
+    assert wrapped.wrap is True
+    assert wrapped.max_width_chars == 77
+    assert StudyPlanGUI._label_should_stay_single_line(dummy, wrapped) is False
+
+
+def test_set_workbench_refresh_fallback_updates_status_and_panel_text():
+    class _FakeLabel:
+        def __init__(self):
+            self.text = ""
+
+        def get_text(self):
+            return self.text
+
+        def set_text(self, value):
+            self.text = str(value)
+
+    class _FakeBuffer:
+        def __init__(self):
+            self.text = ""
+
+        def set_text(self, value):
+            self.text = str(value)
+
+    class _FakeTextView:
+        def __init__(self):
+            self._buf = _FakeBuffer()
+
+        def get_buffer(self):
+            return self._buf
+
+    dummy = types.SimpleNamespace(
+        _coach_workspace_status_label=_FakeLabel(),
+        _coach_workspace_view=_FakeTextView(),
+        _insights_workspace_status_label=_FakeLabel(),
+        _insights_workspace_view=_FakeTextView(),
+        _set_label_text_if_changed=lambda label, text: label.set_text(text),
+    )
+    report = types.SimpleNamespace(error="RuntimeError", details="boom")
+
+    StudyPlanGUI._set_workbench_refresh_fallback(dummy, "coach", report)
+    assert "UI refresh failed" in dummy._coach_workspace_status_label.text
+    assert "RuntimeError" in dummy._coach_workspace_view.get_buffer().text
+
+    StudyPlanGUI._set_workbench_refresh_fallback(dummy, "insights", report)
+    assert "UI refresh failed" in dummy._insights_workspace_status_label.text
+    assert "Diagnostics refresh failed" in dummy._insights_workspace_view.get_buffer().text
+
+
+def test_refresh_workbench_page_routes_through_safe_render_section():
+    calls: list[tuple[str, str]] = []
+
+    def _safe(section_id, render_fn, fallback_fn=None):
+        calls.append(("safe", str(section_id)))
+        render_fn()
+        return True
+
+    dummy = types.SimpleNamespace(
+        _safe_render_section=_safe,
+        _refresh_tutor_workspace_page=lambda: calls.append(("refresh", "tutor")),
+        _refresh_coach_workspace_page=lambda: calls.append(("refresh", "coach")),
+        _refresh_insights_workspace_page=lambda: calls.append(("refresh", "insights")),
+        _refresh_settings_workspace_page=lambda: calls.append(("refresh", "settings")),
+        _refresh_workbench_shell_status=lambda: calls.append(("refresh", "shell")),
+        _set_workbench_refresh_fallback=lambda _page, _report: calls.append(("fallback", "workbench")),
+    )
+
+    StudyPlanGUI._refresh_workbench_page(dummy, "coach")
+
+    assert calls == [("safe", "coach_workspace"), ("refresh", "coach"), ("refresh", "shell")]
+
+
+def test_render_study_room_card_guarded_uses_safe_render_section_and_clears_source():
+    calls: list[str] = []
+
+    def _safe(section_id, render_fn, fallback_fn=None):
+        calls.append(str(section_id))
+        render_fn()
+        return True
+
+    dummy = types.SimpleNamespace(
+        _study_room_update_source=123,
+        _safe_render_section=_safe,
+        _update_study_room_card_impl=lambda: calls.append("render"),
+        _set_study_room_render_fallback=lambda _report: calls.append("fallback"),
+    )
+
+    result = StudyPlanGUI._render_study_room_card_guarded(dummy)
+
+    assert result is False
+    assert dummy._study_room_update_source is None
+    assert calls == ["study_room", "render"]
+
+
+def test_render_dashboard_guarded_uses_safe_render_section():
+    calls: list[str] = []
+
+    def _safe(section_id, render_fn, fallback_fn=None):
+        calls.append(str(section_id))
+        render_fn()
+        return True
+
+    dummy = types.SimpleNamespace(
+        _safe_render_section=_safe,
+        _render_dashboard=lambda: calls.append("render"),
+        _set_dashboard_render_fallback=lambda _report: calls.append("fallback"),
+    )
+
+    result = StudyPlanGUI._render_dashboard_guarded(dummy)
+
+    assert result is False
+    assert calls == ["dashboard", "render"]
 
 
 def test_compute_tutor_control_state_running_disables_send_and_copy_last():
@@ -1901,6 +2310,140 @@ def test_validate_generated_gap_questions_non_strict_allows_shorter_rows():
     assert "question_too_short" not in basic_reasons
 
 
+def test_validate_generated_gap_questions_uses_engine_sanitizer_for_placeholder_options():
+    def _sanitize(chapter, row, source="runtime", quarantine_on_fail=False):
+        if list(row.get("options", []) or []) == ["A", "B", "C", "D"]:
+            return None, ["placeholder_options_only"], {"repaired": False}
+        return row, [], {"repaired": False}
+
+    engine = types.SimpleNamespace(
+        CHAPTERS=["Topic A"],
+        QUESTIONS={"Topic A": []},
+        _sanitize_question_bank_row=_sanitize,
+        _question_dedupe_key=lambda row: (
+            str(row.get("question", "")).strip().lower(),
+            tuple(str(v).strip().lower() for v in list(row.get("options", []) or [])),
+            str(row.get("correct", "")).strip().lower(),
+        ),
+    )
+    dummy = types.SimpleNamespace(engine=engine)
+    valid, reasons = StudyPlanGUI._validate_generated_gap_questions(
+        dummy,
+        "Topic A",
+        [
+            {
+                "question": "Which statement is correct?",
+                "options": ["A", "B", "C", "D"],
+                "correct": "A",
+                "explanation": "Placeholder-only options should be rejected.",
+            }
+        ],
+    )
+    assert valid == []
+    assert "placeholder_options_only" in reasons
+
+
+def test_parse_generated_gap_questions_normalizes_common_schema_variants():
+    dummy = types.SimpleNamespace()
+    dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
+    payload = {
+        "topic": "Topic A",
+        "items": [
+            {
+                "prompt": "CAPM is mainly used to estimate what?",
+                "choices": {"A": "Tax payable", "B": "Required return", "C": "Inventory EOQ", "D": "Dividend cover"},
+                "answer": "B",
+                "rationale": "CAPM estimates required return.",
+            },
+            {
+                "stem": "Which ratio is used in Miller-Orr inputs here?",
+                "answers": [
+                    {"label": "A", "text": "Variance of daily cash flows"},
+                    {"label": "B", "text": "PE ratio"},
+                    {"label": "C", "text": "Dividend yield"},
+                    {"label": "D", "text": "Gross margin"},
+                ],
+                "correct_option": 0,
+                "why": "Miller-Orr uses variance of cash flows.",
+            },
+        ],
+    }
+    chapter, rows, err = StudyPlanGUI._parse_generated_gap_questions(dummy, json.dumps(payload, ensure_ascii=True))
+    assert chapter == "Topic A"
+    assert err is None
+    assert len(rows) == 2
+    assert rows[0]["question"].startswith("CAPM is mainly used")
+    assert rows[0]["correct"] == "Required return"
+    assert rows[1]["correct"] == "Variance of daily cash flows"
+    assert len(rows[0]["options"]) == 4
+    assert len(rows[1]["options"]) == 4
+
+
+def test_parse_generated_gap_questions_recovers_labeled_option_strings_and_warns_on_dropped_rows():
+    dummy = types.SimpleNamespace()
+    dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
+    text = json.dumps(
+        {
+            "chapter": "Topic A",
+            "questions": [
+                {
+                    "question_text": "What does EOQ primarily optimize?",
+                    "options": ["A) total inventory cost", "B) tax burden", "C) interest cover", "D) gearing ratio"],
+                    "correct_answer": "A",
+                    "explanation": "EOQ minimizes total ordering + holding costs.",
+                },
+                "not-a-row",
+            ],
+        },
+        ensure_ascii=True,
+    )
+    chapter, rows, err = StudyPlanGUI._parse_generated_gap_questions(dummy, text)
+    assert chapter == "Topic A"
+    assert len(rows) == 1
+    assert rows[0]["correct"] == "total inventory cost"
+    assert "Recovered 1 rows; dropped 1 malformed row" in str(err or "")
+
+
+def test_generate_gap_drill_questions_uses_recovery_status_on_ollama_error():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        ai_tutor_gap_generation_enabled=True,
+        local_llm_enabled=True,
+        _select_local_llm_model=lambda **_kw: ("model-a", None),
+        _build_gap_generation_prompt=lambda chapter, count, snapshot: "prompt",
+        _ollama_generate_text=lambda model, prompt: ("", "connection refused"),
+        _compose_ollama_recovery_status=lambda err, **_kw: "RECOVERY STATUS",
+    )
+
+    ok, msg = StudyPlanGUI._generate_gap_drill_questions(dummy, "Topic A", snapshot={})
+
+    assert ok is False
+    assert msg == "RECOVERY STATUS"
+
+
+def test_generate_gap_drill_questions_uses_guardrail_status_for_parse_reject():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        ai_tutor_gap_generation_enabled=True,
+        local_llm_enabled=True,
+        _select_local_llm_model=lambda **_kw: ("model-a", None),
+        _build_gap_generation_prompt=lambda chapter, count, snapshot: "prompt",
+        _ollama_generate_text=lambda model, prompt: ("{}", None),
+        _parse_generated_gap_questions=lambda text: ("Topic A", [], "No JSON object found."),
+        _append_gap_question_quarantine=lambda *_args, **_kw: None,
+        _record_ai_tutor_autopilot_metrics=lambda *_args, **_kw: None,
+        _compose_ollama_guardrail_status=lambda detail, **_kw: "GUARDRAIL STATUS",
+        _ai_tutor_autopilot_stats={},
+    )
+
+    ok, msg = StudyPlanGUI._generate_gap_drill_questions(dummy, "Topic A", snapshot={})
+
+    assert ok is False
+    assert msg == "GUARDRAIL STATUS"
+
+
 def test_normalize_ai_tutor_action_plan_section_c_requires_confirmation():
     engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"])
     dummy = types.SimpleNamespace(engine=engine)
@@ -2131,6 +2674,199 @@ def test_evaluate_section_c_response_falls_back_when_llm_disabled():
     assert isinstance(evaluation, dict)
     assert evaluation.get("method") == "deterministic"
     assert "Local AI disabled" in str(warn or "")
+
+
+def test_section_c_rewrite_planner_picks_weakest_by_ratio_then_mark_weight():
+    dummy = types.SimpleNamespace()
+    question = {
+        "prompt": "Advise on receivables policy using case facts.",
+        "exhibits": ["Sales 2.4m; funding cost 11%; bad debts may increase."],
+        "required_tasks": [
+            "Apply technical model to the case facts.",
+            "Show workings and assumptions.",
+            "Give a justified recommendation.",
+        ],
+    }
+    # Two weak rows share ratio 0.5; planner should choose the one with higher max marks.
+    evaluation = {
+        "criterion_scores": [
+            {"criterion": "Technical application to case facts", "score": 4, "max_mark": 8, "feedback": "Partial."},
+            {"criterion": "Method, workings, and assumptions", "score": 3, "max_mark": 6, "feedback": "Partial."},
+            {"criterion": "Evaluation and recommendation", "score": 3, "max_mark": 4, "feedback": "Okay."},
+        ]
+    }
+    plan = StudyPlanGUI._plan_section_c_weakest_criterion_rewrite(dummy, question, evaluation)
+    assert isinstance(plan, dict)
+    assert plan["criterion"] == "Technical application to case facts"
+    assert plan["criterion_kind"] == "technical"
+    assert "Rewrite only the weakest section" in str(plan.get("instruction", ""))
+
+
+def test_section_c_evaluation_delta_computes_total_and_row_deltas():
+    dummy = types.SimpleNamespace()
+    before_eval = {
+        "total_mark": 9,
+        "max_mark": 20,
+        "criterion_scores": [
+            {"criterion": "Technical application to case facts", "score": 4, "max_mark": 8},
+            {"criterion": "Method, workings, and assumptions", "score": 3, "max_mark": 6},
+            {"criterion": "Evaluation and recommendation", "score": 2, "max_mark": 4},
+            {"criterion": "Structure and exam communication", "score": 0, "max_mark": 2},
+        ],
+    }
+    after_eval = {
+        "total_mark": 13,
+        "max_mark": 20,
+        "criterion_scores": [
+            {"criterion": "Technical application to case facts", "score": 6, "max_mark": 8},
+            {"criterion": "Method, workings, and assumptions", "score": 4, "max_mark": 6},
+            {"criterion": "Evaluation and recommendation", "score": 2, "max_mark": 4},
+            {"criterion": "Structure and exam communication", "score": 1, "max_mark": 2},
+        ],
+    }
+    delta = StudyPlanGUI._compute_section_c_evaluation_delta(dummy, before_eval, after_eval)
+    assert isinstance(delta, dict)
+    assert delta["before_total"] == 9
+    assert delta["after_total"] == 13
+    assert delta["total_delta"] == 4
+    rows = list(delta.get("criterion_deltas", []) or [])
+    assert any(row.get("criterion") == "Technical application to case facts" and row.get("delta") == 2 for row in rows)
+    text = StudyPlanGUI._format_section_c_delta_text(dummy, delta)
+    assert "Rewrite delta: +4" in text
+
+
+def test_build_section_c_intelligence_snapshot_uses_existing_intelligence_signals():
+    dummy = types.SimpleNamespace()
+    dummy._build_local_ai_context_packet = lambda kind="tutor", horizon_days=14: {"must_review_due": 5}
+    dummy._get_tutor_learning_loop_observability_summary = lambda: {
+        "checks": 12,
+        "fragility_score": 64.0,
+        "effective_accuracy_pct": 58.0,
+        "calibration_bias": 1.0,
+        "misconceptions_top": ("method_gap",),
+    }
+    dummy._build_tutor_loop_cognitive_runtime_meta = lambda chapter="": {
+        "posterior_mean": 0.38,
+        "posterior_variance": 0.04,
+        "struggle_mode": True,
+        "quiz_active": False,
+        "fsm_state": "PRODUCTIVE_STRUGGLE",
+    }
+    dummy._read_recent_section_c_attempts_summary = lambda chapter, **_: {
+        "attempts": 4,
+        "avg_score_pct": 47.0,
+        "last_score_pct": 51.0,
+        "weakest_criterion_top": "Method, workings, and assumptions",
+        "weakest_criterion_recurrence": 3,
+    }
+    dummy._build_section_c_intelligence_snapshot = types.MethodType(StudyPlanGUI._build_section_c_intelligence_snapshot, dummy)
+
+    intel = StudyPlanGUI._build_section_c_intelligence_snapshot(dummy, "Topic A", snapshot={"must_review_due": 2})
+    assert intel["target_difficulty"] == "supportive"
+    assert intel["struggle_mode"] is True
+    assert intel["rubric_emphasis"] == "Method, workings, and assumptions"
+    assert intel["recent_section_c_weakest_recurrence"] == 3
+    assert any("confidence calibration" in str(item).lower() for item in list(intel.get("coaching_cues", []) or []))
+
+
+def test_build_section_c_generation_prompt_includes_intelligence_payload():
+    dummy = types.SimpleNamespace(module_title="FM", current_topic="Topic A")
+    dummy._build_section_c_intelligence_snapshot = lambda chapter, snapshot=None: {
+        "target_difficulty": "stretch",
+        "rubric_emphasis": "Evaluation and recommendation",
+        "coaching_cues": ["confidence calibration check"],
+        "fragility_score": 22.0,
+        "recent_section_c_avg_pct": 71.0,
+        "recent_section_c_weakest_criterion": "Evaluation and recommendation",
+    }
+    prompt = StudyPlanGUI._build_section_c_generation_prompt(
+        dummy,
+        "Topic A",
+        snapshot={"weak_topics_top3": [{"chapter": "Topic A"}], "must_review_due": 2},
+    )
+    assert "section_c_intelligence" in prompt
+    assert "\"target_difficulty\":\"stretch\"" in prompt
+    assert "\"rubric_emphasis\":\"Evaluation and recommendation\"" in prompt
+    assert "Use payload.section_c_intelligence.target_difficulty" in prompt
+
+
+def test_section_c_rewrite_planner_adapts_instruction_from_intelligence():
+    dummy = types.SimpleNamespace()
+    question = {
+        "prompt": "Advise on receivables policy using case facts.",
+        "exhibits": ["Sales 2.4m; funding cost 11%; bad debts may increase."],
+        "required_tasks": [
+            "Apply technical model to the case facts.",
+            "Show workings and assumptions.",
+            "Give a justified recommendation.",
+        ],
+    }
+    evaluation = {
+        "criterion_scores": [
+            {"criterion": "Technical application to case facts", "score": 4, "max_mark": 8, "feedback": "Partial."},
+            {"criterion": "Method, workings, and assumptions", "score": 3, "max_mark": 6, "feedback": "Partial."},
+            {"criterion": "Evaluation and recommendation", "score": 3, "max_mark": 4, "feedback": "Okay."},
+        ]
+    }
+    plan = StudyPlanGUI._plan_section_c_weakest_criterion_rewrite(
+        dummy,
+        question,
+        evaluation,
+        intelligence={
+            "target_difficulty": "supportive",
+            "struggle_mode": True,
+            "rubric_emphasis": "Technical application to case facts",
+            "recent_section_c_weakest_recurrence": 3,
+            "calibration_bias": 1.2,
+            "must_review_due": 4,
+        },
+    )
+    assert isinstance(plan, dict)
+    instruction = str(plan.get("instruction", ""))
+    assert "Target length: 4-6 lines." in instruction
+    assert "recurring weak criterion" in instruction.lower()
+    assert "assumption check or sensitivity" in instruction.lower() or "assumption check" in instruction.lower()
+
+
+def test_generate_section_c_question_uses_recovery_status_on_ollama_error():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        local_llm_enabled=True,
+        _select_local_llm_model=lambda **_kw: ("model-a", None),
+        _build_section_c_generation_prompt=lambda chapter, snapshot=None: "prompt",
+        _ollama_generate_text=lambda model, prompt: ("", "timeout"),
+        _default_section_c_question=lambda chapter: {"chapter": chapter, "prompt": "fallback"},
+        _upsert_section_c_question=lambda chapter, row, persist=True: row,
+        _compose_ollama_recovery_status=lambda err, **_kw: "RECOVERY STATUS",
+    )
+
+    row, warn = StudyPlanGUI._generate_section_c_question(dummy, "Topic A", snapshot={})
+
+    assert isinstance(row, dict)
+    assert row.get("prompt") == "fallback"
+    assert warn == "RECOVERY STATUS"
+
+
+def test_generate_section_c_question_uses_guardrail_status_on_parse_failure():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        local_llm_enabled=True,
+        _select_local_llm_model=lambda **_kw: ("model-a", None),
+        _build_section_c_generation_prompt=lambda chapter, snapshot=None: "prompt",
+        _ollama_generate_text=lambda model, prompt: ("{}", None),
+        _parse_generated_section_c_question=lambda text, chapter: (None, "JSON parse error"),
+        _default_section_c_question=lambda chapter: {"chapter": chapter, "prompt": "fallback"},
+        _upsert_section_c_question=lambda chapter, row, persist=True: row,
+        _compose_ollama_guardrail_status=lambda detail, **_kw: "GUARDRAIL STATUS",
+    )
+
+    row, warn = StudyPlanGUI._generate_section_c_question(dummy, "Topic A", snapshot={})
+
+    assert isinstance(row, dict)
+    assert row.get("prompt") == "fallback"
+    assert warn == "GUARDRAIL STATUS"
 
 
 def test_format_ai_tutor_transcript_labels_roles():
@@ -2864,6 +3600,47 @@ def test_start_stop_core_housekeeping_timers_registers_and_cleans_sources(monkey
     assert int(dummy._window_poll_timer_id) == 0
 
 
+def test_start_core_housekeeping_timers_skips_semantic_and_auto_train_in_smoke_mode(monkeypatch):
+    import studyplan_app as appmod
+
+    timer_calls: list[tuple[int, int]] = []
+    registered: list[int] = []
+    loky_diag_labels: list[str] = []
+    next_id = {"value": 201}
+
+    def _fake_timeout_add(delay_ms, _cb):
+        source_id = int(next_id["value"])
+        next_id["value"] = source_id + 1
+        timer_calls.append((int(delay_ms), source_id))
+        return source_id
+
+    monkeypatch.setattr(appmod.GLib, "timeout_add", _fake_timeout_add)
+    monkeypatch.setattr(appmod, "_log_loky_diagnostics", lambda label: loky_diag_labels.append(str(label)))
+
+    dummy = types.SimpleNamespace(
+        _core_runtime_shutdown=False,
+        _dialog_smoke_mode=False,
+        _smoke_mode_bootstrap=True,
+        _auto_train_timer_id=0,
+        _semantic_warmup_timer_id=0,
+        _window_poll_timer_id=0,
+        _auto_train_ml_tick=lambda: True,
+        _semantic_warmup_tick=lambda: False,
+        _poll_window_size=lambda: True,
+        _register_glib_source=lambda source_id: registered.append(int(source_id)),
+        _force_remove_glib_source=lambda _source_id: None,
+    )
+
+    StudyPlanGUI._start_core_housekeeping_timers(dummy)
+
+    assert [row[0] for row in timer_calls] == [700]
+    assert registered == [201]
+    assert int(dummy._auto_train_timer_id) == 0
+    assert int(dummy._semantic_warmup_timer_id) == 0
+    assert int(dummy._window_poll_timer_id) == 201
+    assert loky_diag_labels == ["semantic_warmup_skipped"]
+
+
 def test_single_instance_lock_acquire_release_with_existing_lock(tmp_path):
     import fcntl
     import studyplan_app as appmod
@@ -2923,6 +3700,52 @@ def test_cleanup_quiz_dialog_runtime_applies_for_matching_session_token():
     assert dummy.quiz_dialog is None
 
 
+def test_cleanup_quiz_dialog_runtime_refreshes_ui_after_abrupt_close():
+    calls = {"stop": 0, "timer_label": 0, "dashboard": 0, "recommendations": 0, "study_room": 0, "tutor": 0}
+    active_dialog = object()
+    dummy = types.SimpleNamespace(
+        _quiz_reason_job_token=4,
+        quiz_dialog=active_dialog,
+        quiz_session={"session_token": 7},
+        _stop_quiz_or_review_timer_if_active=lambda finalize=True: calls.__setitem__("stop", calls["stop"] + 1),
+        _update_action_timer_label=lambda: calls.__setitem__("timer_label", calls["timer_label"] + 1),
+        update_dashboard=lambda: calls.__setitem__("dashboard", calls["dashboard"] + 1),
+        update_recommendations=lambda: calls.__setitem__("recommendations", calls["recommendations"] + 1),
+        update_study_room_card=lambda: calls.__setitem__("study_room", calls["study_room"] + 1),
+        _refresh_tutor_workspace_page=lambda: calls.__setitem__("tutor", calls["tutor"] + 1),
+    )
+
+    StudyPlanGUI._cleanup_quiz_dialog_runtime(dummy, finalize_timer=True, session_token=7, dialog=active_dialog)
+
+    assert calls == {
+        "stop": 1,
+        "timer_label": 1,
+        "dashboard": 1,
+        "recommendations": 1,
+        "study_room": 1,
+        "tutor": 1,
+    }
+    assert dummy.quiz_dialog is None
+
+
+def test_cleanup_quiz_dialog_runtime_stale_token_skips_ui_reconciliation():
+    calls = {"stop": 0, "timer_label": 0, "dashboard": 0}
+    active_dialog = object()
+    dummy = types.SimpleNamespace(
+        _quiz_reason_job_token=4,
+        quiz_dialog=active_dialog,
+        quiz_session={"session_token": 99},
+        _stop_quiz_or_review_timer_if_active=lambda finalize=True: calls.__setitem__("stop", calls["stop"] + 1),
+        _update_action_timer_label=lambda: calls.__setitem__("timer_label", calls["timer_label"] + 1),
+        update_dashboard=lambda: calls.__setitem__("dashboard", calls["dashboard"] + 1),
+    )
+
+    StudyPlanGUI._cleanup_quiz_dialog_runtime(dummy, finalize_timer=True, session_token=7, dialog=active_dialog)
+
+    assert calls == {"stop": 0, "timer_label": 0, "dashboard": 0}
+    assert dummy.quiz_dialog is active_dialog
+
+
 def test_on_close_request_uses_runtime_shutdown_and_non_blocking_recap_notification():
     calls: dict[str, int] = {"shutdown": 0, "notify": 0, "save_data": 0, "save_status": 0}
     dummy = types.SimpleNamespace(
@@ -2937,6 +3760,7 @@ def test_on_close_request_uses_runtime_shutdown_and_non_blocking_recap_notificat
         send_notification=lambda _title, _body: calls.__setitem__("notify", calls["notify"] + 1),
         engine=types.SimpleNamespace(save_data=lambda: calls.__setitem__("save_data", calls["save_data"] + 1)),
         update_save_status_display=lambda: calls.__setitem__("save_status", calls["save_status"] + 1),
+        _schedule_close_hard_exit=lambda _delay=0: None,
         get_application=lambda: None,
     )
 

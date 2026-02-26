@@ -14,13 +14,89 @@ AI_TUTOR_MAX_RESPONSE_CHARS = 12000
 AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS = 90
 AI_TUTOR_MIN_TURN_TIMEOUT_SECONDS = 20
 AI_TUTOR_MAX_TURN_TIMEOUT_SECONDS = 900
-AI_TUTOR_PROMPT_CONTRACT_VERSION = 3
+AI_TUTOR_PROMPT_CONTRACT_VERSION = 4
 AI_TUTOR_STREAM_STALL_MS = 900
 AI_TUTOR_STREAM_WATCHDOG_INTERVAL_MS = 240
 AI_TUTOR_RAG_USAGE_HINT = (
     "Use snippets when relevant and cite IDs like [S1] for snippet-backed facts. "
     "If snippets are insufficient, answer with model knowledge and state assumptions clearly."
 )
+
+
+def infer_tutor_prompt_mode_hint(user_prompt: str) -> str:
+    text = str(user_prompt or "").strip().lower()
+    if not text:
+        return "teach"
+    if any(token in text for token in ("section c", "constructed response", "case question", "case-based")):
+        return "section_c_coach"
+    if (
+        any(token in text for token in ("exam technique", "command verb", "marks", "time allocation", "examiner"))
+        and any(token in text for token in ("exam", "question", "answer", "approach", "technique", "section c"))
+    ):
+        return "exam_technique"
+    if any(token in text for token in ("quiz me", "test me", "drill me", "rapid fire", "retrieval", "practice questions")):
+        return "retrieval_drill"
+    if any(token in text for token in ("step by step", "guide me", "work through", "don't give", "dont give", "hint first")):
+        return "guided_practice"
+    if any(token in text for token in ("revision plan", "revise", "study plan", "what should i study", "what next")):
+        return "revision_planner"
+    if any(token in text for token in ("why am i wrong", "mistake", "error", "keep getting", "where am i going wrong")):
+        return "error_clinic"
+    return "teach"
+
+
+def _build_tutor_mode_guidance(mode_hint: str) -> list[str]:
+    mode = str(mode_hint or "teach").strip().lower() or "teach"
+    lines = [f"Mode hint (adapt response style): {mode}"]
+    if mode == "guided_practice":
+        lines.extend(
+            [
+                "- Use guided practice: ask for the learner's next step first, then reveal hints before full solutions.",
+                "- Keep explanations short between attempts and focus on method correction.",
+            ]
+        )
+    elif mode == "retrieval_drill":
+        lines.extend(
+            [
+                "- Use retrieval mode: minimize explanation first, ask 1-3 quick checks, then give concise correction.",
+                "- Prioritize recall/application prompts over long theory paragraphs.",
+            ]
+        )
+    elif mode == "exam_technique":
+        lines.extend(
+            [
+                "- Use exam-technique coaching: emphasize command verbs, mark allocation, and time management.",
+                "- Show what earns marks and common presentation mistakes.",
+            ]
+        )
+    elif mode == "section_c_coach":
+        lines.extend(
+            [
+                "- Use Section C coaching: structure by requirement part/marks and apply points to case facts.",
+                "- Prefer step-mark logic, assumptions, and recommendation quality over generic notes.",
+            ]
+        )
+    elif mode == "revision_planner":
+        lines.extend(
+            [
+                "- Use revision-planning mode: produce a practical sequence of study actions with timeboxes.",
+                "- Tie the plan to weak areas, due reviews, and immediate practice checks.",
+            ]
+        )
+    elif mode == "error_clinic":
+        lines.extend(
+            [
+                "- Use error-clinic mode: diagnose why the learner is missing marks, then prescribe corrective drills.",
+                "- Name the likely misconception and test the corrected understanding immediately.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "- Use teaching mode: explain intuition + method + exam relevance with a short worked example if applicable.",
+            ]
+        )
+    return lines
 
 
 def extract_tutor_coverage_targets(user_prompt: str, max_targets: int = 6) -> list[str]:
@@ -563,6 +639,7 @@ def build_ai_tutor_context_prompt_details(
     recent_messages = cleaned_history[-recent_cap:]
     older_summary = _summarize_older_tutor_messages(older_messages)
     coverage_targets = extract_tutor_coverage_targets(user_prompt, max_targets=6)
+    mode_hint = infer_tutor_prompt_mode_hint(user_prompt)
     lines = [
         "You are a first-class local ACCA tutor embedded inside the StudyPlan app.",
         f"Module: {module_title or 'selected module'}",
@@ -575,6 +652,15 @@ def build_ai_tutor_context_prompt_details(
         "Avoid generic motivation; be operational and exam-hard.",
         "When useful, end with one concrete next step (topic + mode + duration).",
         "If assumptions are required, state them explicitly.",
+        "Default learning-loop response contract (practice-first unless the user opts out):",
+        "- Direct answer / teach the concept briefly",
+        "- Method or worked example (when calculations/procedures apply)",
+        "- Micro-check (1-3 practical checks or prompts)",
+        "- What to look for / common pitfall",
+        "- Next step (topic + mode + duration)",
+        "- When the learner answers a check, mark it as correct/partial/incorrect and correct the specific gap",
+        "",
+        *_build_tutor_mode_guidance(mode_hint),
         "",
     ]
     if len(coverage_targets) >= 2:
@@ -614,6 +700,8 @@ def build_ai_tutor_context_prompt_details(
         "summary_included": bool(older_summary),
         "coverage_targets": coverage_targets,
         "coverage_target_count": int(len(coverage_targets)),
+        "mode_hint": str(mode_hint),
+        "practice_first_contract": True,
     }
     return prompt, meta
 
@@ -980,6 +1068,16 @@ class AITutorDialogController:
             prompt_text = _current_prompt_text(strip=False)
             char_count = len(prompt_text)
             word_count = len([tok for tok in prompt_text.split() if tok.strip()])
+            try:
+                size_fn = getattr(app, "_apply_tutor_prompt_window_size", None)
+                if callable(size_fn):
+                    size_fn(
+                        prompt_scroller,
+                        model_name=_selected_model_name() or str(getattr(app, "local_llm_model", "") or ""),
+                        base_min_height=120,
+                    )
+            except Exception:
+                pass
             prompt_count_label.set_text(f"{char_count} chars · {word_count} words")
             if char_count > 2200:
                 prompt_count_label.add_css_class("status-warn")
@@ -1662,6 +1760,33 @@ class AITutorDialogController:
             if not user_prompt:
                 status_label.set_text("Enter a prompt first.")
                 return
+            cognitive_runtime_brief = ""
+            cognitive_guard: dict[str, Any] = {}
+            try:
+                builder = getattr(app, "_build_cognitive_tutor_runtime_brief", None)
+                if callable(builder):
+                    cognitive_runtime_brief, cognitive_guard = cast(
+                        Any,
+                        builder(user_prompt=user_prompt, chapter=str(getattr(app, "current_topic", "") or "").strip()),
+                    )
+            except Exception:
+                cognitive_runtime_brief = ""
+                cognitive_guard = {}
+            blocked_response = str(cognitive_guard.get("blocked_response", "") or "").strip()
+            if blocked_response:
+                history.append({"role": "user", "content": user_prompt})
+                history.append({"role": "assistant", "content": blocked_response})
+                try:
+                    note_exchange = getattr(app, "_cognitive_tutor_note_exchange", None)
+                    if callable(note_exchange):
+                        cast(Any, note_exchange)("user", user_prompt)
+                        cast(Any, note_exchange)("assistant", blocked_response)
+                except Exception:
+                    pass
+                _persist_history()
+                status_label.set_text("Quiz active: Socratic guard enforced.")
+                _render_transcript(force_scroll=True)
+                return
             turn_requested_at = float(time.monotonic())
             prompt_stage_started_at = float(time.monotonic())
             module_title = str(getattr(app, "module_title", "") or "").strip() or "selected module"
@@ -1853,6 +1978,71 @@ class AITutorDialogController:
                     ).strip()
                 except Exception:
                     planner_brief = ""
+            learner_profile_brief = ""
+            learner_profile_builder = getattr(app, "_build_ai_tutor_learner_profile_brief", None)
+            if callable(learner_profile_builder):
+                try:
+                    learner_profile_brief = str(
+                        cast(
+                            Any,
+                            learner_profile_builder(
+                                current_topic=chapter,
+                                user_prompt=user_prompt,
+                                max_chars=260,
+                            ),
+                        )
+                        or ""
+                    ).strip()
+                except Exception:
+                    learner_profile_brief = ""
+            if learner_profile_brief:
+                planner_brief = (
+                    f"{planner_brief}\n{learner_profile_brief}".strip()
+                    if planner_brief
+                    else learner_profile_brief
+                )
+            if cognitive_runtime_brief:
+                planner_brief = (
+                    f"{planner_brief}\n{cognitive_runtime_brief}".strip()
+                    if planner_brief
+                    else cognitive_runtime_brief
+                )
+            rag_evidence_policy: dict[str, Any] = {}
+            rag_evidence_policy_builder = getattr(app, "_evaluate_ai_tutor_rag_evidence_policy", None)
+            if callable(rag_evidence_policy_builder):
+                try:
+                    rag_evidence_policy = dict(
+                        cast(
+                            Any,
+                            rag_evidence_policy_builder(
+                                user_prompt=user_prompt,
+                                chapter=chapter,
+                                rag_meta=rag_meta,
+                            ),
+                        )
+                        or {}
+                    )
+                except Exception:
+                    rag_evidence_policy = {}
+            rag_evidence_line = str(rag_evidence_policy.get("planner_brief_line", "") or "").strip()
+            if rag_evidence_line:
+                planner_brief = (
+                    f"{planner_brief}\n{rag_evidence_line}".strip()
+                    if planner_brief
+                    else rag_evidence_line
+                )
+            rag_claim_recorder = getattr(app, "_record_cognitive_rag_claim_confidence", None)
+            if callable(rag_claim_recorder):
+                try:
+                    cast(
+                        Any,
+                        rag_claim_recorder(
+                            user_prompt=user_prompt,
+                            decision=rag_evidence_policy,
+                        ),
+                    )
+                except Exception:
+                    pass
             full_prompt = assemble_ai_tutor_turn_prompt(
                 full_prompt,
                 learning_context=context_block,
@@ -2045,6 +2235,7 @@ class AITutorDialogController:
             embedding_cache_hits = int(rag_meta.get("embedding_cache_hits", 0) or 0)
             embedding_cache_misses = int(rag_meta.get("embedding_cache_misses", 0) or 0)
             prefilter_kept = int(rag_meta.get("prefilter_kept", 0) or 0)
+            rag_evidence_mode = str(rag_evidence_policy.get("policy_mode", "") or "").strip()
             status_parts = ["Generating…"]
             if condensed_count > 0:
                 status_parts.append(f"context condensed: {condensed_count} older turn(s)")
@@ -2052,6 +2243,9 @@ class AITutorDialogController:
                 status_parts.append(f"CTX: {context_chars}/{context_budget_chars} chars")
             if coverage_target_count > 1:
                 status_parts.append(f"Coverage targets: {coverage_target_count}")
+            fsm_state = str(cognitive_guard.get("fsm_state", "") or "").strip()
+            if fsm_state:
+                status_parts.append(f"FSM: {fsm_state}")
             if latency_load_level in {"warn", "critical"}:
                 status_parts.append(f"Adaptive mode: {latency_load_level}")
             if latency_hardening_applied or latency_slo_status == "fail":
@@ -2095,6 +2289,8 @@ class AITutorDialogController:
                 status_parts.append("RAG: no relevant snippets")
             elif rag_method == "disabled":
                 status_parts.append("RAG disabled (toggle in Preferences or set STUDYPLAN_AI_TUTOR_RAG_PDFS)")
+            if rag_evidence_mode in {"weak_grounding", "disabled"} and rag_method != "disabled":
+                status_parts.append("RAG evidence: weak")
             rag_errors = [err for err in rag_meta.get("errors", []) if err]
             if rag_errors:
                 status_parts.append(f"RAG errors: {rag_errors[0][:72]}")
@@ -2192,6 +2388,21 @@ class AITutorDialogController:
                     run_state["draft_assistant"] = ""
                     _set_running(False)
                     final_text = str(text or "").strip() or draft_assistant
+                    try:
+                        postfilter = getattr(app, "_cognitive_tutor_postfilter_response", None)
+                        if callable(postfilter):
+                            final_text = str(
+                                cast(
+                                    Any,
+                                    postfilter(
+                                        final_text,
+                                        permission=str(cognitive_guard.get("permission", "hint_ok") or "hint_ok"),
+                                    ),
+                                )
+                                or ""
+                            ).strip()
+                    except Exception:
+                        pass
 
                     coverage_eval = assess_tutor_coverage(final_text, coverage_targets)
                     coverage_state["target_count"] = int(coverage_eval.get("target_count", coverage_target_count) or coverage_target_count)
@@ -2245,6 +2456,13 @@ class AITutorDialogController:
                             final_text = clean_ai_tutor_text(final_text) or final_text
                             history.append({"role": "user", "content": draft_user})
                             history.append({"role": "assistant", "content": f"{final_text}\n\n{suffix}"})
+                            try:
+                                note_exchange = getattr(app, "_cognitive_tutor_note_exchange", None)
+                                if callable(note_exchange):
+                                    cast(Any, note_exchange)("user", draft_user)
+                                    cast(Any, note_exchange)("assistant", f"{final_text}\n\n{suffix}")
+                            except Exception:
+                                pass
                             _persist_history()
                             if bool(guard_state.get("timeout_hit", False)):
                                 status_label.set_text(f"Turn timed out after {int(turn_timeout_seconds)}s ({model_name}).")
@@ -2307,6 +2525,13 @@ class AITutorDialogController:
                                 pass
                         history.append({"role": "user", "content": draft_user})
                         history.append({"role": "assistant", "content": final_text})
+                        try:
+                            note_exchange = getattr(app, "_cognitive_tutor_note_exchange", None)
+                            if callable(note_exchange):
+                                cast(Any, note_exchange)("user", draft_user)
+                                cast(Any, note_exchange)("assistant", final_text)
+                        except Exception:
+                            pass
                         _persist_history()
                     _record_turn_telemetry(
                         outcome="success",
@@ -2362,6 +2587,13 @@ class AITutorDialogController:
                 app._ai_tutor_dialog_open = False
             except Exception:
                 pass
+            for refresh_name in ("_refresh_tutor_workspace_page", "update_dashboard", "update_study_room_card"):
+                try:
+                    refresh_fn = getattr(app, refresh_name, None)
+                    if callable(refresh_fn):
+                        refresh_fn()
+                except Exception:
+                    pass
             _persist_history()
             d.destroy()
 

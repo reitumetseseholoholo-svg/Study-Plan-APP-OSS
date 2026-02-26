@@ -9,6 +9,8 @@ from unittest import mock
 
 import pytest
 
+from studyplan.cognitive_state import CognitiveState
+from studyplan.working_memory_service import WorkingMemoryService
 from studyplan_engine import StudyPlanEngine
 
 
@@ -45,6 +47,33 @@ def test_constructor_sets_today_and_initial_structures(monkeypatch):
     assert eng.pomodoro_log.get("by_chapter") == {}
 
 
+def test_engine_initializes_cognitive_runtime_wrapper(engine_no_io):
+    eng = engine_no_io
+    assert isinstance(getattr(eng, "cognitive_state", None), CognitiveState)
+    assert isinstance(getattr(eng, "working_memory_service", None), WorkingMemoryService)
+    assert hasattr(eng, "mastery_kernel")
+    assert str(getattr(eng, "COGNITIVE_STATE_FILE", "") or "").endswith("cognitive_state.json")
+
+
+def test_save_data_persists_cognitive_state_snapshot(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    writes: list[tuple[str, dict]] = []
+
+    def _capture_atomic(path, payload, indent=2):
+        writes.append((str(path), dict(payload)))
+
+    monkeypatch.setattr(eng, "_backup_file", lambda path: None, raising=True)
+    monkeypatch.setattr(eng, "_append_health_log", lambda: None, raising=True)
+    monkeypatch.setattr(eng, "_atomic_write_json", _capture_atomic, raising=True)
+
+    eng.save_data()
+
+    assert any(path == eng.DATA_FILE for path, _payload in writes)
+    cog_writes = [payload for path, payload in writes if path == eng.COGNITIVE_STATE_FILE]
+    assert cog_writes, "expected cognitive_state.json snapshot write"
+    assert int(cog_writes[-1].get("schema_version", 0) or 0) >= 1
+
+
 def test_cleanup_joblib_loky_runtime_is_idempotent(monkeypatch):
     calls = {"count": 0, "kwargs": []}
     created = {"count": 0}
@@ -73,6 +102,166 @@ def test_cleanup_joblib_loky_runtime_is_idempotent(monkeypatch):
     assert created["count"] == 0
     assert calls["kwargs"]
     assert calls["kwargs"][0].get("wait") is False
+
+
+def test_cleanup_joblib_loky_runtime_allows_final_blocking_pass_after_nonblocking(monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    class _Executor:
+        def shutdown(self, **kwargs):
+            calls.append(dict(kwargs))
+
+    fake_module = types.SimpleNamespace(_executor=_Executor())
+    monkeypatch.setitem(sys.modules, "joblib.externals.loky.reusable_executor", fake_module)
+
+    original_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_DONE", False))
+    original_nb_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_NONBLOCKING_DONE", False))
+    try:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = False
+        StudyPlanEngine._LOKY_CLEANUP_NONBLOCKING_DONE = False
+        StudyPlanEngine._cleanup_joblib_loky_runtime(wait_for_workers=False)
+        fake_module._executor = _Executor()
+        StudyPlanEngine._cleanup_joblib_loky_runtime(wait_for_workers=True)
+    finally:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = original_done
+        StudyPlanEngine._LOKY_CLEANUP_NONBLOCKING_DONE = original_nb_done
+
+    assert len(calls) == 2
+    assert calls[0].get("wait") is False
+    assert calls[1].get("wait") is True
+
+
+def test_cleanup_joblib_loky_runtime_blocking_pass_runs_process_cleanup_hook(monkeypatch):
+    shutdown_calls: list[dict[str, object]] = []
+    process_calls = {"python_exit": 0}
+    tracker_calls = {"stop": 0}
+
+    class _Executor:
+        def shutdown(self, **kwargs):
+            shutdown_calls.append(dict(kwargs))
+
+    fake_reusable = types.SimpleNamespace(_executor=_Executor())
+    fake_process = types.SimpleNamespace(_python_exit=lambda: process_calls.__setitem__("python_exit", process_calls["python_exit"] + 1))
+    fake_backend_rt = types.SimpleNamespace(
+        _resource_tracker=types.SimpleNamespace(_stop=lambda: tracker_calls.__setitem__("stop", tracker_calls["stop"] + 1))
+    )
+    monkeypatch.setitem(sys.modules, "joblib.externals.loky.reusable_executor", fake_reusable)
+    monkeypatch.setitem(sys.modules, "joblib.externals.loky.process_executor", fake_process)
+    monkeypatch.setitem(sys.modules, "joblib.externals.loky.backend.resource_tracker", fake_backend_rt)
+
+    original_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_DONE", False))
+    original_nb_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_NONBLOCKING_DONE", False))
+    try:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = False
+        StudyPlanEngine._LOKY_CLEANUP_NONBLOCKING_DONE = False
+        StudyPlanEngine._cleanup_joblib_loky_runtime(wait_for_workers=True)
+    finally:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = original_done
+        StudyPlanEngine._LOKY_CLEANUP_NONBLOCKING_DONE = original_nb_done
+
+    assert shutdown_calls
+    assert shutdown_calls[0].get("wait") is True
+    assert process_calls["python_exit"] == 1
+    assert tracker_calls["stop"] == 1
+
+
+def test_cleanup_joblib_loky_runtime_blocking_pass_runs_process_cleanup_even_without_executor(monkeypatch):
+    process_calls = {"python_exit": 0}
+    fake_reusable = types.SimpleNamespace(_executor=None)
+    fake_process = types.SimpleNamespace(_python_exit=lambda: process_calls.__setitem__("python_exit", process_calls["python_exit"] + 1))
+    monkeypatch.setitem(sys.modules, "joblib.externals.loky.reusable_executor", fake_reusable)
+    monkeypatch.setitem(sys.modules, "joblib.externals.loky.process_executor", fake_process)
+
+    original_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_DONE", False))
+    original_nb_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_NONBLOCKING_DONE", False))
+    try:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = False
+        StudyPlanEngine._LOKY_CLEANUP_NONBLOCKING_DONE = True
+        StudyPlanEngine._cleanup_joblib_loky_runtime(wait_for_workers=True)
+    finally:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = original_done
+        StudyPlanEngine._LOKY_CLEANUP_NONBLOCKING_DONE = original_nb_done
+
+    assert process_calls["python_exit"] == 1
+
+
+def test_cleanup_joblib_loky_runtime_uses_pending_executor_for_final_blocking_pass(monkeypatch):
+    calls: list[dict[str, object]] = []
+    process_calls = {"python_exit": 0}
+    tracker_calls = {"stop": 0}
+
+    class _Executor:
+        def shutdown(self, **kwargs):
+            calls.append(dict(kwargs))
+
+    fake_reusable = types.SimpleNamespace(_executor=_Executor())
+    fake_process = types.SimpleNamespace(_python_exit=lambda: process_calls.__setitem__("python_exit", process_calls["python_exit"] + 1))
+    fake_backend_rt = types.SimpleNamespace(
+        _resource_tracker=types.SimpleNamespace(_stop=lambda: tracker_calls.__setitem__("stop", tracker_calls["stop"] + 1))
+    )
+    monkeypatch.setitem(sys.modules, "joblib.externals.loky.reusable_executor", fake_reusable)
+    monkeypatch.setitem(sys.modules, "joblib.externals.loky.process_executor", fake_process)
+    monkeypatch.setitem(sys.modules, "joblib.externals.loky.backend.resource_tracker", fake_backend_rt)
+
+    original_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_DONE", False))
+    original_nb_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_NONBLOCKING_DONE", False))
+    original_pending = getattr(StudyPlanEngine, "_LOKY_PENDING_BLOCKING_EXECUTOR", None)
+    try:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = False
+        StudyPlanEngine._LOKY_CLEANUP_NONBLOCKING_DONE = False
+        StudyPlanEngine._LOKY_PENDING_BLOCKING_EXECUTOR = None
+        StudyPlanEngine._cleanup_joblib_loky_runtime(wait_for_workers=False)
+        fake_reusable._executor = None
+        StudyPlanEngine._cleanup_joblib_loky_runtime(wait_for_workers=True)
+    finally:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = original_done
+        StudyPlanEngine._LOKY_CLEANUP_NONBLOCKING_DONE = original_nb_done
+        StudyPlanEngine._LOKY_PENDING_BLOCKING_EXECUTOR = original_pending
+
+    assert len(calls) == 2
+    assert calls[0].get("wait") is False
+    assert calls[1].get("wait") is True
+    assert process_calls["python_exit"] == 2
+    assert tracker_calls["stop"] == 2
+
+
+def test_cleanup_joblib_loky_runtime_uses_cached_process_module_when_import_fails(monkeypatch):
+    process_calls = {"python_exit": 0}
+    tracker_calls = {"stop": 0}
+    fake_reusable = types.SimpleNamespace(_executor=None)
+    fake_process = types.SimpleNamespace(_python_exit=lambda: process_calls.__setitem__("python_exit", process_calls["python_exit"] + 1))
+    monkeypatch.setitem(sys.modules, "joblib.externals.loky.reusable_executor", fake_reusable)
+
+    import importlib as _importlib
+
+    original_import_module = _importlib.import_module
+
+    def _fake_import_module(name: str, package=None):
+        if ("process_executor" in str(name)) or ("backend.resource_tracker" in str(name)):
+            raise ImportError("interpreter teardown simulation")
+        return original_import_module(name, package)
+
+    original_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_DONE", False))
+    original_nb_done = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_NONBLOCKING_DONE", False))
+    original_process_ref = getattr(StudyPlanEngine, "_LOKY_PROCESS_MODULE_REF", None)
+    original_rt_ref = getattr(StudyPlanEngine, "_LOKY_BACKEND_RESOURCE_TRACKER_REF", None)
+    try:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = False
+        StudyPlanEngine._LOKY_CLEANUP_NONBLOCKING_DONE = False
+        StudyPlanEngine._LOKY_PROCESS_MODULE_REF = fake_process
+        StudyPlanEngine._LOKY_BACKEND_RESOURCE_TRACKER_REF = types.SimpleNamespace(
+            _resource_tracker=types.SimpleNamespace(_stop=lambda: tracker_calls.__setitem__("stop", tracker_calls["stop"] + 1))
+        )
+        monkeypatch.setattr(_importlib, "import_module", _fake_import_module)
+        StudyPlanEngine._cleanup_joblib_loky_runtime(wait_for_workers=True)
+    finally:
+        StudyPlanEngine._LOKY_CLEANUP_DONE = original_done
+        StudyPlanEngine._LOKY_CLEANUP_NONBLOCKING_DONE = original_nb_done
+        StudyPlanEngine._LOKY_PROCESS_MODULE_REF = original_process_ref
+        StudyPlanEngine._LOKY_BACKEND_RESOURCE_TRACKER_REF = original_rt_ref
+
+    assert process_calls["python_exit"] == 1
+    assert tracker_calls["stop"] == 1
 
 
 def test_cleanup_joblib_loky_runtime_skips_when_no_executor(monkeypatch):
@@ -111,6 +300,44 @@ def test_shutdown_runtime_requests_blocking_loky_cleanup(monkeypatch):
     engine = StudyPlanEngine.__new__(StudyPlanEngine)
     StudyPlanEngine.shutdown_runtime(engine)
     assert captured.get("wait_for_workers") is True
+
+
+def test_constructor_registers_blocking_atexit_loky_cleanup(monkeypatch):
+    recorded_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    def _fake_register(func, *args, **kwargs):
+        recorded_calls.append((func, args, dict(kwargs)))
+        return object()
+
+    monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "load_questions", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "save_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "test_methods", lambda self: None, raising=True)
+    monkeypatch.setattr("studyplan_engine.atexit.register", _fake_register, raising=True)
+
+    original_registered = bool(getattr(StudyPlanEngine, "_LOKY_CLEANUP_REGISTERED", False))
+    try:
+        StudyPlanEngine._LOKY_CLEANUP_REGISTERED = False
+        StudyPlanEngine()
+    finally:
+        StudyPlanEngine._LOKY_CLEANUP_REGISTERED = original_registered
+
+    matched = False
+    for registered_func, args, kwargs in recorded_calls:
+        if not callable(registered_func):
+            continue
+        same_target = False
+        if hasattr(registered_func, "__func__") and hasattr(StudyPlanEngine._cleanup_joblib_loky_runtime, "__func__"):
+            same_target = registered_func.__func__ is StudyPlanEngine._cleanup_joblib_loky_runtime.__func__
+        if not same_target and registered_func is StudyPlanEngine._cleanup_joblib_loky_runtime:
+            same_target = True
+        if not same_target:
+            continue
+        if args == (True,) or kwargs.get("wait_for_workers") is True:
+            matched = True
+            break
+    assert matched, "Expected blocking atexit registration for loky cleanup"
 
 
 def test_competence_initialization_covers_all_chapters(engine_no_io):
@@ -467,14 +694,14 @@ def test_import_questions_json_reports_semantic_mapping_quality(engine_no_io, mo
         "questions": [
             {
                 "question": "Import semantic mapping question 1?",
-                "options": ["A", "B", "C", "D"],
-                "correct": "A",
+                "options": ["Alpha", "Beta", "Gamma", "Delta"],
+                "correct": "Alpha",
                 "explanation": "x",
             },
             {
                 "question": "Import semantic mapping question 2?",
-                "options": ["A", "B", "C", "D"],
-                "correct": "B",
+                "options": ["One", "Two", "Three", "Four"],
+                "correct": "Two",
                 "explanation": "y",
             },
         ],
@@ -518,8 +745,8 @@ def test_import_questions_json_keeps_pretagged_outcomes(engine_no_io, monkeypatc
         "questions": [
             {
                 "question": "Pretagged outcome import question?",
-                "options": ["A", "B", "C", "D"],
-                "correct": "C",
+                "options": ["North", "South", "East", "West"],
+                "correct": "East",
                 "explanation": "z",
                 "outcome_ids": ["A.7"],
             }
@@ -586,8 +813,8 @@ def test_import_questions_json_counts_cross_method(engine_no_io, monkeypatch, tm
         "questions": [
             {
                 "question": "Cross-method semantic import question?",
-                "options": ["A", "B", "C", "D"],
-                "correct": "A",
+                "options": ["Cash", "Debt", "Equity", "Tax"],
+                "correct": "Cash",
                 "explanation": "x",
             }
         ],
@@ -619,8 +846,8 @@ def test_add_questions_semantic_dedup_skips_near_duplicates(engine_no_io, monkey
     eng.QUESTIONS[chapter] = [
         {
             "question": "Which formula is used for weighted average cost of capital?",
-            "options": ["A", "B", "C", "D"],
-            "correct": "A",
+            "options": ["WACC formula", "CAPM formula", "NPV rule", "EOQ model"],
+            "correct": "WACC formula",
             "explanation": "",
         }
     ]
@@ -645,14 +872,14 @@ def test_add_questions_semantic_dedup_skips_near_duplicates(engine_no_io, monkey
     incoming = [
         {
             "question": "What is the WACC formula?",
-            "options": ["A", "B", "C", "D"],
-            "correct": "B",
+            "options": ["CAPM only", "Weighted average debt and equity cost", "Payback rule", "ARR rule"],
+            "correct": "Weighted average debt and equity cost",
             "explanation": "",
         },
         {
             "question": "What is investment appraisal?",
-            "options": ["A", "B", "C", "D"],
-            "correct": "C",
+            "options": ["Inventory count", "Payroll audit", "Project evaluation", "Tax return filing"],
+            "correct": "Project evaluation",
             "explanation": "",
         },
     ]
@@ -669,8 +896,8 @@ def test_add_questions_semantic_dedup_fallback_when_model_unavailable(engine_no_
     eng.QUESTIONS[chapter] = [
         {
             "question": "Which formula is used for weighted average cost of capital?",
-            "options": ["A", "B", "C", "D"],
-            "correct": "A",
+            "options": ["WACC formula", "CAPM formula", "NPV rule", "EOQ model"],
+            "correct": "WACC formula",
             "explanation": "",
         }
     ]
@@ -680,8 +907,8 @@ def test_add_questions_semantic_dedup_fallback_when_model_unavailable(engine_no_
     incoming = [
         {
             "question": "What is the WACC formula?",
-            "options": ["A", "B", "C", "D"],
-            "correct": "B",
+            "options": ["CAPM only", "Weighted average debt and equity cost", "Payback rule", "ARR rule"],
+            "correct": "Weighted average debt and equity cost",
             "explanation": "",
         }
     ]
@@ -689,6 +916,57 @@ def test_add_questions_semantic_dedup_fallback_when_model_unavailable(engine_no_
     assert added == 1
     assert int(dedup.get("skipped", 0) or 0) == 0
     assert bool(dedup.get("enabled", False)) is False
+
+
+def test_add_questions_sanitizer_rejects_placeholder_only_options(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    quarantined: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        eng,
+        "_append_question_quality_quarantine",
+        lambda ch, row, issues, **kwargs: quarantined.append((str(ch), list(issues))),
+    )
+    incoming = [
+        {
+            "question": "What is WACC?",
+            "options": ["A", "B", "C", "D"],
+            "correct": "A",
+            "explanation": "placeholder options should fail",
+        }
+    ]
+    added, stats = eng._add_questions_with_stats(chapter, incoming)
+    assert added == 0
+    assert int(stats.get("quality_quarantined", 0) or 0) >= 1
+    issue_counts = stats.get("quality_issue_counts", {})
+    assert isinstance(issue_counts, dict)
+    assert int(issue_counts.get("placeholder_options_only", 0) or 0) >= 1
+    assert quarantined and "placeholder_options_only" in quarantined[0][1]
+
+
+def test_sanitize_question_bank_row_repairs_inline_options_from_stem(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    row = {
+        "question": (
+            "Which statement is correct about WACC? "
+            "A) It ignores cost of equity "
+            "B) It combines weighted component costs "
+            "C) It is always lower than debt cost "
+            "D) It is the same as payback period"
+        ),
+        "options": ["A", "B", "C", "D"],
+        "correct": "B",
+        "explanation": "WACC combines weighted sources of finance.",
+    }
+    clean, issues, meta = eng._sanitize_question_bank_row(chapter, row, source="test", quarantine_on_fail=False)
+    assert issues == []
+    assert isinstance(clean, dict)
+    assert clean["question"].startswith("Which statement is correct about WACC?")
+    assert clean["options"][1] == "It combines weighted component costs"
+    assert clean["correct"] == "It combines weighted component costs"
+    assert bool(meta.get("repaired", False)) is True
+    assert "inline_options_extracted" in list(meta.get("repairs", []) or [])
 
 
 def test_import_data_snapshot_clamps_srs_to_question_count(tmp_path, monkeypatch):
@@ -730,8 +1008,8 @@ def test_restart_preserves_learning_cards_for_json_added_questions(tmp_path, mon
     monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
 
     extra_questions = [
-        {"question": "Extra Q1", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""},
-        {"question": "Extra Q2", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""},
+        {"question": "Extra Q1", "options": ["Opt 1", "Opt 2", "Opt 3", "Opt 4"], "correct": "Opt 1", "explanation": ""},
+        {"question": "Extra Q2", "options": ["Alpha", "Beta", "Gamma", "Delta"], "correct": "Alpha", "explanation": ""},
     ]
     questions_file.write_text(json.dumps({chapter: extra_questions}), encoding="utf-8")
 

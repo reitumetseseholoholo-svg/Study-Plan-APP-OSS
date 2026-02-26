@@ -17,6 +17,9 @@ import threading
 import io
 import contextlib
 from typing import Dict, Any, List, Union, Set, Tuple, cast
+from studyplan.cognitive_state import CognitiveState
+from studyplan.mastery_kernel import MasteryKernel
+from studyplan.working_memory_service import WorkingMemoryService
 from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
 
 class StudyPlanEngine:
@@ -81,6 +84,11 @@ class StudyPlanEngine:
     _SEMANTIC_SHARED_RERANK_LOCK = threading.Lock()
     _LOKY_CLEANUP_REGISTERED = False
     _LOKY_CLEANUP_DONE = False
+    _LOKY_CLEANUP_NONBLOCKING_DONE = False
+    _LOKY_PENDING_BLOCKING_EXECUTOR: Any | None = None
+    _LOKY_REUSABLE_MODULE_REF: Any | None = None
+    _LOKY_PROCESS_MODULE_REF: Any | None = None
+    _LOKY_BACKEND_RESOURCE_TRACKER_REF: Any | None = None
     CHAPTERS = [
         "FM Function",
         "FM Environment",
@@ -2517,7 +2525,10 @@ class StudyPlanEngine:
         self._init_module_defaults()
         if not bool(self.__class__._LOKY_CLEANUP_REGISTERED):
             try:
-                atexit.register(self.__class__._cleanup_joblib_loky_runtime)
+                # Final interpreter shutdown should request a blocking cleanup pass
+                # to reduce loky semaphore warnings if the app previously performed
+                # only a non-blocking close-time cleanup.
+                atexit.register(self.__class__._cleanup_joblib_loky_runtime, True)
                 self.__class__._LOKY_CLEANUP_REGISTERED = True
             except Exception:
                 pass
@@ -2553,6 +2564,8 @@ class StudyPlanEngine:
             for ch in self.CHAPTERS:
                 self.importance_weights.setdefault(ch, 10)
         self.DATA_FILE, self.QUESTIONS_FILE = self._resolve_module_paths(self.module_id)
+        data_dir_for_module = os.path.dirname(self.DATA_FILE) or self.DEFAULT_DATA_DIR
+        self.COGNITIVE_STATE_FILE = os.path.join(data_dir_for_module, "cognitive_state.json")
         if exam_date is None:
             self.exam_date = datetime.date.today() if default_exam_date_to_today else None
         else:
@@ -2720,6 +2733,9 @@ class StudyPlanEngine:
             self.load_data()
         except Exception as e:
             print(f"Unexpected error loading data: {e}")
+        self.cognitive_state = self._load_or_build_cognitive_state()
+        self.working_memory_service = WorkingMemoryService(self.cognitive_state)
+        self.mastery_kernel = MasteryKernel(self, self.cognitive_state)
 
         self._load_recall_model()
         self._load_recall_model_sklearn()
@@ -2786,9 +2802,15 @@ class StudyPlanEngine:
 
     @classmethod
     def _cleanup_joblib_loky_runtime(cls, wait_for_workers: bool = False) -> None:
+        wants_blocking = bool(wait_for_workers)
         if bool(cls._LOKY_CLEANUP_DONE):
             return
-        cls._LOKY_CLEANUP_DONE = True
+        if (not wants_blocking) and bool(getattr(cls, "_LOKY_CLEANUP_NONBLOCKING_DONE", False)):
+            return
+        if wants_blocking:
+            cls._LOKY_CLEANUP_DONE = True
+        else:
+            cls._LOKY_CLEANUP_NONBLOCKING_DONE = True
         reusable_module = None
         try:
             import importlib
@@ -2798,47 +2820,133 @@ class StudyPlanEngine:
                 import importlib
                 reusable_module = importlib.import_module("loky.reusable_executor")
             except Exception:
-                reusable_module = None
-        if reusable_module is None:
-            return
-        # Never create a new reusable executor during shutdown.
-        # Access module internals only if an executor already exists.
-        executor = getattr(reusable_module, "_executor", None)
-        if executor is None:
-            return
-        try:
-            executor_any = cast(Any, executor)
-        except Exception:
-            return
-        # Handle joblib/loky signature differences across versions.
-        # Explicit shutdown calls may request blocking worker teardown to
-        # reduce semaphore/resource leak warnings on interpreter exit.
-        if bool(wait_for_workers):
-            shutdown_attempts = (
-                {"wait": True, "kill_workers": True},
-                {"wait": True},
-                {"kill_workers": True},
-                {},
-            )
-        else:
-            shutdown_attempts = (
-                {"wait": False, "kill_workers": True},
-                {"wait": False},
-                {"kill_workers": True},
-                {},
-            )
-        for kwargs in shutdown_attempts:
+                reusable_module = getattr(cls, "_LOKY_REUSABLE_MODULE_REF", None)
+        if reusable_module is not None:
             try:
-                executor_any.shutdown(**kwargs)
-                break
-            except TypeError:
-                continue
+                cls._LOKY_REUSABLE_MODULE_REF = reusable_module
             except Exception:
-                break
+                pass
+        if reusable_module is not None:
+            # Never create a new reusable executor during shutdown.
+            # Access module internals only if an executor already exists.
+            executor = getattr(reusable_module, "_executor", None)
+            if (executor is None) and wants_blocking:
+                executor = getattr(cls, "_LOKY_PENDING_BLOCKING_EXECUTOR", None)
+            if executor is not None:
+                try:
+                    executor_any = cast(Any, executor)
+                except Exception:
+                    executor_any = None
+                if executor_any is not None:
+                    if not wants_blocking:
+                        try:
+                            cls._LOKY_PENDING_BLOCKING_EXECUTOR = executor_any
+                        except Exception:
+                            pass
+                    # Handle joblib/loky signature differences across versions.
+                    # Explicit shutdown calls may request blocking worker teardown to
+                    # reduce semaphore/resource leak warnings on interpreter exit.
+                    if wants_blocking:
+                        shutdown_attempts = (
+                            {"wait": True, "kill_workers": True},
+                            {"wait": True},
+                            {"kill_workers": True},
+                            {},
+                        )
+                    else:
+                        shutdown_attempts = (
+                            {"wait": False, "kill_workers": True},
+                            {"wait": False},
+                            {"kill_workers": True},
+                            {},
+                        )
+                    for kwargs in shutdown_attempts:
+                        try:
+                            executor_any.shutdown(**kwargs)
+                            break
+                        except TypeError:
+                            continue
+                        except Exception:
+                            break
+                try:
+                    setattr(reusable_module, "_executor", None)
+                except Exception:
+                    pass
+        if wants_blocking:
+            try:
+                cls._LOKY_PENDING_BLOCKING_EXECUTOR = None
+            except Exception:
+                pass
+        # Ask loky's process-executor layer to wake/join manager threads before
+        # interpreter exit. This reduces residual semaphores/resource_tracker warnings.
+        process_module = None
+        for process_mod_name in (
+            "joblib.externals.loky.process_executor",
+            "loky.process_executor",
+        ):
+            try:
+                import importlib
+                process_module = importlib.import_module(process_mod_name)
+            except Exception:
+                continue
+            break
+        if process_module is None:
+            process_module = getattr(cls, "_LOKY_PROCESS_MODULE_REF", None)
+        elif process_module is not None:
+            try:
+                cls._LOKY_PROCESS_MODULE_REF = process_module
+            except Exception:
+                pass
+        if process_module is not None:
+            try:
+                python_exit = getattr(process_module, "_python_exit", None)
+                if callable(python_exit):
+                    python_exit()
+            except Exception:
+                pass
+        backend_rt_module = None
+        for rt_mod_name in (
+            "joblib.externals.loky.backend.resource_tracker",
+            "loky.backend.resource_tracker",
+        ):
+            try:
+                import importlib
+                backend_rt_module = importlib.import_module(rt_mod_name)
+            except Exception:
+                continue
+            break
+        if backend_rt_module is None:
+            backend_rt_module = getattr(cls, "_LOKY_BACKEND_RESOURCE_TRACKER_REF", None)
+        elif backend_rt_module is not None:
+            try:
+                cls._LOKY_BACKEND_RESOURCE_TRACKER_REF = backend_rt_module
+            except Exception:
+                pass
+        if backend_rt_module is not None:
+            try:
+                tracker = getattr(backend_rt_module, "_resource_tracker", None)
+                stop = getattr(tracker, "_stop", None)
+                if callable(stop):
+                    stop()
+            except Exception:
+                pass
+        # Python's stdlib resource tracker may still hold loky semaphore entries even
+        # after loky-specific cleanup hooks run. Stop it during shutdown to avoid
+        # noisy leaked-semaphore warnings on clean app exit.
         try:
-            setattr(reusable_module, "_executor", None)
+            import multiprocessing.resource_tracker as mp_resource_tracker
+
+            mp_tracker = getattr(mp_resource_tracker, "_resource_tracker", None)
+            mp_stop = getattr(mp_tracker, "_stop", None)
+            if callable(mp_stop):
+                mp_stop()
         except Exception:
             pass
+        if wants_blocking:
+            try:
+                cls._LOKY_CLEANUP_NONBLOCKING_DONE = True
+            except Exception:
+                pass
 
     def shutdown_runtime(self, wait_for_workers: bool = True) -> None:
         self.__class__._cleanup_joblib_loky_runtime(wait_for_workers=bool(wait_for_workers))
@@ -6660,7 +6768,18 @@ class StudyPlanEngine:
                                 continue
                             nk = k if k in self.QUESTIONS_DEFAULT else self.CHAPTER_ALIASES.get(str(k).strip().lower())
                             if nk in self.QUESTIONS_DEFAULT:
-                                cleaned = [q for q in v if isinstance(q, dict)]
+                                cleaned: list[dict] = []
+                                for q in v:
+                                    if not isinstance(q, dict):
+                                        continue
+                                    sanitized, _issues, _meta = self._sanitize_question_bank_row(
+                                        nk,
+                                        q,
+                                        source="json_load",
+                                        quarantine_on_fail=True,
+                                    )
+                                    if isinstance(sanitized, dict):
+                                        cleaned.append(sanitized)
                                 questions_from_json.setdefault(nk, []).extend(cleaned)
             except json.JSONDecodeError as e:
                 print(f"Error loading questions from JSON: {e}")
@@ -6794,16 +6913,15 @@ class StudyPlanEngine:
         if chapter is None or chapter not in self.CHAPTERS:
             raise ValueError(f"Invalid chapter: {chapter}")
 
-        # Validate question structure
-        required_keys = {'question', 'options', 'correct', 'explanation'}
-        if required_keys != set(question_dict.keys()):
-            raise ValueError(f"Question must have keys: {required_keys}")
-
-        if len(question_dict['options']) != 4:
-            raise ValueError("Question must have exactly 4 options")
-
-        if question_dict['correct'] is None or question_dict['correct'] not in question_dict['options']:
-            raise ValueError("Correct answer must be one of the options")
+        sanitized, issues, _meta = self._sanitize_question_bank_row(
+            chapter,
+            question_dict,
+            source="add_question",
+            quarantine_on_fail=True,
+        )
+        if not isinstance(sanitized, dict):
+            raise ValueError(f"Question failed sanitization: {', '.join(issues[:3]) or 'invalid_question'}")
+        question_dict = sanitized
 
         # Load existing questions
         try:
@@ -6941,6 +7059,216 @@ class StudyPlanEngine:
         except Exception:
             cleaned = ""
         return cleaned.strip().lower()
+
+    def _question_quality_quarantine_path(self) -> str:
+        return os.path.expanduser("~/.config/studyplan/question_bank_quarantine.jsonl")
+
+    def _append_question_quality_quarantine(
+        self,
+        chapter: str,
+        row: Any,
+        issues: list[str],
+        *,
+        source: str = "runtime",
+    ) -> None:
+        payload = {
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            "chapter": str(chapter or ""),
+            "source": str(source or "runtime"),
+            "issues": [str(x) for x in issues if str(x)],
+            "row": row if isinstance(row, dict) else {"raw": str(row or "")[:1000]},
+        }
+        path = self._question_quality_quarantine_path()
+        line = json.dumps(payload, ensure_ascii=True) + "\n"
+        try:
+            os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, line.encode("utf-8", "replace"))
+                try:
+                    os.fsync(fd)
+                except Exception:
+                    pass
+            finally:
+                os.close(fd)
+        except Exception:
+            pass
+
+    def _sanitize_question_bank_row(
+        self,
+        chapter: str,
+        row: Any,
+        *,
+        source: str = "runtime",
+        quarantine_on_fail: bool = False,
+    ) -> tuple[dict | None, list[str], dict[str, Any]]:
+        issues: list[str] = []
+        meta: dict[str, Any] = {"repaired": False, "repairs": []}
+        if chapter not in getattr(self, "CHAPTERS", []):
+            issues.append("invalid_chapter")
+            return None, issues, meta
+        if not isinstance(row, dict):
+            issues.append("non_object_row")
+            return None, issues, meta
+
+        def _text_alias(d: dict, *keys: str) -> str:
+            for key in keys:
+                if key in d:
+                    text = " ".join(str(d.get(key, "") or "").split()).strip()
+                    if text:
+                        return text
+            return ""
+
+        def _strip_opt_prefix(text: Any) -> str:
+            cleaned = " ".join(str(text or "").split()).strip()
+            cleaned = re.sub(r"^\(?[A-Da-d]\)?[\.\:\-\)]\s*", "", cleaned)
+            return cleaned.strip()
+
+        def _normalize_options(raw: Any) -> tuple[list[str], dict[str, str]]:
+            labels: dict[str, str] = {}
+            if isinstance(raw, dict):
+                for key in ("A", "B", "C", "D"):
+                    if key in raw:
+                        val = _strip_opt_prefix(raw.get(key))
+                        if val:
+                            labels[key] = val
+            elif isinstance(raw, list):
+                for idx, item in enumerate(raw[:4]):
+                    lbl = chr(ord("A") + idx)
+                    if isinstance(item, dict):
+                        txt = _text_alias(item, "text", "option_text", "value", "content", "option", "answer")
+                        if not txt:
+                            txt = _text_alias(item, "label", "key")
+                        txt = _strip_opt_prefix(txt)
+                    else:
+                        txt = _strip_opt_prefix(item)
+                    if txt:
+                        labels[lbl] = txt
+            ordered = [labels[k] for k in ("A", "B", "C", "D") if k in labels]
+            return ordered, labels
+
+        def _extract_inline_options(stem_text: str) -> tuple[str, list[str]] | None:
+            text = str(stem_text or "").strip()
+            if not text:
+                return None
+            matches = list(re.finditer(r"(?<![A-Za-z0-9])([A-Da-d])[\)\.\:]\s*", text))
+            if len(matches) < 4:
+                return None
+            first_four = matches[:4]
+            labels = [m.group(1).upper() for m in first_four]
+            if labels != ["A", "B", "C", "D"]:
+                return None
+            options: list[str] = []
+            for idx, m in enumerate(first_four):
+                start = m.end()
+                end = first_four[idx + 1].start() if idx + 1 < len(first_four) else len(text)
+                seg = " ".join(text[start:end].split()).strip()
+                seg = _strip_opt_prefix(seg)
+                if not seg:
+                    return None
+                options.append(seg)
+            stem = " ".join(text[: first_four[0].start()].split()).strip()
+            if len(stem) < 6:
+                return None
+            return stem, options
+
+        def _placeholder_only(opts: list[str]) -> bool:
+            if len(opts) != 4:
+                return False
+            normalized = [str(o or "").strip().upper() for o in opts]
+            return normalized == ["A", "B", "C", "D"]
+
+        def _normalize_correct(raw_correct: Any, options: list[str], labels: dict[str, str]) -> str:
+            if isinstance(raw_correct, (int, float)) and not isinstance(raw_correct, bool):
+                idx = int(raw_correct)
+                if 0 <= idx < len(options):
+                    return str(options[idx])
+                if 1 <= idx <= len(options):
+                    return str(options[idx - 1])
+            raw = " ".join(str(raw_correct or "").split()).strip()
+            if not raw:
+                return ""
+            upper = raw.upper()
+            if upper in labels:
+                return str(labels[upper])
+            if upper[:1] in {"A", "B", "C", "D"} and len(upper) > 1 and upper[1] in {")", ".", ":"}:
+                mapped = labels.get(upper[0], "")
+                if mapped:
+                    return str(mapped)
+            stripped = _strip_opt_prefix(raw)
+            for opt in options:
+                if stripped.lower() == str(opt or "").strip().lower():
+                    return str(opt)
+            return stripped
+
+        question = _text_alias(row, "question", "prompt", "stem", "question_text", "text", "q")
+        options_raw = None
+        for key in ("options", "choices", "answers", "alternatives"):
+            if key in row:
+                options_raw = row.get(key)
+                break
+        options, labels = _normalize_options(options_raw)
+        correct = _normalize_correct(
+            row.get("correct", row.get("correct_answer", row.get("correct_option", row.get("answer")))),
+            options,
+            labels,
+        )
+        explanation = _text_alias(row, "explanation", "rationale", "why", "reason", "solution_explanation")
+        if not explanation and isinstance(row.get("solution"), str):
+            explanation = " ".join(str(row.get("solution", "") or "").split()).strip()
+
+        if _placeholder_only(options):
+            extracted = _extract_inline_options(question)
+            if extracted is not None:
+                question, extracted_options = extracted
+                options = extracted_options
+                labels = {chr(ord("A") + idx): opt for idx, opt in enumerate(options[:4])}
+                correct = _normalize_correct(
+                    row.get("correct", row.get("correct_answer", row.get("correct_option", row.get("answer")))),
+                    options,
+                    labels,
+                )
+                meta["repaired"] = True
+                meta["repairs"].append("inline_options_extracted")
+
+        if len(question) < 8:
+            issues.append("question_too_short")
+        if len(options) != 4:
+            issues.append("options_not_four")
+        else:
+            if any(not str(opt or "").strip() for opt in options):
+                issues.append("empty_option")
+            lowered = [str(opt or "").strip().lower() for opt in options]
+            if len(set(lowered)) != len(lowered):
+                issues.append("duplicate_options")
+            if _placeholder_only(options):
+                issues.append("placeholder_options_only")
+        if options and correct and correct not in options:
+            issues.append("correct_not_in_options")
+        if options and not correct:
+            issues.append("missing_correct")
+        if not explanation:
+            explanation = ""
+
+        if issues:
+            if quarantine_on_fail:
+                self._append_question_quality_quarantine(chapter, row, issues, source=source)
+            return None, sorted(set(issues)), meta
+
+        cleaned = {
+            "question": str(question),
+            "options": [str(opt) for opt in options],
+            "correct": str(correct),
+            "explanation": str(explanation),
+        }
+        # Preserve a small set of optional metadata fields if present
+        for extra_key in ("outcome_ids", "semantic_match_confidence", "semantic_match_method"):
+            if extra_key in row:
+                cleaned[extra_key] = row.get(extra_key)
+        return cleaned, [], meta
 
     def _question_dedupe_key(self, q: Dict[str, Any]) -> Tuple[str, Tuple[str, ...], str]:
         """Stable key for deduplicating questions across imports."""
@@ -7191,35 +7519,27 @@ class StudyPlanEngine:
         if chapter is None or score < 0.35:
             raise ValueError(f"Could not confidently match chapter '{chapter_name}'")
 
-        question_dicts: Dict[Tuple[str, Tuple[str, ...], str], Dict[str, Any]] = {
-            self._question_dedupe_key(question): dict(question)
-            for question in questions
-            if all(key in question for key in ("question", "options", "correct", "explanation"))
-        }
+        question_dicts: Dict[Tuple[str, Tuple[str, ...], str], Dict[str, Any]] = {}
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            clean_q, _issues, _meta = self._sanitize_question_bank_row(
+                chapter,
+                question,
+                source="import_questions_from_json",
+                quarantine_on_fail=True,
+            )
+            if not isinstance(clean_q, dict):
+                continue
+            question_dicts[self._question_dedupe_key(clean_q)] = dict(clean_q)
 
-        existing_questions: Set[Tuple[str, Tuple[str, ...], str]] = {
-            self._question_dedupe_key(question) for question in self.QUESTIONS.get(chapter, [])
-        }
-
-        new_questions: List[Dict[str, Any]] = [
-            q for q in question_dicts.values() if self._question_dedupe_key(q) not in existing_questions
-        ]
-
-        self.QUESTIONS.setdefault(chapter, []).extend(new_questions)
-
-        if chapter not in self.srs_data:
-            self.srs_data[chapter] = []
-
-        self.srs_data[chapter].extend([
-            {"last_review": None, "interval": 1, "efactor": 2.5}
-            for _ in new_questions
-        ])
+        added, _stats = self._add_questions_with_stats(chapter, list(question_dicts.values()))
 
         self.save_questions()
         self.save_data()
         self._semantic_invalidate_chapter_assets(chapter)
 
-        print(f"Imported {len(new_questions)} AI questions into {chapter_name}")
+        print(f"Imported {int(added)} AI questions into {chapter_name}")
 
     def _add_questions_with_stats(self, chapter: str, questions: list[dict]) -> tuple[int, dict[str, Any]]:
         """Validate, deduplicate, semantically deduplicate, and add questions to a chapter."""
@@ -7229,27 +7549,54 @@ class StudyPlanEngine:
             "skipped": 0,
             "method": "fallback",
             "threshold": float(getattr(self, "IMPORT_SEMANTIC_DEDUP_MIN_SCORE", 0.90) or 0.90),
+            "quality_checked": 0,
+            "quality_repaired": 0,
+            "quality_quarantined": 0,
+            "quality_issue_counts": {},
         }
         if chapter not in self.CHAPTERS:
             return 0, semantic_dedup
         valid = []
         for q in questions:
-            if not isinstance(q, dict):
+            semantic_dedup["quality_checked"] = int(semantic_dedup.get("quality_checked", 0) or 0) + 1
+            clean_q, issues, sanitize_meta = self._sanitize_question_bank_row(
+                chapter,
+                q,
+                source="add_questions",
+                quarantine_on_fail=True,
+            )
+            if not isinstance(clean_q, dict):
+                semantic_dedup["quality_quarantined"] = int(semantic_dedup.get("quality_quarantined", 0) or 0) + 1
+                issue_counts = semantic_dedup.get("quality_issue_counts", {})
+                if not isinstance(issue_counts, dict):
+                    issue_counts = {}
+                    semantic_dedup["quality_issue_counts"] = issue_counts
+                for issue in issues:
+                    key = str(issue or "").strip()
+                    if not key:
+                        continue
+                    issue_counts[key] = int(issue_counts.get(key, 0) or 0) + 1
                 continue
-            if not all(k in q for k in ("question", "options", "correct")):
-                continue
-            options = q.get("options")
-            if not isinstance(options, list) or len(options) < 2:
-                continue
-            correct = q.get("correct")
-            if correct not in options:
-                continue
-            # Ensure explanation key exists for consistency
-            q.setdefault("explanation", "")
-            valid.append(q)
+            if bool((sanitize_meta or {}).get("repaired", False)):
+                semantic_dedup["quality_repaired"] = int(semantic_dedup.get("quality_repaired", 0) or 0) + 1
+            valid.append(clean_q)
 
         valid = self._deduplicate_questions(chapter, valid)
+        quality_meta = {
+            "quality_checked": int(semantic_dedup.get("quality_checked", 0) or 0),
+            "quality_repaired": int(semantic_dedup.get("quality_repaired", 0) or 0),
+            "quality_quarantined": int(semantic_dedup.get("quality_quarantined", 0) or 0),
+            "quality_issue_counts": dict(semantic_dedup.get("quality_issue_counts", {}) or {}),
+        }
         valid, semantic_dedup = self._semantic_deduplicate_questions(chapter, valid)
+        for key, value in quality_meta.items():
+            if key == "quality_issue_counts":
+                merged_counts = dict(semantic_dedup.get(key, {}) or {})
+                for issue_key, count in dict(value or {}).items():
+                    merged_counts[str(issue_key)] = int(merged_counts.get(str(issue_key), 0) or 0) + int(count or 0)
+                semantic_dedup[key] = merged_counts
+            else:
+                semantic_dedup[key] = int(semantic_dedup.get(key, 0) or 0) + int(value or 0)
         if not valid:
             return 0, semantic_dedup
 
@@ -7265,6 +7612,53 @@ class StudyPlanEngine:
         """Backwards-compatible wrapper returning added count only."""
         added, _stats = self._add_questions_with_stats(chapter, questions)
         return added
+
+    def scan_question_bank_quality(self) -> dict[str, Any]:
+        """Deterministically scan the live question bank for malformed rows.
+
+        This is monitoring-only: it never mutates `QUESTIONS`. Use sanitization at import/add
+        paths for real-time cleaning.
+        """
+        issue_counts: dict[str, int] = {}
+        chapter_counts: dict[str, dict[str, int]] = {}
+        total_rows = 0
+        clean_rows = 0
+        warned_rows = 0
+        for chapter in list(getattr(self, "CHAPTERS", []) or []):
+            rows = getattr(self, "QUESTIONS", {}).get(chapter, [])
+            if not isinstance(rows, list):
+                continue
+            ch_stats = {"total": 0, "clean": 0, "flagged": 0}
+            for row in rows:
+                ch_stats["total"] += 1
+                total_rows += 1
+                clean_row, issues, _meta = self._sanitize_question_bank_row(
+                    chapter,
+                    row,
+                    source="quality_scan",
+                    quarantine_on_fail=False,
+                )
+                if isinstance(clean_row, dict):
+                    ch_stats["clean"] += 1
+                    clean_rows += 1
+                    continue
+                ch_stats["flagged"] += 1
+                warned_rows += 1
+                for issue in list(issues or []):
+                    key = str(issue or "").strip()
+                    if not key:
+                        continue
+                    issue_counts[key] = int(issue_counts.get(key, 0) or 0) + 1
+            if ch_stats["total"] > 0:
+                chapter_counts[str(chapter)] = ch_stats
+        return {
+            "total_rows": int(total_rows),
+            "clean_rows": int(clean_rows),
+            "flagged_rows": int(warned_rows),
+            "issue_counts": issue_counts,
+            "chapter_counts": chapter_counts,
+            "quality_score": (float(clean_rows) / float(total_rows)) if total_rows > 0 else 1.0,
+        }
 
     def _build_semantic_import_stats(self) -> dict[str, Any]:
         return {
@@ -11077,6 +11471,63 @@ class StudyPlanEngine:
             except Exception as e:
                 self._recover_data_from_latest_snapshot(e)
 
+    def _build_legacy_cognitive_state(self) -> CognitiveState:
+        module_cfg = {"chapter_flow": dict(getattr(self, "CHAPTER_FLOW", {}) or {})}
+        try:
+            return CognitiveState.from_legacy_data(
+                {
+                    "competence": dict(getattr(self, "competence", {}) or {}),
+                    "difficulty_counts": dict(getattr(self, "difficulty_counts", {}) or {}),
+                    "chapter_miss_streak": dict(getattr(self, "chapter_miss_streak", {}) or {}),
+                    "study_days": [d.isoformat() if hasattr(d, "isoformat") else str(d) for d in list(getattr(self, "study_days", set()) or [])],
+                },
+                module_cfg,
+            )
+        except Exception:
+            return CognitiveState()
+
+    def _load_or_build_cognitive_state(self) -> CognitiveState:
+        path = str(getattr(self, "COGNITIVE_STATE_FILE", "") or "").strip()
+        if path and os.path.exists(path):
+            try:
+                payload = self._load_json_file_with_limit(
+                    path,
+                    getattr(self, "MAX_DATA_FILE_BYTES", 64 * 1024 * 1024),
+                    "Cognitive state",
+                )
+                state = CognitiveState.from_snapshot(payload)
+                state.last_persist_ok = True
+                state.last_persist_error = None
+                return state
+            except Exception as exc:
+                try:
+                    corrupt_path = f"{path}.corrupt.{int(time.time())}"
+                    os.replace(path, corrupt_path)
+                except Exception:
+                    pass
+                state = self._build_legacy_cognitive_state()
+                state.last_persist_ok = False
+                state.last_persist_error = f"load_recovered:{exc}"
+                return state
+        state = self._build_legacy_cognitive_state()
+        state.last_persist_ok = None
+        state.last_persist_error = None
+        return state
+
+    def persist_cognitive_state(self) -> None:
+        state = getattr(self, "cognitive_state", None)
+        if not isinstance(state, CognitiveState):
+            return
+        path = str(getattr(self, "COGNITIVE_STATE_FILE", "") or "").strip()
+        if not path:
+            return
+        payload = state.to_json_snapshot()
+        self._atomic_write_json(path, payload, indent=2)
+        ts = str(payload.get("timestamp", "") or "").strip() or datetime.datetime.now().isoformat(timespec="seconds")
+        state.last_persisted_at = ts
+        state.last_persist_ok = True
+        state.last_persist_error = None
+
     def reset_data(self):
         """
         Reset all user progress data to default values.
@@ -11179,6 +11630,16 @@ class StudyPlanEngine:
 
         # Write migration/health log if needed
         self._append_health_log()
+        try:
+            self.persist_cognitive_state()
+        except Exception as exc:
+            try:
+                state = getattr(self, "cognitive_state", None)
+                if isinstance(state, CognitiveState):
+                    state.last_persist_ok = False
+                    state.last_persist_error = str(exc)
+            except Exception:
+                pass
 
     def _backup_file(self, path: str) -> None:
         """Create/refresh a .bak backup of the data file."""
