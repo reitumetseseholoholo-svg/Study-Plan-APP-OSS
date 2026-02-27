@@ -3852,7 +3852,7 @@ def test_render_grounded_tutor_feedback_falls_back_when_evidence_fields_missing(
     assert payload["evidence_confidence"] == 0.0
     assert payload["citations_count"] == 0
     assert payload["band"] == "Low confidence"
-    assert "Trust: Low confidence" in str(payload["trust_summary"])
+    assert "Trust signal: Low confidence" in str(payload["trust_summary"])
 
 
 def test_render_grounded_tutor_feedback_coerces_invalid_confidence_and_citations():
