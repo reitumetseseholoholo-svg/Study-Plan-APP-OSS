@@ -160,6 +160,8 @@ def test_practice_loop_recommends_transfer_after_strong_correct():
     assert guidance["next_action"]
     assert guidance["reason"]
     assert guidance["outcome"] == "correct"
+    assert "urgent" in guidance
+    assert guidance["urgent"] is False
 
 
 def test_practice_loop_recommends_remediation_after_incorrect():
@@ -174,5 +176,7 @@ def test_practice_loop_recommends_remediation_after_incorrect():
     result = controller.submit_attempt(loop, item, TutorAssessmentSubmission(item_id=item.item_id, answer_text="wrong"))
     guidance = controller.recommend_next_action(loop, item, result, hints_used=1)
     assert guidance["outcome"] == "incorrect"
+    assert guidance["next_action"]
+    assert guidance["reason"]
     assert guidance["urgent"] is True
     assert "retry" in str(guidance["next_action"]).lower()

@@ -3838,3 +3838,32 @@ def test_get_today_blocks_preview_returns_next_pending_block_for_today_schedule(
     assert preview
     assert preview[0].get("kind") == "Focus"
     assert preview[0].get("topic") == "Topic B"
+
+
+def test_render_grounded_tutor_feedback_falls_back_when_evidence_fields_missing():
+    dummy = types.SimpleNamespace()
+    payload = StudyPlanGUI._render_grounded_tutor_feedback(
+        dummy,
+        "NPV compares discounted cash flows.",
+        mode="teach",
+        evidence_confidence=None,
+        citations_count=None,
+    )
+    assert payload["evidence_confidence"] == 0.0
+    assert payload["citations_count"] == 0
+    assert payload["band"] == "Low confidence"
+    assert "Trust: Low confidence" in str(payload["trust_summary"])
+
+
+def test_render_grounded_tutor_feedback_coerces_invalid_confidence_and_citations():
+    dummy = types.SimpleNamespace()
+    payload = StudyPlanGUI._render_grounded_tutor_feedback(
+        dummy,
+        "Working-capital analysis should link inventory, receivables, and payables.",
+        mode="teach",
+        evidence_confidence="bad-value",
+        citations_count="n/a",
+    )
+    assert payload["evidence_confidence"] == 0.0
+    assert payload["citations_count"] == 0
+    assert "Evidence:" in str(payload["details_text"])

@@ -120,6 +120,18 @@ def test_grounded_tutor_response_includes_confidence_band_and_evidence():
     assert "Citations used: 3" in fb.details_text
 
 
+def test_grounded_tutor_response_summary_disclosure_hides_details():
+    fb = TutorDialogRenderer.render_grounded_tutor_response(
+        "Use discounted cash flow to compare alternatives.",
+        mode="teach",
+        evidence_confidence=0.64,
+        citations_count=2,
+    )
+    rendered = fb.render(DisclosureLevel.SUMMARY)
+    assert "summary" in rendered
+    assert "details" not in rendered
+
+
 def test_next_action_guidance_is_explicit_and_colored():
     fb = TutorDialogRenderer.render_next_action_guidance(
         outcome="incorrect",
