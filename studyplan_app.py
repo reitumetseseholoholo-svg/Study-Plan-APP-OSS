@@ -3300,7 +3300,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._tutor_workspace_summary_label = summary_label
         page_box.append(summary_label)
 
-        trust_details_expander = Gtk.Expander(label="Tutor trust details")
+        trust_details_expander = Gtk.Expander(label="Trust details")
         trust_details_expander.set_expanded(False)
         trust_details_expander.set_visible(False)
         trust_details_label = Gtk.Label(label="")
@@ -16188,7 +16188,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 band = summary_text.rsplit("[", 1)[-1].split("]", 1)[0].strip() or band
             except Exception:
                 band = "Low confidence"
-        trust_summary = f"Trust: {band} • evidence {cits}"
+        trust_summary = f"Trust signal: {band} • evidence {cits}"
         return {
             "trust_summary": trust_summary,
             "summary_text": summary_text,
