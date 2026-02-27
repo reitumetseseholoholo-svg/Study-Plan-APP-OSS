@@ -6,10 +6,15 @@ import json
 import os
 import re
 import random
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any, Protocol, Sequence
 
+from .ai.recovery import build_deterministic_fallback_response
+from .config import Config
 from .contracts import (
     AppStateSnapshot,
     AutopilotDecision,
@@ -178,6 +183,599 @@ class TutorSessionControllerService(Protocol):
 
 class TutorPromptOrchestrationService(Protocol):
     def build_turn_prompt(self, request: TutorLoopTurnRequest) -> dict[str, object]: ...
+
+
+@dataclass
+class LlamaCppTutorService:
+    """TutorService implementation for llama.cpp OpenAI-compatible endpoints."""
+
+    endpoint: str = field(default_factory=lambda: str(getattr(Config, "LLAMA_CPP_ENDPOINT", "") or "").strip())
+    model: str = field(default_factory=lambda: str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip())
+    enabled: bool = field(default_factory=lambda: bool(getattr(Config, "LLAMA_CPP_ENABLED", True)))
+    timeout_seconds: float = field(
+        default_factory=lambda: float(getattr(Config, "LLAMA_CPP_TIMEOUT_SECONDS", 30.0) or 30.0)
+    )
+    max_retries: int = field(default_factory=lambda: int(getattr(Config, "LLAMA_CPP_MAX_RETRIES", 2) or 2))
+    temperature: float = field(default_factory=lambda: float(getattr(Config, "LLAMA_CPP_TEMPERATURE", 0.2) or 0.2))
+    top_p: float = field(default_factory=lambda: float(getattr(Config, "LLAMA_CPP_TOP_P", 0.95) or 0.95))
+    context_window: int = field(
+        default_factory=lambda: int(getattr(Config, "LLAMA_CPP_CONTEXT_WINDOW", 8192) or 8192)
+    )
+    auto_model_discovery: bool = field(
+        default_factory=lambda: bool(getattr(Config, "LLAMA_CPP_AUTO_MODEL_DISCOVERY", True))
+    )
+    ollama_discovery_enabled: bool = field(
+        default_factory=lambda: bool(getattr(Config, "LLAMA_CPP_OLLAMA_DISCOVERY_ENABLED", True))
+    )
+    gpt4all_discovery_enabled: bool = field(
+        default_factory=lambda: bool(getattr(Config, "LLAMA_CPP_GPT4ALL_DISCOVERY_ENABLED", True))
+    )
+    ollama_host: str = field(default_factory=lambda: str(getattr(Config, "LLAMA_CPP_OLLAMA_HOST", "") or "").strip())
+    gpt4all_models_dir: str = field(
+        default_factory=lambda: str(getattr(Config, "LLAMA_CPP_GPT4ALL_MODELS_DIR", "") or "").strip()
+    )
+    model_preference: str = field(
+        default_factory=lambda: str(getattr(Config, "LLAMA_CPP_MODEL_PREFERENCE", "fast_cpp") or "fast_cpp").strip().lower()
+    )
+    model_discovery_ttl_seconds: float = field(
+        default_factory=lambda: float(getattr(Config, "LLAMA_CPP_MODEL_DISCOVERY_TTL_SECONDS", 120.0) or 120.0)
+    )
+    _model_catalog_cached_at: float = field(default=0.0, init=False, repr=False)
+    _model_catalog_cached: tuple[str, ...] = field(default_factory=tuple, init=False, repr=False)
+    _model_catalog_sources: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+
+    RETRYABLE_ERROR_CODES: tuple[str, ...] = (
+        "timeout",
+        "busy",
+        "host_unreachable",
+        "stream_stall",
+        "invalid_output",
+        "invalid_json",
+        "empty_output",
+        "http_error",
+    )
+
+    @staticmethod
+    def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+        try:
+            out = int(value)
+        except Exception:
+            out = int(default)
+        if out < minimum:
+            out = minimum
+        if out > maximum:
+            out = maximum
+        return out
+
+    @staticmethod
+    def _clamp_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+        try:
+            out = float(value)
+        except Exception:
+            out = float(default)
+        if out < minimum:
+            out = minimum
+        if out > maximum:
+            out = maximum
+        return out
+
+    @staticmethod
+    def _coerce_text(value: Any, default: str = "") -> str:
+        text = str(value or "").strip()
+        return text if text else str(default or "")
+
+    @staticmethod
+    def _normalize_ollama_host(host: str) -> str:
+        raw = str(host or "").strip()
+        if not raw:
+            return ""
+        if not re.match(r"^[a-z]+://", raw, flags=re.IGNORECASE):
+            raw = f"http://{raw}"
+        return raw.rstrip("/")
+
+    @staticmethod
+    def _normalize_gpt4all_filename_to_model(filename: str) -> str:
+        stem = str(os.path.splitext(str(filename or ""))[0] or "").strip().lower()
+        norm = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")
+        if not norm:
+            return ""
+        if not norm.startswith("gpt4all-"):
+            norm = f"gpt4all-{norm}"
+        return f"{norm}:latest"
+
+    @staticmethod
+    def _de_dupe(items: Sequence[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            name = str(item or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            out.append(name)
+        return out
+
+    def _discover_ollama_models(self) -> list[str]:
+        if not self.ollama_discovery_enabled:
+            return []
+        host = self._normalize_ollama_host(self.ollama_host)
+        if not host:
+            return []
+        url = f"{host}/api/tags"
+        try:
+            with urllib.request.urlopen(url, timeout=self._clamp_float(self.timeout_seconds, 8.0, 2.0, 30.0)) as response:
+                raw = response.read()
+        except Exception:
+            return []
+        try:
+            payload = json.loads(raw.decode("utf-8", errors="replace"))
+        except Exception:
+            return []
+        if not isinstance(payload, dict):
+            return []
+        models_node = payload.get("models")
+        if not isinstance(models_node, list):
+            return []
+        out: list[str] = []
+        for item in models_node:
+            if not isinstance(item, dict):
+                continue
+            name = self._coerce_text(item.get("name"), "")
+            if name:
+                out.append(name)
+        return self._de_dupe(out)
+
+    def _discover_gpt4all_models(self) -> list[str]:
+        if not self.gpt4all_discovery_enabled:
+            return []
+        models_dir = self._coerce_text(self.gpt4all_models_dir, "")
+        if not models_dir:
+            return []
+        expanded = os.path.expanduser(models_dir)
+        if not os.path.isdir(expanded):
+            return []
+        out: list[str] = []
+        try:
+            files = sorted(os.listdir(expanded))
+        except Exception:
+            return []
+        for name in files:
+            lower = str(name or "").lower()
+            if not lower.endswith(".gguf"):
+                continue
+            model_name = self._normalize_gpt4all_filename_to_model(name)
+            if model_name:
+                out.append(model_name)
+        return self._de_dupe(out)
+
+    def _fast_cpp_rank_key(self, model_name: str) -> tuple[float, int, str]:
+        name = str(model_name or "").strip().lower()
+        if not name:
+            return (9999.0, 9999, "")
+        score = 0.0
+        size_match = re.search(r"(\d+(?:\.\d+)?)b", name)
+        if size_match:
+            try:
+                score += float(size_match.group(1))
+            except Exception:
+                score += 8.0
+        else:
+            score += 8.0
+        if "q2" in name:
+            score -= 2.0
+        elif "q3" in name:
+            score -= 1.5
+        elif "q4" in name:
+            score -= 1.0
+        elif "q5" in name:
+            score -= 0.4
+        elif "q8" in name:
+            score += 0.7
+        if any(tok in name for tok in ("mini", "tiny", "small", "1b", "1.5b", "2b", "3b")):
+            score -= 0.35
+        if any(tok in name for tok in ("32b", "34b", "70b", "72b")):
+            score += 10.0
+        if name.startswith("gpt4all-"):
+            score -= 0.15
+        return (score, len(name), name)
+
+    def _sort_model_candidates(self, models: Sequence[str]) -> list[str]:
+        deduped = self._de_dupe(models)
+        preference = self._coerce_text(self.model_preference, "fast_cpp").lower()
+        if preference == "fast_cpp":
+            return sorted(deduped, key=self._fast_cpp_rank_key)
+        if preference == "alphabetical":
+            return sorted(deduped)
+        return deduped
+
+    def _discover_model_catalog(self) -> tuple[list[str], dict[str, str], bool]:
+        ttl = self._clamp_float(self.model_discovery_ttl_seconds, 120.0, 5.0, 3600.0)
+        now = time.monotonic()
+        if self._model_catalog_cached and (now - float(self._model_catalog_cached_at or 0.0)) <= ttl:
+            return (
+                list(self._model_catalog_cached),
+                dict(self._model_catalog_sources),
+                True,
+            )
+        source_map: dict[str, str] = {}
+        for model_name in self._discover_ollama_models():
+            source_map.setdefault(model_name, "ollama")
+        for model_name in self._discover_gpt4all_models():
+            source_map.setdefault(model_name, "gpt4all")
+        models_sorted = self._sort_model_candidates(list(source_map.keys()))
+        self._model_catalog_cached = tuple(models_sorted)
+        self._model_catalog_sources = dict(source_map)
+        self._model_catalog_cached_at = now
+        return models_sorted, source_map, False
+
+    def _resolve_model_candidates(self, request_model: str) -> tuple[list[str], dict[str, str], dict[str, Any]]:
+        requested = self._coerce_text(request_model, "")
+        configured = self._coerce_text(self.model, "")
+        if requested:
+            return [requested], {requested: "request"}, {"mode": "request_model", "cache_hit": False}
+
+        if not self.auto_model_discovery:
+            if configured:
+                return [configured], {configured: "configured"}, {"mode": "configured_only", "cache_hit": False}
+            return [], {}, {"mode": "configured_only", "cache_hit": False}
+
+        discovered, source_map, cache_hit = self._discover_model_catalog()
+        models = list(discovered)
+        if configured and configured not in source_map:
+            source_map[configured] = "configured"
+            models.append(configured)
+        models = self._sort_model_candidates(models)
+        return (
+            models,
+            source_map,
+            {
+                "mode": "auto_discovery",
+                "cache_hit": bool(cache_hit),
+            },
+        )
+
+    def _normalize_request(self, request: TutorTurnRequest) -> dict[str, Any]:
+        model_name = self._coerce_text(getattr(request, "model", ""), self.model)
+        if not model_name:
+            model_name = self._coerce_text(self.model, "")
+        prompt = self._coerce_text(getattr(request, "prompt", ""))
+        context_budget_chars = self._clamp_int(
+            getattr(request, "context_budget_chars", 4000),
+            default=4000,
+            minimum=256,
+            maximum=20000,
+        )
+        rag_budget_chars = self._clamp_int(
+            getattr(request, "rag_budget_chars", 1500),
+            default=1500,
+            minimum=0,
+            maximum=20000,
+        )
+        return {
+            "model": model_name,
+            "prompt": prompt,
+            "history_fingerprint": self._coerce_text(getattr(request, "history_fingerprint", "")),
+            "context_budget_chars": context_budget_chars,
+            "rag_budget_chars": rag_budget_chars,
+        }
+
+    def _build_payload(self, normalized: dict[str, Any]) -> dict[str, Any]:
+        prompt = self._coerce_text(normalized.get("prompt"), "")
+        approx_prompt_tokens = max(1, len(prompt) // 4)
+        max_completion_tokens = max(
+            64,
+            min(
+                1024,
+                int(self.context_window) - int(approx_prompt_tokens),
+            ),
+        )
+        return {
+            "model": self._coerce_text(normalized.get("model"), self.model),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "temperature": self._clamp_float(self.temperature, 0.2, 0.0, 2.0),
+            "top_p": self._clamp_float(self.top_p, 0.95, 0.0, 1.0),
+            "max_tokens": max_completion_tokens,
+            "stream": False,
+        }
+
+    @staticmethod
+    def _map_http_error(status_code: int, body_text: str) -> str:
+        lower = str(body_text or "").lower()
+        if status_code == 404:
+            if "model" in lower and ("not found" in lower or "missing" in lower):
+                return "model_missing"
+            return "endpoint_missing"
+        if status_code in {408, 504}:
+            return "timeout"
+        if status_code in {429, 503}:
+            return "busy"
+        return "http_error"
+
+    @staticmethod
+    def _map_url_error(reason: Any, message: str) -> str:
+        reason_text = str(reason or "").strip().lower()
+        message_text = str(message or "").strip().lower()
+        if "timed out" in reason_text or "timed out" in message_text or "timeout" in message_text:
+            return "timeout"
+        if any(token in reason_text for token in ("refused", "unreachable", "failed")):
+            return "host_unreachable"
+        return "host_unreachable"
+
+    @staticmethod
+    def _extract_assistant_text(payload: dict[str, Any]) -> str:
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        first = choices[0]
+        if not isinstance(first, dict):
+            return ""
+        message = first.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+        text = first.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        return ""
+
+    def _invoke_once(self, normalized: dict[str, Any]) -> tuple[bool, str, str, dict[str, Any]]:
+        payload = self._build_payload(normalized)
+        body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        request = urllib.request.Request(
+            url=self.endpoint,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._clamp_float(self.timeout_seconds, 30.0, 1.0, 300.0)) as response:
+                status = int(getattr(response, "status", 200) or 200)
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            raw = b""
+            try:
+                raw = exc.read() or b""
+            except Exception:
+                raw = b""
+            body_text = raw.decode("utf-8", errors="replace")
+            error_code = self._map_http_error(int(getattr(exc, "code", 500) or 500), body_text)
+            return (
+                False,
+                "",
+                error_code,
+                {"status_code": int(getattr(exc, "code", 500) or 500), "error_message": self._coerce_text(body_text)},
+            )
+        except urllib.error.URLError as exc:
+            message = self._coerce_text(getattr(exc, "reason", ""), str(exc))
+            return (
+                False,
+                "",
+                self._map_url_error(getattr(exc, "reason", ""), message),
+                {"status_code": 0, "error_message": message},
+            )
+        except TimeoutError as exc:
+            return (False, "", "timeout", {"status_code": 0, "error_message": self._coerce_text(str(exc), "timeout")})
+        except Exception as exc:
+            return (
+                False,
+                "",
+                "unknown_error",
+                {"status_code": 0, "error_message": self._coerce_text(str(exc), "unknown error")},
+            )
+
+        text_payload = raw.decode("utf-8", errors="replace")
+        if status >= 400:
+            return (
+                False,
+                "",
+                self._map_http_error(status, text_payload),
+                {"status_code": status, "error_message": self._coerce_text(text_payload)},
+            )
+        try:
+            decoded = json.loads(text_payload)
+        except Exception:
+            return (
+                False,
+                "",
+                "invalid_json",
+                {"status_code": status, "error_message": "json parse failed"},
+            )
+        if not isinstance(decoded, dict):
+            return (
+                False,
+                "",
+                "invalid_output",
+                {"status_code": status, "error_message": "response payload is not an object"},
+            )
+        if isinstance(decoded.get("error"), dict):
+            err = dict(decoded.get("error", {}))
+            msg = self._coerce_text(err.get("message"), "model returned error")
+            code = self._coerce_text(err.get("code"), "http_error").lower()
+            mapped = code if code in {"model_missing", "endpoint_missing", "timeout", "busy"} else "http_error"
+            return (
+                False,
+                "",
+                mapped,
+                {"status_code": status, "error_message": msg},
+            )
+        text = self._extract_assistant_text(decoded)
+        if not text:
+            return (
+                False,
+                "",
+                "empty_output",
+                {"status_code": status, "error_message": "empty model output"},
+            )
+        return (
+            True,
+            text,
+            "",
+            {"status_code": status, "response_chars": len(text)},
+        )
+
+    def _fallback_payload(
+        self,
+        normalized: dict[str, Any],
+        *,
+        error_code: str,
+        message: str = "",
+        model_name: str = "",
+    ) -> dict[str, Any]:
+        return build_deterministic_fallback_response(
+            error_code=error_code,
+            message=message,
+            model=model_name,
+            topic_hint=self._coerce_text(normalized.get("history_fingerprint"), "current topic"),
+        )
+
+    def generate(self, request: TutorTurnRequest) -> TutorTurnResult:
+        started = time.perf_counter()
+        normalized = self._normalize_request(request)
+        request_model = self._coerce_text(getattr(request, "model", ""), "")
+        model_name = self._coerce_text(request_model, self._coerce_text(normalized.get("model"), self.model))
+        model_candidates, candidate_sources, discovery_meta = self._resolve_model_candidates(request_model)
+        if model_name and model_name not in model_candidates:
+            model_candidates = self._sort_model_candidates([model_name, *model_candidates])
+            candidate_sources.setdefault(model_name, "configured")
+        primary_model = self._coerce_text(model_candidates[0] if model_candidates else model_name, "")
+        telemetry: dict[str, Any] = {
+            "provider": "llama.cpp",
+            "endpoint": self._coerce_text(self.endpoint),
+            "model": primary_model,
+            "model_candidates_count": len(model_candidates),
+            "model_candidates_preview": list(model_candidates[:6]),
+            "model_selection_mode": str(discovery_meta.get("mode", "configured_only") or "configured_only"),
+            "model_catalog_cache_hit": bool(discovery_meta.get("cache_hit", False)),
+            "model_preference": self._coerce_text(self.model_preference, "fast_cpp"),
+            "retry_count": 0,
+            "fallback_used": False,
+            "error_code": "",
+        }
+        if not self.enabled:
+            error_code = "provider_disabled"
+            fallback = self._fallback_payload(
+                normalized,
+                error_code=error_code,
+                message="llama.cpp provider disabled by configuration",
+                model_name=model_name,
+            )
+            telemetry["fallback_used"] = True
+            telemetry["error_code"] = str(fallback.get("error_code", error_code) or error_code)
+            telemetry["fallback_code"] = str(fallback.get("fallback_code", "") or "")
+            telemetry["recovery"] = fallback.get("recovery", {})
+            latency_ms = int(max(0.0, (time.perf_counter() - started) * 1000.0))
+            telemetry["latency_ms"] = latency_ms
+            return TutorTurnResult(
+                text=self._coerce_text(fallback.get("text"), ""),
+                model=primary_model or "unknown",
+                latency_ms=latency_ms,
+                error_code=self._coerce_text(fallback.get("error_code"), error_code),
+                telemetry=telemetry,
+            )
+        if not self._coerce_text(self.endpoint):
+            error_code = "endpoint_missing"
+            fallback = self._fallback_payload(
+                normalized,
+                error_code=error_code,
+                message="llama.cpp endpoint missing",
+                model_name=model_name,
+            )
+            telemetry["fallback_used"] = True
+            telemetry["error_code"] = str(fallback.get("error_code", error_code) or error_code)
+            telemetry["fallback_code"] = str(fallback.get("fallback_code", "") or "")
+            telemetry["recovery"] = fallback.get("recovery", {})
+            latency_ms = int(max(0.0, (time.perf_counter() - started) * 1000.0))
+            telemetry["latency_ms"] = latency_ms
+            return TutorTurnResult(
+                text=self._coerce_text(fallback.get("text"), ""),
+                model=primary_model or "unknown",
+                latency_ms=latency_ms,
+                error_code=self._coerce_text(fallback.get("error_code"), error_code),
+                telemetry=telemetry,
+            )
+        if not model_candidates:
+            error_code = "model_missing"
+            fallback = self._fallback_payload(
+                normalized,
+                error_code=error_code,
+                message="llama.cpp model missing",
+                model_name="",
+            )
+            telemetry["fallback_used"] = True
+            telemetry["error_code"] = str(fallback.get("error_code", error_code) or error_code)
+            telemetry["fallback_code"] = str(fallback.get("fallback_code", "") or "")
+            telemetry["recovery"] = fallback.get("recovery", {})
+            latency_ms = int(max(0.0, (time.perf_counter() - started) * 1000.0))
+            telemetry["latency_ms"] = latency_ms
+            return TutorTurnResult(
+                text=self._coerce_text(fallback.get("text"), ""),
+                model="unknown",
+                latency_ms=latency_ms,
+                error_code=self._coerce_text(fallback.get("error_code"), error_code),
+                telemetry=telemetry,
+            )
+
+        attempts = max(1, self._clamp_int(self.max_retries, 2, 0, 5) + 1)
+        final_error = ""
+        final_message = ""
+        retries_used = 0
+        for candidate in model_candidates:
+            normalized["model"] = candidate
+            telemetry["model"] = candidate
+            telemetry["model_source"] = self._coerce_text(candidate_sources.get(candidate), "unknown")
+            for attempt_idx in range(attempts):
+                ok, text, error_code, meta = self._invoke_once(normalized)
+                telemetry["retry_count"] = int(retries_used)
+                if isinstance(meta, dict):
+                    telemetry.update(meta)
+                if ok:
+                    latency_ms = int(max(0.0, (time.perf_counter() - started) * 1000.0))
+                    telemetry["latency_ms"] = latency_ms
+                    telemetry["fallback_used"] = False
+                    telemetry["error_code"] = ""
+                    return TutorTurnResult(
+                        text=self._coerce_text(text),
+                        model=candidate,
+                        latency_ms=latency_ms,
+                        error_code="",
+                        telemetry=telemetry,
+                    )
+                final_error = self._coerce_text(error_code, "unknown_error")
+                final_message = self._coerce_text(meta.get("error_message") if isinstance(meta, dict) else "", "request failed")
+                retries_used += 1
+                # Move to next discovered model quickly when provider reports missing model.
+                if final_error == "model_missing":
+                    break
+                if final_error not in self.RETRYABLE_ERROR_CODES:
+                    break
+                if attempt_idx >= (attempts - 1):
+                    break
+
+        fallback = self._fallback_payload(
+            normalized,
+            error_code=final_error or "unknown_error",
+            message=final_message,
+            model_name=self._coerce_text(normalized.get("model"), primary_model),
+        )
+        latency_ms = int(max(0.0, (time.perf_counter() - started) * 1000.0))
+        telemetry["latency_ms"] = latency_ms
+        telemetry["fallback_used"] = True
+        telemetry["error_code"] = str(fallback.get("error_code", final_error or "unknown_error") or "unknown_error")
+        telemetry["fallback_code"] = str(fallback.get("fallback_code", "") or "")
+        telemetry["recovery"] = fallback.get("recovery", {})
+        return TutorTurnResult(
+            text=self._coerce_text(fallback.get("text"), ""),
+            model=self._coerce_text(normalized.get("model"), primary_model) or "unknown",
+            latency_ms=latency_ms,
+            error_code=self._coerce_text(fallback.get("error_code"), final_error or "unknown_error"),
+            telemetry=telemetry,
+        )
 
 
 class ModuleAdapter(Protocol):
@@ -2067,10 +2665,14 @@ class DeterministicTutorAssessmentService:
     def _assess_numeric(self, item: TutorPracticeItem, answer_text: str) -> TutorAssessmentResult:
         meta = dict(item.meta or {})
         expected_raw = meta.get("numeric_answer", meta.get("answer_value"))
-        try:
-            expected = float(expected_raw)
-        except Exception:
+        expected: float | None
+        if expected_raw is None:
             expected = None
+        else:
+            try:
+                expected = float(expected_raw)
+            except Exception:
+                expected = None
         marks_max = float(meta.get("marks_max", 1.0) or 1.0)
         if expected is None:
             return TutorAssessmentResult(
@@ -2701,7 +3303,8 @@ class RuleBasedTutorLearningLoopService:
         if must_review_due > 0 or overdue > 0:
             return "revision_planner", "review_pressure"
 
-        weak_topics = tuple(getattr(app_snapshot, "weak_topics_top3", ()) or ())
+        weak_topics_raw = tuple(getattr(app_snapshot, "weak_topics_top3", ()) or ())
+        weak_topics = tuple(str(t or "").strip() for t in weak_topics_raw if str(t or "").strip())
         current_topic = str(getattr(app_snapshot, "current_topic", "") or "").strip()
         if weak_topics and current_topic and any(current_topic.lower() == t.lower() for t in weak_topics):
             return "guided_practice", "weak_topic_focus"

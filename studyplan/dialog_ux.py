@@ -23,7 +23,7 @@ class DialogFeedback:
     
     def render(self, level: DisclosureLevel = DisclosureLevel.STANDARD) -> dict[str, Any]:
         """Render feedback at requested disclosure level."""
-        base = {
+        base: dict[str, Any] = {
             "primary_action": self.primary_action,
             "summary": self.summary_text,
             "color": self.color_hint,

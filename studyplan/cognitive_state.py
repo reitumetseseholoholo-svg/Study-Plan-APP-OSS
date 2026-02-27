@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import datetime as _dt
 from enum import Enum
+import math
 from typing import Any, Tuple, List
 
 from .logging_config import get_logger
@@ -11,6 +12,7 @@ logger = get_logger(__name__)
 
 
 COGNITIVE_STATE_SCHEMA_VERSION = 1
+INTERVENTION_LEVELS = ("none", "light", "strong")
 
 
 @dataclass
@@ -319,6 +321,56 @@ class CognitiveState:
         if int(self.structure_exposure_counts.get(key, 0) or 0) >= 3:
             return False
         return True
+
+    def recommend_intervention_level(
+        self,
+        *,
+        outcome: str,
+        hints_used: int = 0,
+        pattern_detected: bool = False,
+        confidence_delta: float | None = None,
+    ) -> str:
+        """Classify intervention strength for next-step guidance.
+
+        Returns one of: ``none``, ``light``, ``strong``.
+        """
+        normalized = str(outcome or "").strip().lower()
+        if normalized not in {"correct", "partial", "incorrect", "unknown"}:
+            normalized = "unknown"
+        score = 0
+
+        if normalized == "incorrect":
+            score += 3
+        elif normalized == "partial":
+            score += 1
+
+        try:
+            hints = int(hints_used or 0)
+        except Exception:
+            hints = 0
+        if hints >= 2:
+            score += 1
+
+        if bool(pattern_detected):
+            score += 2
+
+        if bool(self.struggle_mode):
+            score += 1
+
+        # Positive delta means "felt more confident than actual accuracy".
+        if confidence_delta is not None and normalized != "correct":
+            try:
+                conf_delta = float(confidence_delta)
+            except Exception:
+                conf_delta = 0.0
+            if math.isfinite(conf_delta) and conf_delta >= 0.25:
+                score += 1
+
+        if score >= 3:
+            return INTERVENTION_LEVELS[2]
+        if score >= 1:
+            return INTERVENTION_LEVELS[1]
+        return INTERVENTION_LEVELS[0]
 
     def record_transfer_exposure(self, structure_id: str, attempt_id: str = "") -> None:
         key = str(structure_id or "").strip()

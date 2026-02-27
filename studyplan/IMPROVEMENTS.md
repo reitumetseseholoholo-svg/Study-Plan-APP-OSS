@@ -4,6 +4,92 @@
 
 ---
 
+## One-Sitting Scope (Execution Order)
+
+This section defines the exact scope for a single coding sitting. Keep to these three deliverables only:
+
+- [x] Intervention triggers in the practice loop (`none|light|strong`)
+- [x] Next-action policy extraction into a pure/testable function path
+- [x] Structured decision telemetry payload for action recommendations
+
+Validation run for this sitting:
+
+- `16 new tests added` (net new `def test_...` functions across modified test files)
+- `36 passed in 0.10s`
+- Command: `pytest testing/test_practice_loop_fsm.py testing/test_tutor_improvements.py testing/integration/test_practice_loop_e2e.py`
+- Extended check: `43 passed in 0.11s`
+- Command: `pytest testing/test_question_generation.py testing/test_cognitive_state.py testing/test_practice_loop_fsm.py testing/test_tutor_improvements.py testing/integration/test_practice_loop_e2e.py`
+
+---
+
+## One-Sitting Stabilization Pass (v1.1.2)
+
+Focus: stabilize current repo behavior and lock existing features with contract-level tests.
+
+What was stabilized:
+
+- Controller output guardrails in `practice_loop_controller.py` (type-safe fallback outputs, exception-safe returns, normalized payload shapes)
+- Intervention/action normalization in `cognitive_state.py` and `practice_loop_fsm.py` (unknown outcome handling, robust boolean coercion, non-finite confidence handling)
+- Persistence and DTO serialization round-trip coverage in `testing/test_persistence.py`
+- Regression net for high-risk paths: `partial`, `unknown outcome`, `malformed question-generation payload`
+
+Test delta for this pass:
+
+- `17 new tests added` (net new `def test_...` functions)
+
+Verification:
+
+- Baseline core suite: `49 passed in 0.13s`
+- Final core suite (same command): `63 passed in 0.17s`
+- Final expanded stabilization suite: `68 passed in 0.18s`
+- Final command: `pytest testing/test_question_generation.py testing/test_cognitive_state.py testing/test_practice_loop_fsm.py testing/test_tutor_improvements.py testing/integration/test_practice_loop_e2e.py testing/test_persistence.py`
+
+---
+
+## One-Sitting Llama.cpp Stabilization Pass (v1.1.3)
+
+Scope: stabilize AI tutoring behavior specifically through the llama.cpp path while preserving current feature behavior.
+
+Success criteria for this pass:
+
+- [x] `pyright` is clean at the end of the pass (`0 errors`)
+- [x] Core tutor stability suite is green (question generation + cognitive state + FSM + tutor improvements + e2e + persistence + assessment scoring)
+- [x] llama.cpp failures degrade deterministically (no crash, stable fallback text, machine-readable error code)
+- [x] llama.cpp malformed/empty responses are normalized before entering tutor decision flow
+
+Test delta for this pass:
+
+- `13 new tests added` (llama.cpp config/invocation/recovery + controller guardrails + telemetry propagation)
+
+Verification:
+
+- `pyright` → `0 errors, 0 warnings, 0 informations`
+- Core tutor stability suite: `74 passed in 0.21s`
+- Command: `pytest testing/test_question_generation.py testing/test_cognitive_state.py testing/test_practice_loop_fsm.py testing/test_tutor_improvements.py testing/integration/test_practice_loop_e2e.py testing/test_persistence.py testing/test_assessment_scoring.py`
+- Expanded llama.cpp stabilization suite: `83 passed in 0.22s`
+- Command: `pytest testing/test_ai_recovery.py testing/test_llama_cpp_service.py testing/test_question_generation.py testing/test_cognitive_state.py testing/test_practice_loop_fsm.py testing/test_tutor_improvements.py testing/integration/test_practice_loop_e2e.py testing/test_persistence.py testing/test_assessment_scoring.py testing/test_config.py`
+
+---
+
+## Patch: Question Generation Reliability (v1.1.1)
+
+`PracticeLoopController.auto_generate_questions` is now hardened for production edge-cases:
+
+- Sanitizes empty `topic` to `"General"`
+- Clamps `count` to `1..20` after safe integer coercion
+- Returns `[]` on backend exceptions (fail-safe behavior)
+- Enforces backend payload contract (`list`/`tuple` only)
+- Normalizes output to non-empty strings and caps output length to requested count
+
+Coverage added in [`testing/test_question_generation.py`](testing/test_question_generation.py):
+
+- Input sanitization behavior
+- Count clamping behavior
+- Backend failure fallback
+- Invalid backend payload type fallback
+
+---
+
 ## What's New: Intelligent Tutoring System
 
 We've enhanced the AI tutor with 3 game-changing cognitive science improvements:

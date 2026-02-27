@@ -10,7 +10,7 @@ Core principles implemented:
 6. Reflection: End-of-session learning summary
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -78,10 +78,10 @@ class ElaborationQuestionSet:
     base_concept: str
     
     # Questions designed for remembering → understanding → applying → analyzing → evaluating
-    questions: dict[str, str] = None
+    questions: dict[str, str] = field(default_factory=dict)
     
     def __post_init__(self):
-        if self.questions is None:
+        if not self.questions:
             self.questions = self._generate_default_questions()
     
     def _generate_default_questions(self) -> dict[str, str]:

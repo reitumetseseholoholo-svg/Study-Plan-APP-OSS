@@ -61,7 +61,7 @@ class _PerfContext:
     def __init__(self, monitor: PerformanceMonitor, operation: str):
         self.monitor = monitor
         self.operation = operation
-        self.start = None
+        self.start: float | None = None
 
     def __enter__(self):
         self.start = time.perf_counter()
@@ -69,6 +69,7 @@ class _PerfContext:
 
     def __exit__(self, *args):
         end = time.perf_counter()
-        duration_ms = (end - self.start) * 1000
+        start = self.start if self.start is not None else end
+        duration_ms = (end - start) * 1000
         timestamp = datetime.now(timezone.utc).isoformat()
         self.monitor.record(self.operation, duration_ms, timestamp)

@@ -3,6 +3,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
+KNOWN_ASSESSMENT_OUTCOMES = {"correct", "partial", "incorrect"}
+
+
 class PracticeLoopEvent(str, Enum):
     """Explicit event enumeration for practice loop state machine."""
     QUIZ_START = "quiz_start"
@@ -40,6 +43,92 @@ class StateTransition:
     event: PracticeLoopEvent
     to_state: PracticeLoopState
     action: str = ""  # e.g., "update_posterior", "generate_hint"
+
+
+@dataclass(frozen=True)
+class NextActionDecision:
+    """Pure action recommendation for learner-facing next-step guidance."""
+
+    reason: str
+    next_action: str
+    urgent: bool = False
+
+
+def _coerce_text(value: Any, default: str = "") -> str:
+    try:
+        text = str(value or "").strip()
+    except Exception:
+        text = ""
+    return text if text else str(default or "")
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+    return bool(value)
+
+
+def normalize_assessment_outcome(outcome: Any) -> str:
+    normalized = _coerce_text(outcome, "").lower()
+    if normalized in KNOWN_ASSESSMENT_OUTCOMES:
+        return normalized
+    return "unknown"
+
+
+def recommend_action_policy(
+    *,
+    outcome: Any,
+    can_transfer: Any = False,
+    pattern_detected: Any = False,
+    pattern_description: Any = "",
+    remediation: Any = "",
+) -> NextActionDecision:
+    """Return next-step decision with no side effects.
+
+    Args:
+        outcome: Assessment outcome ("correct", "partial", "incorrect").
+        can_transfer: Whether transfer test should be offered for correct outcomes.
+        pattern_detected: Whether recurring misconception pattern was detected.
+        pattern_description: Optional recurring pattern summary.
+        remediation: Optional remediation message when incorrect.
+    """
+    normalized = normalize_assessment_outcome(outcome)
+    can_transfer_flag = _coerce_bool(can_transfer)
+    pattern_detected_flag = _coerce_bool(pattern_detected)
+    pattern_description_text = _coerce_text(pattern_description)
+    remediation_text = _coerce_text(remediation)
+    reason = "Continue building momentum."
+    action = "Proceed to the next question."
+    urgent = False
+
+    if normalized == "incorrect":
+        if pattern_detected_flag:
+            reason = pattern_description_text or "Recurring misconception detected."
+        else:
+            reason = remediation_text or "Concept gap detected."
+        action = "Review remediation, then retry a similar question."
+        urgent = True
+    elif normalized == "partial":
+        reason = "Method is close, but one or more rubric steps are missing."
+        action = "Tighten your method steps and resubmit."
+        urgent = True
+    elif normalized == "correct":
+        if can_transfer_flag:
+            reason = "Strong performance with low support; this is a good transfer check moment."
+            action = "Attempt a transfer variant in a new context."
+        else:
+            reason = "Solid result recorded; reinforce with spaced retrieval."
+            action = "Proceed and review this topic again on schedule."
+
+    return NextActionDecision(reason=reason, next_action=action, urgent=urgent)
 
 
 # Explicit transition table (deterministic, no hidden side-effects)

@@ -8,10 +8,63 @@ class Environment(str, Enum):
     PROD = "prod"
 
 
+def _env_text(name: str, default: str = "") -> str:
+    raw = os.getenv(name, default)
+    text = str(raw or "").strip()
+    return text if text else str(default or "")
+
+
+def _parse_environment(default: Environment = Environment.DEV) -> Environment:
+    raw = _env_text("STUDYPLAN_ENV", default.value).lower()
+    for option in Environment:
+        if option.value == raw:
+            return option
+    return default
+
+
+def _parse_bool(name: str, default: bool = False) -> bool:
+    raw = _env_text(name, "1" if default else "0").lower()
+    if raw in {"1", "true", "yes", "y", "on"}:
+        return True
+    if raw in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
+def _parse_int(name: str, default: int, *, min_value: int | None = None, max_value: int | None = None) -> int:
+    try:
+        value = int(_env_text(name, str(default)))
+    except Exception:
+        value = int(default)
+    if min_value is not None and value < min_value:
+        value = min_value
+    if max_value is not None and value > max_value:
+        value = max_value
+    return value
+
+
+def _parse_float(
+    name: str,
+    default: float,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float:
+    try:
+        value = float(_env_text(name, str(default)))
+    except Exception:
+        value = float(default)
+    if min_value is not None and value < min_value:
+        value = min_value
+    if max_value is not None and value > max_value:
+        value = max_value
+    return value
+
+
 class Config:
     """Centralized configuration with environment-aware defaults."""
 
-    ENV = Environment(os.getenv("STUDYPLAN_ENV", "dev"))
+    ENV = _parse_environment()
 
     # Performance monitoring
     PERF_MONITOR_ENABLED = ENV in {Environment.DEV, Environment.STAGING}
@@ -35,4 +88,78 @@ class Config:
     PERSISTENCE_ENABLE_MIGRATIONS = True
 
     # Logging
-    LOG_LEVEL = os.getenv("STUDYPLAN_LOG_LEVEL", "INFO" if ENV == Environment.PROD else "DEBUG")
+    LOG_LEVEL = _env_text(
+        "STUDYPLAN_LOG_LEVEL",
+        "INFO" if ENV == Environment.PROD else "DEBUG",
+    ).upper()
+
+    # Llama.cpp (OpenAI-compatible endpoint) runtime controls.
+    LLAMA_CPP_ENABLED = _parse_bool("STUDYPLAN_LLAMA_CPP_ENABLED", default=True)
+    LLAMA_CPP_ENDPOINT = _env_text(
+        "STUDYPLAN_LLAMA_CPP_ENDPOINT",
+        "http://127.0.0.1:8080/v1/chat/completions",
+    )
+    LLAMA_CPP_MODEL = _env_text(
+        "STUDYPLAN_LLAMA_CPP_MODEL",
+        "llama3.1:8b-instruct-q4_k_m",
+    )
+    LLAMA_CPP_CONTEXT_WINDOW = _parse_int(
+        "STUDYPLAN_LLAMA_CPP_CONTEXT_WINDOW",
+        8192,
+        min_value=512,
+        max_value=32768,
+    )
+    LLAMA_CPP_TIMEOUT_SECONDS = _parse_float(
+        "STUDYPLAN_LLAMA_CPP_TIMEOUT_SECONDS",
+        30.0,
+        min_value=1.0,
+        max_value=300.0,
+    )
+    LLAMA_CPP_MAX_RETRIES = _parse_int(
+        "STUDYPLAN_LLAMA_CPP_MAX_RETRIES",
+        2,
+        min_value=0,
+        max_value=5,
+    )
+    LLAMA_CPP_TEMPERATURE = _parse_float(
+        "STUDYPLAN_LLAMA_CPP_TEMPERATURE",
+        0.2,
+        min_value=0.0,
+        max_value=2.0,
+    )
+    LLAMA_CPP_TOP_P = _parse_float(
+        "STUDYPLAN_LLAMA_CPP_TOP_P",
+        0.95,
+        min_value=0.0,
+        max_value=1.0,
+    )
+    LLAMA_CPP_AUTO_MODEL_DISCOVERY = _parse_bool(
+        "STUDYPLAN_LLAMA_CPP_AUTO_MODEL_DISCOVERY",
+        default=True,
+    )
+    LLAMA_CPP_OLLAMA_DISCOVERY_ENABLED = _parse_bool(
+        "STUDYPLAN_LLAMA_CPP_OLLAMA_DISCOVERY_ENABLED",
+        default=True,
+    )
+    LLAMA_CPP_GPT4ALL_DISCOVERY_ENABLED = _parse_bool(
+        "STUDYPLAN_LLAMA_CPP_GPT4ALL_DISCOVERY_ENABLED",
+        default=True,
+    )
+    LLAMA_CPP_OLLAMA_HOST = _env_text(
+        "STUDYPLAN_LLAMA_CPP_OLLAMA_HOST",
+        os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"),
+    )
+    LLAMA_CPP_GPT4ALL_MODELS_DIR = _env_text(
+        "STUDYPLAN_LLAMA_CPP_GPT4ALL_MODELS_DIR",
+        os.path.expanduser("~/.local/share/nomic.ai/GPT4All"),
+    )
+    LLAMA_CPP_MODEL_PREFERENCE = _env_text(
+        "STUDYPLAN_LLAMA_CPP_MODEL_PREFERENCE",
+        "fast_cpp",
+    ).lower()
+    LLAMA_CPP_MODEL_DISCOVERY_TTL_SECONDS = _parse_float(
+        "STUDYPLAN_LLAMA_CPP_MODEL_DISCOVERY_TTL_SECONDS",
+        120.0,
+        min_value=5.0,
+        max_value=3600.0,
+    )

@@ -28,7 +28,7 @@ exclude = ["__pycache__", ".git", ".venv", "build", "dist"]
 
 [tool.pyright]
 include = ["studyplan"]
-exclude = ["**/__pycache__", ".venv", "build"]
+exclude = ["**/__pycache__", ".venv", "build", "dist", "**/node_modules", ".git"]
 typeCheckingMode = "basic"
 reportPrivateImportUsage = false
 

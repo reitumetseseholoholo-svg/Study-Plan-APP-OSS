@@ -1,0 +1,11 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "python.analysis.exclude": [
+    "**/.git",
+    "**/.venv",
+    "**/__pycache__",
+    "**/build",
+    "**/dist",
+    "**/node_modules"
+  ]
+}

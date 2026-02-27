@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Callable
-from gi.repository import Gtk, Pango
+from gi.repository import Gtk, Pango  # pyright: ignore[reportAttributeAccessIssue]
 
 
 class UIBuilder:

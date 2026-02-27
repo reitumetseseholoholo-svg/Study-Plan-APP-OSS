@@ -62,3 +62,41 @@ def summarize_recovery(error_code: str, message: str, model: str = "") -> dict[s
         "recovery_sequence": sequence,
         "hint": recovery_hint_text(kind, sequence, model=model),
     }
+
+
+def build_deterministic_fallback_response(
+    *,
+    error_code: str,
+    message: str = "",
+    model: str = "",
+    topic_hint: str = "",
+) -> dict[str, Any]:
+    """Build a stable tutor fallback payload with machine-readable metadata."""
+    normalized_code = str(error_code or "unknown_error").strip().lower() or "unknown_error"
+    safe_topic = str(topic_hint or "").strip() or "current topic"
+    recovery = summarize_recovery(normalized_code, message, model=model)
+    failure_kind = str(recovery.get("failure_kind", "unknown") or "unknown")
+    fallback_code = f"fallback_{failure_kind}"
+    lead_by_kind = {
+        "timeout": "Tutor response is temporarily unavailable.",
+        "conn_refused": "Tutor response is temporarily unavailable.",
+        "stream_stall": "Tutor response is temporarily unavailable.",
+        "model_unavailable": "Tutor model is temporarily unavailable.",
+        "invalid_output": "Tutor response is temporarily unavailable.",
+        "context_overflow": "Tutor response is temporarily unavailable.",
+    }
+    lead = str(lead_by_kind.get(failure_kind, "Tutor response is temporarily unavailable."))
+    text = (
+        f"{lead} "
+        f"Here is a quick practice step while I reconnect on {safe_topic}: "
+        "write one key idea, one formula or rule, and one short exam-style application."
+    )
+    return {
+        "text": text,
+        "error_code": normalized_code,
+        "fallback_code": fallback_code,
+        "failure_kind": failure_kind,
+        "recovery_sequence": list(recovery.get("recovery_sequence", []) or []),
+        "hint": str(recovery.get("hint", "") or ""),
+        "recovery": recovery,
+    }

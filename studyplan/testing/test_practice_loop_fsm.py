@@ -1,6 +1,12 @@
 import pytest
 
-from studyplan.practice_loop_fsm import PracticeLoopFSM, PracticeLoopEvent, PracticeLoopState
+from studyplan.practice_loop_fsm import (
+    PracticeLoopFSM,
+    PracticeLoopEvent,
+    PracticeLoopState,
+    normalize_assessment_outcome,
+    recommend_action_policy,
+)
 
 
 def test_fsm_initial_state():
@@ -40,3 +46,56 @@ def test_fsm_full_sequence():
     assert fsm.current_state == PracticeLoopState.ASSESSING
     next_s, action = fsm.transition(PracticeLoopEvent.ASSESSMENT_CORRECT)
     assert action == "update_posterior_alpha"
+
+
+def test_recommend_action_policy_for_incorrect_pattern():
+    decision = recommend_action_policy(
+        outcome="incorrect",
+        pattern_detected=True,
+        pattern_description="Recurring sign error in NPV",
+    )
+    assert decision.urgent is True
+    assert decision.reason == "Recurring sign error in NPV"
+    assert "retry" in decision.next_action.lower()
+
+
+def test_recommend_action_policy_for_partial():
+    decision = recommend_action_policy(outcome="partial")
+    assert decision.urgent is True
+    assert "missing" in decision.reason.lower()
+    assert "resubmit" in decision.next_action.lower()
+
+
+def test_recommend_action_policy_for_correct_can_transfer():
+    decision = recommend_action_policy(outcome="correct", can_transfer=True)
+    assert decision.urgent is False
+    assert "transfer" in decision.next_action.lower()
+
+
+def test_recommend_action_policy_unknown_outcome_defaults():
+    decision = recommend_action_policy(outcome="mystery")
+    assert decision.urgent is False
+    assert decision.reason == "Continue building momentum."
+    assert "next question" in decision.next_action.lower()
+
+
+def test_recommend_action_policy_incorrect_uses_remediation_text():
+    decision = recommend_action_policy(
+        outcome="incorrect",
+        remediation="Re-check the discounting step and signs.",
+    )
+    assert decision.urgent is True
+    assert decision.reason == "Re-check the discounting step and signs."
+
+
+def test_normalize_assessment_outcome_unknown_for_unexpected_value():
+    assert normalize_assessment_outcome("MYSTERY") == "unknown"
+    assert normalize_assessment_outcome(None) == "unknown"
+
+
+def test_recommend_action_policy_coerces_string_booleans():
+    decision = recommend_action_policy(
+        outcome="correct",
+        can_transfer="false",
+    )
+    assert "transfer variant" not in decision.next_action.lower()

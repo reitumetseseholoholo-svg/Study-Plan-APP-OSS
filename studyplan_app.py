@@ -82,6 +82,7 @@ from studyplan.contracts import (
     TutorLoopTurnRequest,
     TutorPracticeItem,
     TutorSessionState,
+    TutorTurnRequest,
 )
 from studyplan.services import (
     DeterministicTransferVariantGenerator,
@@ -91,6 +92,7 @@ from studyplan.services import (
     DeterministicTutorStrugglePolicyService,
     InMemoryTutorLearnerModelStore,
     InMemoryTutorSessionController,
+    LlamaCppTutorService,
     RuleBasedRagEvidencePolicyService,
     RuleBasedTutorLearningLoopService,
     StructureRegistry,
@@ -1406,6 +1408,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "last_topic": "",
             "last_intent": "",
             "last_next_step": "",
+            "last_help_feedback": "",
+            "last_help_feedback_at": "",
             "last_updated_at": "",
             "notes": [],
         }
@@ -1508,6 +1512,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.workbench_tabs_left_spacer: Gtk.Box | None = None
         self.workbench_tabs_right_spacer: Gtk.Box | None = None
         self.workbench_status_label: Gtk.Label | None = None
+        self.workbench_health_label: Gtk.Label | None = None
+        self.workbench_model_label: Gtk.Label | None = None
         self.workbench_sidebar_btn: Gtk.Button | None = None
         self._workbench_page_names: set[str] = set()
         self._workbench_aliases: dict[str, str] = {
@@ -2669,6 +2675,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         status_label.add_css_class("workbench-status")
         self.workbench_status_label = status_label
 
+        health_label = Gtk.Label(label="")
+        health_label.set_halign(Gtk.Align.START)
+        health_label.set_wrap(False)
+        health_label.set_ellipsize(Pango.EllipsizeMode.END)
+        health_label.add_css_class("single-line-lock")
+        health_label.add_css_class("muted")
+        health_label.add_css_class("status-line")
+        self.workbench_health_label = health_label
+
+        model_label = Gtk.Label(label="")
+        model_label.set_halign(Gtk.Align.START)
+        model_label.set_wrap(False)
+        model_label.set_ellipsize(Pango.EllipsizeMode.END)
+        model_label.add_css_class("single-line-lock")
+        model_label.add_css_class("muted")
+        model_label.add_css_class("status-line")
+        self.workbench_model_label = model_label
+
         stack = Gtk.Stack()
         stack.set_hexpand(True)
         stack.set_vexpand(True)
@@ -2724,6 +2748,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         shell.append(header)
         shell.append(quick_actions_scroll)
         shell.append(status_label)
+        shell.append(health_label)
+        shell.append(model_label)
         shell.append(stack)
         self._refresh_workbench_shell_status()
         self._refresh_workbench_tabs_alignment()
@@ -2800,6 +2826,179 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         else:
             status_text = f"{page_title} • {topic_short} • {model_short} • {ap_token} • {sem_token} • {sb_token}"
         self._set_label_text_if_changed(label, status_text)
+        try:
+            label.set_tooltip_text(status_tooltip)
+        except Exception:
+            pass
+        self._refresh_workbench_model_readiness_line()
+        self._refresh_workbench_app_health_line()
+
+    def _infer_local_model_source_label(self, model_name: str) -> str:
+        name = str(model_name or "").strip().lower()
+        if not name:
+            return "Unknown"
+        if name.startswith("gpt4all-"):
+            return "GPT4All"
+        return "Ollama"
+
+    def _compute_workbench_model_readiness(self) -> tuple[str, str, str]:
+        llm_enabled = bool(getattr(self, "local_llm_enabled", False))
+        if not llm_enabled:
+            return (
+                "disabled",
+                "Model: unavailable (disabled)",
+                "Local AI tutor is disabled in Preferences.",
+            )
+
+        selected_model = str(getattr(self, "local_llm_model", "") or "").strip()
+        cached_models = [
+            str(item).strip()
+            for item in list(getattr(self, "_ollama_models_cache", []) or [])
+            if str(item or "").strip()
+        ]
+        current_model = selected_model or (cached_models[0] if cached_models else "")
+        if not current_model:
+            return (
+                "unavailable",
+                "Model: unavailable",
+                "No local model detected. Open Tutor and click Refresh models.",
+            )
+
+        source = self._infer_local_model_source_label(current_model)
+        cooling = False
+        cooldown_remaining = 0
+        cooldown_reader = getattr(self, "_is_local_llm_model_on_cooldown", None)
+        if callable(cooldown_reader):
+            try:
+                cooling, cooldown_remaining, _cooldown_reason = cast(Any, cooldown_reader(current_model))
+            except Exception:
+                cooling, cooldown_remaining = False, 0
+        if cooling:
+            return (
+                "recovering",
+                f"Model: {source} recovering ({int(max(1, cooldown_remaining))}s)",
+                f"{source} model is cooling down after recent failures: {current_model}",
+            )
+
+        if selected_model and cached_models and selected_model not in cached_models:
+            return (
+                "not_loaded",
+                f"Model: {source} not loaded",
+                f"Selected model is not currently available in Ollama: {selected_model}",
+            )
+
+        if bool(getattr(self, "_gpt4all_auto_import_in_progress", False)):
+            return (
+                "syncing",
+                f"Model: {source} syncing",
+                f"Model catalog is syncing/importing in background. Current model: {current_model}",
+            )
+
+        return (
+            "ready",
+            f"Model: {source} ready",
+            f"Current local model is ready: {current_model}",
+        )
+
+    def _refresh_workbench_model_readiness_line(self) -> None:
+        label = getattr(self, "workbench_model_label", None)
+        if label is None:
+            return
+        state_key, status_text, status_tooltip = self._compute_workbench_model_readiness()
+        self._set_label_text_if_changed(label, status_text)
+        try:
+            if str(state_key or "").strip().lower() == "ready":
+                label.remove_css_class("status-warn")
+            else:
+                label.add_css_class("status-warn")
+        except Exception:
+            pass
+        try:
+            label.set_tooltip_text(status_tooltip)
+        except Exception:
+            pass
+
+    def _compute_workbench_app_health(self) -> tuple[str, str, str]:
+        sync_in_progress = bool(getattr(self, "_coach_sync_in_progress", False))
+        sync_key = str(getattr(self, "_last_coach_sync_key", "") or "").strip()
+        if sync_in_progress or sync_key:
+            origin = str(getattr(self, "_last_coach_sync_origin", "") or "").strip()
+            detail = f" (origin: {origin})" if origin else ""
+            return (
+                "sync_issue",
+                "App Health: Sync issue",
+                f"Coach views are resyncing topic picks{detail}.",
+            )
+
+        llm_enabled = bool(getattr(self, "local_llm_enabled", False))
+        selected_model = str(getattr(self, "local_llm_model", "") or "").strip()
+        cached_models = [
+            str(item).strip()
+            for item in list(getattr(self, "_ollama_models_cache", []) or [])
+            if str(item or "").strip()
+        ]
+        if not llm_enabled:
+            return (
+                "model_unavailable",
+                "App Health: Model unavailable",
+                "Local AI tutor is disabled in Preferences.",
+            )
+        if not selected_model and not cached_models:
+            return (
+                "model_unavailable",
+                "App Health: Model unavailable",
+                "No local AI model is currently ready. Open Tutor and refresh models.",
+            )
+
+        coach_error = str(getattr(self, "_ai_coach_last_error", "") or "").strip()
+        cooling_models = 0
+        recovering_models = 0
+        now_ts = float(time.monotonic())
+        model_health = getattr(self, "_llm_model_health", {})
+        if isinstance(model_health, dict):
+            for row in list(model_health.values()):
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    cooldown_until = float(row.get("cooldown_until", 0.0) or 0.0)
+                except Exception:
+                    cooldown_until = 0.0
+                consecutive_failures = int(row.get("consecutive_failures", 0) or 0)
+                row_error = str(row.get("last_error", "") or "").strip()
+                if cooldown_until > now_ts:
+                    cooling_models += 1
+                elif consecutive_failures > 0 or row_error:
+                    recovering_models += 1
+        if coach_error or cooling_models > 0 or recovering_models > 0:
+            parts: list[str] = []
+            if cooling_models > 0:
+                parts.append(f"{cooling_models} model cooling down")
+            if recovering_models > 0:
+                parts.append(f"{recovering_models} model recovering")
+            if coach_error:
+                parts.append("coach fallback active")
+            detail = ", ".join(parts) if parts else "recent model issue detected"
+            return (
+                "recovery_mode",
+                "App Health: Recovery mode",
+                f"Tutor is recovering ({detail}). Study can continue safely.",
+            )
+
+        return ("ready", "App Health: Ready", "Core study features are available.")
+
+    def _refresh_workbench_app_health_line(self) -> None:
+        label = getattr(self, "workbench_health_label", None)
+        if label is None:
+            return
+        status_key, status_text, status_tooltip = self._compute_workbench_app_health()
+        self._set_label_text_if_changed(label, status_text)
+        try:
+            if str(status_key or "").strip().lower() == "ready":
+                label.remove_css_class("status-warn")
+            else:
+                label.add_css_class("status-warn")
+        except Exception:
+            pass
         try:
             label.set_tooltip_text(status_tooltip)
         except Exception:
@@ -3201,6 +3400,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         practice_learning_box.append(practice_next_meta_label)
 
+        practice_session_summary_label = self._ui.label(
+            "Progress: submit a checked attempt to start tracking.\n"
+            "Weak spots: none flagged in this check.\n"
+            "Next best step: run one checked practice attempt.",
+            css_classes=["muted", "allow-wrap"],
+            wrap=True,
+        )
+        practice_learning_box.append(practice_session_summary_label)
+
         practice_transfer_label = self._ui.label(
             "Transfer: no transfer checks recorded yet.",
             css_classes=["muted", "allow-wrap"],
@@ -3288,6 +3496,39 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._tutor_workspace_response_view = response_view
         page_box.append(response_scroller)
 
+        help_feedback_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        help_feedback_row.add_css_class("inline-toolbar")
+        help_feedback_label = Gtk.Label(label="Did this help?")
+        help_feedback_label.set_halign(Gtk.Align.START)
+        help_feedback_label.add_css_class("muted")
+        help_feedback_clear_btn = Gtk.Button(label="Clear")
+        help_feedback_partly_btn = Gtk.Button(label="Partly")
+        help_feedback_stuck_btn = Gtk.Button(label="Still stuck")
+        for btn in (help_feedback_clear_btn, help_feedback_partly_btn, help_feedback_stuck_btn):
+            btn.set_sensitive(False)
+        help_feedback_row.append(help_feedback_label)
+        help_feedback_row.append(help_feedback_clear_btn)
+        help_feedback_row.append(help_feedback_partly_btn)
+        help_feedback_row.append(help_feedback_stuck_btn)
+        help_feedback_scroller = Gtk.ScrolledWindow()
+        help_feedback_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        help_feedback_scroller.set_min_content_height(42)
+        help_feedback_scroller.set_child(help_feedback_row)
+        page_box.append(help_feedback_scroller)
+        help_feedback_next_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        help_feedback_next_row.add_css_class("inline-toolbar")
+        help_feedback_next_label = Gtk.Label(label="Follow-up prompt: rate an answer to get the next prompt.")
+        help_feedback_next_label.set_halign(Gtk.Align.START)
+        help_feedback_next_label.set_hexpand(True)
+        help_feedback_next_label.set_wrap(True)
+        help_feedback_next_label.add_css_class("muted")
+        help_feedback_next_label.add_css_class("allow-wrap")
+        help_feedback_insert_btn = Gtk.Button(label="Insert follow-up prompt")
+        help_feedback_insert_btn.set_sensitive(False)
+        help_feedback_next_row.append(help_feedback_next_label)
+        help_feedback_next_row.append(help_feedback_insert_btn)
+        page_box.append(help_feedback_next_row)
+
         summary_label = Gtk.Label(label="Telemetry: waiting for tutor turns.")
         summary_label.set_halign(Gtk.Align.START)
         summary_label.set_wrap(False)
@@ -3311,6 +3552,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         trust_details_expander.set_child(trust_details_label)
         page_box.append(trust_details_expander)
 
+        memory_snapshot = self._sanitize_ai_tutor_working_memory(getattr(self, "_ai_tutor_working_memory", {}))
+        stored_help_feedback = self._normalize_ai_tutor_help_feedback(memory_snapshot.get("last_help_feedback", ""))
         run_state: dict[str, Any] = {
             "active": False,
             "job_id": 0,
@@ -3356,8 +3599,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "practice_transfer_base": None,
             "practice_last_transfer_summary": None,
             "practice_next_guidance": None,
+            "practice_session_quality_summary": {},
             "tutor_trust_summary": "",
             "tutor_trust_details": "",
+            "tutor_help_feedback": stored_help_feedback,
+            "tutor_help_feedback_at": str(memory_snapshot.get("last_help_feedback_at", "") or "").strip(),
+            "tutor_help_feedback_turn": 0,
+            "tutor_help_followup_prompt": "",
         }
         self._tutor_workspace_state = run_state
 
@@ -4043,6 +4291,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 practice_next_meta_label.set_visible(bool(meta_line))
             except Exception:
                 pass
+            summary_map = run_state.get("practice_session_quality_summary")
+            progress_line = "Progress: submit a checked attempt to start tracking."
+            weak_line = "Weak spots: none flagged in this check."
+            next_step_line = "Next best step: run one checked practice attempt."
+            if isinstance(summary_map, dict) and summary_map:
+                progress_line = str(summary_map.get("progress", "") or "").strip() or progress_line
+                weak_line = str(summary_map.get("weak_spots", "") or "").strip() or weak_line
+                next_step_line = str(summary_map.get("next_best_step", "") or "").strip() or next_step_line
+            self._set_label_text_if_changed(
+                practice_session_summary_label,
+                f"{progress_line}\n{weak_line}\n{next_step_line}",
+            )
 
             transfer_line = "Transfer: no transfer checks recorded yet."
             transfer_tooltip = "Transfer checks test whether you can apply the same structure in a new scenario."
@@ -4453,6 +4713,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 run_state["practice_transfer_base"] = None
                 run_state["practice_last_transfer_summary"] = None
                 run_state["practice_next_guidance"] = None
+                run_state["practice_session_quality_summary"] = {}
             except Exception:
                 run_state["practice_plan_result"] = None
                 run_state["practice_item"] = None
@@ -4467,8 +4728,69 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 run_state["practice_transfer_base"] = None
                 run_state["practice_last_transfer_summary"] = None
                 run_state["practice_next_guidance"] = None
+                run_state["practice_session_quality_summary"] = {}
             _reset_practice_answer_box()
             _refresh_practice_panel()
+            # Render explicit next-action guidance into the practice action UI.
+            try:
+                from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopState
+                from studyplan.dialog_ux import TutorDialogRenderer, DisclosureLevel
+
+                try:
+                    cog = self._cognitive_state()
+                except Exception:
+                    cog = None
+
+                try:
+                    loop_state_obj = PracticeLoopState(
+                        cognitive_state=cog,
+                        session_state=session_state if isinstance(session_state, TutorSessionState) else session_state,
+                        learner_profile=learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else learner_profile,
+                        app_snapshot=_build_tutor_loop_app_snapshot(),
+                        current_item=cast(TutorPracticeItem, item),
+                        current_result=result,
+                    )
+                except Exception:
+                    # Fallback minimal loop object for recommender
+                    loop_state_obj = PracticeLoopState(
+                        cognitive_state=cog or CognitiveState(),
+                        session_state=session_state if isinstance(session_state, TutorSessionState) else TutorSessionState(session_id="tutor-workspace", module="", topic=""),
+                        learner_profile=learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else TutorLearnerProfileSnapshot(learner_id="local-user", module=""),
+                        app_snapshot=_build_tutor_loop_app_snapshot(),
+                    )
+
+                try:
+                    controller = PracticeLoopController()
+                    guidance = controller.recommend_next_action(
+                        loop_state_obj,
+                        cast(TutorPracticeItem, item),
+                        result,
+                        hints_used=max(0, int(run_state.get("practice_hint_use_count", 0) or 0)),
+                    )
+                except Exception:
+                    guidance = None
+
+                if isinstance(guidance, dict):
+                    try:
+                        fb = TutorDialogRenderer.render_next_action_guidance(
+                            outcome=guidance.get("outcome", "unknown"),
+                            reason=guidance.get("reason", ""),
+                            next_action=guidance.get("next_action", ""),
+                            urgent=bool(guidance.get("urgent", False)),
+                        )
+                        summary = fb.render(DisclosureLevel.SUMMARY)
+                        details = fb.render(DisclosureLevel.STANDARD)
+                        self._set_label_text_if_changed(practice_action_label, str(summary.get("summary", str(guidance.get("next_action", "")))))
+                        status_text = str(details.get("details", str(guidance.get("reason", ""))))
+                        if status_text:
+                            status_text = f"Reason: {status_text}"
+                        self._set_label_text_if_changed(practice_action_status_label, status_text or "Action status: waiting for plan.")
+                        run_state["practice_next_guidance"] = dict(guidance)
+                    except Exception:
+                        pass
+            except Exception:
+                # Non-fatal: leave practice action UI as-is
+                pass
             try:
                 mode_used = str(getattr(result, "mode_used", "") or "").strip()
                 phase_after = str(getattr(result, "phase_after_turn", "") or "").strip()
@@ -4678,6 +5000,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             except Exception:
                 run_state["practice_next_guidance"] = None
+            try:
+                run_state["practice_session_quality_summary"] = self._build_practice_session_quality_summary(
+                    session_state=session_state if isinstance(session_state, TutorSessionState) else None,
+                    learner_profile=learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else None,
+                    item=cast(TutorPracticeItem, item),
+                    result_obj=result,
+                    guidance=run_state.get("practice_next_guidance"),
+                )
+            except Exception:
+                run_state["practice_session_quality_summary"] = {}
             _refresh_practice_panel()
             try:
                 out = str(getattr(result, "outcome", "") or "").strip()
@@ -4827,6 +5159,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             run_state["practice_hint_policy_last_decision"] = None
             run_state["practice_hint_use_count"] = 0
             run_state["practice_next_guidance"] = None
+            run_state["practice_session_quality_summary"] = {}
             _reset_practice_answer_box()
             _refresh_practice_panel()
             try:
@@ -4956,6 +5289,66 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 for msg in history
                 if isinstance(msg, dict) and str(msg.get("role", "")).strip().lower() == "assistant"
             )
+
+        def _feedback_status_text(signal: str) -> str:
+            normalized = self._normalize_ai_tutor_help_feedback(signal)
+            if normalized == "clear":
+                return "Feedback saved: clear. Next reply will move one step harder."
+            if normalized == "partly":
+                return "Feedback saved: partly clear. Next reply will simplify then check."
+            if normalized == "stuck":
+                return "Feedback saved: still stuck. Next reply will slow down step-by-step."
+            return "Feedback saved."
+
+        def _refresh_help_feedback_buttons() -> None:
+            has_answer = bool(_latest_assistant_answer())
+            is_active = bool(run_state.get("active", False))
+            selected = self._normalize_ai_tutor_help_feedback(run_state.get("tutor_help_feedback", ""))
+            enabled = has_answer and (not is_active)
+            mapping = (
+                (help_feedback_clear_btn, "clear"),
+                (help_feedback_partly_btn, "partly"),
+                (help_feedback_stuck_btn, "stuck"),
+            )
+            for btn, token in mapping:
+                btn.set_sensitive(enabled)
+                try:
+                    if selected == token and has_answer:
+                        btn.add_css_class("suggested-action")
+                    else:
+                        btn.remove_css_class("suggested-action")
+                except Exception:
+                    pass
+
+        def _set_help_feedback(signal: str) -> None:
+            if bool(run_state.get("active", False)):
+                _set_status("Wait for the current turn to finish before rating.")
+                return
+            if not bool(_latest_assistant_answer()):
+                _set_status("No tutor answer yet. Send a prompt first.")
+                return
+            normalized = self._normalize_ai_tutor_help_feedback(signal)
+            if not normalized:
+                return
+            run_state["tutor_help_feedback"] = normalized
+            run_state["tutor_help_feedback_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            run_state["tutor_help_feedback_turn"] = _turn_count()
+            feedback_recorder = getattr(self, "_record_ai_tutor_help_feedback", None)
+            if callable(feedback_recorder):
+                try:
+                    cast(
+                        Any,
+                        feedback_recorder(
+                            normalized,
+                            at=str(run_state.get("tutor_help_feedback_at", "") or ""),
+                            persist=True,
+                        ),
+                    )
+                except Exception:
+                    pass
+            _refresh_help_feedback_buttons()
+            _set_status(_feedback_status_text(normalized))
+            _refresh_status_line()
 
         def _update_prompt_meta() -> None:
             prompt_text = _current_prompt_text(strip=False)
@@ -5150,13 +5543,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 run_state["stream_watchdog_id"] = 0
             else:
                 _ensure_stream_watchdog()
+            has_latest_answer = bool(_latest_assistant_answer())
             controls = compute_tutor_control_state(
                 running=bool(running),
                 model_ready=bool(_selected_model_name()),
                 llm_ready=bool(self.local_llm_enabled),
                 prompt_ready=bool(_current_prompt_text(strip=True)),
                 has_history=bool(history),
-                has_latest_answer=bool(_latest_assistant_answer()),
+                has_latest_answer=has_latest_answer,
                 has_active_or_history=bool(history) or bool(run_state.get("active", False)),
             )
             send_btn.set_sensitive(bool(controls.get("send_enabled", False)))
@@ -5181,6 +5575,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
             gap_generate_btn.set_sensitive(gap_enabled)
             section_c_btn.set_sensitive(not bool(running))
+            _refresh_help_feedback_buttons()
             _update_follow_button()
             try:
                 refresh_practice_cb = run_state.get("refresh_practice")
@@ -5366,6 +5761,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     quick_prompts_box.set_spacing(6)
                     quick_prompt_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
                     quick_prompt_scroll.set_min_content_height(42)
+            except Exception:
+                pass
+            try:
+                if very_narrow:
+                    help_feedback_row.set_orientation(Gtk.Orientation.VERTICAL)
+                    help_feedback_row.set_spacing(4)
+                    help_feedback_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+                    help_feedback_scroller.set_min_content_height(120)
+                    help_feedback_label.set_text("Help?")
+                else:
+                    help_feedback_row.set_orientation(Gtk.Orientation.HORIZONTAL)
+                    help_feedback_row.set_spacing(6)
+                    help_feedback_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+                    help_feedback_scroller.set_min_content_height(42)
+                    help_feedback_label.set_text("Did this help?")
             except Exception:
                 pass
             try:
@@ -5875,6 +6285,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     ).strip()
                 except Exception:
                     planner_brief = ""
+            help_feedback_brief = ""
+            help_feedback_builder = getattr(self, "_build_ai_tutor_help_feedback_brief", None)
+            if callable(help_feedback_builder):
+                try:
+                    help_feedback_brief = str(
+                        cast(
+                            Any,
+                            help_feedback_builder(
+                                feedback=run_state.get("tutor_help_feedback", ""),
+                            ),
+                        )
+                        or ""
+                    ).strip()
+                except Exception:
+                    help_feedback_brief = ""
+            if help_feedback_brief and help_feedback_brief not in planner_brief:
+                planner_brief = (
+                    f"{planner_brief}\n{help_feedback_brief}".strip()
+                    if planner_brief
+                    else help_feedback_brief
+                )
             learner_profile_brief = ""
             learner_profile_builder = getattr(self, "_build_ai_tutor_learner_profile_brief", None)
             if callable(learner_profile_builder):
@@ -6332,13 +6763,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         first_token_ms=int(guard_state.get("first_token_ms", 0) or 0),
                     )
                     _render_transcript(force_scroll=True)
+                    _refresh_help_feedback_buttons()
                     if int(coverage_state.get("target_count", 0) or 0) > 1:
                         _set_status(
                             f"Done ({model_name}) • turns: {_turn_count()} • coverage "
                             f"{int(coverage_state.get('hit_count', 0) or 0)}/{int(coverage_state.get('target_count', 0) or 0)}"
+                            " • self-check ready"
                         )
                     else:
-                        _set_status(f"Done ({model_name}) • turns: {_turn_count()}")
+                        _set_status(f"Done ({model_name}) • turns: {_turn_count()} • self-check ready")
                     _refresh_status_line()
                     try:
                         prompt_view.grab_focus()
@@ -6458,6 +6891,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         jump_btn.connect("clicked", _jump_latest)
         follow_btn.connect("clicked", _follow_live_toggle)
+        help_feedback_clear_btn.connect("clicked", lambda *_: _set_help_feedback("clear"))
+        help_feedback_partly_btn.connect("clicked", lambda *_: _set_help_feedback("partly"))
+        help_feedback_stuck_btn.connect("clicked", lambda *_: _set_help_feedback("stuck"))
         practice_plan_btn.connect("clicked", _plan_tutor_practice_loop)
         practice_check_btn.connect("clicked", _check_tutor_practice_answer)
         practice_retry_variant_btn.connect("clicked", _retry_tutor_practice_variant)
@@ -15325,6 +15761,63 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             max_tokens = _env_int("STUDYPLAN_AI_CONTEXT_MAX_TOKENS_TUTOR", AI_CONTEXT_DEFAULT_MAX_TOKENS_TUTOR, 120, 480)
         return int(max_chars), int(max_tokens)
 
+    def _normalize_ai_tutor_help_feedback(self, value: Any) -> str:
+        token = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+        if token in {"clear", "cleared", "understood", "got it"}:
+            return "clear"
+        if token in {"partly", "partial", "partially", "almost"}:
+            return "partly"
+        if token in {"stuck", "still stuck", "confused", "lost", "not clear"}:
+            return "stuck"
+        return ""
+
+    def _build_ai_tutor_help_feedback_brief(self, *, feedback: Any = "") -> str:
+        signal = self._normalize_ai_tutor_help_feedback(feedback)
+        if not signal:
+            memory = self._sanitize_ai_tutor_working_memory(getattr(self, "_ai_tutor_working_memory", {}))
+            signal = self._normalize_ai_tutor_help_feedback(memory.get("last_help_feedback", ""))
+        if not signal:
+            return ""
+        try:
+            adaptation = self._get_practice_loop_controller().build_tutor_feedback_adaptation(signal)
+        except Exception:
+            adaptation = {}
+        planner_hint = str((adaptation or {}).get("planner_hint", "") or "").strip()
+        if planner_hint:
+            return f"- {planner_hint}"
+        return ""
+
+    def _record_ai_tutor_help_feedback(
+        self,
+        feedback: Any,
+        *,
+        at: str = "",
+        persist: bool = False,
+    ) -> dict[str, Any]:
+        signal = self._normalize_ai_tutor_help_feedback(feedback)
+        memory = self._sanitize_ai_tutor_working_memory(getattr(self, "_ai_tutor_working_memory", {}))
+        feedback_at = re.sub(r"\s+", " ", str(at or "")).strip()
+        if signal and not feedback_at:
+            feedback_at = datetime.datetime.now().isoformat(timespec="seconds")
+        memory = self._sanitize_ai_tutor_working_memory(
+            {
+                "last_topic": memory.get("last_topic", ""),
+                "last_intent": memory.get("last_intent", ""),
+                "last_next_step": memory.get("last_next_step", ""),
+                "last_help_feedback": signal,
+                "last_help_feedback_at": feedback_at if signal else "",
+                "last_updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "notes": list(memory.get("notes", []) or []),
+            }
+        )
+        self._ai_tutor_working_memory = dict(memory)
+        if bool(persist):
+            try:
+                self.save_preferences()
+            except Exception:
+                pass
+        return dict(memory)
+
     def _sanitize_ai_tutor_working_memory(self, value: Any) -> dict[str, Any]:
         raw = value if isinstance(value, dict) else {}
 
@@ -15349,6 +15842,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "last_topic": _clip_text(raw.get("last_topic", ""), 100),
             "last_intent": _clip_text(raw.get("last_intent", ""), 180),
             "last_next_step": _clip_text(raw.get("last_next_step", ""), 220),
+            "last_help_feedback": self._normalize_ai_tutor_help_feedback(raw.get("last_help_feedback", "")),
+            "last_help_feedback_at": _clip_text(raw.get("last_help_feedback_at", ""), 40),
             "last_updated_at": updated_at,
             "notes": notes,
         }
@@ -15421,6 +15916,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "last_topic": topic,
                 "last_intent": intent,
                 "last_next_step": next_step,
+                "last_help_feedback": memory.get("last_help_feedback", ""),
+                "last_help_feedback_at": memory.get("last_help_feedback_at", ""),
                 "last_updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
                 "notes": notes,
             }
@@ -15480,6 +15977,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ordered = " -> ".join(targets[:4])
             lines.append(f"- Coverage order: {ordered}")
         lines.append("- Include pitfalls and a 2-3 check quick drill.")
+        feedback_line = self._build_ai_tutor_help_feedback_brief(feedback=memory.get("last_help_feedback", ""))
+        if feedback_line:
+            lines.append(feedback_line)
         if continuity:
             lines.append(f"- Continuity cue from last turn: {continuity[:120]}")
         lines.append("- End with one next step (topic + mode + duration).")
@@ -16156,6 +16656,68 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         return fallback
 
+    def _build_practice_session_quality_summary(
+        self,
+        *,
+        session_state: TutorSessionState | None,
+        learner_profile: TutorLearnerProfileSnapshot | None,
+        item: TutorPracticeItem | Any,
+        result_obj: Any,
+        guidance: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
+        fallback = {
+            "progress": "Progress: submit a checked attempt to start tracking.",
+            "weak_spots": "Weak spots: none flagged in this check.",
+            "next_best_step": "Next best step: run one checked practice attempt.",
+        }
+        cog_state = self._cognitive_state()
+        if (
+            cog_state is None
+            or not isinstance(session_state, TutorSessionState)
+            or not isinstance(learner_profile, TutorLearnerProfileSnapshot)
+        ):
+            return dict(fallback)
+        try:
+            days_to_exam = None
+            try:
+                exam_date_obj = getattr(getattr(self, "engine", None), "exam_date", None)
+                if isinstance(exam_date_obj, datetime.date):
+                    days_to_exam = int((exam_date_obj - datetime.date.today()).days)
+            except Exception:
+                days_to_exam = None
+            app_snapshot = AppStateSnapshot(
+                module=str(getattr(session_state, "module", "") or "").strip() or str(getattr(self, "module_title", "") or "module"),
+                current_topic=str(getattr(session_state, "topic", "") or "").strip(),
+                coach_pick=str(getattr(self, "_coach_pick_topic", "") or getattr(self, "current_topic", "") or "").strip(),
+                days_to_exam=days_to_exam,
+                must_review_due=max(0, int(self._get_must_review_due_count(datetime.date.today()) or 0)),
+                overdue_srs_count=0,
+                meta={"source": "tutor_workspace"},
+            )
+            loop_state = PracticeLoopState(
+                cognitive_state=cog_state,
+                session_state=session_state,
+                learner_profile=learner_profile,
+                app_snapshot=app_snapshot,
+                current_item=cast(TutorPracticeItem, item),
+                current_result=result_obj if isinstance(result_obj, TutorAssessmentResult) else None,
+            )
+            result_safe: TutorAssessmentResult | None = result_obj if isinstance(result_obj, TutorAssessmentResult) else None
+            summary = self._get_practice_loop_controller().build_session_quality_summary(
+                loop_state,
+                result=result_safe,
+                guidance=guidance if isinstance(guidance, dict) else None,
+            )
+            if isinstance(summary, dict) and summary:
+                out = dict(fallback)
+                out["progress"] = str(summary.get("progress", "") or "").strip() or fallback["progress"]
+                out["weak_spots"] = str(summary.get("weak_spots", "") or "").strip() or fallback["weak_spots"]
+                out["next_best_step"] = str(summary.get("next_best_step", "") or "").strip() or fallback["next_best_step"]
+                return out
+        except Exception:
+            pass
+        return dict(fallback)
+
     def _render_grounded_tutor_feedback(
         self,
         response_text: str,
@@ -16612,6 +17174,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     "last_topic": "",
                     "last_intent": "",
                     "last_next_step": "",
+                    "last_help_feedback": "",
+                    "last_help_feedback_at": "",
                     "last_updated_at": "",
                     "notes": [],
                 }
@@ -16620,6 +17184,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "last_topic": "",
                 "last_intent": "",
                 "last_next_step": "",
+                "last_help_feedback": "",
+                "last_help_feedback_at": "",
                 "last_updated_at": "",
                 "notes": [],
             }
@@ -36432,6 +36998,24 @@ def _release_single_instance_lock() -> None:
         pass
 
 
+def _startup_no_display_message() -> str:
+    return (
+        "No desktop display detected. Study Assistant can only run in a desktop GUI session.\n"
+        "Open it from your logged-in desktop environment and try again."
+    )
+
+
+def _startup_already_running_message(lock_path: str | None = None) -> str:
+    path = os.path.expanduser(str(lock_path or APP_INSTANCE_LOCK_PATH or "").strip())
+    if not path:
+        path = APP_INSTANCE_LOCK_PATH
+    return (
+        "Study Assistant is already running.\n"
+        "Switch to the existing window first (for example via Alt+Tab/workspace switch).\n"
+        f"If no window exists after a forced close, remove stale lock file and retry: {path}"
+    )
+
+
 class StudyApp(Gtk.Application):
     def __init__(
         self,
@@ -36493,13 +37077,13 @@ if __name__ == "__main__":
     init_result = Gtk.init_check()
     gtk_ok = init_result[0] if isinstance(init_result, tuple) else init_result
     if not gtk_ok:
-        print("No display available; Gtk UI cannot start.")
+        print(_startup_no_display_message())
         sys.exit(0)
     if Gdk.Display.get_default() is None:
-        print("No display available; Gtk UI cannot start.")
+        print(_startup_no_display_message())
         sys.exit(0)
     if not _acquire_single_instance_lock():
-        print("Study Assistant is already running. Close the existing window first.")
+        print(_startup_already_running_message())
         sys.exit(0)
     exam_date = None
     dialog_smoke_test = False

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
-from gi.repository import Gtk
+from typing import Any, Callable
+from gi.repository import Gtk  # pyright: ignore[reportAttributeAccessIssue]
 
 from studyplan.ui_builder import UIBuilder
 
@@ -51,7 +51,7 @@ class WidgetCache:
     def get_or_create(
         self,
         key: str,
-        factory: callable,
+        factory: Callable[[], Gtk.Widget],
     ) -> Gtk.Widget:
         """Get cached widget or create new one."""
         if key not in self._cache:
@@ -76,7 +76,7 @@ class ReactiveWidget:
     Simplifies patterns where UI needs to refresh when underlying data changes.
     """
 
-    def __init__(self, widget: Gtk.Widget, update_fn: callable) -> None:
+    def __init__(self, widget: Gtk.Widget, update_fn: Callable[[Gtk.Widget, Any], None]) -> None:
         self.widget = widget
         self._update_fn = update_fn
         self._data: Any = None
@@ -102,8 +102,8 @@ class SectionBuilder:
     def __init__(self, ui: UIBuilder) -> None:
         self._ui = ui
         self._title: str | None = None
-        self._card_content: callable | None = None
-        self._actions: list[tuple[str, callable]] = []
+        self._card_content: Callable[[Gtk.Box], None] | None = None
+        self._actions: list[tuple[str, Callable[..., Any]]] = []
         self._css_classes: list[str] = []
 
     def with_title(self, title: str) -> "SectionBuilder":
@@ -111,12 +111,12 @@ class SectionBuilder:
         self._title = title
         return self
 
-    def with_card(self, content_fn: callable) -> "SectionBuilder":
+    def with_card(self, content_fn: Callable[[Gtk.Box], None]) -> "SectionBuilder":
         """Set card content builder function."""
         self._card_content = content_fn
         return self
 
-    def with_action(self, label: str, handler: callable) -> "SectionBuilder":
+    def with_action(self, label: str, handler: Callable[..., Any]) -> "SectionBuilder":
         """Add an action button."""
         self._actions.append((label, handler))
         return self

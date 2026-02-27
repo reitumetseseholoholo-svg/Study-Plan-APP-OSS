@@ -13,6 +13,33 @@ from studyplan.cognitive_state import CognitiveState
 from studyplan.performance_monitor import PerformanceMonitor
 
 
+def _assert_guidance_contract(guidance: dict):
+    assert isinstance(guidance, dict)
+    assert isinstance(guidance.get("outcome"), str)
+    assert isinstance(guidance.get("topic"), str)
+    assert isinstance(guidance.get("reason"), str) and guidance["reason"]
+    assert isinstance(guidance.get("next_action"), str) and guidance["next_action"]
+    assert isinstance(guidance.get("urgent"), bool)
+
+    telemetry = guidance.get("telemetry")
+    assert isinstance(telemetry, dict)
+    assert isinstance(telemetry.get("decision_source"), str) and telemetry["decision_source"]
+
+    inputs = telemetry.get("inputs")
+    assert isinstance(inputs, dict)
+    assert isinstance(inputs.get("outcome"), str)
+    assert isinstance(inputs.get("hints_used"), int)
+    assert isinstance(inputs.get("can_transfer"), bool)
+    assert isinstance(inputs.get("topic"), str)
+
+    signals = telemetry.get("signals")
+    assert isinstance(signals, dict)
+    assert signals.get("intervention_level") in {"none", "light", "strong"}
+    assert isinstance(signals.get("pattern_detected"), bool)
+    assert isinstance(signals.get("diagnosis_used"), bool)
+    assert signals.get("confidence_delta") is None or isinstance(signals.get("confidence_delta"), float)
+
+
 def test_practice_loop_simulation():
     session = TutorSessionState(session_id="s1", module="m", topic="T1")
     learner = TutorLearnerProfileSnapshot(learner_id="u1", module="m")
@@ -157,11 +184,44 @@ def test_practice_loop_recommends_transfer_after_strong_correct():
     )
 
     guidance = controller.recommend_next_action(loop, item, result, hints_used=0)
+    _assert_guidance_contract(guidance)
     assert guidance["next_action"]
     assert guidance["reason"]
     assert guidance["outcome"] == "correct"
     assert "urgent" in guidance
     assert guidance["urgent"] is False
+    assert "telemetry" in guidance
+    assert guidance["telemetry"]["decision_source"]
+    assert guidance["telemetry"]["inputs"]["outcome"] == "correct"
+    assert guidance["telemetry"]["signals"]["intervention_level"] == "none"
+    assert guidance["telemetry"]["signals"]["diagnosis_used"] is False
+    assert "intervention required" not in guidance["reason"].lower()
+
+
+def test_practice_loop_recommends_light_intervention_after_partial():
+    controller = PracticeLoopController(perf_monitor=PerformanceMonitor(enabled=True))
+    cog_state = CognitiveState()
+    session = TutorSessionState(session_id="s6p", module="m", topic="T1")
+    learner = TutorLearnerProfileSnapshot(learner_id="u6p", module="m")
+    app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
+    loop = PracticeLoopState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+
+    item = controller.build_practice_items(loop, max_items=1)[0]
+    result = TutorAssessmentResult(
+        item_id=item.item_id,
+        outcome="partial",
+        marks_awarded=1.0,
+        marks_max=2.0,
+        feedback="Method mostly right; one step missing.",
+    )
+    guidance = controller.recommend_next_action(loop, item, result, hints_used=0)
+    _assert_guidance_contract(guidance)
+    assert guidance["outcome"] == "partial"
+    assert guidance["urgent"] is True
+    assert guidance["reason"].startswith("Targeted intervention advised.")
+    assert "targeted hint" in str(guidance["next_action"]).lower()
+    assert guidance["telemetry"]["signals"]["intervention_level"] == "light"
+    assert guidance["telemetry"]["signals"]["diagnosis_used"] is False
 
 
 def test_practice_loop_recommends_remediation_after_incorrect():
@@ -175,8 +235,16 @@ def test_practice_loop_recommends_remediation_after_incorrect():
     item = controller.build_practice_items(loop, max_items=1)[0]
     result = controller.submit_attempt(loop, item, TutorAssessmentSubmission(item_id=item.item_id, answer_text="wrong"))
     guidance = controller.recommend_next_action(loop, item, result, hints_used=1)
+    _assert_guidance_contract(guidance)
     assert guidance["outcome"] == "incorrect"
     assert guidance["next_action"]
     assert guidance["reason"]
     assert guidance["urgent"] is True
     assert "retry" in str(guidance["next_action"]).lower()
+    assert "telemetry" in guidance
+    assert guidance["telemetry"]["inputs"]["hints_used"] == 1
+    assert guidance["telemetry"]["signals"]["intervention_level"] == "strong"
+    assert guidance["telemetry"]["signals"]["diagnosis_used"] is True
+    assert isinstance(guidance["telemetry"]["signals"]["pattern_detected"], bool)
+    assert guidance["reason"].startswith("Immediate intervention required.")
+    assert "progressive hints" in guidance["next_action"].lower()
