@@ -1,0 +1,68 @@
+name: CI Quality Gates
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'studyplan/**/*.py'
+      - 'tests/**/*.py'
+      - 'pyproject.toml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'studyplan/**/*.py'
+      - 'tests/**/*.py'
+      - 'pyproject.toml'
+
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff pyright pytest
+
+      - name: Lint with ruff
+        run: |
+          ruff check studyplan/ tests/ studyplan/testing/
+          ruff format --check studyplan/ tests/ studyplan/testing/
+
+      - name: Type check with pyright
+        run: |
+          pyright studyplan/
+
+      - name: Run pytest (core + integration)
+        run: |
+          pytest tests/ studyplan/testing/ -v --tb=short
+
+      - name: Check test coverage (pytest-cov)
+        run: |
+          pip install pytest-cov
+          pytest tests/ studyplan/testing/ --cov=studyplan --cov-report=term-missing --cov-fail-under=60
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Run bandit for security issues
+        run: |
+          pip install bandit
+          bandit -r studyplan/ -ll || true  # warn only

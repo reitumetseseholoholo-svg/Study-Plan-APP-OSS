@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "studyplan"
+version = "0.1.0"
+description = "ACCA Study Plan App - AI-powered adaptive tutoring runtime"
+authors = ["ACCA OSS Team"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+ruff = "^0.3"
+pyright = "^1.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+select = ["E", "F", "W", "N", "C", "B"]
+ignore = ["E501", "W503"]
+exclude = ["__pycache__", ".git", ".venv", "build", "dist"]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.pyright]
+include = ["studyplan"]
+exclude = ["**/__pycache__", ".venv", "build"]
+typeCheckingMode = "basic"
+reportPrivateImportUsage = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "studyplan/testing"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import datetime as _dt
-from typing import Any
+from enum import Enum
+from typing import Any, Tuple, List
+
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 COGNITIVE_STATE_SCHEMA_VERSION = 1
@@ -119,6 +124,14 @@ class CognitiveState:
     last_persisted_at: str | None = None
     last_persist_ok: bool | None = None
     last_persist_error: str | None = None
+    # recovery / degradation state
+    class Mode(str, Enum):
+        NORMAL = "normal"
+        DEGRADED = "degraded"
+        READONLY = "readonly"
+        OFFLINE = "offline"
+    mode: "CognitiveState.Mode" = Mode.NORMAL
+    recovery_hints: dict[str, str] = field(default_factory=dict)
 
     def to_json_snapshot(self) -> dict[str, Any]:
         payload = {
@@ -136,6 +149,11 @@ class CognitiveState:
             "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
         }
         return payload
+
+    def mark_corrupted(self, reason: str) -> None:
+        logger.warning("marking cognitive state corrupted", extra={"reason": reason})
+        self.mode = self.Mode.READONLY
+        self.recovery_hints["last_error"] = reason
 
     @classmethod
     def from_snapshot(cls, payload: Any) -> "CognitiveState":
@@ -182,10 +200,7 @@ class CognitiveState:
                     score = float(value)
                 except Exception:
                     continue
-                if score < 0.0:
-                    score = 0.0
-                if score > 1.0:
-                    score = 1.0
+                score = max(0.0, min(1.0, score))
                 state.claim_confidence[claim_key] = score
         structure_exposure_counts = payload.get("structure_exposure_counts")
         if isinstance(structure_exposure_counts, dict):
@@ -291,6 +306,7 @@ class CognitiveState:
         if not bool(base_correct):
             return False
         try:
+            # Values below 0.5 indicate high hint dependency.
             if float(hint_penalty or 0.0) < 0.5:
                 return False
         except Exception:
@@ -314,3 +330,37 @@ class CognitiveState:
             self.transfer_attempt_ids.append(attempt_key)
             if len(self.transfer_attempt_ids) > 200:
                 self.transfer_attempt_ids[:] = self.transfer_attempt_ids[-200:]
+
+
+class CognitiveStateValidator:
+    @staticmethod
+    def validate(state: CognitiveState) -> tuple[bool, list[str]]:
+        errors: list[str] = []
+        # posterior mean in 0..1
+        for topic, posterior in state.posteriors.items():
+            m = posterior.mean
+            if not (0.0 <= m <= 1.0):
+                errors.append(f"Topic '{topic}' mean={m} outside [0,1]")
+        # struggle flags bool
+        for flag_name, flag_val in state.working_memory.struggle_flags.items():
+            if not isinstance(flag_val, bool):
+                errors.append(f"Struggle flag '{flag_name}' not bool: {flag_val}")
+        # quiz_active invariants
+        if state.quiz_active and not state.working_memory.active_question_id:
+            errors.append("quiz_active=True but no active_question_id")
+        # mode validity
+        if state.mode not in CognitiveState.Mode:
+            errors.append(f"Unknown mode {state.mode}")
+        return (len(errors) == 0, errors)
+
+    @classmethod
+    def from_snapshot(cls, payload: Any) -> "CognitiveState":
+        return CognitiveState.from_snapshot(payload)
+
+    @classmethod
+    def from_legacy_data(
+        cls,
+        data: dict[str, Any] | None,
+        module_config: dict[str, Any] | None = None,
+    ) -> "CognitiveState":
+        return CognitiveState.from_legacy_data(data, module_config)

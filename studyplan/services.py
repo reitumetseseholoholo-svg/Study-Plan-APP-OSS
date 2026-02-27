@@ -1670,16 +1670,27 @@ class InMemoryTutorLearnerModelStore:
         return tuple(out)
 
 
+from functools import lru_cache
+
+
 def _normalize_free_text(value: Any) -> str:
     text = str(value or "").strip().lower()
     text = re.sub(r"\s+", " ", text)
     return text
 
 
+# caching normalization and tokenization to avoid repeat regex work
+@lru_cache(maxsize=4096)
+def _normalized_cached(value: str) -> str:
+    # value expected to be str already
+    return _normalize_free_text(value)
+
+@lru_cache(maxsize=4096)
 def _tokenize_words(value: Any) -> tuple[str, ...]:
-    text = _normalize_free_text(value)
+    text = _normalized_cached(str(value or ""))
     if not text:
         return ()
+    # simple regex; precompiled not necessary but could be
     tokens = tuple(tok for tok in re.findall(r"[a-z0-9]+", text) if tok)
     return tokens
 

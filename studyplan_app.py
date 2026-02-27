@@ -13705,7 +13705,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cache_put_response = getattr(self, "_ai_cache_put_response", None)
         ctx_value = max(512, min(8192, int(num_ctx)))
         temp_value = max(0.0, min(1.0, float(temperature)))
-        thread_value = max(1, int(self._effective_ollama_num_threads(model_name=model_name, num_ctx=ctx_value)))
+        thread_reader = getattr(self, "_effective_ollama_num_threads", None)
+        if callable(thread_reader):
+            try:
+                thread_value = int(cast(Any, thread_reader)(model_name=model_name, num_ctx=ctx_value))
+            except Exception:
+                thread_value = int(DEFAULT_OLLAMA_NUM_THREADS)
+        else:
+            thread_value = int(DEFAULT_OLLAMA_NUM_THREADS)
+        thread_value = max(1, thread_value)
         response_cache_key = ""
         if can_cache and callable(cache_hash):
             response_cache_key = cache_hash(
@@ -13873,7 +13881,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return "", "Ollama runtime busy. Retry shortly."
         host = self._normalize_ollama_host()
         url = f"{host}/api/generate"
-        thread_value = max(1, int(self._effective_ollama_num_threads(model_name=model_name, num_ctx=DEFAULT_OLLAMA_CONTEXT)))
+        thread_reader = getattr(self, "_effective_ollama_num_threads", None)
+        if callable(thread_reader):
+            try:
+                thread_value = int(cast(Any, thread_reader)(model_name=model_name, num_ctx=DEFAULT_OLLAMA_CONTEXT))
+            except Exception:
+                thread_value = int(DEFAULT_OLLAMA_NUM_THREADS)
+        else:
+            thread_value = int(DEFAULT_OLLAMA_NUM_THREADS)
+        thread_value = max(1, thread_value)
         payload = {
             "model": model_name,
             "prompt": prompt_text,
