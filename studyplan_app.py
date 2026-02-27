@@ -109,6 +109,8 @@ from studyplan.telemetry.slo import evaluate_latency_slo
 from studyplan.working_memory_service import WorkingMemoryService
 from studyplan.lifecycle import ShutdownBarrier
 from studyplan.ui import UIBuilder
+from studyplan.dialog_ux import DisclosureLevel, TutorDialogRenderer
+from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopState
 
 
 import datetime
@@ -1586,6 +1588,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._transfer_attempt_log_service = TransferAttemptLogService()
         self._transfer_attempts_log_loaded = False
         self._tutor_rag_evidence_policy_service = RuleBasedRagEvidencePolicyService()
+        self._practice_loop_controller: PracticeLoopController | None = None
         self._tutor_learning_loop_service = RuleBasedTutorLearningLoopService(
             session_controller=self._tutor_session_controller,
             learner_model_store=self._tutor_learner_model_store,
@@ -3177,6 +3180,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         practice_learning_box.append(practice_metrics_label)
 
+        practice_next_action_label = self._ui.label(
+            "Next: submit an assessed answer to get guidance.",
+            css_classes=["allow-wrap"],
+            wrap=True,
+        )
+        practice_learning_box.append(practice_next_action_label)
+
+        practice_next_reason_label = self._ui.label(
+            "Reason: guidance is based on your latest assessed result.",
+            css_classes=["muted", "allow-wrap"],
+            wrap=True,
+        )
+        practice_learning_box.append(practice_next_reason_label)
+
+        practice_next_meta_label = self._ui.label(
+            "",
+            css_classes=["muted", "allow-wrap"],
+            wrap=True,
+        )
+        practice_learning_box.append(practice_next_meta_label)
+
         practice_transfer_label = self._ui.label(
             "Transfer: no transfer checks recorded yet.",
             css_classes=["muted", "allow-wrap"],
@@ -3276,6 +3300,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._tutor_workspace_summary_label = summary_label
         page_box.append(summary_label)
 
+        trust_details_expander = Gtk.Expander(label="Tutor trust details")
+        trust_details_expander.set_expanded(False)
+        trust_details_expander.set_visible(False)
+        trust_details_label = Gtk.Label(label="")
+        trust_details_label.set_halign(Gtk.Align.START)
+        trust_details_label.set_wrap(True)
+        trust_details_label.add_css_class("muted")
+        trust_details_label.add_css_class("allow-wrap")
+        trust_details_expander.set_child(trust_details_label)
+        page_box.append(trust_details_expander)
+
         run_state: dict[str, Any] = {
             "active": False,
             "job_id": 0,
@@ -3320,6 +3355,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "practice_hint_use_count": 0,
             "practice_transfer_base": None,
             "practice_last_transfer_summary": None,
+            "practice_next_guidance": None,
+            "tutor_trust_summary": "",
+            "tutor_trust_details": "",
         }
         self._tutor_workspace_state = run_state
 
@@ -3976,6 +4014,36 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
 
+            next_line = "Next: submit an assessed answer to get guidance."
+            reason_line = "Reason: guidance is based on your latest assessed result."
+            meta_line = ""
+            guidance_obj = run_state.get("practice_next_guidance")
+            if isinstance(guidance_obj, dict) and guidance_obj:
+                action_text = str(guidance_obj.get("next_action", "") or "").strip()
+                reason_text = str(guidance_obj.get("reason", "") or "").strip()
+                if action_text:
+                    next_line = f"Next: {action_text}"
+                if reason_text:
+                    reason_line = f"Reason: {reason_text}"
+                urgent_now = bool(guidance_obj.get("urgent", False))
+                try:
+                    next_days = guidance_obj.get("next_retest_days")
+                    next_days_val = None if next_days is None else int(next_days)
+                except Exception:
+                    next_days_val = None
+                if urgent_now:
+                    meta_line = "Priority: urgent"
+                elif isinstance(next_days_val, int) and next_days_val > 0:
+                    day_label = "day" if next_days_val == 1 else "days"
+                    meta_line = f"Scheduled in {next_days_val} {day_label}"
+            self._set_label_text_if_changed(practice_next_action_label, next_line)
+            self._set_label_text_if_changed(practice_next_reason_label, reason_line)
+            self._set_label_text_if_changed(practice_next_meta_label, meta_line)
+            try:
+                practice_next_meta_label.set_visible(bool(meta_line))
+            except Exception:
+                pass
+
             transfer_line = "Transfer: no transfer checks recorded yet."
             transfer_tooltip = "Transfer checks test whether you can apply the same structure in a new scenario."
             transfer_summary_obj = run_state.get("practice_last_transfer_summary")
@@ -4384,6 +4452,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 run_state["practice_hint_use_count"] = 0
                 run_state["practice_transfer_base"] = None
                 run_state["practice_last_transfer_summary"] = None
+                run_state["practice_next_guidance"] = None
             except Exception:
                 run_state["practice_plan_result"] = None
                 run_state["practice_item"] = None
@@ -4397,6 +4466,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 run_state["practice_hint_use_count"] = 0
                 run_state["practice_transfer_base"] = None
                 run_state["practice_last_transfer_summary"] = None
+                run_state["practice_next_guidance"] = None
             _reset_practice_answer_box()
             _refresh_practice_panel()
             try:
@@ -4598,6 +4668,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 }
             except Exception:
                 pass
+            try:
+                run_state["practice_next_guidance"] = self._build_practice_next_action_guidance(
+                    session_state=session_state if isinstance(session_state, TutorSessionState) else None,
+                    learner_profile=learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else None,
+                    item=cast(TutorPracticeItem, item),
+                    result_obj=result,
+                    hints_used=max(0, int(run_state.get("practice_hint_use_count", 0) or 0)),
+                )
+            except Exception:
+                run_state["practice_next_guidance"] = None
             _refresh_practice_panel()
             try:
                 out = str(getattr(result, "outcome", "") or "").strip()
@@ -4621,6 +4701,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     _set_status(f"Practice assessed: {out}")
             except Exception:
                 _set_status("Practice assessed.")
+            try:
+                practice_answer_view.grab_focus()
+            except Exception:
+                pass
 
         def _hint_tutor_practice_item(*_args) -> None:
             item = run_state.get("practice_item")
@@ -4742,6 +4826,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             run_state["practice_hint_policy_state"] = {}
             run_state["practice_hint_policy_last_decision"] = None
             run_state["practice_hint_use_count"] = 0
+            run_state["practice_next_guidance"] = None
             _reset_practice_answer_box()
             _refresh_practice_panel()
             try:
@@ -5195,9 +5280,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     )
                 else:
                     summary_text = summary_full
+            trust_summary = str(run_state.get("tutor_trust_summary", "") or "").strip()
+            trust_details = str(run_state.get("tutor_trust_details", "") or "").strip()
+            if trust_summary:
+                trust_summary_display = trust_summary
+                if very_narrow:
+                    trust_summary_display = self._compact_ui_token(trust_summary, 34, trust_summary)
+                elif narrow:
+                    trust_summary_display = self._compact_ui_token(trust_summary, 52, trust_summary)
+                summary_text = f"{summary_text} • {trust_summary_display}"
+                summary_full = f"{summary_full}\n{trust_summary}"
+            if trust_details:
+                summary_full = f"{summary_full}\n{trust_details}"
             self._set_label_text_if_changed(summary_label, summary_text)
             try:
                 summary_label.set_tooltip_text(summary_full)
+            except Exception:
+                pass
+            try:
+                trust_details_expander.set_visible(bool(trust_details))
+                trust_details_label.set_text(trust_details if trust_details else "")
             except Exception:
                 pass
 
@@ -5387,6 +5489,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return
             history.clear()
             _persist_history()
+            run_state["tutor_trust_summary"] = ""
+            run_state["tutor_trust_details"] = ""
             _set_status("New chat started.")
             run_state["follow_live"] = True
             run_state["follow_manual_override"] = False
@@ -5899,6 +6003,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             run_state["stream_watchdog_last_force_at"] = 0.0
             run_state["stream_watchdog_forced_flushes"] = 0
             run_state["practice_hint_policy_state"] = {}
+            run_state["tutor_trust_summary"] = ""
+            run_state["tutor_trust_details"] = ""
             self.local_llm_model = model_name
             self.save_preferences()
             rag_count = int(rag_meta.get("snippet_count", 0) or 0)
@@ -6060,6 +6166,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     except Exception:
                         pass
                     if err == "cancelled":
+                        run_state["tutor_trust_summary"] = ""
+                        run_state["tutor_trust_details"] = ""
                         telemetry_error = "cancelled"
                         if bool(guard_state.get("timeout_hit", False)):
                             telemetry_error = "timeout"
@@ -6108,8 +6216,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         _set_status(f"Stopped ({model_name}).")
                         _render_transcript(force_scroll=True)
                         _refresh_status_line()
+                        try:
+                            prompt_view.grab_focus()
+                        except Exception:
+                            pass
                         return False
                     if err:
+                        run_state["tutor_trust_summary"] = ""
+                        run_state["tutor_trust_details"] = ""
                         _code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
                         _record_turn_telemetry(
                             model_name=str(model_name or ""),
@@ -6139,6 +6253,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         _set_status(friendly)
                         _render_transcript()
                         _refresh_status_line()
+                        try:
+                            prompt_view.grab_focus()
+                        except Exception:
+                            pass
                         return False
                     if draft_user and final_text:
                         final_text = clean_ai_tutor_text(final_text) or final_text
@@ -6165,6 +6283,29 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         except Exception:
                             pass
                         _persist_history()
+                    try:
+                        target_count_now = max(0, int(coverage_state.get("target_count", 0) or 0))
+                    except Exception:
+                        target_count_now = 0
+                    try:
+                        hit_count_now = max(0, int(coverage_state.get("hit_count", 0) or 0))
+                    except Exception:
+                        hit_count_now = 0
+                    if rag_count > 0:
+                        if target_count_now > 0:
+                            evidence_confidence = max(0.0, min(1.0, float(hit_count_now) / float(target_count_now)))
+                        else:
+                            evidence_confidence = max(0.0, min(1.0, 0.45 + (0.08 * float(rag_count))))
+                    else:
+                        evidence_confidence = 0.0
+                    grounded_feedback = self._render_grounded_tutor_feedback(
+                        final_text,
+                        mode="teach",
+                        evidence_confidence=evidence_confidence,
+                        citations_count=rag_count,
+                    )
+                    run_state["tutor_trust_summary"] = str(grounded_feedback.get("trust_summary", "") or "")
+                    run_state["tutor_trust_details"] = str(grounded_feedback.get("details_text", "") or "")
                     _record_turn_telemetry(
                         model_name=str(model_name or ""),
                         outcome="success",
@@ -6199,6 +6340,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     else:
                         _set_status(f"Done ({model_name}) • turns: {_turn_count()}")
                     _refresh_status_line()
+                    try:
+                        prompt_view.grab_focus()
+                    except Exception:
+                        pass
                     return False
 
                 GLib.idle_add(_finish)
@@ -15936,6 +16081,122 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             count = 0
         # Match mastery-kernel intuition: each hint reduces independent-confidence weight.
         return max(0.0, min(1.0, float(0.7**count)))
+
+    def _get_practice_loop_controller(self) -> PracticeLoopController:
+        ctrl = getattr(self, "_practice_loop_controller", None)
+        if isinstance(ctrl, PracticeLoopController):
+            return ctrl
+        ctrl = PracticeLoopController()
+        self._practice_loop_controller = ctrl
+        return ctrl
+
+    def _build_practice_next_action_guidance(
+        self,
+        *,
+        session_state: TutorSessionState | None,
+        learner_profile: TutorLearnerProfileSnapshot | None,
+        item: TutorPracticeItem | Any,
+        result_obj: Any,
+        hints_used: int = 0,
+    ) -> dict[str, Any]:
+        outcome_text = str(getattr(result_obj, "outcome", "") or "").strip().lower() or "unknown"
+        fallback: dict[str, Any] = {
+            "outcome": outcome_text,
+            "next_action": "Proceed to the next question.",
+            "reason": "Continue building momentum.",
+            "urgent": bool(outcome_text in {"incorrect", "partial"}),
+            "next_retest_days": None,
+        }
+        cog_state = self._cognitive_state()
+        if (
+            cog_state is None
+            or not isinstance(session_state, TutorSessionState)
+            or not isinstance(learner_profile, TutorLearnerProfileSnapshot)
+        ):
+            return fallback
+        try:
+            days_to_exam = None
+            try:
+                exam_date_obj = getattr(getattr(self, "engine", None), "exam_date", None)
+                if isinstance(exam_date_obj, datetime.date):
+                    days_to_exam = int((exam_date_obj - datetime.date.today()).days)
+            except Exception:
+                days_to_exam = None
+            app_snapshot = AppStateSnapshot(
+                module=str(getattr(session_state, "module", "") or "").strip() or str(getattr(self, "module_title", "") or "module"),
+                current_topic=str(getattr(session_state, "topic", "") or "").strip(),
+                coach_pick=str(getattr(self, "_coach_pick_topic", "") or getattr(self, "current_topic", "") or "").strip(),
+                days_to_exam=days_to_exam,
+                must_review_due=max(0, int(self._get_must_review_due_count(datetime.date.today()) or 0)),
+                overdue_srs_count=0,
+                meta={"source": "tutor_workspace"},
+            )
+            loop_state = PracticeLoopState(
+                cognitive_state=cog_state,
+                session_state=session_state,
+                learner_profile=learner_profile,
+                app_snapshot=app_snapshot,
+                current_item=cast(TutorPracticeItem, item),
+                current_result=result_obj,
+            )
+            guidance = self._get_practice_loop_controller().recommend_next_action(
+                loop_state,
+                cast(TutorPracticeItem, item),
+                result_obj,
+                hints_used=max(0, int(hints_used or 0)),
+            )
+            if isinstance(guidance, dict) and guidance:
+                out = dict(fallback)
+                out.update(guidance)
+                out["reason"] = str(out.get("reason", "") or fallback["reason"]).strip() or fallback["reason"]
+                out["next_action"] = str(out.get("next_action", "") or fallback["next_action"]).strip() or fallback["next_action"]
+                out["urgent"] = bool(out.get("urgent", False))
+                return out
+        except Exception:
+            pass
+        return fallback
+
+    def _render_grounded_tutor_feedback(
+        self,
+        response_text: str,
+        *,
+        mode: str = "teach",
+        evidence_confidence: Any = 0.0,
+        citations_count: Any = 0,
+    ) -> dict[str, Any]:
+        try:
+            conf = max(0.0, min(1.0, float(evidence_confidence or 0.0)))
+        except Exception:
+            conf = 0.0
+        try:
+            cits = max(0, int(citations_count or 0))
+        except Exception:
+            cits = 0
+        feedback = TutorDialogRenderer.render_grounded_tutor_response(
+            str(response_text or ""),
+            mode=str(mode or "teach"),
+            evidence_confidence=conf,
+            citations_count=cits,
+        )
+        summary_payload = feedback.render(DisclosureLevel.SUMMARY)
+        details_payload = feedback.render(DisclosureLevel.STANDARD)
+        summary_text = str(summary_payload.get("summary", "") or "").strip()
+        details_text = str(details_payload.get("details", "") or "").strip()
+        band = "Low confidence"
+        if "[" in summary_text and "]" in summary_text:
+            try:
+                band = summary_text.rsplit("[", 1)[-1].split("]", 1)[0].strip() or band
+            except Exception:
+                band = "Low confidence"
+        trust_summary = f"Trust: {band} • evidence {cits}"
+        return {
+            "trust_summary": trust_summary,
+            "summary_text": summary_text,
+            "details_text": details_text,
+            "evidence_confidence": conf,
+            "citations_count": cits,
+            "band": band,
+        }
 
     def _update_cognitive_structure_posterior_from_practice(
         self,
