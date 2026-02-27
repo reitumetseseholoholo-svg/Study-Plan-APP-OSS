@@ -8,6 +8,7 @@ calls later.
 
 from __future__ import annotations
 
+import os
 from typing import Protocol, List
 
 from .logging_config import get_logger
@@ -56,5 +57,18 @@ def get_qgen_service() -> QGenService:
 
     This could inspect config/env to pick real vs dummy implementation.
     """
-    # for now return dummy; later switch via Config flag
+    backend = str(os.environ.get("STUDYPLAN_QGEN_BACKEND", "dummy") or "dummy").strip().lower()
+    if backend in {"llamacpp", "llama.cpp", "llama_cpp"}:
+        try:
+            from .inference.llama_cpp_backend import (
+                LlamaCppHTTPQGenService,
+                maybe_sync_llamacpp_registry_from_ollama,
+            )
+
+            sync_summary = maybe_sync_llamacpp_registry_from_ollama()
+            if isinstance(sync_summary, dict):
+                logger.info("llama.cpp registry sync", extra=sync_summary)
+            return LlamaCppHTTPQGenService()
+        except Exception as exc:
+            logger.warning("llama.cpp qgen backend unavailable; falling back to dummy", extra={"err": str(exc)})
     return DummyQGenService()

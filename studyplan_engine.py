@@ -11628,18 +11628,55 @@ class StudyPlanEngine:
         self._atomic_write_json(self.DATA_FILE, data, indent=4)
         self.last_saved_at = datetime.datetime.now().isoformat(timespec="seconds")
 
-        # Write migration/health log if needed
-        self._append_health_log()
+        # Non-fatal secondary persistence sync (health log + cognitive state).
+        # Use ExceptionGroup/except* so multiple failures are handled deterministically.
+        self._sync_secondary_persistence_artifacts()
+
+    def _sync_secondary_persistence_artifacts(self) -> None:
+        failures: List[BaseException] = []
+        persist_exc: BaseException | None = None
+        try:
+            self._append_health_log()
+        except Exception as exc:
+            failures.append(exc)
         try:
             self.persist_cognitive_state()
         except Exception as exc:
+            persist_exc = exc
+            failures.append(exc)
+
+        if persist_exc is not None:
             try:
                 state = getattr(self, "cognitive_state", None)
                 if isinstance(state, CognitiveState):
                     state.last_persist_ok = False
-                    state.last_persist_error = str(exc)
+                    state.last_persist_error = str(persist_exc)
             except Exception:
                 pass
+
+        if not failures:
+            return
+
+        def _append_note(msg: str) -> None:
+            try:
+                notes = self.data_health.get("notes")
+                if not isinstance(notes, list):
+                    notes = []
+                    self.data_health["notes"] = notes
+                notes.append(str(msg))
+            except Exception:
+                pass
+
+        try:
+            raise ExceptionGroup("secondary persistence sync failed", failures)
+        except* FileNotFoundError as eg:
+            _append_note(f"secondary_sync_missing_file:{len(getattr(eg, 'exceptions', ()))}")
+        except* PermissionError as eg:
+            _append_note(f"secondary_sync_permission:{len(getattr(eg, 'exceptions', ()))}")
+        except* OSError as eg:
+            _append_note(f"secondary_sync_oserror:{len(getattr(eg, 'exceptions', ()))}")
+        except* Exception as eg:
+            _append_note(f"secondary_sync_error:{len(getattr(eg, 'exceptions', ()))}")
 
     def _backup_file(self, path: str) -> None:
         """Create/refresh a .bak backup of the data file."""
