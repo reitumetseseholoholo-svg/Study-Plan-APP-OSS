@@ -5,7 +5,7 @@ import datetime as _dt
 from typing import Any
 
 
-COGNITIVE_STATE_SCHEMA_VERSION = 1
+COGNITIVE_STATE_SCHEMA_VERSION = 3
 
 
 @dataclass
@@ -114,6 +114,12 @@ class CognitiveState:
     claim_confidence: dict[str, float] = field(default_factory=dict)
     structure_exposure_counts: dict[str, int] = field(default_factory=dict)
     transfer_attempt_ids: list[str] = field(default_factory=list)
+    hint_fade_levels: dict[str, int] = field(default_factory=dict)
+    misconception_counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    remediation_by_chapter: dict[str, str] = field(default_factory=dict)
+    reflection_queue: list[str] = field(default_factory=list)
+    cognitive_load_score: float = 0.0
+    cognitive_load_history: list[float] = field(default_factory=list)
     quiz_active: bool = False
     struggle_mode: bool = False
     last_persisted_at: str | None = None
@@ -131,6 +137,23 @@ class CognitiveState:
             "claim_confidence": {k: float(v) for k, v in self.claim_confidence.items()},
             "structure_exposure_counts": {k: int(v) for k, v in self.structure_exposure_counts.items()},
             "transfer_attempt_ids": [str(v) for v in self.transfer_attempt_ids if str(v or "").strip()],
+            "hint_fade_levels": {k: int(v) for k, v in self.hint_fade_levels.items()},
+            "misconception_counts": {
+                k: {mk: int(mv) for mk, mv in v.items()}
+                for k, v in self.misconception_counts.items()
+                if isinstance(v, dict)
+            },
+            "remediation_by_chapter": {
+                k: str(v)
+                for k, v in self.remediation_by_chapter.items()
+                if str(k or "").strip() and str(v or "").strip()
+            },
+            "reflection_queue": [str(v).strip() for v in self.reflection_queue if str(v).strip()][:8],
+            "cognitive_load_score": max(0.0, min(1.0, float(self.cognitive_load_score or 0.0))),
+            "cognitive_load_history": [
+                max(0.0, min(1.0, float(v or 0.0)))
+                for v in list(self.cognitive_load_history or [])[-24:]
+            ],
             "quiz_active": bool(self.quiz_active),
             "struggle_mode": bool(self.struggle_mode),
             "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
@@ -201,6 +224,61 @@ class CognitiveState:
         transfer_attempt_ids = payload.get("transfer_attempt_ids")
         if isinstance(transfer_attempt_ids, (list, tuple)):
             state.transfer_attempt_ids = [str(v).strip() for v in transfer_attempt_ids if str(v).strip()][:200]
+        hint_fade_levels = payload.get("hint_fade_levels")
+        if isinstance(hint_fade_levels, dict):
+            for key, value in hint_fade_levels.items():
+                name = str(key or "").strip()
+                if not name:
+                    continue
+                try:
+                    level = int(value)
+                except Exception:
+                    continue
+                state.hint_fade_levels[name] = max(1, min(4, level))
+        misconception_counts = payload.get("misconception_counts")
+        if isinstance(misconception_counts, dict):
+            for key, value in misconception_counts.items():
+                chapter = str(key or "").strip()
+                if not chapter or not isinstance(value, dict):
+                    continue
+                chapter_counts: dict[str, int] = {}
+                for mk, mv in value.items():
+                    mkey = str(mk or "").strip()
+                    if not mkey:
+                        continue
+                    try:
+                        mcount = int(mv)
+                    except Exception:
+                        continue
+                    chapter_counts[mkey] = max(0, mcount)
+                if chapter_counts:
+                    state.misconception_counts[chapter] = chapter_counts
+        remediation_by_chapter = payload.get("remediation_by_chapter")
+        if isinstance(remediation_by_chapter, dict):
+            for key, value in remediation_by_chapter.items():
+                chapter = str(key or "").strip()
+                remediation = str(value or "").strip()
+                if chapter and remediation:
+                    state.remediation_by_chapter[chapter] = remediation
+        reflection_queue = payload.get("reflection_queue")
+        if isinstance(reflection_queue, (list, tuple)):
+            state.reflection_queue = [str(v).strip() for v in reflection_queue if str(v).strip()][:8]
+        try:
+            state.cognitive_load_score = max(
+                0.0,
+                min(1.0, float(payload.get("cognitive_load_score", 0.0) or 0.0)),
+            )
+        except Exception:
+            state.cognitive_load_score = 0.0
+        history = payload.get("cognitive_load_history")
+        if isinstance(history, (list, tuple)):
+            parsed: list[float] = []
+            for row in history:
+                try:
+                    parsed.append(max(0.0, min(1.0, float(row or 0.0))))
+                except Exception:
+                    continue
+            state.cognitive_load_history = parsed[-24:]
         state.quiz_active = bool(payload.get("quiz_active", False))
         state.struggle_mode = bool(payload.get("struggle_mode", False))
         return state
@@ -314,3 +392,100 @@ class CognitiveState:
             self.transfer_attempt_ids.append(attempt_key)
             if len(self.transfer_attempt_ids) > 200:
                 self.transfer_attempt_ids[:] = self.transfer_attempt_ids[-200:]
+
+    def get_hint_fade_level(self, chapter: str, default: int = 2) -> int:
+        key = str(chapter or "").strip()
+        if not key:
+            return max(1, min(4, int(default)))
+        try:
+            fallback = int(default)
+        except Exception:
+            fallback = 2
+        value = int(self.hint_fade_levels.get(key, fallback) or fallback)
+        return max(1, min(4, value))
+
+    def adapt_hint_fade_level(self, chapter: str, *, correct: bool, hints_used: int) -> int:
+        key = str(chapter or "").strip()
+        if not key:
+            return 2
+        level = self.get_hint_fade_level(key, default=2)
+        if not bool(correct) or int(hints_used or 0) >= 2:
+            level = min(4, level + 1)
+        elif bool(correct) and int(hints_used or 0) == 0:
+            level = max(1, level - 1)
+        self.hint_fade_levels[key] = level
+        return level
+
+    def queue_reflection_prompt(self, prompt: str, max_items: int = 8) -> None:
+        text = str(prompt or "").strip()
+        if not text:
+            return
+        self.reflection_queue.append(text)
+        try:
+            cap = max(1, min(16, int(max_items)))
+        except Exception:
+            cap = 8
+        if len(self.reflection_queue) > cap:
+            self.reflection_queue[:] = self.reflection_queue[-cap:]
+
+    def peek_reflection_prompt(self) -> str | None:
+        if not self.reflection_queue:
+            return None
+        return str(self.reflection_queue[-1] or "").strip() or None
+
+    def pop_reflection_prompt(self) -> str | None:
+        if not self.reflection_queue:
+            return None
+        value = str(self.reflection_queue.pop() or "").strip()
+        return value or None
+
+    def record_misconception(self, chapter: str, tag: str, remediation: str = "") -> None:
+        chapter_key = str(chapter or "").strip()
+        tag_key = str(tag or "").strip()
+        if not chapter_key or not tag_key:
+            return
+        chapter_counts = self.misconception_counts.setdefault(chapter_key, {})
+        chapter_counts[tag_key] = int(chapter_counts.get(tag_key, 0) or 0) + 1
+        rem = str(remediation or "").strip()
+        if rem:
+            self.remediation_by_chapter[chapter_key] = rem
+
+    def top_misconceptions(self, chapter: str, limit: int = 3) -> list[str]:
+        chapter_key = str(chapter or "").strip()
+        if not chapter_key:
+            return []
+        counts = self.misconception_counts.get(chapter_key, {})
+        if not counts:
+            return []
+        try:
+            cap = max(1, min(10, int(limit)))
+        except Exception:
+            cap = 3
+        ranked = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+        return [name for name, _ in ranked[:cap]]
+
+    def set_cognitive_load(self, score: float, max_items: int = 24) -> float:
+        try:
+            normalized = max(0.0, min(1.0, float(score or 0.0)))
+        except Exception:
+            normalized = 0.0
+        self.cognitive_load_score = normalized
+        self.cognitive_load_history.append(normalized)
+        try:
+            cap = max(4, min(64, int(max_items or 24)))
+        except Exception:
+            cap = 24
+        if len(self.cognitive_load_history) > cap:
+            self.cognitive_load_history[:] = self.cognitive_load_history[-cap:]
+        return normalized
+
+    def get_cognitive_load_band(self, score: float | None = None) -> str:
+        try:
+            value = float(self.cognitive_load_score if score is None else score)
+        except Exception:
+            value = 0.0
+        if value >= 0.72:
+            return "high"
+        if value >= 0.42:
+            return "moderate"
+        return "low"

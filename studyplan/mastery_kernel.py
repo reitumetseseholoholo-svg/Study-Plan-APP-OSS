@@ -16,6 +16,12 @@ class MasteryKernel:
     def __init__(self, engine: Any, cognitive_state: CognitiveState):
         self.engine = engine
         self.cognitive_state = cognitive_state
+        self._misconception_remediations = {
+            "impulsive_formula_selection": "Re-state the requirement, then identify the governing formula before computing.",
+            "procedure_dependency": "Solve one step without hints, then compare with the worked method.",
+            "cognitive_overload": "Break the task into two-step checkpoints before final calculation.",
+            "prerequisite_confusion": "Revisit prerequisite concept definitions before retrying mixed questions.",
+        }
 
     def record_attempt(
         self,
@@ -52,7 +58,7 @@ class MasteryKernel:
             post.alpha = max(0.5, float(post.alpha) + max(0.1, weight))
         else:
             post.beta = max(0.5, float(post.beta) + 1.0)
-            self._update_confusion_links(chapter_name, latency_val)
+            self._update_confusion_links(chapter_name, latency_val, hints, correct=False)
         post.last_observation = datetime.datetime.now().isoformat(timespec="seconds")
 
         self._update_struggle_signals(
@@ -86,21 +92,41 @@ class MasteryKernel:
         scaled = float(latency_ms) / 10000.0
         return 1.0 / (1.0 + (scaled * scaled))
 
-    def _update_confusion_links(self, chapter: str, latency_ms: float) -> None:
+    def _update_confusion_links(self, chapter: str, latency_ms: float, hints_used: int, correct: bool) -> None:
         # Fast wrong answers often indicate misconception/confusion, not slow uncertainty.
-        if latency_ms <= 0.0 or latency_ms > 5000.0:
-            return
         raw_flow = getattr(self.engine, "CHAPTER_FLOW", {})
-        if not isinstance(raw_flow, dict):
-            return
-        prereqs = raw_flow.get(chapter)
-        if not isinstance(prereqs, (list, tuple, set)):
-            return
-        links = self.cognitive_state.confusion_links.setdefault(chapter, set())
-        for item in prereqs:
-            text = str(item or "").strip()
-            if text:
-                links.add(text)
+        prereqs = raw_flow.get(chapter) if isinstance(raw_flow, dict) else None
+        if isinstance(prereqs, (list, tuple, set)) and 0.0 < latency_ms <= 5000.0:
+            links = self.cognitive_state.confusion_links.setdefault(chapter, set())
+            for item in prereqs:
+                text = str(item or "").strip()
+                if text:
+                    links.add(text)
+            if links:
+                self.cognitive_state.record_misconception(
+                    chapter,
+                    "prerequisite_confusion",
+                    remediation=self._misconception_remediations["prerequisite_confusion"],
+                )
+
+        tag = self._infer_misconception_tag(latency_ms=latency_ms, hints_used=hints_used, correct=correct)
+        if tag:
+            self.cognitive_state.record_misconception(
+                chapter,
+                tag,
+                remediation=self._misconception_remediations.get(tag, ""),
+            )
+
+    def _infer_misconception_tag(self, *, latency_ms: float, hints_used: int, correct: bool) -> str:
+        if bool(correct):
+            return ""
+        if 0.0 < latency_ms < 3000.0:
+            return "impulsive_formula_selection"
+        if int(hints_used or 0) >= 2:
+            return "procedure_dependency"
+        if latency_ms >= 45000.0:
+            return "cognitive_overload"
+        return ""
 
     def _update_struggle_signals(
         self,

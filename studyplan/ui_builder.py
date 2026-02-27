@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Callable
-from gi.repository import Gtk, Pango
+from gi.repository import Gtk, Pango  # type: ignore[reportMissingImports,reportAttributeAccessIssue,import-untyped]
 
 
 class UIBuilder:
@@ -37,6 +37,7 @@ class UIBuilder:
         text: str = "",
         halign: Gtk.Align = Gtk.Align.START,
         css_classes: list[str] | None = None,
+        xalign: float | None = None,
         wrap: bool = False,
         ellipsize: Pango.EllipsizeMode | None = None,
         max_width_chars: int | None = None,
@@ -45,6 +46,17 @@ class UIBuilder:
         """Create a label with common configurations."""
         lbl = Gtk.Label(label=text)
         lbl.set_halign(halign)
+        if xalign is None:
+            if halign == Gtk.Align.END:
+                xalign = 1.0
+            elif halign == Gtk.Align.CENTER:
+                xalign = 0.5
+            else:
+                xalign = 0.0
+        try:
+            lbl.set_xalign(float(max(0.0, min(1.0, xalign))))
+        except Exception:
+            lbl.set_xalign(0.0)
         
         if css_classes:
             for cls in css_classes:
@@ -284,3 +296,438 @@ class UIBuilder:
         rev.set_transition_type(transition)
         rev.set_reveal_child(False)
         return rev
+    # ──────────────────────────────────────────────────────────────────────────────
+    # INPUT COMPONENTS - Professional form & input widgets
+    # ──────────────────────────────────────────────────────────────────────────────
+
+    def entry(
+        self,
+        placeholder_text: str = "",
+        on_changed: Callable | None = None,
+        on_activate: Callable | None = None,
+        css_classes: list[str] | None = None,
+        max_length: int | None = None,
+        sensitive: bool = True,
+        tooltip: str | None = None,
+    ) -> Gtk.Entry:
+        """Create a text entry field with validation support."""
+        entry = Gtk.Entry()
+        if placeholder_text:
+            entry.set_placeholder_text(placeholder_text)
+        if on_changed:
+            entry.connect("changed", on_changed)
+        if on_activate:
+            entry.connect("activate", on_activate)
+        if css_classes:
+            for cls in css_classes:
+                entry.add_css_class(cls)
+        if max_length:
+            entry.set_max_length(max(1, max_length))
+        entry.set_sensitive(sensitive)
+        if tooltip:
+            entry.set_tooltip_text(tooltip)
+        return entry
+
+    def search_entry(
+        self,
+        on_search: Callable | None = None,
+        placeholder: str = "Search...",
+    ) -> Gtk.SearchEntry:
+        """Create a search entry widget."""
+        search = Gtk.SearchEntry()
+        search.set_placeholder_text(placeholder)
+        if on_search:
+            search.connect("search-changed", on_search)
+        return search
+
+    def check_button(
+        self,
+        label: str = "",
+        active: bool = False,
+        on_toggled: Callable | None = None,
+        tooltip: str | None = None,
+    ) -> Gtk.CheckButton:
+        """Create a check button with label."""
+        btn = Gtk.CheckButton(label=label)
+        btn.set_active(active)
+        if on_toggled:
+            btn.connect("toggled", on_toggled)
+        if tooltip:
+            btn.set_tooltip_text(tooltip)
+        return btn
+
+    def switch(
+        self,
+        label: str = "",
+        active: bool = False,
+        on_notify_active: Callable | None = None,
+        tooltip: str | None = None,
+    ) -> Gtk.Box:
+        """Create a labeled switch (toggle) widget."""
+        box = self.hbox(spacing=12)
+        if label:
+            lbl = self.label(label)
+            box.append(lbl)
+        
+        switch = Gtk.Switch()
+        switch.set_active(active)
+        switch.set_halign(Gtk.Align.END)
+        switch.set_hexpand(True)
+        if on_notify_active:
+            switch.connect("notify::active", on_notify_active)
+        if tooltip:
+            switch.set_tooltip_text(tooltip)
+        
+        box.append(switch)
+        box.set_name("switch-row")
+        return box
+
+    def combo_box_text(
+        self,
+        items: list[str] | None = None,
+        active_id: str = "",
+        on_changed: Callable | None = None,
+        tooltip: str | None = None,
+    ) -> Gtk.ComboBoxText:
+        """Create a combo box with text items."""
+        combo = Gtk.ComboBoxText()
+        if items:
+            for item in items:
+                combo.append_text(str(item))
+        if active_id:
+            combo.set_active_id(str(active_id))
+        if on_changed:
+            combo.connect("changed", on_changed)
+        if tooltip:
+            combo.set_tooltip_text(tooltip)
+        return combo
+
+    def spin_button(
+        self,
+        min_val: float = 0,
+        max_val: float = 100,
+        step: float = 1,
+        value: float = 50,
+        on_changed: Callable | None = None,
+        tooltip: str | None = None,
+    ) -> Gtk.SpinButton:
+        """Create a spin button (numeric input)."""
+        adjustment = Gtk.Adjustment(
+            value=float(value),
+            lower=float(min_val),
+            upper=float(max_val),
+            step_increment=float(step),
+        )
+        spin = Gtk.SpinButton(adjustment=adjustment)
+        if on_changed:
+            spin.connect("value-changed", on_changed)
+        if tooltip:
+            spin.set_tooltip_text(tooltip)
+        return spin
+
+    def scale(
+        self,
+        min_val: float = 0,
+        max_val: float = 100,
+        value: float = 50,
+        step: float = 1,
+        marks: dict[float, str] | None = None,
+        on_changed: Callable | None = None,
+    ) -> Gtk.Scale:
+        """Create a slider/scale widget."""
+        adjustment = Gtk.Adjustment(
+            value=float(value),
+            lower=float(min_val),
+            upper=float(max_val),
+            step_increment=float(step),
+        )
+        scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adjustment)
+        scale.set_draw_value(True)
+        scale.set_value_pos(Gtk.PositionType.RIGHT)
+        
+        if marks:
+            for mark_val, mark_label in marks.items():
+                scale.add_mark(float(mark_val), Gtk.PositionType.BOTTOM, mark_label)
+        
+        if on_changed:
+            scale.connect("value-changed", on_changed)
+        return scale
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    # STATE BUILDERS - Error, Loading, and Empty states
+    # ──────────────────────────────────────────────────────────────────────────────
+
+    def error_state(
+        self,
+        title: str = "Error",
+        message: str = "Something went wrong",
+        details: str = "",
+        on_retry: Callable | None = None,
+    ) -> Gtk.Box:
+        """Build an error state card with optional retry action."""
+        card = self.card(spacing=8)
+        card.add_css_class("state-error")
+        
+        # Title
+        title_lbl = self.label(
+            title,
+            css_classes=["section-title", "error-title"],
+            halign=Gtk.Align.CENTER,
+        )
+        card.append(title_lbl)
+        
+        # Message
+        msg_lbl = self.label(
+            message,
+            css_classes=["muted"],
+            halign=Gtk.Align.CENTER,
+            wrap=True,
+        )
+        card.append(msg_lbl)
+        
+        # Details if provided
+        if details:
+            detail_lbl = self.label(
+                details,
+                css_classes=["muted", "small"],
+                halign=Gtk.Align.CENTER,
+                wrap=True,
+            )
+            card.append(detail_lbl)
+        
+        # Retry button if handler provided
+        if on_retry:
+            action_box = self.hbox(spacing=8)
+            action_box.set_halign(Gtk.Align.CENTER)
+            retry_btn = self.button("Retry", css_class="suggested-action", on_click=on_retry)
+            action_box.append(retry_btn)
+            card.append(action_box)
+        
+        return card
+
+    def loading_state(
+        self,
+        message: str = "Loading...",
+        show_animation: bool = True,
+    ) -> Gtk.Box:
+        """Build a professional loading state."""
+        card = self.card(spacing=12)
+        card.add_css_class("state-loading")
+        card.set_halign(Gtk.Align.CENTER)
+        card.set_valign(Gtk.Align.CENTER)
+        
+        if show_animation:
+            spinner = self.spinner(active=True)
+            spinner.set_halign(Gtk.Align.CENTER)
+            card.append(spinner)
+        
+        msg_lbl = self.label(
+            message,
+            css_classes=["muted"],
+            halign=Gtk.Align.CENTER,
+        )
+        card.append(msg_lbl)
+        
+        return card
+
+    def empty_state(
+        self,
+        title: str = "Nothing here",
+        message: str = "Try adding some content",
+        icon_name: str = "folder-open-symbolic",
+        on_action: Callable | None = None,
+        action_label: str = "Get started",
+    ) -> Gtk.Box:
+        """Build an empty state card."""
+        card = self.card(spacing=12)
+        card.add_css_class("state-empty")
+        card.set_halign(Gtk.Align.CENTER)
+        card.set_valign(Gtk.Align.CENTER)
+        
+        # Icon
+        if icon_name:
+            icon = self.image(icon_name, pixel_size=64)
+            icon.set_opacity(0.5)
+            icon.set_halign(Gtk.Align.CENTER)
+            card.append(icon)
+        
+        # Title
+        title_lbl = self.label(
+            title,
+            css_classes=["section-title"],
+            halign=Gtk.Align.CENTER,
+        )
+        card.append(title_lbl)
+        
+        # Message
+        msg_lbl = self.label(
+            message,
+            css_classes=["muted"],
+            halign=Gtk.Align.CENTER,
+            wrap=True,
+        )
+        card.append(msg_lbl)
+        
+        # Action button
+        if on_action:
+            action_box = self.hbox(spacing=8)
+            action_box.set_halign(Gtk.Align.CENTER)
+            action_btn = self.button(action_label, css_class="suggested-action", on_click=on_action)
+            action_box.append(action_btn)
+            card.append(action_box)
+        
+        return card
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    # FORM BUILDERS - Professional form layouts
+    # ──────────────────────────────────────────────────────────────────────────────
+
+    def form_row(
+        self,
+        label_text: str = "",
+        widget: Gtk.Widget | None = None,
+        help_text: str = "",
+        required: bool = False,
+    ) -> Gtk.Box:
+        """Create a form row with label, widget, and help text."""
+        row = self.vbox(spacing=4)
+        
+        # Label with required indicator
+        if label_text:
+            label_box = self.hbox(spacing=4)
+            lbl = self.label(label_text, css_classes=["form-label"])
+            label_box.append(lbl)
+            
+            if required:
+                req_badge = self.badge("*", css_class="required-indicator")
+                label_box.append(req_badge)
+            
+            row.append(label_box)
+        
+        # Widget
+        if widget:
+            row.append(widget)
+        
+        # Help text
+        if help_text:
+            help_lbl = self.muted_label(help_text)
+            help_lbl.add_css_class("form-help")
+            row.append(help_lbl)
+        
+        return row
+
+    def form_section(
+        self,
+        title: str = "",
+        rows: list[Gtk.Box] | None = None,
+    ) -> Gtk.Box:
+        """Create a form section with optional title."""
+        section = self.vbox(spacing=8)
+        section.add_css_class("form-section")
+        
+        if title:
+            title_lbl = self.section_title(title)
+            section.append(title_lbl)
+        
+        if rows:
+            for row in rows:
+                section.append(row)
+        
+        return section
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    # ACCESSIBILITY & PROFESSIONAL PATTERNS
+    # ──────────────────────────────────────────────────────────────────────────────
+
+    def accessible_button(
+        self,
+        label: str,
+        tooltip: str = "",
+        css_class: str | None = None,
+        on_click: Callable | None = None,
+    ) -> Gtk.Button:
+        """Create a button with accessibility features."""
+        btn = self.button(label, css_class=css_class, on_click=on_click)
+        
+        # Set accessible name and description
+        context = btn.get_accessible()
+        if context:
+            context.set_accessible_name(label)
+            if tooltip:
+                context.set_accessible_description(tooltip)
+        
+        # Add tooltip for keyboard users
+        if tooltip:
+            btn.set_tooltip_text(tooltip)
+        
+        # Make keyboard focusable
+        btn.set_focusable(True)
+        
+        return btn
+
+    def status_indicator(
+        self,
+        status: str = "info",
+        text: str = "",
+        css_class: str | None = None,
+    ) -> Gtk.Box:
+        """Create a status indicator with icon and text (info/success/warning/error)."""
+        box = self.hbox(spacing=8)
+        box.add_css_class("status-indicator")
+        
+        # Status icon
+        icon_map = {
+            "info": "dialog-information-symbolic",
+            "success": "emblem-ok-symbolic",
+            "warning": "dialog-warning-symbolic",
+            "error": "dialog-error-symbolic",
+        }
+        icon_name = icon_map.get(status, "dialog-information-symbolic")
+        icon = self.image(icon_name, pixel_size=20)
+        icon.add_css_class(f"status-{status}")
+        box.append(icon)
+        
+        # Text
+        if text:
+            lbl = self.label(text, css_classes=[f"status-text"], wrap=True)
+            box.append(lbl)
+        
+        # Optional CSS class
+        if css_class:
+            box.add_css_class(css_class)
+        
+        return box
+
+    def info_banner(
+        self,
+        message: str,
+        status: str = "info",
+        closeable: bool = False,
+        on_close: Callable | None = None,
+    ) -> Gtk.Box:
+        """Create an information banner with status styling."""
+        banner = self.hbox(spacing=8)
+        banner.add_css_class("info-banner")
+        banner.add_css_class(f"banner-{status}")
+        banner.set_margin_start(12)
+        banner.set_margin_end(12)
+        banner.set_margin_top(8)
+        banner.set_margin_bottom(8)
+        
+        # Status indicator
+        indicator = self.status_indicator(status=status)
+        banner.append(indicator)
+        
+        # Message
+        msg = self.label(message, wrap=True)
+        msg.set_hexpand(True)
+        banner.append(msg)
+        
+        # Close button if requested
+        if closeable and on_close:
+            close_btn = self.button("", on_click=on_close)
+            close_btn.add_css_class("flat")
+            close_btn.set_icon_name("window-close-symbolic")
+            banner.append(close_btn)
+        
+        return banner

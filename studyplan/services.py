@@ -698,6 +698,40 @@ class TransferScoringService:
         out.sort(key=lambda row: float(row.get("brittleness_index", 0.0) or 0.0), reverse=True)
         return out[: max(1, int(limit))]
 
+    def aggregate_student_metrics(self, student_id: str) -> dict[str, float | int]:
+        sid = str(student_id or "")
+        total_attempts = 0
+        transfer_sum = 0.0
+        brittle_sum = 0.0
+        recovery_sum = 0.0
+        structures = 0
+        for (row_sid, _structure_id), rows in self._attempts.items():
+            if row_sid != sid:
+                continue
+            if not rows:
+                continue
+            score = TransferScore(student_id=sid, structure_id="", attempts=list(rows))
+            total_attempts += int(len(rows))
+            transfer_sum += float(score.transfer_rate)
+            brittle_sum += float(score.brittleness_index)
+            recovery_sum += float(score.recovery_rate)
+            structures += 1
+        if structures <= 0:
+            return {
+                "structures_tracked": 0,
+                "attempts_total": 0,
+                "avg_transfer_rate": 0.0,
+                "avg_brittleness_index": 0.0,
+                "avg_recovery_rate": 0.0,
+            }
+        return {
+            "structures_tracked": int(structures),
+            "attempts_total": int(total_attempts),
+            "avg_transfer_rate": float(transfer_sum / float(structures)),
+            "avg_brittleness_index": float(brittle_sum / float(structures)),
+            "avg_recovery_rate": float(recovery_sum / float(structures)),
+        }
+
 
 @dataclass
 class TransferAttemptLogService:
@@ -2056,11 +2090,26 @@ class DeterministicTutorAssessmentService:
     def _assess_numeric(self, item: TutorPracticeItem, answer_text: str) -> TutorAssessmentResult:
         meta = dict(item.meta or {})
         expected_raw = meta.get("numeric_answer", meta.get("answer_value"))
-        try:
-            expected = float(expected_raw)
-        except Exception:
+        if isinstance(expected_raw, (int, float, str)):
+            try:
+                expected = float(expected_raw)
+            except (ValueError, TypeError):
+                expected = None
+        else:
             expected = None
         marks_max = float(meta.get("marks_max", 1.0) or 1.0)
+        text_lower = str(answer_text or "").lower()
+        numeric_tokens = re.findall(r"[-+]?\d+(?:\.\d+)?", str(answer_text or ""))
+        has_workings = (
+            ("=" in str(answer_text or ""))
+            or any(op in str(answer_text or "") for op in ("+", "-", "*", "/", " x ", "×"))
+            or len(numeric_tokens) >= 2
+            or any(k in text_lower for k in ("therefore", "using", "formula"))
+        )
+        prompt_text = str(getattr(item, "prompt", "") or "").lower()
+        expects_percent = bool(meta.get("expects_percent", False))
+        if not expects_percent:
+            expects_percent = ("% " in (prompt_text + " ")) or ("percent" in prompt_text)
         if expected is None:
             return TutorAssessmentResult(
                 item_id=item.item_id,
@@ -2069,6 +2118,15 @@ class DeterministicTutorAssessmentService:
                 marks_max=marks_max,
                 feedback="No numeric answer key configured for this practice item.",
                 error_tags=("missing_answer_key",),
+                meta={"stepwise_marking": self._build_numeric_stepwise_marking_meta(
+                    marks_max=marks_max,
+                    marks_awarded=0.0,
+                    method_ok=has_workings,
+                    execution_ok=False,
+                    format_ok=False,
+                    rounding_issue=False,
+                    expects_percent=expects_percent,
+                )},
             )
         actual = _extract_first_number(answer_text)
         if actual is None:
@@ -2080,6 +2138,15 @@ class DeterministicTutorAssessmentService:
                 feedback="I could not find a numeric answer. Enter a number (you can include workings).",
                 error_tags=("no_numeric_answer",),
                 retry_recommended=True,
+                meta={"stepwise_marking": self._build_numeric_stepwise_marking_meta(
+                    marks_max=marks_max,
+                    marks_awarded=0.0,
+                    method_ok=has_workings,
+                    execution_ok=False,
+                    format_ok=False,
+                    rounding_issue=False,
+                    expects_percent=expects_percent,
+                )},
             )
         tolerance = float(meta.get("tolerance", 0.01) or 0.01)
         tolerance_pct = meta.get("tolerance_pct")
@@ -2088,9 +2155,44 @@ class DeterministicTutorAssessmentService:
             try:
                 pct = abs(float(tolerance_pct))
                 allowed = max(allowed, abs(expected) * pct)
-            except Exception:
+            except (ValueError, TypeError):
                 pass
         delta = abs(actual - expected)
+        close_enough = delta <= (allowed * 5.0)
+        method_ok = bool(has_workings or close_enough)
+        execution_ok = bool(delta <= allowed)
+        format_ok = True
+        if expects_percent and not execution_ok:
+            format_ok = ("%" in str(answer_text or "")) or ("percent" in text_lower)
+        rounding_issue = bool(close_enough and not execution_ok)
+        correct_meta = {"stepwise_marking": self._build_numeric_stepwise_marking_meta(
+            marks_max=marks_max,
+            marks_awarded=marks_max,
+            method_ok=True,
+            execution_ok=True,
+            format_ok=True,
+            rounding_issue=False,
+            expects_percent=expects_percent,
+        )}
+        partial_marks = round(marks_max * 0.5, 2)
+        partial_meta = {"stepwise_marking": self._build_numeric_stepwise_marking_meta(
+            marks_max=marks_max,
+            marks_awarded=partial_marks,
+            method_ok=method_ok,
+            execution_ok=False,
+            format_ok=format_ok,
+            rounding_issue=rounding_issue,
+            expects_percent=expects_percent,
+        )}
+        incorrect_meta = {"stepwise_marking": self._build_numeric_stepwise_marking_meta(
+            marks_max=marks_max,
+            marks_awarded=0.0,
+            method_ok=method_ok and not execution_ok,
+            execution_ok=False,
+            format_ok=format_ok if method_ok else False,
+            rounding_issue=rounding_issue,
+            expects_percent=expects_percent,
+        )}
         if delta <= allowed:
             return TutorAssessmentResult(
                 item_id=item.item_id,
@@ -2098,17 +2200,19 @@ class DeterministicTutorAssessmentService:
                 marks_awarded=marks_max,
                 marks_max=marks_max,
                 feedback=f"Correct. Your answer {actual:g} is within tolerance.",
+                meta=correct_meta,
             )
-        if delta <= (allowed * 5.0):
+        if close_enough:
             return TutorAssessmentResult(
                 item_id=item.item_id,
                 outcome="partial",
-                marks_awarded=round(marks_max * 0.5, 2),
+                marks_awarded=partial_marks,
                 marks_max=marks_max,
                 feedback=f"Close, but outside tolerance. Expected about {expected:g}; you gave {actual:g}.",
                 error_tags=("numeric_precision",),
                 retry_recommended=True,
                 next_difficulty="same",
+                meta=partial_meta,
             )
         return TutorAssessmentResult(
             item_id=item.item_id,
@@ -2119,7 +2223,61 @@ class DeterministicTutorAssessmentService:
             error_tags=("numeric_mismatch",),
             retry_recommended=True,
             next_difficulty="easier",
+            meta=incorrect_meta,
         )
+
+    def _build_numeric_stepwise_marking_meta(
+        self,
+        *,
+        marks_max: float,
+        marks_awarded: float,
+        method_ok: bool,
+        execution_ok: bool,
+        format_ok: bool,
+        rounding_issue: bool,
+        expects_percent: bool,
+    ) -> dict[str, Any]:
+        total = max(0.0, float(marks_max or 0.0))
+        awarded_total = max(0.0, min(total, float(marks_awarded or 0.0)))
+        method_max = round(total * 0.5, 4)
+        execution_max = round(total * 0.35, 4)
+        format_max = round(max(0.0, total - method_max - execution_max), 4)
+        component_maxes = {
+            "method": method_max,
+            "execution": execution_max,
+            "format": format_max,
+        }
+        component_flags = {
+            "method": bool(method_ok),
+            "execution": bool(execution_ok),
+            "format": bool(format_ok),
+        }
+        component_awards = {"method": 0.0, "execution": 0.0, "format": 0.0}
+        active_keys = [k for k, ok in component_flags.items() if ok and component_maxes.get(k, 0.0) > 0.0]
+        if active_keys and awarded_total > 0.0:
+            active_cap = sum(component_maxes[k] for k in active_keys)
+            if awarded_total >= active_cap:
+                for key in active_keys:
+                    component_awards[key] = round(component_maxes[key], 4)
+            elif active_cap > 0.0:
+                for key in active_keys:
+                    component_awards[key] = round(awarded_total * (component_maxes[key] / active_cap), 4)
+                delta = round(awarded_total - sum(component_awards.values()), 4)
+                if abs(delta) > 0.0:
+                    largest_key = max(active_keys, key=lambda k: component_maxes[k])
+                    component_awards[largest_key] = round(component_awards[largest_key] + delta, 4)
+        return {
+            "method_ok": bool(method_ok),
+            "execution_ok": bool(execution_ok),
+            "format_ok": bool(format_ok),
+            "rounding_issue": bool(rounding_issue),
+            "expects_percent": bool(expects_percent),
+            "stepwise_marks": {
+                "method": {"awarded": float(component_awards["method"]), "max": float(method_max)},
+                "execution": {"awarded": float(component_awards["execution"]), "max": float(execution_max)},
+                "format": {"awarded": float(component_awards["format"]), "max": float(format_max)},
+            },
+        }
 
     def _assess_keyword_based(
         self,
@@ -2690,7 +2848,11 @@ class RuleBasedTutorLearningLoopService:
         if must_review_due > 0 or overdue > 0:
             return "revision_planner", "review_pressure"
 
-        weak_topics = tuple(getattr(app_snapshot, "weak_topics_top3", ()) or ())
+        weak_topics_raw = getattr(app_snapshot, "weak_topics_top3", ()) or ()
+        if isinstance(weak_topics_raw, (list, tuple)):
+            weak_topics = tuple(str(x or "") for x in weak_topics_raw if str(x or "").strip())
+        else:
+            weak_topics = ()
         current_topic = str(getattr(app_snapshot, "current_topic", "") or "").strip()
         if weak_topics and current_topic and any(current_topic.lower() == t.lower() for t in weak_topics):
             return "guided_practice", "weak_topic_focus"

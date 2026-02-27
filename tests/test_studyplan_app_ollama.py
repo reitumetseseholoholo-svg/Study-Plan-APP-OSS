@@ -4,17 +4,22 @@ import datetime
 import json
 import os
 import threading
+import time
 import types
 import urllib.error
 import urllib.request
 
 import pytest
 from studyplan.cognitive_state import CognitiveState, CompetencyPosterior
+from studyplan.contracts import TutorSessionState
+from studyplan.working_memory_service import WorkingMemoryService
 from studyplan_ai_tutor import (
     AI_TUTOR_RAG_USAGE_HINT,
     assess_tutor_coverage,
     assemble_ai_tutor_turn_prompt,
     build_ai_tutor_context_prompt_details,
+    build_tutor_details_status,
+    build_tutor_user_status,
     build_tutor_coverage_checklist_note,
     build_targeted_rag_queries,
     build_rag_context_block,
@@ -26,6 +31,8 @@ from studyplan_ai_tutor import (
     normalize_tutor_timeout_seconds,
     should_force_stream_flush,
     should_keep_response_bottom,
+    tutor_dialog_shortcut_action,
+    tutor_prompt_shortcut_action,
 )
 
 try:
@@ -43,10 +50,92 @@ def _make_dummy(host: str = "127.0.0.1:11434"):
         local_llm_host=host,
         local_llm_timeout_seconds=30,
         local_llm_enabled=True,
+        local_llm_secondary_backend_mode="off",
+        local_llm_secondary_backend_policy="conservative",
+        _llamacpp_backend_client=None,
+        _llamacpp_backend_host="",
+        _llamacpp_secondary_last_error="",
+        _llamacpp_secondary_state={
+            "consecutive_failures": 0,
+            "cooldown_until": 0.0,
+            "last_error": "",
+            "last_failure_at": 0.0,
+            "last_success_at": 0.0,
+            "last_health_ok": None,
+            "last_health_error": "",
+            "last_health_check_at": 0.0,
+        },
+        _local_llm_backend_runtime={
+            "backend": "none",
+            "at": 0.0,
+            "model": "",
+            "model_used": "",
+            "purpose": "general",
+            "last_error": "",
+            "last_duration_ms": 0.0,
+            "counts": {
+                "ollama_success": 0,
+                "ollama_error": 0,
+                "llamacpp_success": 0,
+                "llamacpp_error": 0,
+                "fallback_to_ollama": 0,
+            },
+            "purpose_counts": {},
+            "purpose_perf": {},
+        },
     )
     dummy._allow_remote_ollama_hosts = types.MethodType(StudyPlanGUI._allow_remote_ollama_hosts, dummy)
     dummy._is_local_or_private_host = types.MethodType(StudyPlanGUI._is_local_or_private_host, dummy)
     dummy._normalize_ollama_host = types.MethodType(StudyPlanGUI._normalize_ollama_host, dummy)
+    dummy._normalize_llamacpp_host = types.MethodType(StudyPlanGUI._normalize_llamacpp_host, dummy)
+    dummy._coerce_local_llm_secondary_backend_mode = types.MethodType(
+        StudyPlanGUI._coerce_local_llm_secondary_backend_mode, dummy
+    )
+    dummy._effective_local_llm_secondary_backend_mode = types.MethodType(
+        StudyPlanGUI._effective_local_llm_secondary_backend_mode, dummy
+    )
+    dummy._coerce_local_llm_secondary_backend_policy = types.MethodType(
+        StudyPlanGUI._coerce_local_llm_secondary_backend_policy, dummy
+    )
+    dummy._effective_local_llm_secondary_backend_policy = types.MethodType(
+        StudyPlanGUI._effective_local_llm_secondary_backend_policy, dummy
+    )
+    dummy._should_use_llamacpp_secondary_for_purpose = types.MethodType(
+        StudyPlanGUI._should_use_llamacpp_secondary_for_purpose, dummy
+    )
+    dummy._coerce_llamacpp_secondary_failure_threshold = types.MethodType(
+        StudyPlanGUI._coerce_llamacpp_secondary_failure_threshold, dummy
+    )
+    dummy._coerce_llamacpp_secondary_cooldown_seconds = types.MethodType(
+        StudyPlanGUI._coerce_llamacpp_secondary_cooldown_seconds, dummy
+    )
+    dummy._coerce_llamacpp_secondary_health_cache_seconds = types.MethodType(
+        StudyPlanGUI._coerce_llamacpp_secondary_health_cache_seconds, dummy
+    )
+    dummy._coerce_llamacpp_secondary_timeout_seconds = types.MethodType(
+        StudyPlanGUI._coerce_llamacpp_secondary_timeout_seconds, dummy
+    )
+    dummy._get_llamacpp_secondary_state = types.MethodType(StudyPlanGUI._get_llamacpp_secondary_state, dummy)
+    dummy._is_llamacpp_secondary_on_cooldown = types.MethodType(
+        StudyPlanGUI._is_llamacpp_secondary_on_cooldown, dummy
+    )
+    dummy._record_llamacpp_secondary_outcome = types.MethodType(
+        StudyPlanGUI._record_llamacpp_secondary_outcome, dummy
+    )
+    dummy._check_llamacpp_secondary_health = types.MethodType(StudyPlanGUI._check_llamacpp_secondary_health, dummy)
+    dummy._can_use_llamacpp_secondary = types.MethodType(StudyPlanGUI._can_use_llamacpp_secondary, dummy)
+    dummy._reset_llamacpp_secondary_runtime_state = types.MethodType(
+        StudyPlanGUI._reset_llamacpp_secondary_runtime_state, dummy
+    )
+    dummy._probe_llamacpp_secondary_backend = types.MethodType(
+        StudyPlanGUI._probe_llamacpp_secondary_backend, dummy
+    )
+    dummy._is_llamacpp_secondary_enabled = types.MethodType(StudyPlanGUI._is_llamacpp_secondary_enabled, dummy)
+    dummy._get_llamacpp_backend_client = types.MethodType(StudyPlanGUI._get_llamacpp_backend_client, dummy)
+    dummy._try_llamacpp_secondary_generate = types.MethodType(StudyPlanGUI._try_llamacpp_secondary_generate, dummy)
+    dummy._try_llamacpp_secondary_stream = types.MethodType(StudyPlanGUI._try_llamacpp_secondary_stream, dummy)
+    dummy._record_local_llm_backend_event = types.MethodType(StudyPlanGUI._record_local_llm_backend_event, dummy)
+    dummy._get_local_llm_backend_status = types.MethodType(StudyPlanGUI._get_local_llm_backend_status, dummy)
     dummy._get_ollama_retry_limit = types.MethodType(StudyPlanGUI._get_ollama_retry_limit, dummy)
     dummy._get_ollama_retry_backoff_seconds = types.MethodType(StudyPlanGUI._get_ollama_retry_backoff_seconds, dummy)
     dummy._is_transient_ollama_error = types.MethodType(StudyPlanGUI._is_transient_ollama_error, dummy)
@@ -55,6 +144,7 @@ def _make_dummy(host: str = "127.0.0.1:11434"):
     dummy._normalize_gpt4all_filename_to_ollama_model = types.MethodType(
         StudyPlanGUI._normalize_gpt4all_filename_to_ollama_model, dummy
     )
+    dummy._effective_ollama_num_threads = types.MethodType(StudyPlanGUI._effective_ollama_num_threads, dummy)
     return dummy
 
 
@@ -224,6 +314,40 @@ def test_normalize_ollama_host_allows_remote_when_env_enabled(monkeypatch):
     dummy = _make_dummy("https://example.com:443")
     got = StudyPlanGUI._normalize_ollama_host(dummy)
     assert got == "https://example.com:443"
+
+
+def test_llamacpp_secondary_mode_uses_preference_when_env_unset(monkeypatch):
+    monkeypatch.delenv("STUDYPLAN_SECONDARY_BACKEND", raising=False)
+    monkeypatch.delenv("STUDYPLAN_ENABLE_LLAMACPP_SECONDARY", raising=False)
+    dummy = _make_dummy()
+    dummy.local_llm_secondary_backend_mode = "llama.cpp"
+    assert StudyPlanGUI._effective_local_llm_secondary_backend_mode(dummy) == "llamacpp"
+    assert StudyPlanGUI._is_llamacpp_secondary_enabled(dummy) is True
+
+
+def test_llamacpp_secondary_mode_env_override_can_disable_preference(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND", "off")
+    monkeypatch.delenv("STUDYPLAN_ENABLE_LLAMACPP_SECONDARY", raising=False)
+    dummy = _make_dummy()
+    dummy.local_llm_secondary_backend_mode = "llamacpp"
+    assert StudyPlanGUI._effective_local_llm_secondary_backend_mode(dummy) == "off"
+    assert StudyPlanGUI._is_llamacpp_secondary_enabled(dummy) is False
+
+
+def test_llamacpp_secondary_policy_conservative_allows_tutor_blocks_section_c(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND", "llamacpp")
+    monkeypatch.delenv("STUDYPLAN_SECONDARY_BACKEND_POLICY", raising=False)
+    dummy = _make_dummy()
+    dummy.local_llm_secondary_backend_policy = "conservative"
+    assert StudyPlanGUI._should_use_llamacpp_secondary_for_purpose(dummy, "tutor_chat") is True
+    assert StudyPlanGUI._should_use_llamacpp_secondary_for_purpose(dummy, "section_c_evaluation") is False
+
+
+def test_llamacpp_secondary_policy_env_allows_general(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND", "llamacpp")
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND_POLICY", "all")
+    dummy = _make_dummy()
+    assert StudyPlanGUI._should_use_llamacpp_secondary_for_purpose(dummy, "general") is True
 
 
 def test_gpt4all_auto_import_enabled_toggle(monkeypatch):
@@ -1444,6 +1568,38 @@ def test_build_debug_info_message_handles_missing_tutor_summary():
     assert "AI Tutor top error classes: none" in msg
 
 
+def test_build_debug_info_message_includes_backend_telemetry_lines():
+    dummy = types.SimpleNamespace(
+        exam_date="2026-06-01",
+        engine=types.SimpleNamespace(CHAPTERS=["A"], competence={}),
+        _get_local_llm_backend_status=lambda: {
+            "backend": "llamacpp",
+            "model": "demo:latest",
+            "model_used": "mapped-demo",
+            "last_error": "",
+            "age_seconds": 9,
+            "counts": {
+                "ollama_success": 4,
+                "ollama_error": 1,
+                "llamacpp_success": 6,
+                "llamacpp_error": 2,
+                "fallback_to_ollama": 2,
+            },
+        },
+    )
+    msg = StudyPlanGUI._build_debug_info_message(
+        dummy,
+        hub={},
+        graph_status={},
+        drift={},
+        perf={},
+        tutor_summary={},
+    )
+    assert "Local LLM backend last/model/age(s): llama.cpp/mapped-demo/9" in msg
+    assert "Local LLM backend counts ollama ok/err • llama.cpp ok/err • fallback: 4/1 • 6/2 • 2" in msg
+    assert "Local LLM backend last error: none" in msg
+
+
 def test_build_debug_info_message_includes_tutor_loop_thresholds_lines():
     dummy = types.SimpleNamespace(
         exam_date="2026-06-01",
@@ -1586,10 +1742,16 @@ def test_build_tutor_loop_cognitive_runtime_meta_reports_posterior_and_flags(mon
     cog.working_memory.socratic_state = "SCAFFOLD"
     cog.working_memory.active_chapter = "WACC"
     cog.working_memory.context_chunks = ["a", "b"]
+    cog.remediation_by_chapter["WACC"] = "Re-state assumptions before selecting formula."
+    cog.queue_reflection_prompt("What rule did you use?")
+    cog.set_cognitive_load(0.66)
+    cog.hint_fade_levels["WACC"] = 3
     cog.posteriors["WACC"] = CompetencyPosterior(alpha=8.0, beta=2.0)
+    svc = WorkingMemoryService(cog)
     dummy = types.SimpleNamespace()
     dummy._is_cognitive_runtime_enabled = lambda: True
     dummy._cognitive_state = lambda: cog
+    dummy._working_memory_service = lambda: svc
     dummy.current_topic = "WACC"
     meta = StudyPlanGUI._build_tutor_loop_cognitive_runtime_meta(dummy, chapter="WACC")
     assert bool(meta.get("enabled", False)) is True
@@ -1600,6 +1762,373 @@ def test_build_tutor_loop_cognitive_runtime_meta_reports_posterior_and_flags(mon
     assert int(meta.get("wm_chunks", 0) or 0) == 2
     assert float(meta.get("posterior_mean", 0.0) or 0.0) > 0.75
     assert float(meta.get("posterior_variance", 1.0) or 1.0) >= 0.0
+    assert int(meta.get("hint_support_level", 0) or 0) == 3
+    assert bool(meta.get("reflection_prompt_pending", False)) is True
+    assert "assumptions" in str(meta.get("remediation_focus", "")).lower()
+    assert str(meta.get("cognitive_load_band", "")) == "moderate"
+    assert float(meta.get("cognitive_load_score", 0.0) or 0.0) > 0.5
+    assert bool(meta.get("dual_coding_aids", []))
+    assert "Dual coding:" in str(meta.get("dual_coding_line", ""))
+    assert "What rule did you use?" in str(meta.get("reflection_prompt_preview", ""))
+
+
+def test_cognitive_tutor_guard_prepare_exposes_runtime_controls():
+    state = CognitiveState()
+    state.working_memory.active_chapter = "WACC"
+    state.remediation_by_chapter["WACC"] = "Check debt/equity weighting assumptions."
+    state.queue_reflection_prompt("What boundary condition could break your method?")
+    state.hint_fade_levels["WACC"] = 4
+    state.set_cognitive_load(0.78)
+    svc = WorkingMemoryService(state)
+    dummy = types.SimpleNamespace(
+        _cognitive_state=lambda: state,
+        _working_memory_service=lambda: svc,
+        _is_quiz_answer_request_text=lambda text: False,
+    )
+    guard = StudyPlanGUI._cognitive_tutor_guard_prepare(
+        dummy,
+        user_prompt="help me with wacc",
+        chapter="WACC",
+        event="TUTOR_REQUEST",
+    )
+    assert int(guard.get("hint_support_level", 0) or 0) == 4
+    assert "weighting assumptions" in str(guard.get("remediation_focus", "")).lower()
+    assert "boundary condition" in str(guard.get("reflection_prompt", "")).lower()
+    assert str(guard.get("cognitive_load_band", "")) == "high"
+    assert bool(guard.get("dual_coding_aids", []))
+    assert "Dual-coding aid:" in str(guard.get("dual_coding_line", ""))
+
+
+def test_build_cognitive_tutor_runtime_brief_includes_dual_coding_line():
+    dummy = types.SimpleNamespace(
+        _cognitive_tutor_guard_prepare=lambda **kwargs: {
+            "suffix": "",
+            "wm_context": "",
+            "hint_support_level": 2,
+            "remediation_focus": "",
+            "reflection_prompt": "",
+            "fsm_state": "SCAFFOLD",
+            "cognitive_load_score": 0.4,
+            "cognitive_load_band": "moderate",
+            "dual_coding_line": "Dual-coding aid: Draw a weighting table.",
+        }
+    )
+    text, guard = StudyPlanGUI._build_cognitive_tutor_runtime_brief(dummy, user_prompt="help", chapter="WACC")
+    assert "Dual-coding aid: Draw a weighting table." in text
+    assert "dual_coding_line" in guard
+
+
+def test_cognitive_tutor_note_exchange_consumes_reflection_prompt_and_transitions():
+    state = CognitiveState()
+    state.working_memory.socratic_state = "REFLECT"
+    state.working_memory.active_chapter = "Topic A"
+    state.posteriors["Topic A"] = CompetencyPosterior(alpha=6.0, beta=3.0)
+    state.queue_reflection_prompt("Explain why the rule works.")
+    svc = WorkingMemoryService(state)
+    dummy = types.SimpleNamespace(
+        _cognitive_state=lambda: state,
+        _working_memory_service=lambda: svc,
+    )
+    StudyPlanGUI._cognitive_tutor_note_exchange(dummy, "assistant", "Use this strategy and check assumptions.")
+    assert state.peek_reflection_prompt() is None
+    assert str(state.working_memory.socratic_state or "") in {"CONSOLIDATE", "CHALLENGE"}
+
+
+def test_format_practice_transfer_feedback_classifies_brittle_and_strong():
+    dummy = types.SimpleNamespace()
+    brittle_line, brittle_tip = StudyPlanGUI._format_practice_transfer_feedback(
+        dummy,
+        {"structure_id": "wacc_optimization_v1", "attempts": 3, "transfer_rate": 0.33, "brittleness_index": 0.66, "recovery_rate": 0.0},
+    )
+    assert "Transfer feedback: Brittle" in brittle_line
+    assert "memorization risk" in brittle_line.lower()
+    assert "Brittleness" in brittle_tip
+
+    strong_line, strong_tip = StudyPlanGUI._format_practice_transfer_feedback(
+        dummy,
+        {"structure_id": "npv_annuity_timing_v1", "attempts": 5, "transfer_rate": 0.9, "brittleness_index": 0.1, "recovery_rate": 0.0},
+    )
+    assert "Transfer feedback: Strong" in strong_line
+    assert "escalate difficulty" in strong_line.lower()
+    assert "Transfer rate" in strong_tip
+
+
+def test_transfer_insights_summary_includes_aggregates():
+    state = CognitiveState()
+    state.structure_exposure_counts["npv_annuity_timing_v1"] = 1
+
+    class _Scorer:
+        def get_brittle_concepts(self, _student_id: str, threshold: float = 0.3, limit: int = 3):
+            _ = threshold, limit
+            return [{"structure_id": "wacc_optimization_v1", "brittleness_index": 0.6}]
+
+        def aggregate_student_metrics(self, _student_id: str):
+            return {
+                "structures_tracked": 2,
+                "attempts_total": 5,
+                "avg_transfer_rate": 0.72,
+                "avg_brittleness_index": 0.28,
+            }
+
+    dummy = types.SimpleNamespace(
+        _load_transfer_attempts_into_runtime=lambda: None,
+        _transfer_scoring_service=_Scorer(),
+        _cognitive_state=lambda: state,
+        student_id="u1",
+    )
+
+    summary = StudyPlanGUI._transfer_insights_summary(dummy)
+    assert bool(summary.get("enabled", False)) is True
+    assert int(summary.get("concepts_tested", 0) or 0) == 2
+    assert int(summary.get("attempts_total", 0) or 0) == 5
+    assert float(summary.get("avg_transfer_rate", 0.0) or 0.0) == pytest.approx(0.72, abs=1e-9)
+    assert float(summary.get("avg_brittleness_index", 0.0) or 0.0) == pytest.approx(0.28, abs=1e-9)
+
+
+def test_load_transfer_attempts_into_runtime_syncs_cognitive_state_and_dedupes():
+    state = CognitiveState()
+
+    class _Scorer:
+        def __init__(self):
+            self.calls: list[object] = []
+
+        def record_attempt(self, attempt):
+            self.calls.append(attempt)
+
+    attempt1 = types.SimpleNamespace(attempt_id="a1", structure_id="npv_annuity_timing_v1")
+    attempt2 = types.SimpleNamespace(attempt_id="a2", structure_id="wacc_optimization_v1")
+    attempt1_dup = types.SimpleNamespace(attempt_id="a1", structure_id="npv_annuity_timing_v1")
+
+    class _Loader:
+        def load_recent_attempts(self, _path: str, max_rows: int = 600):
+            _ = max_rows
+            return (attempt1, attempt2, attempt1_dup)
+
+    scorer = _Scorer()
+    dummy = types.SimpleNamespace(
+        _transfer_attempts_log_loaded=False,
+        _transfer_scoring_service=scorer,
+        _transfer_attempt_log_service=_Loader(),
+        _transfer_attempts_log_path=lambda: "/tmp/transfer_attempts.jsonl",
+        _cognitive_state=lambda: state,
+    )
+
+    StudyPlanGUI._load_transfer_attempts_into_runtime(dummy, max_rows=10)
+    assert bool(dummy._transfer_attempts_log_loaded) is True
+    assert len(scorer.calls) == 2
+    assert int(state.structure_exposure_counts.get("npv_annuity_timing_v1", 0) or 0) == 1
+    assert int(state.structure_exposure_counts.get("wacc_optimization_v1", 0) or 0) == 1
+    assert "a1" in state.transfer_attempt_ids
+    assert "a2" in state.transfer_attempt_ids
+
+
+def test_format_practice_error_signature_uses_tags_and_policy():
+    dummy = types.SimpleNamespace()
+    result_obj = types.SimpleNamespace(
+        outcome="partial",
+        error_tags=("formula_choice", "assumption_missing"),
+        misconception_tags=("wacc_weights",),
+        meta={},
+    )
+    line, tooltip = StudyPlanGUI._format_practice_error_signature(
+        dummy,
+        result_obj=result_obj,
+        intervention_policy={"intervention_type": "step_drill", "rationale_short": "repeat formula-choice confusion"},
+    )
+    assert "Error signature:" in line
+    assert "method selection" in line.lower()
+    assert "Policy: step drill" in line
+    assert "Error tags:" in tooltip
+
+
+def test_format_practice_difficulty_ladder_respects_transfer_and_struggle():
+    dummy = types.SimpleNamespace()
+    session_state = TutorSessionState(session_id="s", module="FM", topic="WACC", meta={"difficulty_hint": "harder"})
+    item = types.SimpleNamespace(item_type="short_answer", difficulty="standard", meta={})
+    transfer_candidate = types.SimpleNamespace(meta={"transfer_variant": True})
+    line, tooltip = StudyPlanGUI._format_practice_difficulty_ladder(
+        dummy,
+        item=item,
+        session_state=session_state,
+        result_obj=types.SimpleNamespace(outcome="correct"),
+        intervention_policy={"intervention_type": "worked_example_then_retest"},
+        transfer_candidate=transfer_candidate,
+        cognitive_meta={"enabled": True, "posterior_mean": 0.85, "struggle_mode": False, "quiz_active": False},
+    )
+    assert "Difficulty: standard" in line
+    assert "next if correct: transfer variant" in line
+    assert "Difficulty ladder" in tooltip
+
+    line2, _ = StudyPlanGUI._format_practice_difficulty_ladder(
+        dummy,
+        item=item,
+        session_state=session_state,
+        result_obj=types.SimpleNamespace(outcome="incorrect"),
+        intervention_policy={"intervention_type": "step_drill"},
+        transfer_candidate=None,
+        cognitive_meta={"enabled": True, "posterior_mean": 0.25, "struggle_mode": True, "quiz_active": False},
+    )
+    assert "next if weak: guided practice" in line2
+
+
+def test_build_practice_hint_ladder_produces_four_levels_and_calc_scaffold():
+    dummy = types.SimpleNamespace()
+    item = types.SimpleNamespace(item_type="calculation_step", expected_format="numeric answer", prompt="Compute WACC")
+    ladder = StudyPlanGUI._build_practice_hint_ladder(
+        dummy,
+        item=item,
+        rubric_hints=("formula", "weights", "rounding"),
+        quiz_safe_cap=4,
+    )
+    assert len(ladder) == 4
+    assert "formula" in ladder[0].lower()
+    assert "structure hint" in ladder[1].lower()
+    assert "partial step" in ladder[2].lower()
+    assert "near-answer" in ladder[3].lower()
+
+
+def test_format_practice_hint_level_status_respects_quiz_safe_cap():
+    dummy = types.SimpleNamespace()
+    dummy._compact_ui_token = lambda text, _max_chars, _full=None: str(text)
+    dummy._build_practice_hint_ladder = types.MethodType(StudyPlanGUI._build_practice_hint_ladder, dummy)
+    item = types.SimpleNamespace(
+        item_type="short_answer",
+        expected_format="2-line explanation",
+        prompt="Explain WACC relevance",
+        rubric_hints=("definition", "application"),
+    )
+    run_state = {
+        "practice_hint_level": 3,
+        "practice_hint_level_effective": 2,
+        "practice_result": None,
+    }
+    line, tooltip = StudyPlanGUI._format_practice_hint_level_status(
+        dummy,
+        item=item,
+        run_state=run_state,
+        cognitive_meta={"quiz_active": True},
+    )
+    assert "Hint level: 2/4" in line
+    assert "quiz-safe cap" in line
+    assert "Shown level: 2/4" in tooltip
+
+
+def test_format_practice_stepwise_marking_line_renders_flags_and_rounding_note():
+    dummy = types.SimpleNamespace()
+    result_obj = types.SimpleNamespace(
+        meta={
+            "stepwise_marking": {
+                "method_ok": True,
+                "execution_ok": False,
+                "format_ok": True,
+                "rounding_issue": True,
+                "stepwise_marks": {
+                    "method": {"awarded": 1.0, "max": 1.0},
+                    "execution": {"awarded": 0.0, "max": 0.7},
+                    "format": {"awarded": 0.0, "max": 0.3},
+                },
+            }
+        }
+    )
+    line, tooltip = StudyPlanGUI._format_practice_stepwise_marking_line(dummy, result_obj=result_obj)
+    assert "Stepwise:" in line
+    assert "method ✓" in line
+    assert "execution ✗" in line
+    assert "rounding issue" in line
+    assert "Method: ok" in tooltip
+    assert "Execution: not met" in tooltip
+
+
+def test_format_practice_dual_coding_status_prefers_cognitive_meta_line():
+    dummy = types.SimpleNamespace()
+    item = types.SimpleNamespace(item_type="short_answer")
+    line, tooltip = StudyPlanGUI._format_practice_dual_coding_status(
+        dummy,
+        item=item,
+        cognitive_meta={
+            "dual_coding_line": "Dual coding: Draw a weighting table.",
+            "dual_coding_aids": ["Draw a weighting table.", "Map assumptions vs data."],
+        },
+    )
+    assert "Draw a weighting table" in line
+    assert "Recommended aids:" in tooltip
+    assert "Map assumptions vs data." in tooltip
+
+
+def test_format_practice_dual_coding_status_falls_back_for_calculation_items():
+    dummy = types.SimpleNamespace()
+    calc_item = types.SimpleNamespace(item_type="calculation_step")
+    line, tooltip = StudyPlanGUI._format_practice_dual_coding_status(
+        dummy,
+        item=calc_item,
+        cognitive_meta={},
+    )
+    assert "setup table" in line.lower()
+    assert "item type: calculation_step" in tooltip.lower()
+
+
+def test_format_practice_reflection_status_pending_with_preview():
+    dummy = types.SimpleNamespace()
+    dummy._compact_ui_token = lambda text, _max_chars, _full=None: str(text)
+    item = types.SimpleNamespace(item_type="short_answer")
+    line, tooltip = StudyPlanGUI._format_practice_reflection_status(
+        dummy,
+        item=item,
+        cognitive_meta={
+            "reflection_prompt_pending": True,
+            "reflection_prompt_preview": "What rule helped you solve this, and when would it fail?",
+        },
+    )
+    assert "Reflection: queued" in line
+    assert "What rule helped you solve this" in line
+    assert "metacognitive" in tooltip.lower()
+
+
+def test_format_practice_reflection_status_none_pending():
+    dummy = types.SimpleNamespace()
+    item = types.SimpleNamespace(item_type="short_answer")
+    line, tooltip = StudyPlanGUI._format_practice_reflection_status(
+        dummy,
+        item=item,
+        cognitive_meta={"reflection_prompt_pending": False},
+    )
+    assert "none pending" in line.lower()
+    assert "no reflection prompt is queued" in tooltip.lower()
+
+
+def test_format_practice_interleave_shadow_status_with_no_events():
+    dummy = types.SimpleNamespace()
+    line, tooltip = StudyPlanGUI._format_practice_interleave_shadow_status(
+        dummy,
+        summary={"days": 7, "events": 0},
+        chapter="WACC",
+    )
+    assert "no recent events" in line.lower()
+    assert "topic WACC" in line
+    assert "Run review sessions" in tooltip
+
+
+def test_format_practice_interleave_shadow_status_renders_lane_mix_and_mode():
+    dummy = types.SimpleNamespace()
+    summary = {
+        "days": 7,
+        "events": 5,
+        "selected_total": 20,
+        "candidate_total": 32,
+        "selected_lane_share": {"target": 0.55, "adjacent": 0.25, "far": 0.2, "unknown": 0.0},
+        "candidate_lane_share": {"target": 0.40, "adjacent": 0.35, "far": 0.25, "unknown": 0.0},
+        "ratio_mode_counts": {"boost-high-gap": 3, "default": 2},
+    }
+    line, tooltip = StudyPlanGUI._format_practice_interleave_shadow_status(
+        dummy,
+        summary=summary,
+        chapter="FM Function",
+    )
+    assert "Interleave shadow (7d): n=5" in line
+    assert "target 55%" in line
+    assert "mode boost-high-gap" in line
+    assert "Selected total: 20" in tooltip
+    assert "measurement-only" in tooltip
 
 
 def test_get_rag_embedding_insights_includes_per_pdf_details_and_tiers(tmp_path):
@@ -1643,6 +2172,125 @@ def test_compute_tutor_control_state_enables_send_and_copy_last_when_ready():
     assert state["copy_last_enabled"] is True
     assert state["copy_transcript_enabled"] is True
     assert state["jump_latest_enabled"] is True
+
+
+def test_build_tutor_user_status_ready_plain_language():
+    text = build_tutor_user_status({"phase": "ready"})
+    assert "ready" in text.lower()
+    assert "ctrl+enter" in text.lower()
+
+
+def test_build_tutor_user_status_timeout_actionable():
+    text = build_tutor_user_status({"phase": "timeout", "turn_timeout_seconds": 45})
+    assert "timed out" in text.lower()
+    assert "45" in text
+
+
+def test_build_tutor_user_status_host_unreachable_actionable():
+    code, friendly = classify_ollama_error("Connection refused", host="http://127.0.0.1:11434")
+    assert code == "host_unreachable"
+    text = build_tutor_user_status({"phase": "error", "friendly": friendly})
+    assert "cannot reach ollama" in text.lower()
+
+
+def test_build_tutor_details_status_includes_ctx_rag_fsm_when_present():
+    details = build_tutor_details_status(
+        {
+            "phase": "generating",
+            "host": "http://127.0.0.1:11434",
+            "model": "gemma:2b",
+            "context_chars": 300,
+            "context_budget_chars": 900,
+            "coverage_target_count": 3,
+            "coverage_hit_count": 2,
+            "rag_summary": "3 snippets from 2 PDFs",
+            "fsm_state": "SCAFFOLD",
+            "latency_load_level": "warn",
+            "latency_slo_status": "fail",
+        }
+    )
+    assert "phase: generating" in details.lower()
+    assert "context: 300/900 chars" in details.lower()
+    assert "coverage: 2/3" in details.lower()
+    assert "rag:" in details.lower()
+    assert "fsm: scaffold" in details.lower()
+
+
+def test_build_tutor_details_status_omits_missing_sections():
+    details = build_tutor_details_status({})
+    assert details == ""
+
+
+def test_prompt_key_ctrl_shift_c_routes_copy_transcript():
+    action = tutor_prompt_shortcut_action(
+        keyval=67,
+        state=5,  # ctrl + shift
+        ctrl_mask=4,
+        shift_mask=1,
+        key_return=65293,
+        key_kp_enter=65421,
+        key_l=108,
+        key_L=76,
+        key_c=99,
+        key_C=67,
+        key_a=97,
+        key_A=65,
+        key_j=106,
+        key_J=74,
+    )
+    assert action == "copy_transcript"
+
+
+def test_prompt_key_ctrl_shift_a_routes_copy_last():
+    action = tutor_prompt_shortcut_action(
+        keyval=65,
+        state=5,  # ctrl + shift
+        ctrl_mask=4,
+        shift_mask=1,
+        key_return=65293,
+        key_kp_enter=65421,
+        key_l=108,
+        key_L=76,
+        key_c=99,
+        key_C=67,
+        key_a=97,
+        key_A=65,
+        key_j=106,
+        key_J=74,
+    )
+    assert action == "copy_last"
+
+
+def test_prompt_key_ctrl_j_routes_jump_latest():
+    action = tutor_prompt_shortcut_action(
+        keyval=106,
+        state=4,  # ctrl only
+        ctrl_mask=4,
+        shift_mask=1,
+        key_return=65293,
+        key_kp_enter=65421,
+        key_l=108,
+        key_L=76,
+        key_c=99,
+        key_C=67,
+        key_a=97,
+        key_A=65,
+        key_j=106,
+        key_J=74,
+    )
+    assert action == "jump_latest"
+
+
+def test_dialog_key_f1_toggles_details():
+    action = tutor_dialog_shortcut_action(keyval=65470, running=False, esc_key=65307, f1_key=65470)
+    assert action == "toggle_details"
+
+
+def test_dialog_key_escape_blocked_while_running():
+    action_running = tutor_dialog_shortcut_action(keyval=65307, running=True, esc_key=65307, f1_key=65470)
+    action_idle = tutor_dialog_shortcut_action(keyval=65307, running=False, esc_key=65307, f1_key=65470)
+    assert action_running is None
+    assert action_idle == "close"
 
 
 def test_format_ui_info_block_lines_splits_long_status_rows_for_readability():
@@ -3036,6 +3684,268 @@ def test_ollama_generate_text_returns_busy_when_runtime_slot_unavailable():
     assert text == ""
     assert isinstance(err, str) and "runtime busy" in err.lower()
     assert calls and calls[-1][0] == "demo:latest" and calls[-1][1] is False
+
+
+def test_ollama_generate_text_with_options_uses_llamacpp_secondary_when_enabled(monkeypatch):
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND", "llamacpp")
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND_POLICY", "all")
+    dummy._try_llamacpp_secondary_generate = lambda **_kwargs: ("secondary response", None)
+    text, err = StudyPlanGUI._ollama_generate_text_with_options(
+        dummy,
+        model="demo:latest",
+        prompt="ping",
+        num_ctx=2048,
+        temperature=0.2,
+        use_response_cache=False,
+    )
+    assert err is None
+    assert text == "secondary response"
+
+
+def test_ollama_generate_text_with_options_falls_back_to_ollama_on_llamacpp_error(monkeypatch):
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND", "llamacpp")
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND_POLICY", "all")
+    dummy._try_llamacpp_secondary_generate = lambda **_kwargs: ("", "llamacpp: timeout")
+    dummy._is_local_llm_model_on_cooldown = lambda _model: (False, 0, "")
+    dummy._acquire_ollama_request_slot = lambda wait_seconds=None: (True, 0)
+    dummy._release_ollama_request_slot = lambda: None
+    dummy._ollama_request_json = lambda _path, payload=None, timeout_seconds=None: ({"response": "ollama fallback"}, None)
+    text, err = StudyPlanGUI._ollama_generate_text_with_options(
+        dummy,
+        model="demo:latest",
+        prompt="ping",
+        num_ctx=2048,
+        temperature=0.2,
+        use_response_cache=False,
+    )
+    assert err is None
+    assert text == "ollama fallback"
+
+
+def test_try_llamacpp_secondary_generate_records_backend_telemetry(monkeypatch):
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND", "llamacpp")
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND_POLICY", "all")
+
+    class _FakeClient:
+        def generate(self, **_kwargs):
+            return types.SimpleNamespace(text="secondary ok", error=None, model_used="mapped-demo")
+
+    dummy._get_llamacpp_backend_client = lambda: _FakeClient()
+    result = StudyPlanGUI._try_llamacpp_secondary_generate(
+        dummy,
+        model="demo:latest",
+        prompt="ping",
+        num_ctx=2048,
+        temperature=0.2,
+        timeout_seconds=30,
+    )
+    assert result is not None
+    text, err = result
+    status = StudyPlanGUI._get_local_llm_backend_status(dummy)
+    assert err is None
+    assert text == "secondary ok"
+    assert status["backend"] == "llamacpp"
+    assert str(status["model_used"]) == "mapped-demo"
+    assert int(status["counts"]["llamacpp_success"]) >= 1
+
+
+def test_try_llamacpp_secondary_generate_skips_when_cooling_down(monkeypatch):
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND", "llamacpp")
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND_POLICY", "all")
+    now = time.monotonic()
+    dummy._llamacpp_secondary_state["cooldown_until"] = float(now + 120.0)
+    dummy._llamacpp_secondary_state["last_error"] = "timeout burst"
+    called = {"generate": 0}
+
+    class _FakeClient:
+        def health(self):
+            return True, None
+
+        def generate(self, **_kwargs):
+            called["generate"] += 1
+            return types.SimpleNamespace(text="unexpected", error=None, model_used="mapped-demo")
+
+    dummy._get_llamacpp_backend_client = lambda: _FakeClient()
+    result = StudyPlanGUI._try_llamacpp_secondary_generate(
+        dummy,
+        model="demo:latest",
+        prompt="ping",
+        num_ctx=1024,
+        temperature=0.2,
+        timeout_seconds=120,
+    )
+    assert result is None
+    assert called["generate"] == 0
+    assert "timeout burst" in str(dummy._llamacpp_secondary_last_error or "")
+
+
+def test_try_llamacpp_secondary_generate_clamps_secondary_timeout(monkeypatch):
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND", "llamacpp")
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND_POLICY", "all")
+    monkeypatch.setenv("STUDYPLAN_LLAMACPP_SECONDARY_TIMEOUT_SECONDS", "18")
+    seen: dict[str, int] = {"timeout": 0}
+
+    class _FakeClient:
+        def health(self):
+            return True, None
+
+        def generate(self, **kwargs):
+            seen["timeout"] = int(kwargs.get("timeout_seconds", 0) or 0)
+            return types.SimpleNamespace(text="ok", error=None, model_used="mapped-demo")
+
+    dummy._get_llamacpp_backend_client = lambda: _FakeClient()
+    result = StudyPlanGUI._try_llamacpp_secondary_generate(
+        dummy,
+        model="demo:latest",
+        prompt="ping",
+        num_ctx=1024,
+        temperature=0.2,
+        timeout_seconds=300,
+    )
+    assert result is not None
+    text, err = result
+    assert err is None
+    assert text == "ok"
+    assert seen["timeout"] == 18
+
+
+def test_backend_status_surfaces_secondary_gate_state(monkeypatch):
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND", "llamacpp")
+    status = StudyPlanGUI._get_local_llm_backend_status(dummy)
+    assert status["secondary_mode"] == "llamacpp"
+    assert "secondary_policy" in status
+    assert "secondary_ready" in status
+    assert "secondary_timeout_seconds" in status
+    assert "secondary_consecutive_failures" in status
+    assert "purpose" in status
+    assert "purpose_counts" in status
+
+
+def test_record_backend_event_tracks_purpose_counts():
+    dummy = _make_dummy()
+    StudyPlanGUI._record_local_llm_backend_event(
+        dummy,
+        backend="ollama",
+        success=True,
+        model_name="demo:latest",
+        model_used="demo:latest",
+        purpose="tutor_chat",
+    )
+    StudyPlanGUI._record_local_llm_backend_event(
+        dummy,
+        backend="llamacpp",
+        success=False,
+        model_name="demo:latest",
+        model_used="demo:latest",
+        err="timeout",
+        purpose="gap_generation",
+    )
+    status = StudyPlanGUI._get_local_llm_backend_status(dummy)
+    assert status["purpose"] == "gap_generation"
+    purpose_counts = status.get("purpose_counts", {})
+    assert isinstance(purpose_counts, dict)
+    assert int(purpose_counts["tutor_chat"]["ollama_success"]) >= 1
+    assert int(purpose_counts["gap_generation"]["llamacpp_error"]) >= 1
+
+
+def test_record_backend_event_tracks_purpose_latency_stats():
+    dummy = _make_dummy()
+    StudyPlanGUI._record_local_llm_backend_event(
+        dummy,
+        backend="ollama",
+        success=True,
+        model_name="demo:latest",
+        model_used="demo:latest",
+        purpose="tutor_chat",
+        duration_ms=120.0,
+    )
+    StudyPlanGUI._record_local_llm_backend_event(
+        dummy,
+        backend="ollama",
+        success=True,
+        model_name="demo:latest",
+        model_used="demo:latest",
+        purpose="tutor_chat",
+        duration_ms=80.0,
+    )
+    status = StudyPlanGUI._get_local_llm_backend_status(dummy)
+    perf = status.get("purpose_performance", {})
+    assert isinstance(perf, dict)
+    tutor_perf = perf.get("tutor_chat", {})
+    assert int(tutor_perf.get("calls", 0) or 0) == 2
+    assert float(tutor_perf.get("avg_duration_ms", 0.0) or 0.0) > 0.0
+    assert float(tutor_perf.get("p95_duration_ms", 0.0) or 0.0) >= 80.0
+
+
+def test_ollama_generate_text_with_options_records_purpose_for_telemetry():
+    dummy = _make_dummy()
+    dummy._try_llamacpp_secondary_generate = lambda **_kwargs: None
+    dummy._is_local_llm_model_on_cooldown = lambda _model: (False, 0, "")
+    dummy._acquire_ollama_request_slot = lambda wait_seconds=None: (True, 0)
+    dummy._release_ollama_request_slot = lambda: None
+    dummy._ollama_request_json = lambda _path, payload=None, timeout_seconds=None: ({"response": "ok"}, None)
+    text, err = StudyPlanGUI._ollama_generate_text_with_options(
+        dummy,
+        model="demo:latest",
+        prompt="ping",
+        num_ctx=1024,
+        temperature=0.2,
+        use_response_cache=False,
+        secondary_purpose="coach_recommendation",
+    )
+    assert err is None
+    assert text == "ok"
+    status = StudyPlanGUI._get_local_llm_backend_status(dummy)
+    assert status["purpose"] == "coach_recommendation"
+    assert int(status["purpose_counts"]["coach_recommendation"]["ollama_success"]) >= 1
+
+
+def test_probe_llamacpp_secondary_backend_reports_disabled_when_off(monkeypatch):
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND", "off")
+    ok, message = StudyPlanGUI._probe_llamacpp_secondary_backend(dummy)
+    assert ok is False
+    assert "disabled" in message.lower()
+
+
+def test_probe_llamacpp_secondary_backend_success(monkeypatch):
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_SECONDARY_BACKEND", "llamacpp")
+
+    class _FakeClient:
+        def health(self):
+            return True, None
+
+    dummy._get_llamacpp_backend_client = lambda: _FakeClient()
+    ok, message = StudyPlanGUI._probe_llamacpp_secondary_backend(dummy)
+    assert ok is True
+    assert "reachable" in message.lower()
+
+
+def test_reset_llamacpp_secondary_runtime_state_clears_gate_fields():
+    dummy = _make_dummy()
+    now = time.monotonic()
+    state = dummy._llamacpp_secondary_state
+    state["consecutive_failures"] = 3
+    state["cooldown_until"] = float(now + 120.0)
+    state["last_error"] = "failure"
+    state["last_health_error"] = "down"
+    dummy._llamacpp_secondary_last_error = "failure"
+
+    StudyPlanGUI._reset_llamacpp_secondary_runtime_state(dummy)
+
+    state = dummy._llamacpp_secondary_state
+    assert int(state.get("consecutive_failures", -1)) == 0
+    assert float(state.get("cooldown_until", -1.0) or 0.0) == 0.0
+    assert str(state.get("last_error", "x")) == ""
+    assert str(state.get("last_health_error", "x")) == ""
+    assert str(dummy._llamacpp_secondary_last_error) == ""
 
 
 def test_ollama_generate_text_stream_retries_transient_error_before_chunks(monkeypatch):

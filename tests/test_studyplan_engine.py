@@ -53,6 +53,9 @@ def test_engine_initializes_cognitive_runtime_wrapper(engine_no_io):
     assert isinstance(getattr(eng, "working_memory_service", None), WorkingMemoryService)
     assert hasattr(eng, "mastery_kernel")
     assert str(getattr(eng, "COGNITIVE_STATE_FILE", "") or "").endswith("cognitive_state.json")
+    assert hasattr(eng, "runtime_config")
+    assert hasattr(eng, "performance_monitor")
+    assert hasattr(eng, "secure_importer")
 
 
 def test_save_data_persists_cognitive_state_snapshot(engine_no_io, monkeypatch):
@@ -72,6 +75,87 @@ def test_save_data_persists_cognitive_state_snapshot(engine_no_io, monkeypatch):
     cog_writes = [payload for path, payload in writes if path == eng.COGNITIVE_STATE_FILE]
     assert cog_writes, "expected cognitive_state.json snapshot write"
     assert int(cog_writes[-1].get("schema_version", 0) or 0) >= 1
+
+
+def test_runtime_infrastructure_status_exposes_config_and_monitor(engine_no_io):
+    eng = engine_no_io
+    status = eng.get_runtime_infrastructure_status()
+    assert isinstance(status, dict)
+    config = status.get("config", {})
+    assert isinstance(config, dict)
+    assert int(config.get("cache_size", 0) or 0) > 0
+    assert "enable_secure_imports" in config
+    monitor = status.get("monitor", {})
+    assert isinstance(monitor, dict)
+    assert "enabled" in monitor
+
+
+def test_import_questions_json_uses_secure_importer_loader_when_enabled(engine_no_io, tmp_path, monkeypatch):
+    eng = engine_no_io
+    monkeypatch.setattr(eng, "save_questions", lambda: None, raising=True)
+    monkeypatch.setattr(eng, "save_data", lambda: None, raising=True)
+
+    path = tmp_path / "secure.json"
+    path.write_text("{}", encoding="utf-8")
+    calls = {"secure": 0}
+    payload = {
+        "chapter": "WACC",
+        "questions": [{"question": "Q1", "options": ["A", "B"], "correct": "A"}],
+    }
+
+    def _secure_load(file_path: str, **_kwargs):
+        calls["secure"] += 1
+        assert str(file_path).endswith(".json")
+        return payload
+
+    monkeypatch.setattr(eng.secure_importer, "load_json", _secure_load, raising=True)
+    monkeypatch.setattr(
+        eng,
+        "_load_json_file_with_limit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("legacy loader should not run")),
+        raising=True,
+    )
+
+    result = eng.import_questions_json(str(path))
+    assert calls["secure"] == 1
+    assert int(result.get("added", 0) or 0) >= 1
+
+
+def test_import_questions_json_falls_back_to_legacy_loader_on_secure_error(engine_no_io, tmp_path, monkeypatch):
+    eng = engine_no_io
+    monkeypatch.setattr(eng, "save_questions", lambda: None, raising=True)
+    monkeypatch.setattr(eng, "save_data", lambda: None, raising=True)
+
+    path = tmp_path / "fallback.json"
+    path.write_text("{}", encoding="utf-8")
+    payload = {
+        "chapter": "WACC",
+        "questions": [{"question": "Q1", "options": ["A", "B"], "correct": "A"}],
+    }
+    monkeypatch.setattr(
+        eng.secure_importer,
+        "load_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("forced secure loader failure")),
+        raising=True,
+    )
+    monkeypatch.setattr(eng, "_load_json_file_with_limit", lambda *_args, **_kwargs: payload, raising=True)
+
+    result = eng.import_questions_json(str(path))
+    assert int(result.get("added", 0) or 0) >= 1
+
+
+def test_save_data_tracks_performance_when_monitor_enabled(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    eng.performance_monitor.enabled = True
+    monkeypatch.setattr(eng, "_backup_file", lambda _path: None, raising=True)
+    monkeypatch.setattr(eng, "_append_health_log", lambda: None, raising=True)
+    monkeypatch.setattr(eng, "_atomic_write_json", lambda *_args, **_kwargs: None, raising=True)
+
+    eng.save_data()
+    snap = eng.performance_monitor.snapshot(limit=16)
+    ops = snap.get("operations", {})
+    assert isinstance(ops, dict)
+    assert "engine.save_data" in ops
 
 
 def test_cleanup_joblib_loky_runtime_is_idempotent(monkeypatch):
@@ -338,6 +422,55 @@ def test_constructor_registers_blocking_atexit_loky_cleanup(monkeypatch):
             matched = True
             break
     assert matched, "Expected blocking atexit registration for loky cleanup"
+
+
+def test_import_questions_json_rejects_invalid_extension(engine_no_io, tmp_path):
+    eng = engine_no_io
+    bad_path = tmp_path / "questions.txt"
+    bad_path.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="must be one of"):
+        eng.import_questions_json(str(bad_path))
+
+
+def test_import_questions_json_enforces_question_row_limit(engine_no_io, tmp_path, monkeypatch):
+    eng = engine_no_io
+    monkeypatch.setattr(eng, "save_questions", lambda: None, raising=True)
+    monkeypatch.setattr(eng, "save_data", lambda: None, raising=True)
+    eng.MAX_QUESTION_IMPORT_ROWS = 2
+    payload = {
+        "chapter": "WACC",
+        "questions": [
+            {"question": "Q1", "options": ["A", "B"], "correct": "A"},
+            {"question": "Q2", "options": ["A", "B"], "correct": "A"},
+            {"question": "Q3", "options": ["A", "B"], "correct": "A"},
+        ],
+    }
+    path = tmp_path / "bulk.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="payload too large"):
+        eng.import_questions_json(str(path))
+
+
+def test_import_questions_csv_enforces_row_limit(engine_no_io, tmp_path, monkeypatch):
+    eng = engine_no_io
+    monkeypatch.setattr(eng, "save_questions", lambda: None, raising=True)
+    monkeypatch.setattr(eng, "save_data", lambda: None, raising=True)
+    eng.MAX_QUESTION_IMPORT_ROWS = 1
+    path = tmp_path / "bulk.csv"
+    path.write_text(
+        "chapter,question,option1,option2,correct\nWACC,Q1,A,B,A\nWACC,Q2,A,B,A\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="more than 1 rows"):
+        eng.import_questions_json(str(path))
+
+
+def test_load_json_with_limit_reports_decode_location(engine_no_io, tmp_path):
+    eng = engine_no_io
+    bad = tmp_path / "bad.json"
+    bad.write_text("{bad json}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="line"):
+        eng._load_json_file_with_limit(str(bad), 1024 * 1024, "Question import JSON")
 
 
 def test_competence_initialization_covers_all_chapters(engine_no_io):
@@ -2444,6 +2577,90 @@ def test_semantic_interleave_mix_exposes_cluster_mode(engine_no_io, monkeypatch)
     mix = eng.get_semantic_interleave_mix(chapter, [0, 1, 2], target_outcome_ids=["A.1"])
     assert str(mix.get("cluster_mode", "")) in {"semantic", "lexical", "fallback"}
     assert "target_cluster_count" in mix
+
+
+def test_select_due_review_questions_records_interleave_shadow_event(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    today_iso = datetime.date.today().isoformat()
+    q_count = len(eng.QUESTIONS.get(chapter, []))
+    eng.srs_data[chapter] = [
+        {"last_review": today_iso, "interval": 1, "efactor": 2.5}
+        for _ in range(q_count)
+    ]
+    monkeypatch.setattr(eng, "get_retention_probability", lambda _chapter, idx: float(idx) / 100.0)
+    monkeypatch.setattr(eng, "_question_outcome_ids", lambda _chapter, idx: [f"A.{(idx % 3) + 1}"])
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "one", "level": 2},
+                {"id": "A.2", "text": "two", "level": 2},
+                {"id": "A.3", "text": "three", "level": 2},
+            ],
+        }
+    }
+
+    selected = eng.select_due_review_questions(chapter, count=3)
+    assert selected == [0, 1, 2]
+    events = eng.study_hub_stats.get("interleave_shadow_events", [])
+    assert isinstance(events, list) and events
+    latest = events[-1]
+    assert latest.get("chapter") == chapter
+    assert latest.get("source") == "due_review"
+    assert int(latest.get("selected_count", 0) or 0) == 3
+    assert isinstance(latest.get("selected_mix"), dict)
+
+
+def test_select_due_review_questions_ignores_shadow_recorder_failures(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    today_iso = datetime.date.today().isoformat()
+    q_count = len(eng.QUESTIONS.get(chapter, []))
+    eng.srs_data[chapter] = [
+        {"last_review": today_iso, "interval": 1, "efactor": 2.5}
+        for _ in range(q_count)
+    ]
+    monkeypatch.setattr(eng, "get_retention_probability", lambda _chapter, idx: float(idx) / 100.0)
+    monkeypatch.setattr(eng, "_record_interleave_shadow_event", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    selected = eng.select_due_review_questions(chapter, count=3)
+    assert selected == [0, 1, 2]
+
+
+def test_get_interleave_shadow_summary_rollup(engine_no_io):
+    eng = engine_no_io
+    today = datetime.date.today()
+    eng.study_hub_stats["interleave_shadow_events"] = [
+        {
+            "date": today.isoformat(),
+            "source": "due_review",
+            "chapter": "FM Function",
+            "candidate_count": 5,
+            "selected_count": 3,
+            "candidate_mix": {"target": 2, "adjacent": 2, "far": 1, "unknown": 0},
+            "selected_mix": {"target": 2, "adjacent": 1, "far": 0, "unknown": 0},
+            "ratio_mode": "boost-high-gap",
+        },
+        {
+            "date": (today - datetime.timedelta(days=30)).isoformat(),
+            "source": "due_review",
+            "chapter": "FM Function",
+            "candidate_count": 10,
+            "selected_count": 5,
+            "candidate_mix": {"target": 0, "adjacent": 0, "far": 0, "unknown": 10},
+            "selected_mix": {"target": 0, "adjacent": 0, "far": 0, "unknown": 5},
+            "ratio_mode": "default",
+        },
+    ]
+    summary = eng.get_interleave_shadow_summary(days=7, chapter="FM Function", source="due_review")
+    assert int(summary.get("events", 0) or 0) == 1
+    assert int(summary.get("selected_total", 0) or 0) == 3
+    ratio_modes = summary.get("ratio_mode_counts", {})
+    assert isinstance(ratio_modes, dict)
+    assert int(ratio_modes.get("boost-high-gap", 0) or 0) == 1
+    lane_share = summary.get("selected_lane_share", {})
+    assert isinstance(lane_share, dict)
+    assert lane_share.get("target", 0.0) == pytest.approx(2.0 / 3.0, rel=1e-6)
 
 
 def test_semantic_drift_kpi_flags_gap_and_lag(engine_no_io):

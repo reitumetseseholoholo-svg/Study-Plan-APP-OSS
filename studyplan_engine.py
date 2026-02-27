@@ -18,6 +18,7 @@ import io
 import contextlib
 from typing import Dict, Any, List, Union, Set, Tuple, cast
 from studyplan.cognitive_state import CognitiveState
+from studyplan.infrastructure import ConfigManager, PerformanceMonitor, SecureImporter, StudyPlanRuntimeConfig
 from studyplan.mastery_kernel import MasteryKernel
 from studyplan.working_memory_service import WorkingMemoryService
 from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
@@ -71,6 +72,8 @@ class StudyPlanEngine:
     INTERLEAVE_ADJACENT_RATIO = 0.25
     INTERLEAVE_FAR_RATIO = 0.15
     INTERLEAVE_MIN_TARGET = 1
+    INTERLEAVE_SHADOW_MAX_EVENTS = 200
+    INTERLEAVE_SHADOW_SUMMARY_DAYS = 7
     CONCEPT_GRAPH_SCHEMA_VERSION = 1
     OUTCOME_CLUSTER_SCHEMA_VERSION = 1
     SEMANTIC_CLUSTER_SIM_THRESHOLD = 0.72
@@ -154,6 +157,7 @@ class StudyPlanEngine:
     MAX_SNAPSHOT_IMPORT_BYTES = 64 * 1024 * 1024
     MAX_QUESTION_IMPORT_BYTES = 32 * 1024 * 1024
     MAX_CSV_IMPORT_BYTES = 16 * 1024 * 1024
+    MAX_QUESTION_IMPORT_ROWS = 50000
     DATA_FILE = DEFAULT_DATA_FILE
     QUESTIONS_FILE = DEFAULT_QUESTIONS_FILE
     CHAPTER_ALIASES = {
@@ -2523,6 +2527,15 @@ class StudyPlanEngine:
         self._low_confidence_match_counts: Dict[str, int] = {}
         self._low_confidence_match_log_suppressed = False
         self._init_module_defaults()
+        self.runtime_config: StudyPlanRuntimeConfig = ConfigManager().load()
+        self.performance_monitor = PerformanceMonitor(
+            enabled=bool(getattr(self.runtime_config, "enable_performance_monitoring", False)),
+            max_operations=512,
+        )
+        self.secure_importer = SecureImporter(
+            max_file_size_bytes=int(getattr(self.runtime_config, "max_file_size_bytes", 10 * 1024 * 1024) or 10 * 1024 * 1024),
+            allowed_extensions=tuple(getattr(self.runtime_config, "allowed_extensions", (".json", ".csv")) or (".json", ".csv")),
+        )
         if not bool(self.__class__._LOKY_CLEANUP_REGISTERED):
             try:
                 # Final interpreter shutdown should request a blocking cleanup pass
@@ -5745,6 +5758,240 @@ class StudyPlanEngine:
         far_ratio /= total
         return target_ratio, adjacent_ratio, far_ratio, mode
 
+    def _shadow_interleave_mix(
+        self, chapter: str, indices: List[int], target_outcome_ids: List[str] | None = None
+    ) -> Dict[str, Any]:
+        """Compute interleave lane mix without semantic model or cluster graph calls."""
+        result: Dict[str, Any] = {
+            "target": 0,
+            "adjacent": 0,
+            "far": 0,
+            "unknown": 0,
+            "total": 0,
+            "target_outcomes": [],
+            "planned_target_ratio": 0.0,
+            "planned_adjacent_ratio": 0.0,
+            "planned_far_ratio": 0.0,
+            "ratio_mode": "default",
+            "cluster_mode": "fallback",
+            "target_cluster_count": 0,
+        }
+        questions = self.QUESTIONS.get(chapter, [])
+        if not isinstance(questions, list) or not questions:
+            return result
+        if not isinstance(indices, list):
+            return result
+
+        cleaned_indices: list[int] = []
+        seen: set[int] = set()
+        for item in indices:
+            if not isinstance(item, int):
+                continue
+            if item < 0 or item >= len(questions):
+                continue
+            if item in seen:
+                continue
+            seen.add(item)
+            cleaned_indices.append(item)
+        if not cleaned_indices:
+            return result
+
+        planned_target, planned_adjacent, planned_far, ratio_mode = self._adaptive_interleave_ratios(chapter)
+        result["planned_target_ratio"] = float(planned_target)
+        result["planned_adjacent_ratio"] = float(planned_adjacent)
+        result["planned_far_ratio"] = float(planned_far)
+        result["ratio_mode"] = str(ratio_mode or "default")
+
+        outcome_lookup = self._chapter_outcome_lookup(chapter)
+        if not outcome_lookup:
+            result["unknown"] = len(cleaned_indices)
+            result["total"] = len(cleaned_indices)
+            return result
+        outcome_order = [oid for oid in outcome_lookup.keys() if isinstance(oid, str) and oid.strip()]
+        if not outcome_order:
+            result["unknown"] = len(cleaned_indices)
+            result["total"] = len(cleaned_indices)
+            return result
+        outcome_pos = {oid: idx for idx, oid in enumerate(outcome_order)}
+
+        targets = self._resolve_interleave_target_outcomes(chapter, target_outcome_ids)
+        target_set = set(targets)
+        target_positions = [outcome_pos[oid] for oid in targets if oid in outcome_pos]
+        if not target_positions:
+            result["unknown"] = len(cleaned_indices)
+            result["total"] = len(cleaned_indices)
+            return result
+
+        for idx in cleaned_indices:
+            outcome_ids = self._question_outcome_ids(chapter, idx)
+            if not outcome_ids:
+                result["unknown"] = int(result["unknown"]) + 1
+                continue
+            nearest = 9999
+            in_target = False
+            for oid in outcome_ids:
+                pos = outcome_pos.get(oid)
+                if pos is None:
+                    continue
+                if oid in target_set:
+                    in_target = True
+                for tpos in target_positions:
+                    dist = abs(pos - tpos)
+                    if dist < nearest:
+                        nearest = dist
+            if in_target:
+                result["target"] = int(result["target"]) + 1
+            elif nearest <= 1:
+                result["adjacent"] = int(result["adjacent"]) + 1
+            elif nearest < 9999:
+                result["far"] = int(result["far"]) + 1
+            else:
+                result["unknown"] = int(result["unknown"]) + 1
+
+        result["total"] = len(cleaned_indices)
+        result["target_outcomes"] = targets
+        return result
+
+    def _record_interleave_shadow_event(
+        self,
+        chapter: str,
+        candidate_indices: List[int],
+        selected_indices: List[int],
+        *,
+        source: str = "due_review",
+        target_outcome_ids: List[str] | None = None,
+    ) -> None:
+        """Record shadow telemetry for interleave behavior without changing selection."""
+        chapter_name = str(chapter or "").strip()
+        if not chapter_name:
+            return
+        selected_mix = self._shadow_interleave_mix(chapter_name, selected_indices, target_outcome_ids)
+        candidate_mix = self._shadow_interleave_mix(chapter_name, candidate_indices, target_outcome_ids)
+        event = {
+            "date": datetime.date.today().isoformat(),
+            "source": str(source or "unknown"),
+            "chapter": chapter_name,
+            "candidate_count": int(candidate_mix.get("total", 0) or 0),
+            "selected_count": int(selected_mix.get("total", 0) or 0),
+            "candidate_mix": {
+                "target": int(candidate_mix.get("target", 0) or 0),
+                "adjacent": int(candidate_mix.get("adjacent", 0) or 0),
+                "far": int(candidate_mix.get("far", 0) or 0),
+                "unknown": int(candidate_mix.get("unknown", 0) or 0),
+            },
+            "selected_mix": {
+                "target": int(selected_mix.get("target", 0) or 0),
+                "adjacent": int(selected_mix.get("adjacent", 0) or 0),
+                "far": int(selected_mix.get("far", 0) or 0),
+                "unknown": int(selected_mix.get("unknown", 0) or 0),
+            },
+            "ratio_mode": str(selected_mix.get("ratio_mode", "default") or "default"),
+            "planned_target_ratio": float(selected_mix.get("planned_target_ratio", 0.0) or 0.0),
+            "planned_adjacent_ratio": float(selected_mix.get("planned_adjacent_ratio", 0.0) or 0.0),
+            "planned_far_ratio": float(selected_mix.get("planned_far_ratio", 0.0) or 0.0),
+            "target_outcomes": list(selected_mix.get("target_outcomes", []) or []),
+        }
+        if not isinstance(self.study_hub_stats, dict):
+            self.study_hub_stats = {}
+        existing = self.study_hub_stats.get("interleave_shadow_events", [])
+        events = existing if isinstance(existing, list) else []
+        events.append(event)
+        try:
+            max_keep = max(1, int(getattr(self, "INTERLEAVE_SHADOW_MAX_EVENTS", 200) or 200))
+        except Exception:
+            max_keep = 200
+        if len(events) > max_keep:
+            events = events[-max_keep:]
+        self.study_hub_stats["interleave_shadow_events"] = events
+
+    def get_interleave_shadow_summary(
+        self, *, days: int | None = None, chapter: str | None = None, source: str | None = None
+    ) -> Dict[str, Any]:
+        """Return rolling interleave shadow telemetry summary for diagnostics."""
+        try:
+            horizon = int(days if days is not None else getattr(self, "INTERLEAVE_SHADOW_SUMMARY_DAYS", 7) or 7)
+        except Exception:
+            horizon = 7
+        horizon = max(1, horizon)
+        cutoff = datetime.date.today() - datetime.timedelta(days=horizon)
+        chapter_filter = str(chapter or "").strip()
+        source_filter = str(source or "").strip()
+        events_raw = self.study_hub_stats.get("interleave_shadow_events", []) if isinstance(self.study_hub_stats, dict) else []
+        events = events_raw if isinstance(events_raw, list) else []
+
+        considered = 0
+        candidate_total = 0
+        selected_total = 0
+        candidate_lane_totals = {"target": 0, "adjacent": 0, "far": 0, "unknown": 0}
+        selected_lane_totals = {"target": 0, "adjacent": 0, "far": 0, "unknown": 0}
+        ratio_mode_counts: dict[str, int] = {}
+        by_chapter: dict[str, int] = {}
+        by_source: dict[str, int] = {}
+
+        for row in events:
+            if not isinstance(row, dict):
+                continue
+            row_date = self._parse_date(row.get("date"))
+            if row_date is None or row_date < cutoff:
+                continue
+            row_chapter = str(row.get("chapter", "") or "").strip()
+            row_source = str(row.get("source", "") or "").strip()
+            if chapter_filter and row_chapter != chapter_filter:
+                continue
+            if source_filter and row_source != source_filter:
+                continue
+            considered += 1
+            by_chapter[row_chapter] = by_chapter.get(row_chapter, 0) + 1
+            by_source[row_source] = by_source.get(row_source, 0) + 1
+            try:
+                candidate_total += int(row.get("candidate_count", 0) or 0)
+            except Exception:
+                pass
+            try:
+                selected_total += int(row.get("selected_count", 0) or 0)
+            except Exception:
+                pass
+            mode = str(row.get("ratio_mode", "default") or "default")
+            ratio_mode_counts[mode] = ratio_mode_counts.get(mode, 0) + 1
+            candidate_mix = row.get("candidate_mix", {})
+            selected_mix = row.get("selected_mix", {})
+            if isinstance(candidate_mix, dict):
+                for key in ("target", "adjacent", "far", "unknown"):
+                    try:
+                        candidate_lane_totals[key] += int(candidate_mix.get(key, 0) or 0)
+                    except Exception:
+                        pass
+            if isinstance(selected_mix, dict):
+                for key in ("target", "adjacent", "far", "unknown"):
+                    try:
+                        selected_lane_totals[key] += int(selected_mix.get(key, 0) or 0)
+                    except Exception:
+                        pass
+
+        selected_den = float(max(1, selected_total))
+        candidate_den = float(max(1, candidate_total))
+        return {
+            "days": horizon,
+            "events": considered,
+            "chapter": chapter_filter or None,
+            "source": source_filter or None,
+            "candidate_total": candidate_total,
+            "selected_total": selected_total,
+            "candidate_lane_totals": candidate_lane_totals,
+            "selected_lane_totals": selected_lane_totals,
+            "candidate_lane_share": {
+                key: float(candidate_lane_totals.get(key, 0)) / candidate_den
+                for key in ("target", "adjacent", "far", "unknown")
+            },
+            "selected_lane_share": {
+                key: float(selected_lane_totals.get(key, 0)) / selected_den
+                for key in ("target", "adjacent", "far", "unknown")
+            },
+            "ratio_mode_counts": ratio_mode_counts,
+            "events_by_chapter": by_chapter,
+            "events_by_source": by_source,
+        }
+
     def get_semantic_interleave_mix(
         self, chapter: str, indices: List[int], target_outcome_ids: List[str] | None = None
     ) -> Dict[str, Any]:
@@ -6757,34 +7004,35 @@ class StudyPlanEngine:
         """
         questions_from_json = {}
         raw_question_keys: list[str] = []
-        if os.path.exists(self.QUESTIONS_FILE):
-            try:
-                with open(self.QUESTIONS_FILE, 'r', encoding='utf-8') as f:
-                    raw = json.load(f)
-                    if isinstance(raw, dict):
-                        raw_question_keys = [str(k).strip() for k in raw.keys() if str(k).strip()]
-                        for k, v in raw.items():
-                            if not isinstance(v, list):
-                                continue
-                            nk = k if k in self.QUESTIONS_DEFAULT else self.CHAPTER_ALIASES.get(str(k).strip().lower())
-                            if nk in self.QUESTIONS_DEFAULT:
-                                cleaned: list[dict] = []
-                                for q in v:
-                                    if not isinstance(q, dict):
-                                        continue
-                                    sanitized, _issues, _meta = self._sanitize_question_bank_row(
-                                        nk,
-                                        q,
-                                        source="json_load",
-                                        quarantine_on_fail=True,
-                                    )
-                                    if isinstance(sanitized, dict):
-                                        cleaned.append(sanitized)
-                                questions_from_json.setdefault(nk, []).extend(cleaned)
-            except json.JSONDecodeError as e:
-                print(f"Error loading questions from JSON: {e}")
-            except OSError as e:
-                print(f"Error loading questions from JSON: {e}")
+        with self._perf_track("engine.load_questions"):
+            if os.path.exists(self.QUESTIONS_FILE):
+                try:
+                    with open(self.QUESTIONS_FILE, 'r', encoding='utf-8') as f:
+                        raw = json.load(f)
+                        if isinstance(raw, dict):
+                            raw_question_keys = [str(k).strip() for k in raw.keys() if str(k).strip()]
+                            for k, v in raw.items():
+                                if not isinstance(v, list):
+                                    continue
+                                nk = k if k in self.QUESTIONS_DEFAULT else self.CHAPTER_ALIASES.get(str(k).strip().lower())
+                                if nk in self.QUESTIONS_DEFAULT:
+                                    cleaned: list[dict] = []
+                                    for q in v:
+                                        if not isinstance(q, dict):
+                                            continue
+                                        sanitized, _issues, _meta = self._sanitize_question_bank_row(
+                                            nk,
+                                            q,
+                                            source="json_load",
+                                            quarantine_on_fail=True,
+                                        )
+                                        if isinstance(sanitized, dict):
+                                            cleaned.append(sanitized)
+                                    questions_from_json.setdefault(nk, []).extend(cleaned)
+                except json.JSONDecodeError as e:
+                    print(f"Error loading questions from JSON: {e}")
+                except OSError as e:
+                    print(f"Error loading questions from JSON: {e}")
         self.QUESTIONS = {k: self.QUESTIONS_DEFAULT.get(k, []) + questions_from_json.get(k, []) for k in self.QUESTIONS_DEFAULT}
         self._semantic_invalidate_chapter_assets(None)
 
@@ -6875,38 +7123,39 @@ class StudyPlanEngine:
         Save ONLY the questions added via JSON (not class defaults).
         This prevents bloating the JSON file with built-in questions.
         """
-        json_only_questions = {}
-        total_saved = 0
+        with self._perf_track("engine.save_questions"):
+            json_only_questions = {}
+            total_saved = 0
 
-        for chapter in self.CHAPTERS:
-            current_questions = self.QUESTIONS.get(chapter, [])
-            default_questions = self.QUESTIONS_DEFAULT.get(chapter, [])
+            for chapter in self.CHAPTERS:
+                current_questions = self.QUESTIONS.get(chapter, [])
+                default_questions = self.QUESTIONS_DEFAULT.get(chapter, [])
 
-            added_questions = [
-                q for q in current_questions
-                if q is not None and q not in default_questions
-            ]
+                added_questions = [
+                    q for q in current_questions
+                    if q is not None and q not in default_questions
+                ]
 
-            if added_questions:  # Check for empty list
-                json_only_questions[chapter] = added_questions
-                total_saved += len(added_questions)
+                if added_questions:  # Check for empty list
+                    json_only_questions[chapter] = added_questions
+                    total_saved += len(added_questions)
 
-        if json_only_questions:
-            try:
-                self._atomic_write_json(self.QUESTIONS_FILE, json_only_questions, indent=2)
-                print(f"✓ Saved {total_saved} added questions to {self.QUESTIONS_FILE}")
-            except (OSError, json.JSONDecodeError, TypeError) as e:
-                print(f"✗ Error saving questions: {e}")
-            except Exception as e:
-                print(f"✗ Unexpected error saving questions: {e}")
-        else:
-            # If no additions, remove the JSON file (optional)
-            if os.path.exists(self.QUESTIONS_FILE):
+            if json_only_questions:
                 try:
-                    os.remove(self.QUESTIONS_FILE)
-                    print(f"ℹ No added questions. Removed {self.QUESTIONS_FILE}")
-                except OSError as e:
-                    print(f"✗ Error removing file: {e}")
+                    self._atomic_write_json(self.QUESTIONS_FILE, json_only_questions, indent=2)
+                    print(f"✓ Saved {total_saved} added questions to {self.QUESTIONS_FILE}")
+                except (OSError, json.JSONDecodeError, TypeError) as e:
+                    print(f"✗ Error saving questions: {e}")
+                except Exception as e:
+                    print(f"✗ Unexpected error saving questions: {e}")
+            else:
+                # If no additions, remove the JSON file (optional)
+                if os.path.exists(self.QUESTIONS_FILE):
+                    try:
+                        os.remove(self.QUESTIONS_FILE)
+                        print(f"ℹ No added questions. Removed {self.QUESTIONS_FILE}")
+                    except OSError as e:
+                        print(f"✗ Error removing file: {e}")
 
     def add_question(self, chapter, question_dict):
         """Add a single question to a chapter and save to JSON."""
@@ -7493,53 +7742,58 @@ class StudyPlanEngine:
         :return: None
         :rtype: None
         """
-        if not os.path.exists(json_path):
-            raise FileNotFoundError(f"File not found: {json_path}")
-
-        data = cast(
-            Dict[str, Any],
-            self._load_json_file_with_limit(
+        with self._perf_track("engine.import_questions_from_json"):
+            json_path = self._normalize_import_source_path(
                 json_path,
-                getattr(self, "MAX_QUESTION_IMPORT_BYTES", 32 * 1024 * 1024),
                 "Question import JSON",
-            ),
-        )
-
-        chapter_name: str | None = data.get("chapter")
-        questions: List[Dict[str, str]] | None = data.get("questions")
-
-        if chapter_name is None or questions is None:
-            raise ValueError("Invalid JSON format: missing chapter or questions")
-        if not isinstance(chapter_name, str) or not chapter_name.strip():
-            raise ValueError("Invalid JSON format: chapter must be a non-empty string")
-        if not isinstance(questions, list):
-            raise ValueError("Invalid JSON format: questions must be a list")
-
-        chapter, score = self._best_chapter_match(chapter_name)
-        if chapter is None or score < 0.35:
-            raise ValueError(f"Could not confidently match chapter '{chapter_name}'")
-
-        question_dicts: Dict[Tuple[str, Tuple[str, ...], str], Dict[str, Any]] = {}
-        for question in questions:
-            if not isinstance(question, dict):
-                continue
-            clean_q, _issues, _meta = self._sanitize_question_bank_row(
-                chapter,
-                question,
-                source="import_questions_from_json",
-                quarantine_on_fail=True,
+                allowed_extensions=(".json",),
             )
-            if not isinstance(clean_q, dict):
-                continue
-            question_dicts[self._question_dedupe_key(clean_q)] = dict(clean_q)
 
-        added, _stats = self._add_questions_with_stats(chapter, list(question_dicts.values()))
+            data = cast(
+                Dict[str, Any],
+                self._load_import_json_payload(
+                    json_path,
+                    "Question import JSON",
+                    int(getattr(self, "MAX_QUESTION_IMPORT_BYTES", 32 * 1024 * 1024) or 32 * 1024 * 1024),
+                ),
+            )
+            self._validate_import_question_rows(data)
 
-        self.save_questions()
-        self.save_data()
-        self._semantic_invalidate_chapter_assets(chapter)
+            chapter_name: str | None = data.get("chapter")
+            questions: List[Dict[str, str]] | None = data.get("questions")
 
-        print(f"Imported {int(added)} AI questions into {chapter_name}")
+            if chapter_name is None or questions is None:
+                raise ValueError("Invalid JSON format: missing chapter or questions")
+            if not isinstance(chapter_name, str) or not chapter_name.strip():
+                raise ValueError("Invalid JSON format: chapter must be a non-empty string")
+            if not isinstance(questions, list):
+                raise ValueError("Invalid JSON format: questions must be a list")
+
+            chapter, score = self._best_chapter_match(chapter_name)
+            if chapter is None or score < 0.35:
+                raise ValueError(f"Could not confidently match chapter '{chapter_name}'")
+
+            question_dicts: Dict[Tuple[str, Tuple[str, ...], str], Dict[str, Any]] = {}
+            for question in questions:
+                if not isinstance(question, dict):
+                    continue
+                clean_q, _issues, _meta = self._sanitize_question_bank_row(
+                    chapter,
+                    question,
+                    source="import_questions_from_json",
+                    quarantine_on_fail=True,
+                )
+                if not isinstance(clean_q, dict):
+                    continue
+                question_dicts[self._question_dedupe_key(clean_q)] = dict(clean_q)
+
+            added, _stats = self._add_questions_with_stats(chapter, list(question_dicts.values()))
+
+            self.save_questions()
+            self.save_data()
+            self._semantic_invalidate_chapter_assets(chapter)
+
+            print(f"Imported {int(added)} AI questions into {chapter_name}")
 
     def _add_questions_with_stats(self, chapter: str, questions: list[dict]) -> tuple[int, dict[str, Any]]:
         """Validate, deduplicate, semantically deduplicate, and add questions to a chapter."""
@@ -7880,49 +8134,78 @@ class StudyPlanEngine:
           3) [{"chapter": "...", "question": "...", "options": [...], "correct": "..."}]
           4) CSV with header: chapter,question,option1,option2,option3,option4,correct,explanation
         """
-        if not os.path.exists(json_path):
-            raise FileNotFoundError(f"File not found: {json_path}")
+        with self._perf_track("engine.import_questions_json"):
+            normalized_path = self._normalize_import_source_path(
+                json_path,
+                "Question import",
+                allowed_extensions=(".json", ".csv"),
+            )
 
-        if json_path.lower().endswith(".csv"):
-            return self._import_questions_csv(json_path)
+            if normalized_path.lower().endswith(".csv"):
+                return self._import_questions_csv(normalized_path)
 
-        data = self._load_json_file_with_limit(
-            json_path,
-            getattr(self, "MAX_QUESTION_IMPORT_BYTES", 32 * 1024 * 1024),
-            "Question import JSON",
-        )
+            data = self._load_import_json_payload(
+                normalized_path,
+                "Question import JSON",
+                int(getattr(self, "MAX_QUESTION_IMPORT_BYTES", 32 * 1024 * 1024) or 32 * 1024 * 1024),
+            )
+            self._validate_import_question_rows(data)
 
-        total_added = 0
-        chapters_touched = set()
-        low_confidence_matches: list[str] = []
-        unmatched_chapters: list[str] = []
-        semantic_import = self._build_semantic_import_stats()
+            total_added = 0
+            chapters_touched = set()
+            low_confidence_matches: list[str] = []
+            unmatched_chapters: list[str] = []
+            semantic_import = self._build_semantic_import_stats()
 
-        if isinstance(data, dict) and "chapter" in data and "questions" in data:
-            chapter_name = data.get("chapter")
-            if isinstance(chapter_name, str) and chapter_name.strip():
-                chapter, score = self._best_chapter_match(chapter_name)
-                if chapter and score >= 0.35:
-                    if score < 0.5:
-                        low_confidence_matches.append(f"{chapter_name} -> {chapter} ({score:.0%})")
-                    start_idx = len(self.QUESTIONS.get(chapter, []))
-                    added, dedup = self._add_questions_with_stats(chapter, data.get("questions", []))
-                    semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
-                    semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
-                    semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
-                    semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
-                    if added:
-                        chapters_touched.add(chapter)
-                        semantic_import = self._semantic_tag_imported_questions(
-                            chapter, start_idx, added, semantic_import
-                        )
-                    total_added += added
-                else:
-                    unmatched_chapters.append(chapter_name)
-        elif isinstance(data, dict) and "questions_by_chapter" in data:
-            payload = data.get("questions_by_chapter")
-            if isinstance(payload, dict):
-                for ch_key, questions in payload.items():
+            if isinstance(data, dict) and "chapter" in data and "questions" in data:
+                chapter_name = data.get("chapter")
+                if isinstance(chapter_name, str) and chapter_name.strip():
+                    chapter, score = self._best_chapter_match(chapter_name)
+                    if chapter and score >= 0.35:
+                        if score < 0.5:
+                            low_confidence_matches.append(f"{chapter_name} -> {chapter} ({score:.0%})")
+                        start_idx = len(self.QUESTIONS.get(chapter, []))
+                        added, dedup = self._add_questions_with_stats(chapter, data.get("questions", []))
+                        semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
+                        semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
+                        semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
+                        semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
+                        if added:
+                            chapters_touched.add(chapter)
+                            semantic_import = self._semantic_tag_imported_questions(
+                                chapter, start_idx, added, semantic_import
+                            )
+                        total_added += added
+                    else:
+                        unmatched_chapters.append(chapter_name)
+            elif isinstance(data, dict) and "questions_by_chapter" in data:
+                payload = data.get("questions_by_chapter")
+                if isinstance(payload, dict):
+                    for ch_key, questions in payload.items():
+                        if not isinstance(ch_key, str) or not ch_key.strip():
+                            continue
+                        if not isinstance(questions, list):
+                            continue
+                        chapter, score = self._best_chapter_match(ch_key)
+                        if not chapter or score < 0.35:
+                            unmatched_chapters.append(ch_key)
+                            continue
+                        if score < 0.5:
+                            low_confidence_matches.append(f"{ch_key} -> {chapter} ({score:.0%})")
+                        start_idx = len(self.QUESTIONS.get(chapter, []))
+                        added, dedup = self._add_questions_with_stats(chapter, questions)
+                        semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
+                        semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
+                        semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
+                        semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
+                        if added:
+                            chapters_touched.add(chapter)
+                            semantic_import = self._semantic_tag_imported_questions(
+                                chapter, start_idx, added, semantic_import
+                            )
+                        total_added += added
+            elif isinstance(data, dict):
+                for ch_key, questions in data.items():
                     if not isinstance(ch_key, str) or not ch_key.strip():
                         continue
                     if not isinstance(questions, list):
@@ -7945,88 +8228,68 @@ class StudyPlanEngine:
                             chapter, start_idx, added, semantic_import
                         )
                     total_added += added
-        elif isinstance(data, dict):
-            for ch_key, questions in data.items():
-                if not isinstance(ch_key, str) or not ch_key.strip():
-                    continue
-                if not isinstance(questions, list):
-                    continue
-                chapter, score = self._best_chapter_match(ch_key)
-                if not chapter or score < 0.35:
-                    unmatched_chapters.append(ch_key)
-                    continue
-                if score < 0.5:
-                    low_confidence_matches.append(f"{ch_key} -> {chapter} ({score:.0%})")
-                start_idx = len(self.QUESTIONS.get(chapter, []))
-                added, dedup = self._add_questions_with_stats(chapter, questions)
-                semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
-                semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
-                semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
-                semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
-                if added:
-                    chapters_touched.add(chapter)
-                    semantic_import = self._semantic_tag_imported_questions(
-                        chapter, start_idx, added, semantic_import
-                    )
-                total_added += added
-        elif isinstance(data, list):
-            # Group by chapter field
-            grouped: dict[str, list[dict]] = {}
-            for item in data:
-                if not isinstance(item, dict):
-                    continue
-                chapter_name = item.get("chapter") or item.get("topic") or item.get("chapter_name")
-                if not isinstance(chapter_name, str) or not chapter_name.strip():
-                    continue
-                chapter, score = self._best_chapter_match(chapter_name)
-                if not chapter or score < 0.35:
-                    unmatched_chapters.append(chapter_name)
-                    continue
-                if score < 0.5:
-                    low_confidence_matches.append(f"{chapter_name} -> {chapter} ({score:.0%})")
-                grouped.setdefault(chapter, []).append(item)
-            for chapter, questions in grouped.items():
-                start_idx = len(self.QUESTIONS.get(chapter, []))
-                added, dedup = self._add_questions_with_stats(chapter, questions)
-                semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
-                semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
-                semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
-                semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
-                if added:
-                    chapters_touched.add(chapter)
-                    semantic_import = self._semantic_tag_imported_questions(
-                        chapter, start_idx, added, semantic_import
-                    )
-                total_added += added
-        else:
-            raise ValueError("Unsupported JSON format for AI questions")
+            elif isinstance(data, list):
+                grouped: dict[str, list[dict]] = {}
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    chapter_name = item.get("chapter") or item.get("topic") or item.get("chapter_name")
+                    if not isinstance(chapter_name, str) or not chapter_name.strip():
+                        continue
+                    chapter, score = self._best_chapter_match(chapter_name)
+                    if not chapter or score < 0.35:
+                        unmatched_chapters.append(chapter_name)
+                        continue
+                    if score < 0.5:
+                        low_confidence_matches.append(f"{chapter_name} -> {chapter} ({score:.0%})")
+                    grouped.setdefault(chapter, []).append(item)
+                for chapter, questions in grouped.items():
+                    start_idx = len(self.QUESTIONS.get(chapter, []))
+                    added, dedup = self._add_questions_with_stats(chapter, questions)
+                    semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
+                    semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
+                    semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
+                    semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
+                    if added:
+                        chapters_touched.add(chapter)
+                        semantic_import = self._semantic_tag_imported_questions(
+                            chapter, start_idx, added, semantic_import
+                        )
+                    total_added += added
+            else:
+                raise ValueError("Unsupported JSON format for AI questions")
 
-        self.save_questions()
-        self.save_data()
+            self.save_questions()
+            self.save_data()
 
-        return {
-            "added": total_added,
-            "chapters": sorted(chapters_touched),
-            "low_confidence": sorted(set(low_confidence_matches)),
-            "unmatched": sorted(set(unmatched_chapters)),
-            "semantic_import": self._finalize_semantic_import_stats(semantic_import),
-        }
+            return {
+                "added": total_added,
+                "chapters": sorted(chapters_touched),
+                "low_confidence": sorted(set(low_confidence_matches)),
+                "unmatched": sorted(set(unmatched_chapters)),
+                "semantic_import": self._finalize_semantic_import_stats(semantic_import),
+            }
 
     def _import_questions_csv(self, csv_path: str) -> dict:
         """Import AI questions from CSV template."""
-        self._enforce_file_size_limit(
-            csv_path,
-            getattr(self, "MAX_CSV_IMPORT_BYTES", 16 * 1024 * 1024),
-            "Question import CSV",
-        )
-        total_added = 0
-        chapters_touched = set()
-        semantic_import = self._build_semantic_import_stats()
-
-        with open(csv_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
+        with self._perf_track("engine.import_questions_csv"):
+            csv_path = self._normalize_import_source_path(
+                csv_path,
+                "Question import CSV",
+                allowed_extensions=(".csv",),
+            )
+            total_added = 0
+            chapters_touched = set()
+            semantic_import = self._build_semantic_import_stats()
+            max_rows = int(getattr(self, "MAX_QUESTION_IMPORT_ROWS", 50000) or 50000)
             grouped: dict[str, list[dict]] = {}
-            for row in reader:
+            rows = self._load_import_csv_rows(
+                csv_path,
+                "Question import CSV",
+                int(getattr(self, "MAX_CSV_IMPORT_BYTES", 16 * 1024 * 1024) or 16 * 1024 * 1024),
+                max_rows,
+            )
+            for row in rows:
                 chapter_name = row.get("chapter")
                 question = row.get("question")
                 if not isinstance(chapter_name, str) or not chapter_name.strip():
@@ -8065,14 +8328,14 @@ class StudyPlanEngine:
                     )
                 total_added += added
 
-        self.save_questions()
-        self.save_data()
+            self.save_questions()
+            self.save_data()
 
-        return {
-            "added": total_added,
-            "chapters": sorted(chapters_touched),
-            "semantic_import": self._finalize_semantic_import_stats(semantic_import),
-        }
+            return {
+                "added": total_added,
+                "chapters": sorted(chapters_touched),
+                "semantic_import": self._finalize_semantic_import_stats(semantic_import),
+            }
 
     def import_pdf_scores(self, pdf_text: str, allow_lower: bool = False) -> dict:
         """
@@ -9994,58 +10257,59 @@ class StudyPlanEngine:
             question_index (int): Which question was answered (for difficulty weighting)
             is_correct (bool): Whether the question was answered correctly (True/False)
         """
-        try:
-            srs_data = self.srs_data.get(chapter, [])
-            if not isinstance(srs_data, list):
-                srs_data = []
-                self.srs_data[chapter] = srs_data
-            if not (0 <= question_index < len(srs_data)):
-                try:
-                    # Attempt to reconcile SRS length with question pool.
-                    self.sync_srs_with_questions()
-                except Exception:
-                    pass
+        with self._perf_track("engine.update_srs"):
+            try:
                 srs_data = self.srs_data.get(chapter, [])
-                if not isinstance(srs_data, list) or not (0 <= question_index < len(srs_data)):
-                    self._log_coach_warning(
-                        "SRS desync: question index not found after sync",
-                        chapter=chapter,
-                        question_index=question_index,
-                    )
-                    return
-            srs = srs_data[question_index]
-            try:
-                efactor = float(srs.get('efactor', 2.5) or 2.5)
-            except Exception:
-                efactor = 2.5
-            try:
-                interval = float(srs.get('interval', 1) or 1)
-            except Exception:
-                interval = 1.0
-            srs['last_review'] = datetime.date.today().isoformat()
-            if is_correct:
-                # Clear must-review if answered correctly
-                if chapter in self.must_review:
-                    self.must_review[chapter].pop(str(question_index), None)
-                efactor = min(efactor + 0.1, 2.5)
-                sm2_interval = max(interval * min(efactor, 2.0), 3)
-                interval = sm2_interval
+                if not isinstance(srs_data, list):
+                    srs_data = []
+                    self.srs_data[chapter] = srs_data
+                if not (0 <= question_index < len(srs_data)):
+                    try:
+                        # Attempt to reconcile SRS length with question pool.
+                        self.sync_srs_with_questions()
+                    except Exception:
+                        pass
+                    srs_data = self.srs_data.get(chapter, [])
+                    if not isinstance(srs_data, list) or not (0 <= question_index < len(srs_data)):
+                        self._log_coach_warning(
+                            "SRS desync: question index not found after sync",
+                            chapter=chapter,
+                            question_index=question_index,
+                        )
+                        return
+                srs = srs_data[question_index]
                 try:
-                    pred_interval = self.predict_interval_days(chapter, question_index, interval, efactor)
+                    efactor = float(srs.get('efactor', 2.5) or 2.5)
                 except Exception:
-                    pred_interval = None
-                if pred_interval is not None:
-                    # Blend ML prediction with SM-2, cap for stability.
-                    max_cap = 30.0
-                    blended = (0.6 * sm2_interval) + (0.4 * pred_interval)
-                    interval = max(3.0, min(max_cap, blended))
-            else:
-                efactor = max(efactor - 0.2, 1.3)
-                interval = 1.0
-            srs['efactor'] = efactor
-            srs['interval'] = interval
-        except Exception as e:
-            print(f"Error updating SRS for question {question_index} in chapter {chapter}: {e}", file=sys.stderr)
+                    efactor = 2.5
+                try:
+                    interval = float(srs.get('interval', 1) or 1)
+                except Exception:
+                    interval = 1.0
+                srs['last_review'] = datetime.date.today().isoformat()
+                if is_correct:
+                    # Clear must-review if answered correctly
+                    if chapter in self.must_review:
+                        self.must_review[chapter].pop(str(question_index), None)
+                    efactor = min(efactor + 0.1, 2.5)
+                    sm2_interval = max(interval * min(efactor, 2.0), 3)
+                    interval = sm2_interval
+                    try:
+                        pred_interval = self.predict_interval_days(chapter, question_index, interval, efactor)
+                    except Exception:
+                        pred_interval = None
+                    if pred_interval is not None:
+                        # Blend ML prediction with SM-2, cap for stability.
+                        max_cap = 30.0
+                        blended = (0.6 * sm2_interval) + (0.4 * pred_interval)
+                        interval = max(3.0, min(max_cap, blended))
+                else:
+                    efactor = max(efactor - 0.2, 1.3)
+                    interval = 1.0
+                srs['efactor'] = efactor
+                srs['interval'] = interval
+            except Exception as e:
+                print(f"Error updating SRS for question {question_index} in chapter {chapter}: {e}", file=sys.stderr)
 
     def _leitner_box(self, srs_item: dict) -> int:
         """Map SRS item to a Leitner box (1-5)."""
@@ -10219,7 +10483,18 @@ class StudyPlanEngine:
             remaining = [i for i in range(len(questions)) if i not in ordered]
             random.shuffle(remaining)
             ordered.extend(remaining[: max(0, count - len(ordered))])
-        return ordered[: min(count, len(questions))]
+        selected = ordered[: min(count, len(questions))]
+        try:
+            self._record_interleave_shadow_event(
+                chapter=chapter,
+                candidate_indices=due_indices,
+                selected_indices=selected,
+                source="due_review",
+                target_outcome_ids=None,
+            )
+        except Exception:
+            pass
+        return selected
 
     def select_leech_questions(
         self,
@@ -11288,10 +11563,159 @@ class StudyPlanEngine:
             punctuate_simple_errors=False,
         )
 
-    def _load_json_file_with_limit(self, file_path: str, max_bytes: int, label: str) -> Any:
+    @contextlib.contextmanager
+    def _perf_track(self, operation: str):
+        monitor = getattr(self, "performance_monitor", None)
+        if monitor is None or not hasattr(monitor, "track"):
+            yield {"operation": str(operation or "").strip() or "unknown", "elapsed_ms": 0.0, "ok": True}
+            return
+        with cast(Any, monitor).track(operation) as payload:
+            yield payload
+
+    def _load_import_json_payload(self, file_path: str, label: str, max_bytes: int) -> Any:
+        use_secure_imports = bool(
+            getattr(getattr(self, "runtime_config", None), "enable_secure_imports", True)
+        )
+        if use_secure_imports and hasattr(self, "secure_importer"):
+            try:
+                return cast(Any, self.secure_importer).load_json(
+                    file_path,
+                    max_file_size_bytes=int(max_bytes),
+                )
+            except Exception:
+                # Preserve compatibility with legacy parser path.
+                pass
+        return self._load_json_file_with_limit(file_path, max_bytes, label)
+
+    def _load_import_csv_rows(
+        self,
+        file_path: str,
+        label: str,
+        max_bytes: int,
+        max_rows: int,
+    ) -> list[dict[str, str]]:
+        use_secure_imports = bool(
+            getattr(getattr(self, "runtime_config", None), "enable_secure_imports", True)
+        )
+        if use_secure_imports and hasattr(self, "secure_importer"):
+            try:
+                return cast(list[dict[str, str]], cast(Any, self.secure_importer).load_csv_rows(
+                    file_path,
+                    max_file_size_bytes=int(max_bytes),
+                    max_rows=int(max_rows),
+                ))
+            except ValueError as exc:
+                if "csv row limit exceeded" in str(exc).lower():
+                    raise ValueError(f"{label} too large: more than {int(max_rows)} rows") from exc
+            except Exception:
+                # Preserve compatibility with legacy parser path.
+                pass
+
         self._enforce_file_size_limit(file_path, max_bytes, label)
-        with open(file_path, "r", newline="", encoding="utf-8") as f:
-            return json.load(f)
+        rows: list[dict[str, str]] = []
+        seen_rows = 0
+        with open(file_path, "r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                seen_rows += 1
+                if seen_rows > int(max_rows):
+                    raise ValueError(f"{label} too large: more than {int(max_rows)} rows")
+                rows.append({str(k or ""): str(v or "") for k, v in dict(row or {}).items()})
+        return rows
+
+    def get_runtime_infrastructure_status(self) -> dict[str, Any]:
+        config = getattr(self, "runtime_config", None)
+        monitor = getattr(self, "performance_monitor", None)
+        monitor_snapshot: dict[str, Any] = {}
+        if monitor is not None and hasattr(monitor, "snapshot"):
+            try:
+                monitor_snapshot = cast(dict[str, Any], cast(Any, monitor).snapshot(limit=16))
+            except Exception:
+                monitor_snapshot = {}
+        return {
+            "config": {
+                "cache_size": int(getattr(config, "cache_size", 500) or 500),
+                "write_interval_seconds": int(getattr(config, "write_interval_seconds", 30) or 30),
+                "max_file_size_bytes": int(getattr(config, "max_file_size_bytes", 10 * 1024 * 1024) or 10 * 1024 * 1024),
+                "allowed_extensions": tuple(getattr(config, "allowed_extensions", (".json", ".csv")) or (".json", ".csv")),
+                "enable_performance_monitoring": bool(getattr(config, "enable_performance_monitoring", False)),
+                "enable_secure_imports": bool(getattr(config, "enable_secure_imports", True)),
+            },
+            "monitor": monitor_snapshot,
+        }
+
+    def _normalize_import_source_path(
+        self,
+        file_path: str,
+        label: str,
+        allowed_extensions: tuple[str, ...] | None = None,
+    ) -> str:
+        use_secure_imports = bool(
+            getattr(getattr(self, "runtime_config", None), "enable_secure_imports", True)
+        )
+        if use_secure_imports and hasattr(self, "secure_importer"):
+            try:
+                normalized_secure = cast(Any, self.secure_importer).validate_file_path(
+                    file_path,
+                    allowed_extensions=allowed_extensions,
+                )
+                return str(normalized_secure)
+            except Exception:
+                # Fall back to legacy path normalization so existing flows remain resilient.
+                pass
+        raw = str(file_path or "").strip()
+        if not raw:
+            raise ValueError(f"{label} file path is empty")
+        if "\x00" in raw:
+            raise ValueError(f"{label} file path is invalid")
+        normalized = os.path.realpath(os.path.abspath(os.path.expanduser(raw)))
+        if not os.path.exists(normalized):
+            raise FileNotFoundError(f"{label} file not found")
+        if not os.path.isfile(normalized):
+            raise ValueError(f"{label} path is not a regular file")
+        if not os.access(normalized, os.R_OK):
+            raise ValueError(f"{label} file is not readable")
+        if isinstance(allowed_extensions, tuple) and allowed_extensions:
+            suffixes = tuple(str(ext or "").strip().lower() for ext in allowed_extensions if str(ext or "").strip())
+            if suffixes and not normalized.lower().endswith(suffixes):
+                joined = ", ".join(suffixes)
+                raise ValueError(f"{label} file must be one of: {joined}")
+        return normalized
+
+    def _count_import_question_rows(self, payload: Any) -> int:
+        if isinstance(payload, list):
+            return len(payload)
+        if not isinstance(payload, dict):
+            return 0
+        if "chapter" in payload and isinstance(payload.get("questions"), list):
+            return len(payload.get("questions", []) or [])
+        if "questions_by_chapter" in payload and isinstance(payload.get("questions_by_chapter"), dict):
+            total = 0
+            for rows in payload.get("questions_by_chapter", {}).values():
+                if isinstance(rows, list):
+                    total += len(rows)
+            return total
+        total = 0
+        for value in payload.values():
+            if isinstance(value, list):
+                total += len(value)
+        return total
+
+    def _validate_import_question_rows(self, payload: Any) -> int:
+        count = int(self._count_import_question_rows(payload))
+        limit = int(getattr(self, "MAX_QUESTION_IMPORT_ROWS", 50000) or 50000)
+        if count > limit:
+            raise ValueError(f"Question import payload too large: {count} rows (max {limit})")
+        return count
+
+    def _load_json_file_with_limit(self, file_path: str, max_bytes: int, label: str) -> Any:
+        path = self._normalize_import_source_path(file_path, label, allowed_extensions=(".json", ".bak"))
+        self._enforce_file_size_limit(path, max_bytes, label)
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{label} JSON is invalid at line {exc.lineno}, column {exc.colno}") from exc
 
     def import_data_snapshot(self, file_path: str) -> dict[str, Any]:
         """
@@ -11455,21 +11879,22 @@ class StudyPlanEngine:
     def load_data(self):
         """Load user data from JSON file."""
         # Reflect status of the current load attempt; recovery path overwrites these.
-        self.last_load_recovered = False
-        self.last_load_recovery_snapshot = ""
-        self.last_load_recovery_error = ""
-        if os.path.exists(self.DATA_FILE):
-            try:
-                data = self._load_json_file_with_limit(
-                    self.DATA_FILE,
-                    getattr(self, "MAX_DATA_FILE_BYTES", 64 * 1024 * 1024),
-                    "Data",
-                )
-                self._apply_loaded_payload(data)
-            except (OSError, json.JSONDecodeError) as e:
-                self._recover_data_from_latest_snapshot(e)
-            except Exception as e:
-                self._recover_data_from_latest_snapshot(e)
+        with self._perf_track("engine.load_data"):
+            self.last_load_recovered = False
+            self.last_load_recovery_snapshot = ""
+            self.last_load_recovery_error = ""
+            if os.path.exists(self.DATA_FILE):
+                try:
+                    data = self._load_json_file_with_limit(
+                        self.DATA_FILE,
+                        getattr(self, "MAX_DATA_FILE_BYTES", 64 * 1024 * 1024),
+                        "Data",
+                    )
+                    self._apply_loaded_payload(data)
+                except (OSError, json.JSONDecodeError) as e:
+                    self._recover_data_from_latest_snapshot(e)
+                except Exception as e:
+                    self._recover_data_from_latest_snapshot(e)
 
     def _build_legacy_cognitive_state(self) -> CognitiveState:
         module_cfg = {"chapter_flow": dict(getattr(self, "CHAPTER_FLOW", {}) or {})}
@@ -11575,71 +12000,72 @@ class StudyPlanEngine:
         """
         Save user data to JSON file.
         """
-        # Ensure canonical pomodoro structure before saving
-        self._normalize_loaded_data()
-        self.record_progress_snapshot()
+        with self._perf_track("engine.save_data"):
+            # Ensure canonical pomodoro structure before saving
+            self._normalize_loaded_data()
+            self.record_progress_snapshot()
 
-        data = {
-            "version": self.VERSION,
-            "competence": dict(self.competence),
-            "pomodoro_log": dict(self.pomodoro_log),
-            "srs_data": {k: list(v) for k, v in self.srs_data.items()},
-            "study_days": [d.isoformat() for d in self.study_days],
-            "exam_date": self.exam_date.isoformat() if self.exam_date is not None else None,
-            "must_review": dict(self.must_review),
-            "study_hub_stats": dict(self.study_hub_stats),
-            "quiz_results": dict(self.quiz_results),
-            "quiz_recent": {k: list(v) for k, v in self.quiz_recent.items()},
-            "error_notebook": {k: list(v) for k, v in self.error_notebook.items()},
-            "gap_routing_log": list(self.gap_routing_log) if isinstance(self.gap_routing_log, list) else [],
-            "question_stats": {k: dict(v) for k, v in self.question_stats.items()},
-            "outcome_stats": {k: dict(v) for k, v in self.outcome_stats.items()},
-            "progress_log": list(self.progress_log),
-            "chapter_notes": dict(self.chapter_notes),
-            "difficulty_counts": dict(self.difficulty_counts),
-            "chapter_miss_streak": dict(self.chapter_miss_streak),
-            "chapter_miss_last_date": dict(self.chapter_miss_last_date),
-            "hourly_quiz_stats": dict(self.hourly_quiz_stats),
-            "availability": dict(self.availability),
-            "completed_chapters": sorted(self.completed_chapters),
-            "completed_chapters_date": self.completed_chapters_date,
-            "daily_plan_cache": list(self.daily_plan_cache) if isinstance(self.daily_plan_cache, list) else [],
-            "daily_plan_cache_date": self.daily_plan_cache_date,
-            "concept_graph_meta": dict(self.concept_graph_meta) if isinstance(self.concept_graph_meta, dict) else {},
-            "concept_nodes": list(self.concept_nodes) if isinstance(self.concept_nodes, list) else [],
-            "concept_edges": list(self.concept_edges) if isinstance(self.concept_edges, list) else [],
-            "outcome_concept_links": list(self.outcome_concept_links) if isinstance(self.outcome_concept_links, list) else [],
-            "outcome_cluster_meta": dict(self.outcome_cluster_meta) if isinstance(self.outcome_cluster_meta, dict) else {},
-            "outcome_clusters": list(self.outcome_clusters) if isinstance(self.outcome_clusters, list) else [],
-            "outcome_cluster_edges": list(self.outcome_cluster_edges) if isinstance(self.outcome_cluster_edges, list) else [],
-        }
+            data = {
+                "version": self.VERSION,
+                "competence": dict(self.competence),
+                "pomodoro_log": dict(self.pomodoro_log),
+                "srs_data": {k: list(v) for k, v in self.srs_data.items()},
+                "study_days": [d.isoformat() for d in self.study_days],
+                "exam_date": self.exam_date.isoformat() if self.exam_date is not None else None,
+                "must_review": dict(self.must_review),
+                "study_hub_stats": dict(self.study_hub_stats),
+                "quiz_results": dict(self.quiz_results),
+                "quiz_recent": {k: list(v) for k, v in self.quiz_recent.items()},
+                "error_notebook": {k: list(v) for k, v in self.error_notebook.items()},
+                "gap_routing_log": list(self.gap_routing_log) if isinstance(self.gap_routing_log, list) else [],
+                "question_stats": {k: dict(v) for k, v in self.question_stats.items()},
+                "outcome_stats": {k: dict(v) for k, v in self.outcome_stats.items()},
+                "progress_log": list(self.progress_log),
+                "chapter_notes": dict(self.chapter_notes),
+                "difficulty_counts": dict(self.difficulty_counts),
+                "chapter_miss_streak": dict(self.chapter_miss_streak),
+                "chapter_miss_last_date": dict(self.chapter_miss_last_date),
+                "hourly_quiz_stats": dict(self.hourly_quiz_stats),
+                "availability": dict(self.availability),
+                "completed_chapters": sorted(self.completed_chapters),
+                "completed_chapters_date": self.completed_chapters_date,
+                "daily_plan_cache": list(self.daily_plan_cache) if isinstance(self.daily_plan_cache, list) else [],
+                "daily_plan_cache_date": self.daily_plan_cache_date,
+                "concept_graph_meta": dict(self.concept_graph_meta) if isinstance(self.concept_graph_meta, dict) else {},
+                "concept_nodes": list(self.concept_nodes) if isinstance(self.concept_nodes, list) else [],
+                "concept_edges": list(self.concept_edges) if isinstance(self.concept_edges, list) else [],
+                "outcome_concept_links": list(self.outcome_concept_links) if isinstance(self.outcome_concept_links, list) else [],
+                "outcome_cluster_meta": dict(self.outcome_cluster_meta) if isinstance(self.outcome_cluster_meta, dict) else {},
+                "outcome_clusters": list(self.outcome_clusters) if isinstance(self.outcome_clusters, list) else [],
+                "outcome_cluster_edges": list(self.outcome_cluster_edges) if isinstance(self.outcome_cluster_edges, list) else [],
+            }
 
-        # Ensure config folder exists (safe even if DATA_FILE has no directory)
-        data_dir = os.path.dirname(self.DATA_FILE)
-        if data_dir:
+            # Ensure config folder exists (safe even if DATA_FILE has no directory)
+            data_dir = os.path.dirname(self.DATA_FILE)
+            if data_dir:
+                try:
+                    os.makedirs(data_dir, mode=0o700, exist_ok=True)
+                    self._secure_path_permissions(data_dir, 0o700)
+                except Exception:
+                    pass
+
+            # Backup before overwriting
+            self._backup_file(self.DATA_FILE)
+            self._atomic_write_json(self.DATA_FILE, data, indent=4)
+            self.last_saved_at = datetime.datetime.now().isoformat(timespec="seconds")
+
+            # Write migration/health log if needed
+            self._append_health_log()
             try:
-                os.makedirs(data_dir, mode=0o700, exist_ok=True)
-                self._secure_path_permissions(data_dir, 0o700)
-            except Exception:
-                pass
-
-        # Backup before overwriting
-        self._backup_file(self.DATA_FILE)
-        self._atomic_write_json(self.DATA_FILE, data, indent=4)
-        self.last_saved_at = datetime.datetime.now().isoformat(timespec="seconds")
-
-        # Write migration/health log if needed
-        self._append_health_log()
-        try:
-            self.persist_cognitive_state()
-        except Exception as exc:
-            try:
-                state = getattr(self, "cognitive_state", None)
-                if isinstance(state, CognitiveState):
-                    state.last_persist_ok = False
-                    state.last_persist_error = str(exc)
-            except Exception:
-                pass
+                self.persist_cognitive_state()
+            except Exception as exc:
+                try:
+                    state = getattr(self, "cognitive_state", None)
+                    if isinstance(state, CognitiveState):
+                        state.last_persist_ok = False
+                        state.last_persist_error = str(exc)
+                except Exception:
+                    pass
 
     def _backup_file(self, path: str) -> None:
         """Create/refresh a .bak backup of the data file."""

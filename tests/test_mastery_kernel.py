@@ -47,3 +47,21 @@ def test_mastery_kernel_correct_attempt_increases_alpha_and_clears_error_streak(
     assert state.working_memory.active_question_id == "q:ok"
     summary = kernel.get_posterior_summary("Topic A")
     assert 0.0 <= summary["mean"] <= 1.0
+
+
+def test_mastery_kernel_records_misconception_and_remediation_for_fast_error():
+    state = CognitiveState()
+    kernel = MasteryKernel(_DummyEngine(), state)
+
+    kernel.record_attempt(
+        chapter="Topic B",
+        question_id="q:fast-wrong",
+        correct=False,
+        latency_ms=1500.0,
+        hints_used=0,
+    )
+
+    chapter_counts = state.misconception_counts.get("Topic B", {})
+    assert chapter_counts.get("impulsive_formula_selection", 0) >= 1
+    remediation = str(state.remediation_by_chapter.get("Topic B", "")).strip().lower()
+    assert "formula" in remediation or "requirement" in remediation

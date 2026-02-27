@@ -39,9 +39,43 @@ def test_working_memory_service_captures_attempts_and_quiz_state():
     ctx = svc.get_context_string()
     assert "Quiz state: active question" in ctx
     assert "Recent session attempts" in ctx
+    assert "Hint support level" in ctx
+    assert "Cognitive load:" in ctx
     svc.clear_active_question()
     assert state.quiz_active is False
     assert state.working_memory.active_question_id is None
+
+
+def test_working_memory_service_adapts_hint_fade_and_queues_reflection_prompt():
+    state = CognitiveState()
+    svc = WorkingMemoryService(state)
+
+    svc.capture_attempt("Topic A", "q:hint-heavy", False, latency_ms=8000.0, hints_used=3)
+    assert state.get_hint_fade_level("Topic A") == 3
+
+    svc.capture_attempt("Topic A", "q:clean-win", True, latency_ms=10000.0, hints_used=0)
+    assert state.get_hint_fade_level("Topic A") == 2
+    prompt = state.peek_reflection_prompt()
+    assert isinstance(prompt, str)
+    assert "Topic A" in prompt
+    score, band = svc.get_cognitive_load()
+    assert 0.0 <= score <= 1.0
+    assert band in {"low", "moderate", "high"}
+    assert "Topic A" in str(svc.get_reflection_prompt(consume=False))
+    assert "Topic A" in str(svc.get_reflection_prompt(consume=True))
+
+
+def test_working_memory_service_dual_coding_aids_use_topic_and_misconceptions():
+    state = CognitiveState()
+    svc = WorkingMemoryService(state)
+    state.working_memory.active_chapter = "WACC"
+    state.record_misconception("WACC", "weighting mismatch")
+    state.record_misconception("WACC", "formula recall")
+    aids = svc.get_dual_coding_aids(limit=3)
+    assert aids
+    joined = " ".join(aids).lower()
+    assert "weight" in joined or "wacc" in joined
+    assert len(aids) <= 3
 
 
 def test_socratic_fsm_enforces_quiz_guard_and_mastery_progression():
@@ -61,6 +95,31 @@ def test_socratic_fsm_enforces_quiz_guard_and_mastery_progression():
     assert decision.permission == "explain_ok"
 
     state.struggle_mode = True
+    decision = fsm.transition("TUTOR_REQUEST", {"chapter": "Topic A"})
+    assert decision.state == "PRODUCTIVE_STRUGGLE"
+    assert decision.permission == "socratic_only"
+
+
+def test_socratic_fsm_uses_reflection_state_when_prompt_available():
+    state = CognitiveState()
+    state.posteriors["Topic A"] = types.SimpleNamespace(mean=0.7, variance=0.01)  # type: ignore[assignment]
+    state.queue_reflection_prompt("What rule did you use and when would it fail?")
+    fsm = SocraticFSM(state)
+
+    decision = fsm.transition("CORRECT_ATTEMPT", {"chapter": "Topic A"})
+    assert decision.state == "REFLECT"
+    assert decision.permission == "hint_ok"
+
+    decision2 = fsm.transition("REFLECTION_DONE", {"chapter": "Topic A"})
+    assert decision2.state in {"CONSOLIDATE", "CHALLENGE"}
+    assert decision2.permission in {"hint_ok", "explain_ok"}
+
+
+def test_socratic_fsm_high_load_downshifts_to_productive_struggle():
+    state = CognitiveState()
+    state.posteriors["Topic A"] = types.SimpleNamespace(mean=0.9, variance=0.01)  # type: ignore[assignment]
+    state.set_cognitive_load(0.9)
+    fsm = SocraticFSM(state)
     decision = fsm.transition("TUTOR_REQUEST", {"chapter": "Topic A"})
     assert decision.state == "PRODUCTIVE_STRUGGLE"
     assert decision.permission == "socratic_only"

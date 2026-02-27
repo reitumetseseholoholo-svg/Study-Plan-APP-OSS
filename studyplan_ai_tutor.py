@@ -564,6 +564,171 @@ def compute_tutor_control_state(
     }
 
 
+def build_tutor_shortcuts_hint() -> str:
+    return "Ctrl+Enter send • Ctrl+L clear • Ctrl+Shift+C copy chat • Ctrl+Shift+A copy last • Ctrl+J latest • F1 details"
+
+
+def build_tutor_user_status(state: dict[str, Any]) -> str:
+    payload = dict(state or {})
+    message = re.sub(r"\s+", " ", str(payload.get("message", "") or "")).strip()
+    if message:
+        return message[:220]
+    phase = str(payload.get("phase", "ready") or "ready").strip().lower()
+    if phase == "disabled":
+        return "Local AI tutor is disabled in Preferences."
+    if phase == "loading_models":
+        return "Loading local models..."
+    if phase == "models_loaded":
+        count = max(0, int(payload.get("model_count", 0) or 0))
+        return f"Loaded {count} model(s)." if count > 0 else "No local models found in Ollama."
+    if phase == "models_updated":
+        count = max(0, int(payload.get("model_count", 0) or 0))
+        return f"Models updated ({count})." if count > 0 else "Models refreshed."
+    if phase == "models_paused":
+        return "Model refresh paused after repeated errors. Use Refresh models."
+    if phase == "new_chat":
+        return "New chat started."
+    if phase == "quick_prompt":
+        return "Quick prompt inserted."
+    if phase == "copy_chat":
+        ok = bool(payload.get("ok", False))
+        return "Chat copied to clipboard." if ok else "Clipboard unavailable."
+    if phase == "copy_last":
+        ok = bool(payload.get("ok", False))
+        return "Last tutor answer copied." if ok else "Clipboard unavailable."
+    if phase == "empty_prompt":
+        return "Enter a prompt first."
+    if phase == "select_model":
+        return "Select an Ollama model first."
+    if phase == "quiz_guard":
+        return "Quiz active: tutor will guide with hints instead of direct answers."
+    if phase == "generating":
+        return "Generating response..."
+    if phase == "finalizing":
+        return "Finalizing response..."
+    if phase == "stopping":
+        return "Stopping generation..."
+    if phase == "stopped":
+        return "Generation stopped."
+    if phase == "timeout":
+        timeout_seconds = max(1, int(payload.get("turn_timeout_seconds", 0) or 0))
+        return f"Turn timed out after {timeout_seconds}s."
+    if phase == "done":
+        turns = max(0, int(payload.get("turns", 0) or 0))
+        return f"Done. Turns: {turns}" if turns > 0 else "Done."
+    if phase == "error":
+        fallback = re.sub(r"\s+", " ", str(payload.get("friendly", "") or "")).strip()
+        if fallback:
+            return fallback[:220]
+        return "Local tutor request failed. Please retry."
+    return "Ready. Press Ctrl+Enter to send."
+
+
+def build_tutor_details_status(state: dict[str, Any]) -> str:
+    payload = dict(state or {})
+    lines: list[str] = []
+    phase = str(payload.get("phase", "") or "").strip().lower()
+    if phase:
+        lines.append(f"Phase: {phase}")
+    host = str(payload.get("host", "") or "").strip()
+    if host:
+        lines.append(f"Host: {host}")
+    model = str(payload.get("model", "") or "").strip()
+    if model:
+        lines.append(f"Model: {model}")
+    context_chars = max(0, int(payload.get("context_chars", 0) or 0))
+    context_budget_chars = max(0, int(payload.get("context_budget_chars", 0) or 0))
+    if context_budget_chars > 0:
+        lines.append(f"Context: {context_chars}/{context_budget_chars} chars")
+    coverage_target_count = max(0, int(payload.get("coverage_target_count", 0) or 0))
+    coverage_hit_count = max(0, int(payload.get("coverage_hit_count", 0) or 0))
+    if coverage_target_count > 0:
+        lines.append(f"Coverage: {coverage_hit_count}/{coverage_target_count}")
+    rag_summary = re.sub(r"\s+", " ", str(payload.get("rag_summary", "") or "")).strip()
+    if rag_summary:
+        lines.append(f"RAG: {rag_summary}")
+    fsm_state = str(payload.get("fsm_state", "") or "").strip()
+    if fsm_state:
+        lines.append(f"FSM: {fsm_state}")
+    load_level = str(payload.get("latency_load_level", "") or "").strip()
+    if load_level:
+        lines.append(f"Adaptive mode: {load_level}")
+    slo_status = str(payload.get("latency_slo_status", "") or "").strip()
+    if slo_status:
+        lines.append(f"SLO status: {slo_status}")
+    failover_note = re.sub(r"\s+", " ", str(payload.get("failover_note", "") or "")).strip()
+    if failover_note:
+        lines.append(f"Failover: {failover_note}")
+    auto_model_note = re.sub(r"\s+", " ", str(payload.get("auto_model_note", "") or "")).strip()
+    if auto_model_note:
+        lines.append(f"Auto model: {auto_model_note}")
+    details = str(payload.get("details", "") or "").strip()
+    if details:
+        lines.append(details)
+    error = re.sub(r"\s+", " ", str(payload.get("error", "") or "")).strip()
+    if error:
+        lines.append(f"Error: {error}")
+    turn_timeout_seconds = max(0, int(payload.get("turn_timeout_seconds", 0) or 0))
+    if turn_timeout_seconds > 0:
+        lines.append(f"Turn timeout: {turn_timeout_seconds}s")
+    turns = max(0, int(payload.get("turns", 0) or 0))
+    if turns > 0:
+        lines.append(f"Assistant turns: {turns}")
+    shortcuts = str(payload.get("shortcuts", "") or "").strip()
+    if shortcuts:
+        lines.append(f"Shortcuts: {shortcuts}")
+    return "\n".join(lines).strip()
+
+
+def tutor_prompt_shortcut_action(
+    *,
+    keyval: int,
+    state: int,
+    ctrl_mask: int,
+    shift_mask: int,
+    key_return: int,
+    key_kp_enter: int,
+    key_l: int,
+    key_L: int,
+    key_c: int,
+    key_C: int,
+    key_a: int,
+    key_A: int,
+    key_j: int,
+    key_J: int,
+) -> str | None:
+    state_i = int(state)
+    has_ctrl = bool(state_i & int(ctrl_mask))
+    has_shift = bool(state_i & int(shift_mask))
+    key_i = int(keyval)
+    if has_ctrl and key_i in (int(key_return), int(key_kp_enter)):
+        return "send"
+    if has_ctrl and key_i in (int(key_l), int(key_L)):
+        return "clear_prompt"
+    if has_ctrl and has_shift and key_i in (int(key_c), int(key_C)):
+        return "copy_transcript"
+    if has_ctrl and has_shift and key_i in (int(key_a), int(key_A)):
+        return "copy_last"
+    if has_ctrl and key_i in (int(key_j), int(key_J)):
+        return "jump_latest"
+    return None
+
+
+def tutor_dialog_shortcut_action(
+    *,
+    keyval: int,
+    running: bool,
+    esc_key: int,
+    f1_key: int,
+) -> str | None:
+    key_i = int(keyval)
+    if key_i == int(f1_key):
+        return "toggle_details"
+    if key_i == int(esc_key) and not bool(running):
+        return "close"
+    return None
+
+
 def build_ai_tutor_seed_prompt(topic: str, module_title: str = "selected module") -> str:
     topic_val = str(topic or "").strip()
     module_val = str(module_title or "selected module").strip() or "selected module"
@@ -821,8 +986,13 @@ class AITutorDialogController:
         except Exception:
             pass
 
+        header_title = Gtk.Label(label="AI Tutor")
+        header_title.set_halign(Gtk.Align.START)
+        header_title.add_css_class("section-title")
+        content.append(header_title)
+
         intro = Gtk.Label(
-            label="Use local Ollama models for topic explanations, drills, and revision support."
+            label="Exam-focused local tutor for explanations, drills, and revision support."
         )
         intro.set_halign(Gtk.Align.START)
         intro.set_wrap(True)
@@ -852,7 +1022,7 @@ class AITutorDialogController:
         content.append(prompt_label)
         prompt_meta_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         prompt_meta_row.add_css_class("inline-toolbar")
-        prompt_hint = Gtk.Label(label="Ctrl+Enter to send.")
+        prompt_hint = Gtk.Label(label=build_tutor_shortcuts_hint())
         prompt_hint.set_halign(Gtk.Align.START)
         prompt_hint.add_css_class("muted")
         prompt_hint.set_hexpand(True)
@@ -902,44 +1072,39 @@ class AITutorDialogController:
         content.append(quick_prompts_scroller)
         content.append(prompt_scroller)
 
-        action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        action_row.add_css_class("inline-toolbar")
+        primary_action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        primary_action_row.add_css_class("inline-toolbar")
         generate_btn = Gtk.Button(label="Send")
         generate_btn.add_css_class("suggested-action")
         stop_btn = Gtk.Button(label="Stop")
         stop_btn.set_sensitive(False)
+        primary_action_row.append(generate_btn)
+        primary_action_row.append(stop_btn)
+        primary_action_scroller = Gtk.ScrolledWindow()
+        primary_action_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        primary_action_scroller.set_min_content_height(42)
+        primary_action_scroller.set_child(primary_action_row)
+        content.append(primary_action_scroller)
+
+        secondary_action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        secondary_action_row.add_css_class("inline-toolbar")
         new_chat_btn = Gtk.Button(label="New chat")
         clear_prompt_btn = Gtk.Button(label="Clear prompt")
         copy_btn = Gtk.Button(label="Copy transcript")
         copy_btn.set_sensitive(False)
-        action_row.append(generate_btn)
-        action_row.append(stop_btn)
-        action_row.append(new_chat_btn)
-        action_row.append(clear_prompt_btn)
-        action_row.append(copy_btn)
-        action_scroller = Gtk.ScrolledWindow()
-        action_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        action_scroller.set_min_content_height(42)
-        action_scroller.set_child(action_row)
-        content.append(action_scroller)
-
-        status_label = Gtk.Label(label="")
-        status_label.set_halign(Gtk.Align.START)
-        status_label.set_wrap(True)
-        status_label.add_css_class("muted")
-        content.append(status_label)
-
-        cockpit_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        cockpit_row.add_css_class("inline-toolbar")
-        cockpit_status_label = Gtk.Label(label="Tutor cockpit: idle")
-        cockpit_status_label.set_halign(Gtk.Align.START)
-        cockpit_status_label.set_hexpand(True)
-        cockpit_status_label.add_css_class("muted")
-        cockpit_pause_btn = Gtk.Button(label="Pause Autopilot")
-        cockpit_pause_btn.add_css_class("flat")
-        cockpit_row.append(cockpit_status_label)
-        cockpit_row.append(cockpit_pause_btn)
-        content.append(cockpit_row)
+        jump_latest_btn = Gtk.Button(label="Jump to latest")
+        copy_last_btn = Gtk.Button(label="Copy last answer")
+        copy_last_btn.set_sensitive(False)
+        secondary_action_row.append(new_chat_btn)
+        secondary_action_row.append(clear_prompt_btn)
+        secondary_action_row.append(copy_btn)
+        secondary_action_row.append(copy_last_btn)
+        secondary_action_row.append(jump_latest_btn)
+        secondary_action_scroller = Gtk.ScrolledWindow()
+        secondary_action_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        secondary_action_scroller.set_min_content_height(42)
+        secondary_action_scroller.set_child(secondary_action_row)
+        content.append(secondary_action_scroller)
 
         response_label = Gtk.Label(label="Response")
         response_label.set_halign(Gtk.Align.START)
@@ -949,12 +1114,7 @@ class AITutorDialogController:
         response_toolbar.add_css_class("inline-toolbar")
         auto_scroll_toggle = Gtk.CheckButton(label="Auto-scroll")
         auto_scroll_toggle.set_active(True)
-        jump_latest_btn = Gtk.Button(label="Jump to latest")
-        copy_last_btn = Gtk.Button(label="Copy last answer")
-        copy_last_btn.set_sensitive(False)
         response_toolbar.append(auto_scroll_toggle)
-        response_toolbar.append(jump_latest_btn)
-        response_toolbar.append(copy_last_btn)
         content.append(response_toolbar)
         response_scroller = Gtk.ScrolledWindow()
         response_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -971,6 +1131,36 @@ class AITutorDialogController:
         response_buf = response_view.get_buffer()
         response_scroller.set_child(response_view)
         content.append(response_scroller)
+
+        status_label = Gtk.Label(label="")
+        status_label.set_halign(Gtk.Align.START)
+        status_label.set_wrap(True)
+        status_label.add_css_class("muted")
+        content.append(status_label)
+
+        details_expander = Gtk.Expander()
+        details_expander.set_label("Details")
+        details_expander.set_expanded(False)
+        details_expander.set_tooltip_text("Show advanced diagnostics (F1).")
+        details_label = Gtk.Label(label="")
+        details_label.set_halign(Gtk.Align.START)
+        details_label.set_wrap(True)
+        details_label.set_selectable(True)
+        details_label.add_css_class("muted")
+        details_expander.set_child(details_label)
+        content.append(details_expander)
+
+        cockpit_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        cockpit_row.add_css_class("inline-toolbar")
+        cockpit_status_label = Gtk.Label(label="Tutor cockpit: idle")
+        cockpit_status_label.set_halign(Gtk.Align.START)
+        cockpit_status_label.set_hexpand(True)
+        cockpit_status_label.add_css_class("muted")
+        cockpit_pause_btn = Gtk.Button(label="Pause Autopilot")
+        cockpit_pause_btn.add_css_class("flat")
+        cockpit_row.append(cockpit_status_label)
+        cockpit_row.append(cockpit_pause_btn)
+        content.append(cockpit_row)
 
         history: list[dict[str, str]] = []
         for item in list(getattr(app, "_ai_tutor_history", []) or [])[-20:]:
@@ -1006,11 +1196,26 @@ class AITutorDialogController:
             "autopilot_last_nudge_key": "",
         }
 
+        def _set_status(state: dict[str, Any]) -> None:
+            payload = dict(state or {})
+            payload.setdefault("host", app._normalize_ollama_host())
+            payload.setdefault("shortcuts", build_tutor_shortcuts_hint())
+            user_text = build_tutor_user_status(payload)
+            details_text = build_tutor_details_status(payload)
+            try:
+                status_label.set_text(user_text)
+            except Exception:
+                pass
+            try:
+                details_label.set_text(details_text or "No additional diagnostics.")
+            except Exception:
+                pass
+
         if not bool(app.local_llm_enabled):
-            status_label.set_text("Local AI tutor is disabled in Preferences.")
+            _set_status({"phase": "disabled"})
             generate_btn.set_sensitive(False)
         else:
-            status_label.set_text("Ready. Press Ctrl+Enter to send.")
+            _set_status({"phase": "ready"})
 
         refresh_btn.set_tooltip_text("Reload local models from Ollama.")
         generate_btn.set_tooltip_text("Send prompt to the selected model (Ctrl+Enter).")
@@ -1321,6 +1526,11 @@ class AITutorDialogController:
             copy_last_btn.set_sensitive(bool(controls.get("copy_last_enabled", False)))
             jump_latest_btn.set_sensitive(bool(controls.get("jump_latest_enabled", False)))
             _sync_cockpit_controls()
+            if not bool(running):
+                try:
+                    prompt_view.grab_focus()
+                except Exception:
+                    pass
 
         def _autopilot_mode() -> str:
             try:
@@ -1553,7 +1763,7 @@ class AITutorDialogController:
             if bool(run_state.get("active", False)):
                 return
             nonlocal model_poll_errors
-            status_label.set_text("Loading models from Ollama…")
+            _set_status({"phase": "loading_models"})
             refresh_btn.set_sensitive(False)
             generate_btn.set_sensitive(False)
 
@@ -1566,14 +1776,14 @@ class AITutorDialogController:
                     if err:
                         _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
                         _set_dropdown_models([])
-                        status_label.set_text(friendly)
+                        _set_status({"phase": "error", "friendly": friendly, "error": str(err or "")})
                         return False
                     model_poll_errors = 0
                     _set_dropdown_models(models)
                     if models:
-                        status_label.set_text(f"Loaded {len(models)} model(s).")
+                        _set_status({"phase": "models_loaded", "model_count": len(models)})
                     else:
-                        status_label.set_text("No local models found in Ollama.")
+                        _set_status({"phase": "models_loaded", "model_count": 0})
                     return False
 
                 GLib.idle_add(_finish)
@@ -1593,15 +1803,15 @@ class AITutorDialogController:
                         model_poll_errors += 1
                         _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
                         if model_poll_errors >= 3:
-                            status_label.set_text("Model refresh paused after repeated errors; use Refresh.")
+                            _set_status({"phase": "models_paused", "friendly": friendly, "error": str(err or "")})
                             return False
-                        status_label.set_text(friendly)
+                        _set_status({"phase": "error", "friendly": friendly, "error": str(err or "")})
                         return True
                     model_poll_errors = 0
                     cleaned = [str(m).strip() for m in models if str(m).strip()]
                     if cleaned and cleaned != current_models:
                         _set_dropdown_models(cleaned)
-                        status_label.set_text(f"Models updated ({len(cleaned)}).")
+                        _set_status({"phase": "models_updated", "model_count": len(cleaned)})
                     return True
 
                 GLib.idle_add(_finish)
@@ -1623,7 +1833,7 @@ class AITutorDialogController:
                 return
             history.clear()
             _persist_history()
-            status_label.set_text("New chat started.")
+            _set_status({"phase": "new_chat"})
             _render_transcript(force_scroll=True)
             _set_running(False)
 
@@ -1646,7 +1856,7 @@ class AITutorDialogController:
             prompt_buf.set_text(resolved.strip())
             _update_prompt_meta()
             _set_running(False)
-            status_label.set_text("Quick prompt inserted.")
+            _set_status({"phase": "quick_prompt"})
             try:
                 end_iter = prompt_buf.get_end_iter()
                 prompt_buf.place_cursor(end_iter)
@@ -1657,41 +1867,41 @@ class AITutorDialogController:
         def _copy_chat(*_args):
             text = format_ai_tutor_transcript(history)
             if not text:
-                status_label.set_text("Nothing to copy.")
+                _set_status({"message": "Nothing to copy."})
                 return
             try:
                 display = Gdk.Display.get_default()
                 clipboard = display.get_clipboard() if display is not None else None
                 if clipboard is not None:
                     clipboard.set_text(text)
-                    status_label.set_text("Chat copied to clipboard.")
+                    _set_status({"phase": "copy_chat", "ok": True})
                 else:
-                    status_label.set_text("Clipboard unavailable.")
+                    _set_status({"phase": "copy_chat", "ok": False})
             except Exception:
-                status_label.set_text("Clipboard unavailable.")
+                _set_status({"phase": "copy_chat", "ok": False})
 
         def _copy_last_answer(*_args):
             text = _latest_assistant_answer().strip()
             if not text:
-                status_label.set_text("No tutor answer to copy yet.")
+                _set_status({"message": "No tutor answer to copy yet."})
                 return
             try:
                 display = Gdk.Display.get_default()
                 clipboard = display.get_clipboard() if display is not None else None
                 if clipboard is None:
-                    status_label.set_text("Clipboard unavailable.")
+                    _set_status({"phase": "copy_last", "ok": False})
                     return
                 clipboard.set_text(text)
-                status_label.set_text("Last tutor answer copied.")
+                _set_status({"phase": "copy_last", "ok": True})
             except Exception:
-                status_label.set_text("Clipboard unavailable.")
+                _set_status({"phase": "copy_last", "ok": False})
 
         def _generate(*_args):
             if not bool(app.local_llm_enabled):
-                status_label.set_text("Local AI tutor is disabled in Preferences.")
+                _set_status({"phase": "disabled"})
                 return
             if bool(run_state.get("active", False)):
-                status_label.set_text("Generation already running.")
+                _set_status({"message": "Generation already running."})
                 return
             model_name = _selected_model_name() or str(app.local_llm_model or "").strip()
             auto_model_note = ""
@@ -1721,10 +1931,10 @@ class AITutorDialogController:
                         auto_model_note = f"Auto model: {selected_text}"
                     model_name = selected_text
                 elif not model_name and selected_err:
-                    status_label.set_text(str(selected_err))
+                    _set_status({"phase": "error", "friendly": str(selected_err or "")})
                     return
             if not model_name:
-                status_label.set_text("Select an Ollama model first.")
+                _set_status({"phase": "select_model"})
                 return
             model_candidates: list[str] = [str(model_name or "").strip()]
             failover_builder = getattr(app, "_build_local_llm_model_failover_sequence", None)
@@ -1758,7 +1968,7 @@ class AITutorDialogController:
                 failover_note = f"Failover armed: {len(model_candidates)} models"
             user_prompt = _current_prompt_text(strip=True)
             if not user_prompt:
-                status_label.set_text("Enter a prompt first.")
+                _set_status({"phase": "empty_prompt"})
                 return
             cognitive_runtime_brief = ""
             cognitive_guard: dict[str, Any] = {}
@@ -1784,7 +1994,7 @@ class AITutorDialogController:
                 except Exception:
                     pass
                 _persist_history()
-                status_label.set_text("Quiz active: Socratic guard enforced.")
+                _set_status({"phase": "quiz_guard"})
                 _render_transcript(force_scroll=True)
                 return
             turn_requested_at = float(time.monotonic())
@@ -2298,7 +2508,22 @@ class AITutorDialogController:
                 status_parts.append(auto_model_note)
             if failover_note:
                 status_parts.append(failover_note)
-            status_label.set_text(" • ".join(status_parts))
+            _set_status(
+                {
+                    "phase": "generating",
+                    "model": str(model_name or "").strip(),
+                    "context_chars": int(context_chars),
+                    "context_budget_chars": int(context_budget_chars),
+                    "coverage_target_count": int(coverage_target_count),
+                    "coverage_hit_count": 0,
+                    "fsm_state": fsm_state,
+                    "latency_load_level": str(latency_load_level or "").strip(),
+                    "latency_slo_status": str(latency_slo_status or "").strip(),
+                    "failover_note": failover_note,
+                    "auto_model_note": auto_model_note,
+                    "rag_summary": " • ".join(status_parts[1:]),
+                }
+            )
             _set_running(True)
             _render_transcript(force_scroll=True)
 
@@ -2370,8 +2595,13 @@ class AITutorDialogController:
                             return False
                         if not bool(run_state.get("active", False)):
                             return False
-                        status_label.set_text(
-                            f"Model {failed_model} failed, retrying with {retry_model}..."
+                        _set_status(
+                            {
+                                "phase": "finalizing",
+                                "model": str(retry_model or "").strip(),
+                                "message": f"Model {failed_model} failed. Retrying with {retry_model}...",
+                                "error": str(err or ""),
+                            }
                         )
                         return False
 
@@ -2381,6 +2611,7 @@ class AITutorDialogController:
                 def _finish():
                     if int(run_state.get("job_id", 0) or 0) != job_id:
                         return False
+                    _set_status({"phase": "finalizing", "model": str(model_name or "").strip()})
                     draft_user = str(run_state.get("draft_user", "") or "").strip()
                     draft_assistant = str(run_state.get("draft_assistant", "") or "").strip()
                     run_state["cancel_event"] = None
@@ -2465,23 +2696,55 @@ class AITutorDialogController:
                                 pass
                             _persist_history()
                             if bool(guard_state.get("timeout_hit", False)):
-                                status_label.set_text(f"Turn timed out after {int(turn_timeout_seconds)}s ({model_name}).")
+                                _set_status(
+                                    {
+                                        "phase": "timeout",
+                                        "turn_timeout_seconds": int(turn_timeout_seconds),
+                                        "model": str(model_name or "").strip(),
+                                        "turns": _turn_count(),
+                                    }
+                                )
                             elif bool(guard_state.get("truncated", False)):
-                                status_label.set_text(
-                                    f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars) • turns: {_turn_count()}"
+                                _set_status(
+                                    {
+                                        "phase": "stopped",
+                                        "model": str(model_name or "").strip(),
+                                        "turns": _turn_count(),
+                                        "details": f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars).",
+                                    }
                                 )
                             else:
-                                status_label.set_text(f"Stopped ({model_name}) • turns: {_turn_count()}")
+                                _set_status(
+                                    {
+                                        "phase": "stopped",
+                                        "model": str(model_name or "").strip(),
+                                        "turns": _turn_count(),
+                                    }
+                                )
                         else:
                             if bool(guard_state.get("timeout_hit", False)):
-                                status_label.set_text(f"Turn timed out after {int(turn_timeout_seconds)}s ({model_name}).")
+                                _set_status(
+                                    {
+                                        "phase": "timeout",
+                                        "turn_timeout_seconds": int(turn_timeout_seconds),
+                                        "model": str(model_name or "").strip(),
+                                    }
+                                )
                             elif bool(guard_state.get("truncated", False)):
-                                status_label.set_text(
-                                    f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars)."
+                                _set_status(
+                                    {
+                                        "phase": "stopped",
+                                        "model": str(model_name or "").strip(),
+                                        "details": f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars).",
+                                    }
                                 )
                             else:
-                                status_label.set_text(f"Stopped ({model_name}).")
+                                _set_status({"phase": "stopped", "model": str(model_name or "").strip()})
                         _render_transcript(force_scroll=True)
+                        try:
+                            prompt_view.grab_focus()
+                        except Exception:
+                            pass
                         return False
                     if err:
                         _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
@@ -2503,8 +2766,20 @@ class AITutorDialogController:
                             error_class=_code,
                             response_text=final_text,
                         )
-                        status_label.set_text(recovery_status or friendly)
+                        _set_status(
+                            {
+                                "phase": "error",
+                                "friendly": recovery_status or friendly,
+                                "model": str(model_name or "").strip(),
+                                "error": str(err or ""),
+                                "failover_note": failover_note,
+                            }
+                        )
                         _render_transcript()
+                        try:
+                            prompt_view.grab_focus()
+                        except Exception:
+                            pass
                         return False
                     if draft_user and final_text:
                         final_text = clean_ai_tutor_text(final_text) or final_text
@@ -2539,12 +2814,20 @@ class AITutorDialogController:
                         response_text=final_text,
                     )
                     _render_transcript(force_scroll=True)
-                    if int(coverage_state.get("target_count", 0) or 0) > 1:
-                        status_label.set_text(
-                            f"Done ({model_name}) • turns: {_turn_count()} • coverage {int(coverage_state.get('hit_count', 0) or 0)}/{int(coverage_state.get('target_count', 0) or 0)}"
-                        )
-                    else:
-                        status_label.set_text(f"Done ({model_name}) • turns: {_turn_count()}")
+                    _set_status(
+                        {
+                            "phase": "done",
+                            "model": str(model_name or "").strip(),
+                            "turns": _turn_count(),
+                            "coverage_hit_count": int(coverage_state.get("hit_count", 0) or 0),
+                            "coverage_target_count": int(coverage_state.get("target_count", 0) or 0),
+                            "details": "Turn completed successfully.",
+                        }
+                    )
+                    try:
+                        prompt_view.grab_focus()
+                    except Exception:
+                        pass
                     return False
 
                 GLib.idle_add(_finish)
@@ -2558,7 +2841,11 @@ class AITutorDialogController:
             if isinstance(cancel_event, threading.Event):
                 cancel_event.set()
             app._ollama_stop_model(str(run_state.get("model", "") or ""))
-            status_label.set_text("Stopping…")
+            _set_status({"phase": "stopping", "model": str(run_state.get("model", "") or "").strip()})
+            try:
+                prompt_view.grab_focus()
+            except Exception:
+                pass
 
         def _on_close(d, _r):
             if bool(run_state.get("active", False)):
@@ -2599,21 +2886,66 @@ class AITutorDialogController:
 
         def _on_prompt_key(_controller, keyval, _keycode, state):
             ctrl_mask = int(getattr(Gdk.ModifierType, "CONTROL_MASK", 0))
+            shift_mask = int(getattr(Gdk.ModifierType, "SHIFT_MASK", 0))
             return_key = int(getattr(Gdk, "KEY_Return", 65293))
             kp_enter = int(getattr(Gdk, "KEY_KP_Enter", 65421))
             key_l = int(getattr(Gdk, "KEY_l", 108))
             key_L = int(getattr(Gdk, "KEY_L", 76))
-            if (int(state) & ctrl_mask) and int(keyval) in (return_key, kp_enter):
+            key_c = int(getattr(Gdk, "KEY_c", 99))
+            key_C = int(getattr(Gdk, "KEY_C", 67))
+            key_a = int(getattr(Gdk, "KEY_a", 97))
+            key_A = int(getattr(Gdk, "KEY_A", 65))
+            key_j = int(getattr(Gdk, "KEY_j", 106))
+            key_J = int(getattr(Gdk, "KEY_J", 74))
+            action = tutor_prompt_shortcut_action(
+                keyval=int(keyval),
+                state=int(state),
+                ctrl_mask=ctrl_mask,
+                shift_mask=shift_mask,
+                key_return=return_key,
+                key_kp_enter=kp_enter,
+                key_l=key_l,
+                key_L=key_L,
+                key_c=key_c,
+                key_C=key_C,
+                key_a=key_a,
+                key_A=key_A,
+                key_j=key_j,
+                key_J=key_J,
+            )
+            if action == "send":
                 _generate()
                 return True
-            if (int(state) & ctrl_mask) and int(keyval) in (key_l, key_L):
+            if action == "clear_prompt":
                 _clear_prompt()
+                return True
+            if action == "copy_transcript":
+                _copy_chat()
+                return True
+            if action == "copy_last":
+                _copy_last_answer()
+                return True
+            if action == "jump_latest":
+                _jump_latest()
                 return True
             return False
 
         def _on_dialog_key(_controller, keyval, _keycode, _state):
             esc_key = int(getattr(Gdk, "KEY_Escape", 65307))
-            if int(keyval) == esc_key and not bool(run_state.get("active", False)):
+            f1_key = int(getattr(Gdk, "KEY_F1", 65470))
+            action = tutor_dialog_shortcut_action(
+                keyval=int(keyval),
+                running=bool(run_state.get("active", False)),
+                esc_key=esc_key,
+                f1_key=f1_key,
+            )
+            if action == "toggle_details":
+                try:
+                    details_expander.set_expanded(not bool(details_expander.get_expanded()))
+                except Exception:
+                    pass
+                return True
+            if action == "close":
                 dialog.response(Gtk.ResponseType.CLOSE)
                 return True
             return False
@@ -2640,9 +2972,14 @@ class AITutorDialogController:
         dialog.add_controller(dialog_key)
         dialog.connect("response", _on_close)
         dialog.present()
+        _set_running(False)
         _update_prompt_meta()
         _render_transcript(force_scroll=True)
         _refresh_models()
+        try:
+            prompt_view.grab_focus()
+        except Exception:
+            pass
         model_poll_id = GLib.timeout_add_seconds(45, _auto_poll_models)
         try:
             tick_reader = getattr(app, "_coerce_ai_tutor_autopilot_tick_seconds", None)

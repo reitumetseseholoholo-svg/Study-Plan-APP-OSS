@@ -484,6 +484,48 @@ def test_phase3_assessment_service_marks_calculation_with_tolerance():
     assert "numeric_mismatch" in res_far.error_tags or "numeric_precision" in res_far.error_tags
 
 
+def test_phase3_assessment_service_adds_stepwise_marking_breakdown_for_calculation_items():
+    assessor = DeterministicTutorAssessmentService()
+    calc_item = TutorPracticeItem(
+        item_id="calc-2",
+        item_type="calculation_step",
+        prompt="Compute WACC as a percentage.",
+        topic="Cost of Capital",
+        meta={"numeric_answer": 12.5, "tolerance": 0.05, "marks_max": 2.0, "expects_percent": True},
+    )
+
+    res_partial = assessor.assess(
+        item=calc_item,
+        submission=TutorAssessmentSubmission(item_id="calc-2", answer_text="12.7 = result"),
+        session_state=TutorSessionState(session_id="s", module="FM", topic="Cost of Capital"),
+        learner_profile=TutorLearnerProfileSnapshot(learner_id="u", module="FM"),
+    )
+    assert res_partial.outcome == "partial"
+    stepwise = res_partial.meta.get("stepwise_marking", {})
+    assert isinstance(stepwise, dict)
+    assert bool(stepwise.get("method_ok", False)) is True
+    assert bool(stepwise.get("execution_ok", True)) is False
+    assert bool(stepwise.get("rounding_issue", False)) is True
+    assert bool(stepwise.get("format_ok", True)) is False
+    marks_block = stepwise.get("stepwise_marks", {})
+    assert isinstance(marks_block, dict)
+    method_block = marks_block.get("method", {})
+    assert isinstance(method_block, dict)
+    assert float(method_block.get("max", 0.0) or 0.0) > 0.0
+
+    res_correct = assessor.assess(
+        item=calc_item,
+        submission=TutorAssessmentSubmission(item_id="calc-2", answer_text="12.50%"),
+        session_state=TutorSessionState(session_id="s", module="FM", topic="Cost of Capital"),
+        learner_profile=TutorLearnerProfileSnapshot(learner_id="u", module="FM"),
+    )
+    stepwise_ok = res_correct.meta.get("stepwise_marking", {})
+    assert isinstance(stepwise_ok, dict)
+    assert bool(stepwise_ok.get("method_ok", False)) is True
+    assert bool(stepwise_ok.get("execution_ok", False)) is True
+    assert bool(stepwise_ok.get("format_ok", False)) is True
+
+
 def test_phase3_loop_service_can_attach_practice_items_from_practice_service():
     sessions = InMemoryTutorSessionController()
     learners = InMemoryTutorLearnerModelStore()
@@ -889,7 +931,9 @@ def test_rag_evidence_policy_strong_grounding_when_target_hits_present():
         current_topic="WACC",
     )
     assert str(decision.get("policy_mode", "")) == "strong_grounding"
-    assert float(decision.get("confidence_score", 0.0) or 0.0) >= 0.72
+    conf_score_raw = decision.get("confidence_score", 0.0)
+    conf_score = float(conf_score_raw) if isinstance(conf_score_raw, (int, float)) else 0.0
+    assert conf_score >= 0.72
     assert bool(decision.get("insufficient", False)) is False
     assert "RAG evidence strong" in str(decision.get("planner_brief_line", ""))
 
@@ -922,7 +966,9 @@ def test_rag_evidence_policy_disabled_mode_is_bounded_and_explicit():
         current_topic="Risk Management",
     )
     assert str(decision.get("policy_mode", "")) == "disabled"
-    assert 0.0 <= float(decision.get("confidence_score", 0.0) or 0.0) <= 0.35
+    conf_score_raw = decision.get("confidence_score", 0.0)
+    conf_score = float(conf_score_raw) if isinstance(conf_score_raw, (int, float)) else 0.0
+    assert 0.0 <= conf_score <= 0.35
     assert "unavailable" in str(decision.get("planner_brief_line", "")).lower()
 
 
@@ -1024,7 +1070,9 @@ def test_struggle_policy_allows_pre_attempt_hint_when_struggling_and_consumes_to
     )
     assert bool(decision.get("allow", False)) is True
     assert str(decision.get("reason", "")) == "struggle_priority"
-    assert int(decision.get("tokens_remaining", 0) or 0) == 0
+    tokens_remaining_raw = decision.get("tokens_remaining", 0)
+    tokens_remaining = int(tokens_remaining_raw) if isinstance(tokens_remaining_raw, int) else 0
+    assert tokens_remaining == 0
     assert int(state.get("tokens", 0) or 0) == 0
 
 
@@ -1146,6 +1194,45 @@ def test_transfer_scoring_service_computes_transfer_and_brittleness():
     assert score.brittleness_index == 0.5
     brittle = scorer.get_brittle_concepts("u1", threshold=0.3)
     assert brittle and brittle[0]["risk_level"] == "high"
+
+
+def test_transfer_scoring_service_aggregate_student_metrics():
+    scorer = TransferScoringService()
+    scorer.record_attempt(
+        TransferAttempt(
+            attempt_id="a1",
+            student_id="u1",
+            base_question_id="b1",
+            variant_question_id="v1",
+            structure_id="npv_annuity_timing_v1",
+            base_result="correct",
+            variant_result="correct",
+            base_latency_seconds=10.0,
+            variant_latency_seconds=11.0,
+            base_hint_penalty=1.0,
+            variant_hint_penalty=1.0,
+        )
+    )
+    scorer.record_attempt(
+        TransferAttempt(
+            attempt_id="a2",
+            student_id="u1",
+            base_question_id="b2",
+            variant_question_id="v2",
+            structure_id="wacc_optimization_v1",
+            base_result="correct",
+            variant_result="incorrect",
+            base_latency_seconds=8.0,
+            variant_latency_seconds=14.0,
+            base_hint_penalty=1.0,
+            variant_hint_penalty=1.0,
+        )
+    )
+    agg = scorer.aggregate_student_metrics("u1")
+    assert int(agg.get("structures_tracked", 0) or 0) == 2
+    assert int(agg.get("attempts_total", 0) or 0) == 2
+    assert 0.0 <= float(agg.get("avg_transfer_rate", 0.0) or 0.0) <= 1.0
+    assert 0.0 <= float(agg.get("avg_brittleness_index", 0.0) or 0.0) <= 1.0
 
 
 def test_structure_registry_infers_default_fm_structures_from_topic_and_tags():
