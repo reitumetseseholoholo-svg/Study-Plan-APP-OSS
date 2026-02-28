@@ -187,7 +187,13 @@ class TutorPromptOrchestrationService(Protocol):
 
 @dataclass
 class LlamaCppTutorService:
-    """TutorService implementation for llama.cpp OpenAI-compatible endpoints."""
+    """TutorService implementation for llama.cpp OpenAI-compatible endpoints.
+
+    When ``managed_runtime`` is set, the service delegates model discovery
+    and server lifecycle to the llama.cpp-first runtime (direct GGUF
+    loading via ``llama-server``).  The legacy Ollama-based discovery
+    path is kept as a fallback.
+    """
 
     endpoint: str = field(default_factory=lambda: str(getattr(Config, "LLAMA_CPP_ENDPOINT", "") or "").strip())
     model: str = field(default_factory=lambda: str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip())
@@ -223,6 +229,15 @@ class LlamaCppTutorService:
     _model_catalog_cached_at: float = field(default=0.0, init=False, repr=False)
     _model_catalog_cached: tuple[str, ...] = field(default_factory=tuple, init=False, repr=False)
     _model_catalog_sources: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+
+    # llama.cpp-first managed runtime (None = use legacy Ollama discovery path)
+    managed_runtime: Any = field(default=None)
+    _runtime_init_done: bool = field(default=False, init=False, repr=False)
+
+    # Performance optimization fields
+    performance_profiler: PerformanceProfiler | None = field(default=None)
+    performance_cache: PerformanceCacheService | None = field(default=None)
+    performance_middleware: PerformanceMiddleware | None = field(default=None)
 
     RETRYABLE_ERROR_CODES: tuple[str, ...] = (
         "timeout",
@@ -636,6 +651,37 @@ class LlamaCppTutorService:
 
     def generate(self, request: TutorTurnRequest) -> TutorTurnResult:
         started = time.perf_counter()
+        
+        # Profile the operation if profiler is available
+        if self.performance_profiler:
+            return self.performance_profiler.profile_operation(
+                "llama_cpp_generate",
+                self._generate_with_profiling,
+                request,
+                started
+            )
+        
+        return self._generate_with_profiling(request, started)
+    
+    def _ensure_runtime(self, purpose: str = "general") -> None:
+        """Lazily initialize managed runtime and update endpoint/model."""
+        rt = self.managed_runtime
+        if rt is None:
+            return
+        if self._runtime_init_done and self._coerce_text(self.endpoint):
+            return
+        try:
+            status = rt.ensure_ready(purpose)
+        except Exception:
+            return
+        if status.healthy and status.endpoint:
+            self.endpoint = status.endpoint
+            if status.model_name:
+                self.model = status.model_name
+            self._runtime_init_done = True
+
+    def _generate_with_profiling(self, request: TutorTurnRequest, started: float) -> TutorTurnResult:
+        self._ensure_runtime()
         normalized = self._normalize_request(request)
         request_model = self._coerce_text(getattr(request, "model", ""), "")
         model_name = self._coerce_text(request_model, self._coerce_text(normalized.get("model"), self.model))
@@ -644,6 +690,18 @@ class LlamaCppTutorService:
             model_candidates = self._sort_model_candidates([model_name, *model_candidates])
             candidate_sources.setdefault(model_name, "configured")
         primary_model = self._coerce_text(model_candidates[0] if model_candidates else model_name, "")
+
+        runtime_backend = ""
+        if self.managed_runtime is not None:
+            try:
+                runtime_backend = getattr(
+                    getattr(self.managed_runtime, "server", None), "current_model", ""
+                ) or ""
+                if runtime_backend:
+                    runtime_backend = "llama_server"
+            except Exception:
+                pass
+
         telemetry: dict[str, Any] = {
             "provider": "llama.cpp",
             "endpoint": self._coerce_text(self.endpoint),
@@ -653,6 +711,7 @@ class LlamaCppTutorService:
             "model_selection_mode": str(discovery_meta.get("mode", "configured_only") or "configured_only"),
             "model_catalog_cache_hit": bool(discovery_meta.get("cache_hit", False)),
             "model_preference": self._coerce_text(self.model_preference, "fast_cpp"),
+            "runtime_backend": runtime_backend or "external",
             "retry_count": 0,
             "fallback_used": False,
             "error_code": "",
@@ -2269,6 +2328,9 @@ class InMemoryTutorLearnerModelStore:
 
 
 from functools import lru_cache
+from .components.performance.caching import PerformanceCacheService, create_performance_cache_service
+from .components.performance.optimization import PerformanceMiddleware
+from .components.performance.profiler import PerformanceProfiler
 
 
 def _normalize_free_text(value: Any) -> str:

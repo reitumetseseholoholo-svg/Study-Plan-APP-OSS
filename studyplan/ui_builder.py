@@ -71,6 +71,43 @@ class UIBuilder:
         """Create a muted/info label."""
         return self.label(text, halign=halign, css_classes=["muted"])
 
+    def info_line(
+        self,
+        text: str = "",
+        max_width_chars: int = 80,
+    ) -> Gtk.Label:
+        """Single-line muted label with ellipsis and auto-tooltip.
+
+        Use this for dashboard/card info lines that should never wrap or
+        push layout.  The full text is always available via tooltip.
+        """
+        lbl = Gtk.Label(label=text)
+        lbl.set_halign(Gtk.Align.START)
+        lbl.set_wrap(False)
+        lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        lbl.set_max_width_chars(max_width_chars)
+        lbl.add_css_class("muted")
+        lbl.add_css_class("single-line-lock")
+        if text:
+            lbl.set_tooltip_text(text)
+        return lbl
+
+    def body_label(
+        self,
+        text: str = "",
+        max_width_chars: int = 90,
+    ) -> Gtk.Label:
+        """Multi-line wrapping muted label for longer content blocks."""
+        lbl = Gtk.Label(label=text)
+        lbl.set_halign(Gtk.Align.START)
+        lbl.set_wrap(True)
+        lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        lbl.set_max_width_chars(max_width_chars)
+        lbl.set_xalign(0.0)
+        lbl.add_css_class("muted")
+        lbl.add_css_class("allow-wrap")
+        return lbl
+
     def warning_label(self, text: str) -> Gtk.Label:
         """Create a warning label with ellipsis."""
         return self.label(

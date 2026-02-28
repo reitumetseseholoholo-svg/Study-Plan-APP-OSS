@@ -1,0 +1,80 @@
+{
+  "ts_utc": "2026-02-27T20:55:06Z",
+  "host": "http://127.0.0.1:11434",
+  "model": "gpt4all-phi-3-mini-4k-instruct-q4-0:latest",
+  "prompt_count": 6,
+  "samples": 0,
+  "failed_prompts": 6,
+  "failures": [
+    "<urlopen error [Errno 111] Connection refused>",
+    "<urlopen error [Errno 111] Connection refused>",
+    "<urlopen error [Errno 111] Connection refused>",
+    "<urlopen error [Errno 111] Connection refused>",
+    "<urlopen error [Errno 111] Connection refused>",
+    "<urlopen error [Errno 111] Connection refused>"
+  ],
+  "runs": [
+    {
+      "id": 1,
+      "latency_ms": 72,
+      "ok": false,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "prompt_chars": 42
+    },
+    {
+      "id": 2,
+      "latency_ms": 0,
+      "ok": false,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "prompt_chars": 60
+    },
+    {
+      "id": 3,
+      "latency_ms": 0,
+      "ok": false,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "prompt_chars": 73
+    },
+    {
+      "id": 4,
+      "latency_ms": 0,
+      "ok": false,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "prompt_chars": 53
+    },
+    {
+      "id": 5,
+      "latency_ms": 0,
+      "ok": false,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "prompt_chars": 48
+    },
+    {
+      "id": 6,
+      "latency_ms": 0,
+      "ok": false,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "prompt_chars": 51
+    }
+  ],
+  "metrics": {
+    "avg_latency_ms": 0.0,
+    "p50_latency_ms": 0.0,
+    "p90_latency_ms": 0.0,
+    "p95_latency_ms": 0.0,
+    "latency_spread_ratio": 1.0
+  },
+  "slo": {
+    "status": "insufficient",
+    "samples": 0,
+    "p50_latency_ms": 0.0,
+    "p90_latency_ms": 0.0,
+    "p95_latency_ms": 0.0,
+    "latency_spread_ratio": 1.0,
+    "p50_target_ms": 25000,
+    "p90_target_ms": 60000,
+    "spread_target_ratio": 2.4,
+    "min_samples": 6
+  },
+  "status": "insufficient"
+}

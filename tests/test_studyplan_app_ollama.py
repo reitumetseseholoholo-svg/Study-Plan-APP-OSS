@@ -1607,9 +1607,10 @@ def test_get_rag_embedding_insights_includes_per_pdf_details_and_tiers(tmp_path)
     pdf2 = tmp_path / "course_notes.pdf"
     pdf1.write_bytes(b"x" * 1024)
     pdf2.write_bytes(b"y" * 2048)
+    from studyplan.components.performance.caching import PerformanceCacheService
     dummy = types.SimpleNamespace(
         engine=types.SimpleNamespace(SEMANTIC_MODEL_NAME="all-minilm"),
-        _ai_tutor_rag_cache={},
+        _perf_cache=PerformanceCacheService({"cache_max_size": 100, "default_ttl_seconds": 300, "cache_ttl": {}}),
         _ai_cache_debug_last={},
         ai_tutor_rag_max_sources=6,
     )
@@ -3422,11 +3423,14 @@ def test_append_ai_tutor_rag_pdf_path_adds_and_clears_runtime_cache(tmp_path):
     first_pdf.write_bytes(b"%PDF-1.4\nfirst")
     second_pdf.write_bytes(b"%PDF-1.4\nsecond")
 
+    from studyplan.components.performance.caching import PerformanceCacheService
+    perf_cache = PerformanceCacheService({"cache_max_size": 100, "default_ttl_seconds": 300, "cache_ttl": {}})
+    perf_cache.set("rag_doc:stale", {"chunks": []})
+
     calls = {"saved": 0, "tutor_refresh": 0, "settings_refresh": 0}
     dummy = types.SimpleNamespace(
         ai_tutor_rag_pdfs=str(first_pdf),
-        _ai_tutor_rag_cache={"stale": {"chunks": []}},
-        _ai_tutor_rag_cache_order=["stale"],
+        _perf_cache=perf_cache,
         save_preferences=lambda: calls.__setitem__("saved", calls["saved"] + 1),
         _refresh_tutor_workspace_page=lambda: calls.__setitem__("tutor_refresh", calls["tutor_refresh"] + 1),
         _refresh_settings_workspace_page=lambda: calls.__setitem__("settings_refresh", calls["settings_refresh"] + 1),
@@ -3442,8 +3446,7 @@ def test_append_ai_tutor_rag_pdf_path_adds_and_clears_runtime_cache(tmp_path):
     assert "Added Tutor RAG PDF" in message
     paths = [row.strip() for row in str(dummy.ai_tutor_rag_pdfs or "").splitlines() if row.strip()]
     assert paths == [str(first_pdf), str(second_pdf)]
-    assert dummy._ai_tutor_rag_cache == {}
-    assert dummy._ai_tutor_rag_cache_order == []
+    assert perf_cache.get("rag_doc:stale") is None
     assert calls == {"saved": 1, "tutor_refresh": 1, "settings_refresh": 1}
 
 
@@ -3451,11 +3454,11 @@ def test_append_ai_tutor_rag_pdf_path_rejects_duplicate(tmp_path):
     first_pdf = tmp_path / "first.pdf"
     first_pdf.write_bytes(b"%PDF-1.4\nfirst")
 
+    from studyplan.components.performance.caching import PerformanceCacheService
     calls = {"saved": 0}
     dummy = types.SimpleNamespace(
         ai_tutor_rag_pdfs=str(first_pdf),
-        _ai_tutor_rag_cache={},
-        _ai_tutor_rag_cache_order=[],
+        _perf_cache=PerformanceCacheService({"cache_max_size": 100, "default_ttl_seconds": 300, "cache_ttl": {}}),
         save_preferences=lambda: calls.__setitem__("saved", calls["saved"] + 1),
         _refresh_tutor_workspace_page=lambda: None,
         _refresh_settings_workspace_page=lambda: None,

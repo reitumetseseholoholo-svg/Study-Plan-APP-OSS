@@ -597,6 +597,292 @@ scrolledwindow {
     margin-top: 4px;
     margin-bottom: 8px;
 }
+/* visual delight pass */
+.card {
+    transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+.hero-card {
+    transition: border-color 180ms ease, box-shadow 200ms ease;
+}
+button {
+    transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+button:active {
+    transition: background 60ms ease;
+}
+.badge {
+    transition: box-shadow 300ms ease, border-color 200ms ease;
+}
+.badge-highlight {
+    box-shadow: 0 0 0 5px alpha(@theme_selected_bg_color, 0.55);
+    transition: box-shadow 500ms ease-out;
+}
+/* progress bar glow */
+progressbar progress {
+    box-shadow: 0 0 6px 1px alpha(@theme_selected_bg_color, 0.35);
+    transition: background-color 300ms ease;
+}
+.xp-progress progress {
+    box-shadow: 0 0 8px 2px alpha(@theme_selected_bg_color, 0.40);
+}
+/* coach pick accent strip */
+.hero-card.coach-card {
+    border-left: 4px solid alpha(@theme_selected_bg_color, 0.78);
+}
+/* focus / pomodoro dimming */
+window.pomodoro-active .card:not(.hero-card):not(.study-room-card) {
+    opacity: 0.55;
+    transition: opacity 400ms ease;
+}
+window.pomodoro-active .hero-card,
+window.pomodoro-active .study-room-card {
+    opacity: 1.0;
+}
+window.pomodoro-active .tools-card,
+window.pomodoro-active .quest-card,
+window.pomodoro-active .badges-card {
+    opacity: 0.45;
+}
+/* quiz dialog polish */
+.quiz-option.quiz-correct {
+    border-color: @success_color;
+    background: alpha(@success_color, 0.12);
+    box-shadow: 0 0 0 1px alpha(@success_color, 0.30);
+}
+.quiz-option.quiz-wrong {
+    border-color: @error_color;
+    background: alpha(@error_color, 0.10);
+    box-shadow: 0 0 0 1px alpha(@error_color, 0.25);
+}
+.quiz-option.quiz-selected {
+    border-color: alpha(@theme_selected_bg_color, 0.80);
+    background: alpha(@theme_selected_bg_color, 0.10);
+    box-shadow: 0 0 0 1px alpha(@theme_selected_bg_color, 0.36);
+}
+.quiz-score-good {
+    color: @success_color;
+    font-weight: 700;
+}
+.quiz-score-ok {
+    color: @warning_color;
+    font-weight: 700;
+}
+.quiz-score-bad {
+    color: @error_color;
+    font-weight: 700;
+}
+.quiz-feedback {
+    transition: background 200ms ease;
+}
+/* hint level progressive disclosure (ZPD) */
+.hint-level-0 { border-left: 3px solid alpha(@theme_selected_bg_color, 0.25); padding-left: 8px; }
+.hint-level-1 { border-left: 3px solid alpha(@theme_selected_bg_color, 0.40); padding-left: 8px; }
+.hint-level-2 { border-left: 3px solid alpha(@theme_selected_bg_color, 0.55); padding-left: 8px; }
+.hint-level-3 { border-left: 3px solid alpha(@theme_selected_bg_color, 0.72); padding-left: 8px; background: alpha(@theme_selected_bg_color, 0.04); }
+.hint-level-4 { border-left: 3px solid alpha(@theme_selected_bg_color, 0.90); padding-left: 8px; background: alpha(@theme_selected_bg_color, 0.08); }
+/* text overflow control */
+.single-line-lock {
+    -gtk-line-limit: 1;
+}
+.allow-wrap {
+    -gtk-line-limit: 0;
+}
+/* sidebar label density: prevent text blowout in narrow panels */
+.panel-left label {
+    -gtk-line-limit: 4;
+}
+.panel-left label.single-line-lock {
+    -gtk-line-limit: 1;
+}
+.panel-left label.allow-wrap {
+    -gtk-line-limit: 0;
+}
+.panel-left .muted {
+    font-size: 12px;
+    line-height: 1.42;
+}
+/* VS Code-style status bar */
+.workbench-status {
+    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.2px;
+    padding: 3px 8px;
+    min-height: 20px;
+    border-radius: 0;
+    border: none;
+    border-top: 1px solid alpha(@theme_fg_color, 0.10);
+    background: alpha(@theme_selected_bg_color, 0.08);
+    color: alpha(@theme_fg_color, 0.78);
+}
+/* tighter card spacing in sidebar */
+.panel-left .card {
+    padding: 10px;
+    margin-top: 3px;
+    margin-bottom: 3px;
+}
+.panel-left .hero-card {
+    padding: 10px 12px;
+}
+/* VS Code-style section titles: flat, no gradient background */
+.panel-left .section-title {
+    background: transparent;
+    background-image: none;
+    border: none;
+    border-bottom: 1px solid alpha(@theme_fg_color, 0.12);
+    border-radius: 0;
+    padding: 2px 0 4px 0;
+    margin-top: 8px;
+    margin-bottom: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    color: alpha(@theme_fg_color, 0.72);
+}
+/* workbench header bar */
+.workbench-header {
+    padding: 4px 8px 4px 8px;
+    min-height: 32px;
+}
+.workbench-header-primary {
+    min-height: 28px;
+}
+.workbench-title {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.15px;
+}
+/* workspace tab buttons - VS Code tab style */
+.workspace-tabs button {
+    min-height: 28px;
+    padding: 4px 12px;
+    border-radius: 0;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    font-size: 12px;
+    font-weight: 600;
+    color: alpha(@theme_fg_color, 0.62);
+    box-shadow: none;
+}
+.workspace-tabs button:hover {
+    color: alpha(@theme_fg_color, 0.88);
+    background: alpha(@theme_fg_color, 0.04);
+    border-bottom-color: alpha(@theme_fg_color, 0.20);
+}
+.workspace-tabs button:checked {
+    color: @theme_fg_color;
+    border-bottom-color: alpha(@theme_selected_bg_color, 0.90);
+    background: transparent;
+    box-shadow: none;
+}
+/* quick actions row */
+.workbench-quick-actions {
+    padding: 2px 0 4px 0;
+    border-bottom: 1px solid alpha(@theme_fg_color, 0.08);
+}
+.workbench-quick-actions button {
+    min-height: 26px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 6px;
+}
+/* inline toolbar tighter */
+.inline-toolbar {
+    padding-bottom: 3px;
+    margin-bottom: 1px;
+}
+/* top menu bar - VS Code-like */
+.top-menu {
+    min-height: 28px;
+    padding: 2px 8px;
+}
+.top-menu button {
+    min-height: 24px;
+    padding: 2px 8px;
+    font-size: 12px;
+    border-radius: 6px;
+}
+/* tutor area polish */
+.tutor-prompt-scroll,
+.tutor-response-scroll {
+    border-radius: 8px;
+    border: 1px solid alpha(@theme_fg_color, 0.12);
+    background: alpha(@theme_bg_color, 0.60);
+}
+.tutor-prompt-view,
+.tutor-response-view {
+    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
+    font-size: 13px;
+    line-height: 1.52;
+    padding: 8px 10px;
+}
+/* KPI/metric labels */
+.kpi-line {
+    font-size: 12px;
+    font-weight: 620;
+    letter-spacing: 0.1px;
+    line-height: 1.42;
+}
+/* badge refinement */
+.badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    letter-spacing: 0.3px;
+}
+/* plan list rows tighter */
+.focus-list row {
+    padding: 3px 4px;
+    min-height: 28px;
+}
+/* coach card: left accent instead of full border highlight */
+.coach-card {
+    border-left: 3px solid alpha(@theme_selected_bg_color, 0.72);
+}
+/* dialog windows polish */
+window.app-dialog-window {
+    border-radius: 12px;
+}
+window.app-dialog-window .dialog-content {
+    padding: 12px 16px;
+}
+/* subtle panel for grouped sections */
+.subtle-panel {
+    background: alpha(@theme_fg_color, 0.02);
+    border: 1px solid alpha(@theme_fg_color, 0.08);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-top: 4px;
+    margin-bottom: 2px;
+}
+/* status line - single-line status indicators */
+.status-line {
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.15px;
+    padding: 2px 0;
+}
+/* settings grid tighter */
+.settings-grid {
+    margin-top: 2px;
+}
+.settings-grid label {
+    font-size: 12px;
+}
+/* quiz option refinement */
+.quiz-option label {
+    font-size: 13px;
+    line-height: 1.40;
+}
+/* quiz progress bar thinner */
+.quiz-progress {
+    min-height: 8px;
+}
+.quiz-progress trough {
+    min-height: 8px;
+}
 """
 
 COACH_THEME_CSS = b"""
@@ -1202,6 +1488,281 @@ scrolledwindow {
 .dashboard-stack > .card {
     margin-top: 4px;
     margin-bottom: 8px;
+}
+/* visual delight pass */
+.card {
+    transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+.hero-card {
+    transition: border-color 180ms ease, box-shadow 200ms ease;
+}
+button {
+    transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+button:active {
+    transition: background 60ms ease;
+}
+.badge {
+    transition: box-shadow 300ms ease, border-color 200ms ease;
+}
+.badge-highlight {
+    box-shadow: 0 0 0 5px rgba(79, 209, 197, 0.65);
+    transition: box-shadow 500ms ease-out;
+}
+/* progress bar glow */
+progressbar progress {
+    box-shadow: 0 0 6px 1px rgba(139, 175, 255, 0.30);
+    transition: background-color 300ms ease;
+}
+.xp-progress progress {
+    box-shadow: 0 0 8px 2px rgba(79, 209, 197, 0.35);
+}
+/* coach pick accent strip */
+.hero-card.coach-card {
+    border-left: 4px solid rgba(139, 175, 255, 0.82);
+}
+/* focus / pomodoro dimming */
+window.pomodoro-active .card:not(.hero-card):not(.study-room-card) {
+    opacity: 0.50;
+    transition: opacity 400ms ease;
+}
+window.pomodoro-active .hero-card,
+window.pomodoro-active .study-room-card {
+    opacity: 1.0;
+}
+window.pomodoro-active .tools-card,
+window.pomodoro-active .quest-card,
+window.pomodoro-active .badges-card {
+    opacity: 0.40;
+}
+/* quiz dialog polish */
+.quiz-option.quiz-correct {
+    border-color: #2f8a5c;
+    background: rgba(47, 138, 92, 0.14);
+    box-shadow: 0 0 0 1px rgba(47, 138, 92, 0.32);
+}
+.quiz-option.quiz-wrong {
+    border-color: #c85450;
+    background: rgba(200, 84, 80, 0.12);
+    box-shadow: 0 0 0 1px rgba(200, 84, 80, 0.28);
+}
+.quiz-option.quiz-selected {
+    border-color: rgba(139, 175, 255, 0.82);
+    background: rgba(139, 175, 255, 0.12);
+    box-shadow: 0 0 0 1px rgba(139, 175, 255, 0.38);
+}
+.quiz-score-good {
+    color: #4fd1c5;
+    font-weight: 700;
+}
+.quiz-score-ok {
+    color: #f6c453;
+    font-weight: 700;
+}
+.quiz-score-bad {
+    color: #f28b82;
+    font-weight: 700;
+}
+.quiz-feedback {
+    transition: background 200ms ease;
+}
+/* hint level progressive disclosure (ZPD) */
+.hint-level-0 { border-left: 3px solid rgba(139, 175, 255, 0.25); padding-left: 8px; }
+.hint-level-1 { border-left: 3px solid rgba(139, 175, 255, 0.40); padding-left: 8px; }
+.hint-level-2 { border-left: 3px solid rgba(139, 175, 255, 0.55); padding-left: 8px; }
+.hint-level-3 { border-left: 3px solid rgba(139, 175, 255, 0.72); padding-left: 8px; background: rgba(139, 175, 255, 0.05); }
+.hint-level-4 { border-left: 3px solid rgba(139, 175, 255, 0.90); padding-left: 8px; background: rgba(139, 175, 255, 0.10); }
+/* text overflow control */
+.single-line-lock {
+    -gtk-line-limit: 1;
+}
+.allow-wrap {
+    -gtk-line-limit: 0;
+}
+.panel-left label {
+    -gtk-line-limit: 4;
+}
+.panel-left label.single-line-lock {
+    -gtk-line-limit: 1;
+}
+.panel-left label.allow-wrap {
+    -gtk-line-limit: 0;
+}
+.panel-left .muted {
+    font-size: 12px;
+    line-height: 1.42;
+}
+/* VS Code-style status bar */
+.workbench-status {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.2px;
+    padding: 3px 8px;
+    min-height: 20px;
+    border-radius: 0;
+    border: none;
+    border-top: 1px solid rgba(93, 119, 170, 0.40);
+    background: #161e30;
+    color: #a8b8d4;
+}
+/* tighter sidebar cards */
+.panel-left .card {
+    padding: 10px;
+    margin-top: 3px;
+    margin-bottom: 3px;
+}
+.panel-left .hero-card {
+    padding: 10px 12px;
+}
+/* flat section titles */
+.panel-left .section-title {
+    background: transparent;
+    background-image: none;
+    border: none;
+    border-bottom: 1px solid rgba(139, 175, 255, 0.16);
+    border-radius: 0;
+    padding: 2px 0 4px 0;
+    margin-top: 8px;
+    margin-bottom: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    color: #8097be;
+}
+/* workbench header bar */
+.workbench-header {
+    padding: 4px 8px;
+    min-height: 32px;
+}
+.workbench-header-primary {
+    min-height: 28px;
+}
+.workbench-title {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.15px;
+    color: #eaf0ff;
+}
+/* workspace tabs - VS Code style */
+.workspace-tabs button {
+    min-height: 28px;
+    padding: 4px 12px;
+    border-radius: 0;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    font-size: 12px;
+    font-weight: 600;
+    color: #7a90b8;
+    box-shadow: none;
+}
+.workspace-tabs button:hover {
+    color: #c5d4f0;
+    background: rgba(139, 175, 255, 0.06);
+    border-bottom-color: rgba(139, 175, 255, 0.24);
+}
+.workspace-tabs button:checked {
+    color: #eaf0ff;
+    border-bottom-color: #8bafff;
+    background: transparent;
+    box-shadow: none;
+}
+/* quick actions */
+.workbench-quick-actions {
+    padding: 2px 0 4px 0;
+    border-bottom: 1px solid rgba(139, 175, 255, 0.12);
+}
+.workbench-quick-actions button {
+    min-height: 26px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 6px;
+}
+.inline-toolbar {
+    padding-bottom: 3px;
+    margin-bottom: 1px;
+}
+/* top menu bar */
+.top-menu {
+    min-height: 28px;
+    padding: 2px 8px;
+}
+.top-menu button {
+    min-height: 24px;
+    padding: 2px 8px;
+    font-size: 12px;
+    border-radius: 6px;
+}
+/* tutor area polish */
+.tutor-prompt-scroll,
+.tutor-response-scroll {
+    border-radius: 8px;
+    border: 1px solid rgba(90, 114, 161, 0.40);
+    background: #1a2438;
+}
+.tutor-prompt-view,
+.tutor-response-view {
+    font-size: 13px;
+    line-height: 1.52;
+    padding: 8px 10px;
+    color: #eaf0ff;
+}
+.kpi-line {
+    font-size: 12px;
+    font-weight: 620;
+    letter-spacing: 0.1px;
+    line-height: 1.42;
+}
+.badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    letter-spacing: 0.3px;
+}
+.focus-list row {
+    padding: 3px 4px;
+    min-height: 28px;
+}
+.coach-card {
+    border-left: 3px solid rgba(139, 175, 255, 0.78);
+}
+window.app-dialog-window {
+    border-radius: 12px;
+}
+window.app-dialog-window .dialog-content {
+    padding: 12px 16px;
+}
+.subtle-panel {
+    background: rgba(139, 175, 255, 0.04);
+    border: 1px solid rgba(139, 175, 255, 0.10);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-top: 4px;
+    margin-bottom: 2px;
+}
+.status-line {
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.15px;
+    padding: 2px 0;
+    color: #c5d4f0;
+}
+.settings-grid {
+    margin-top: 2px;
+}
+.settings-grid label {
+    font-size: 12px;
+}
+.quiz-option label {
+    font-size: 13px;
+    line-height: 1.40;
+}
+.quiz-progress {
+    min-height: 8px;
+}
+.quiz-progress trough {
+    min-height: 8px;
 }
 """
 

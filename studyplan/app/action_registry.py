@@ -34,6 +34,8 @@ DEFAULT_UI_ACTION_BINDINGS: tuple[ActionBinding, ...] = (
     ActionBinding("close_transient_dialogs", "on_close_transient_dialogs_action"),
     ActionBinding("view_syllabus_cache_stats", "on_menu_view_syllabus_cache_stats"),
     ActionBinding("clear_syllabus_cache", "on_menu_clear_syllabus_cache"),
+    ActionBinding("view_performance_stats", "on_menu_view_performance_stats"),
+    ActionBinding("clear_performance_cache", "on_menu_clear_performance_cache"),
     ActionBinding("view_reflections", "on_view_reflections"),
     ActionBinding("open_ai_tutor", "on_open_ai_tutor"),
     ActionBinding("open_ai_coach", "on_open_ai_coach"),

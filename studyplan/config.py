@@ -163,3 +163,51 @@ class Config:
         min_value=5.0,
         max_value=3600.0,
     )
+
+    # llama.cpp-first: managed server & direct-GGUF runtime
+    LLAMA_CPP_MANAGED_SERVER = _parse_bool("STUDYPLAN_LLAMA_CPP_MANAGED_SERVER", default=True)
+    LLAMA_CPP_SERVER_BIN = _env_text("STUDYPLAN_LLAMA_SERVER_BIN", "")
+    LLAMA_CPP_SERVER_PORT = _parse_int(
+        "STUDYPLAN_LLAMA_SERVER_PORT", 8090, min_value=1024, max_value=65535,
+    )
+    LLAMA_CPP_SERVER_THREADS = _parse_int(
+        "STUDYPLAN_LLAMA_SERVER_THREADS",
+        max(1, min(os.cpu_count() or 4, 6)),
+        min_value=1,
+        max_value=32,
+    )
+    LLAMA_CPP_SERVER_CTX_SIZE = _parse_int(
+        "STUDYPLAN_LLAMA_SERVER_CTX_SIZE", 4096, min_value=512, max_value=32768,
+    )
+    LLAMA_CPP_SERVER_STARTUP_TIMEOUT = _parse_float(
+        "STUDYPLAN_LLAMA_SERVER_STARTUP_TIMEOUT", 60.0, min_value=10.0, max_value=180.0,
+    )
+    LLAMA_CPP_OLLAMA_MANIFESTS_DIR = _env_text(
+        "STUDYPLAN_LLAMA_CPP_OLLAMA_MANIFESTS_DIR",
+        os.path.expanduser("~/.ollama/models/manifests/registry.ollama.ai/library"),
+    )
+    LLAMA_CPP_OLLAMA_BLOBS_DIR = _env_text(
+        "STUDYPLAN_LLAMA_CPP_OLLAMA_BLOBS_DIR",
+        os.path.expanduser("~/.ollama/models/blobs"),
+    )
+    LLAMA_CPP_EXTRA_GGUF_DIR = _env_text("STUDYPLAN_LLAMA_CPP_EXTRA_GGUF_DIR", "")
+    LLAMA_CPP_OLLAMA_FALLBACK = _parse_bool(
+        "STUDYPLAN_LLAMA_CPP_OLLAMA_FALLBACK", default=True,
+    )
+    LLAMA_CPP_RAM_BUDGET_MB = _parse_int(
+        "STUDYPLAN_LLAMA_CPP_RAM_BUDGET_MB", 0, min_value=0, max_value=65536,
+    )
+
+    # Performance caching configuration
+    PERFORMANCE_CACHE_ENABLED = _parse_bool("STUDYPLAN_PERFORMANCE_CACHE_ENABLED", default=True)
+    PERFORMANCE_CACHE_MAX_SIZE = _parse_int("STUDYPLAN_PERFORMANCE_CACHE_MAX_SIZE", 1000, min_value=100, max_value=10000)
+    PERFORMANCE_CACHE_DEFAULT_TTL_SECONDS = _parse_int("STUDYPLAN_PERFORMANCE_CACHE_DEFAULT_TTL_SECONDS", 300, min_value=60, max_value=3600)
+    PERFORMANCE_CACHE_TTL_CONFIG = {
+        "cognitive_state": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_COGNITIVE_STATE", 300, min_value=60, max_value=1800),
+        "hint_strategy": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_HINT_STRATEGY", 600, min_value=120, max_value=3600),
+        "ui_render": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_UI_RENDER", 30, min_value=5, max_value=300),
+        "pdf_text": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_PDF_TEXT", 3600, min_value=300, max_value=7200),
+        "rag_doc": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_RAG_DOC", 1800, min_value=300, max_value=7200),
+        "ollama": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_OLLAMA", 120, min_value=10, max_value=1800),
+        "coach_pick": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_COACH_PICK", 300, min_value=30, max_value=600),
+    }
