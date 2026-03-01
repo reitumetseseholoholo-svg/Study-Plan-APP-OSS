@@ -6,11 +6,17 @@ authors = ["ACCA OSS Team"]
 
 [tool.poetry.dependencies]
 python = "^3.11"
+PyGObject = { version = ">=3.42", optional = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
 ruff = "^0.3"
 pyright = "^1.1"
+
+[tool.poetry.extras]
+# Install with: pip install -e ".[test-full]" or poetry install -E test-full
+# Requires system GTK4/GObject (e.g. Ubuntu: apt install python3-gi gir1.2-gtk-4.0)
+test-full = ["PyGObject"]
 
 [build-system]
 requires = ["poetry-core"]

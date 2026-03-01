@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from unittest.mock import MagicMock
 
 from studyplan.ai.gguf_registry import GgufRegistry, GgufRegistryConfig
 from studyplan.ai.llama_runtime import LlamaRuntime, _detect_available_ram
@@ -92,6 +93,72 @@ class TestRuntimeStatus:
             assert report["catalog_size"] == 2
             assert len(report["top_models"]) == 2
             assert report["ollama_fallback"] is False
+
+
+class TestLlamaCppPrecedence:
+    """Verify llama.cpp (llama-server) is tried before Ollama fallback."""
+
+    def test_ensure_ready_returns_llama_server_when_server_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_fake_gguf(os.path.join(tmpdir, "tiny-1b-q4.gguf"))
+            cfg = GgufRegistryConfig(
+                gpt4all_dir=tmpdir,
+                ollama_manifests_dir="/nonexistent",
+                ollama_blobs_dir="/nonexistent",
+            )
+            fake_server = MagicMock(spec=LlamaServerManager)
+            fake_server.is_running = True
+            fake_server.current_model = "tiny-1b-q4.gguf"
+            fake_server.endpoint = "http://127.0.0.1:8090"
+            fake_server.startup_latency_ms = 0
+            fake_server.ensure_running.return_value = True
+            fake_server.stop.return_value = None
+            fake_server.status.return_value = {"running": True}
+
+            rt = LlamaRuntime(
+                registry=GgufRegistry(config=cfg),
+                selector=ModelSelector(),
+                server=fake_server,
+                ollama_fallback_enabled=True,
+                ollama_host="http://127.0.0.1:11434",
+            )
+            status = rt.ensure_ready(Purpose.GENERAL)
+            assert status.healthy
+            assert status.backend == "llama_server"
+            assert status.endpoint == "http://127.0.0.1:8090"
+            # When server is already running the right model, ensure_running is not called
+            assert fake_server.ensure_running.call_count <= 1
+
+    def test_ensure_ready_falls_back_to_ollama_only_after_llama_server_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_fake_gguf(os.path.join(tmpdir, "tiny-1b-q4.gguf"))
+            cfg = GgufRegistryConfig(
+                gpt4all_dir=tmpdir,
+                ollama_manifests_dir="/nonexistent",
+                ollama_blobs_dir="/nonexistent",
+            )
+            fake_server = MagicMock(spec=LlamaServerManager)
+            fake_server.is_running = False
+            fake_server.current_model = ""
+            fake_server.endpoint = ""
+            fake_server.startup_latency_ms = 0
+            fake_server.ensure_running.return_value = False
+            fake_server.stop.return_value = None
+            fake_server.status.return_value = {"running": False}
+
+            rt = LlamaRuntime(
+                registry=GgufRegistry(config=cfg),
+                selector=ModelSelector(),
+                server=fake_server,
+                ollama_fallback_enabled=False,
+                ollama_host="",
+            )
+            status = rt.ensure_ready(Purpose.GENERAL)
+            assert not status.healthy
+            assert status.backend == "none"
+            assert "llama-server" in (status.error or "")
+            # Runtime tried llama-server first (ensure_running was called)
+            assert fake_server.ensure_running.call_count >= 1
 
 
 class TestRuntimeFromConfig:

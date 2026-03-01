@@ -51,7 +51,10 @@ def recovery_hint_text(kind: str, sequence: list[str], model: str = "") -> str:
     prefix = f"Recovery ({kind})"
     if str(model or "").strip():
         prefix = f"Recovery ({kind}, model={model})"
-    return f"{prefix}: {detail}".strip()
+    out = f"{prefix}: {detail}".strip()
+    if str(kind or "").strip().lower() in {"conn_refused", "host_unreachable"}:
+        out += " Start Ollama with: ollama serve"
+    return out
 
 
 def summarize_recovery(error_code: str, message: str, model: str = "") -> dict[str, Any]:

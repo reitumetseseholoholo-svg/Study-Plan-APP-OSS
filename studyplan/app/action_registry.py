@@ -18,6 +18,7 @@ DEFAULT_UI_ACTION_BINDINGS: tuple[ActionBinding, ...] = (
     ActionBinding("import_syllabus_pdf", "on_menu_import_syllabus_pdf"),
     ActionBinding("import_ai", "on_menu_import_ai"),
     ActionBinding("import_snapshot", "on_menu_import_snapshot"),
+    ActionBinding("backup_now", "on_menu_backup_now"),
     ActionBinding("recover_snapshot", "on_menu_recover_snapshot"),
     ActionBinding("restore_latest_snapshot", "on_menu_restore_latest_snapshot"),
     ActionBinding("export_csv", "on_menu_export_csv"),

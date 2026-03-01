@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 import atexit
-import datetime
-import re
-import json
-import os
-import math
-import random
-import difflib
+import concurrent.futures
+import contextlib
+import copy
 import csv
+import datetime
+import difflib
+import hashlib
+import io
+import json
+import math
+import os
+import random
+import re
 import sys
 import tempfile
-import copy
-import hashlib
-import time
 import threading
-import io
-import contextlib
+import time
 from typing import Dict, Any, List, Union, Set, Tuple, cast
 from studyplan.cognitive_state import CognitiveState
 from studyplan.mastery_kernel import MasteryKernel
@@ -3711,6 +3712,34 @@ class StudyPlanEngine:
             lookup[outcome_id] = {"id": outcome_id, "text": text, "level": level}
         return lookup
 
+    def get_outcome_tutor_prompt_suggestions(self, chapter: str) -> List[Dict[str, str]]:
+        """Return outcome-level tutor prompt suggestions for a chapter (label + prompt text)."""
+        lookup = self._chapter_outcome_lookup(chapter)
+        if not lookup:
+            return []
+        suggestions: List[Dict[str, str]] = []
+        for outcome_id, data in lookup.items():
+            text = str(data.get("text", "") or "").strip()
+            if not text:
+                continue
+            short_text = text[:80] + "…" if len(text) > 80 else text
+            suggestions.append({
+                "outcome_id": outcome_id,
+                "label": f"Explain {outcome_id}",
+                "prompt": f"Explain this learning outcome in simple, exam-focused terms: {short_text}",
+            })
+            suggestions.append({
+                "outcome_id": outcome_id,
+                "label": f"Pitfalls {outcome_id}",
+                "prompt": f"What are the main exam pitfalls for this outcome and how do I avoid them? Outcome: {short_text}",
+            })
+            suggestions.append({
+                "outcome_id": outcome_id,
+                "label": f"Drill {outcome_id}",
+                "prompt": f"Give me 3–5 short practice questions with answers for this outcome: {short_text}",
+            })
+        return suggestions
+
     def normalize_concept_text(self, chapter: str, text: str) -> str:
         """Public canonical normalizer for concept text."""
         return self._semantic_normalize_text(chapter, text)
@@ -4833,7 +4862,8 @@ class StudyPlanEngine:
             scored.append((score, chapter))
 
         scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
-        built = 0
+        # Prepare work items: (chapter, lookup, ordered_ids, normalized) for top chapters
+        work_items: List[Tuple[str, Dict[str, Dict[str, Any]], List[str], List[str]]] = []
         for _score, chapter in scored[:max_chapters]:
             lookup = self._chapter_outcome_lookup(chapter)
             ordered_ids = sorted(lookup.keys())
@@ -4841,9 +4871,43 @@ class StudyPlanEngine:
                 continue
             outcome_texts = [str((lookup.get(oid) or {}).get("text", "")).strip() for oid in ordered_ids]
             normalized = [(self._semantic_normalize_text(chapter, txt) or txt) for txt in outcome_texts]
-            assets = self._semantic_get_chapter_assets(chapter, lookup, ordered_ids, normalized)
-            if isinstance(assets, dict):
-                built += 1
+            work_items.append((chapter, lookup, ordered_ids, normalized))
+
+        if not work_items:
+            return 0
+
+        # Build chapter assets in parallel (TF-IDF is CPU-bound per chapter)
+        max_workers = min(len(work_items), max(1, (os.cpu_count() or 4)))
+        built = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    self._semantic_build_chapter_assets,
+                    chapter,
+                    lookup,
+                    ordered_ids,
+                    normalized,
+                ): chapter
+                for chapter, lookup, ordered_ids, normalized in work_items
+            }
+            for future in concurrent.futures.as_completed(futures):
+                chapter_key = futures[future]
+                try:
+                    result = future.result()
+                except Exception:
+                    result = None
+                with self._semantic_chapter_assets_lock:
+                    self._semantic_perf_stats["tfidf_asset_misses"] = float(
+                        self._semantic_perf_stats.get("tfidf_asset_misses", 0.0) or 0.0
+                    ) + 1.0
+                    if isinstance(result, dict):
+                        existing = self._semantic_chapter_match_assets.get(chapter_key)
+                        if not (
+                            isinstance(existing, dict)
+                            and str(existing.get("signature", "")) == str(result.get("signature", ""))
+                        ):
+                            self._semantic_chapter_match_assets[chapter_key] = result
+                            built += 1
         return built
 
     def warmup_semantic_model(self, force: bool = False) -> Dict[str, Any]:
@@ -10833,6 +10897,14 @@ class StudyPlanEngine:
     def get_mastery_stats(self, chapter: str) -> dict[str, Any]:
         """
         Get mastery statistics for a specific chapter.
+
+        Categorizes questions by SRS state:
+        - new: never reviewed
+        - learning: reviewed, interval < 7 days (early review stage)
+        - reviewing: reviewed, 7 <= interval < 21 days (in spaced repetition)
+        - mastered: interval >= 21 days (high retention probability)
+
+        Also includes competence (0-100%) from engine state when available.
         """
         srs_list = self.srs_data.get(chapter, [])
         if srs_list is None:
@@ -10841,11 +10913,14 @@ class StudyPlanEngine:
         total_cards = len(srs_list)
         mastered = 0
         learning = 0
+        reviewing = 0
         new_cards = 0
         total_ease = 0.0
         total_interval = 0.0
 
         for card_data in srs_list:
+            if not isinstance(card_data, dict):
+                continue
             interval_raw = card_data.get('interval', 0) or 0
             try:
                 interval = float(interval_raw)
@@ -10864,7 +10939,9 @@ class StudyPlanEngine:
                 new_cards += 1
             elif interval >= 21:  # 21+ days = mastered
                 mastered += 1
-            else:
+            elif interval >= 7:  # 7–20 days = in spaced repetition cycle
+                reviewing += 1
+            else:  # interval < 7 = early learning
                 learning += 1
 
             total_ease += ease_factor
@@ -10873,15 +10950,26 @@ class StudyPlanEngine:
         avg_ease = round(total_ease / total_cards, 2) if total_cards > 0 else 0.0
         avg_interval = round(total_interval / total_cards, 1) if total_cards > 0 else 0.0
 
+        # Competence 0–100% from engine state; fallback from question_stats if needed
+        competence_pct = 0.0
+        try:
+            competence_pct = float(self.competence.get(chapter, 0) or 0)
+        except (TypeError, ValueError, AttributeError):
+            pass
+        if competence_pct < 0 or competence_pct > 100:
+            competence_pct = max(0.0, min(100.0, competence_pct))
+
         return {
             "total": total_cards,
             "total_cards": total_cards,
             "mastered": mastered,
             "learning": learning,
+            "reviewing": reviewing,
             "new": new_cards,
             "new_cards": new_cards,
+            "competence": round(competence_pct, 1),
             "avg_ease": avg_ease,
-            "avg_interval": avg_interval
+            "avg_interval": avg_interval,
         }
 
     def get_mastery_summary(self) -> dict[str, Any]:

@@ -22,6 +22,26 @@ def _smoke_bootstrap() -> dict[str, str]:
 
 _SMOKE_BOOTSTRAP_DIAG = _smoke_bootstrap()
 
+from studyplan_app_kpi_routing import (
+    AI_TUTOR_LATENCY_SLO_MIN_SAMPLES,
+    AI_TUTOR_LATENCY_SLO_P50_MS,
+    AI_TUTOR_LATENCY_SLO_P90_MS,
+    AI_TUTOR_LATENCY_SLO_SPREAD_RATIO,
+    DEFAULT_OUTCOME_GAP_QUIZ_RATIO,
+    SMOKE_KPI_THRESHOLDS,
+    SMOKE_REPORT_PATH,
+    SOAK_KPI_THRESHOLDS,
+    SOAK_REPORT_PATH,
+    _adjust_outcome_gap_ratio,
+    _build_gap_routing_meta,
+    _combine_quiz_indices,
+    _compute_strict_smoke_exit_code,
+    _compute_strict_soak_exit_code,
+    _evaluate_smoke_kpi_thresholds,
+    _evaluate_soak_kpi_thresholds,
+    _merge_gap_and_srs_indices,
+)
+
 import gi  # type: ignore[import-untyped]
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
@@ -30,6 +50,14 @@ from studyplan_engine import StudyPlanEngine
 from studyplan.coach_fsm import SocraticFSM
 from studyplan.cognitive_state import CognitiveState
 from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
+from studyplan_app_path_utils import (
+    atomic_write_bytes_file as _path_atomic_write_bytes,
+    atomic_write_csv_rows as _path_atomic_write_csv,
+    atomic_write_text_file as _path_atomic_write_text,
+    normalize_user_file_path as _path_normalize,
+    prepare_export_target_path as _path_prepare_export,
+    validate_import_source_path as _path_validate_import,
+)
 from studyplan_theme import apply_theme, set_theme_runtime_options
 from studyplan_ai_tutor import (
     AITutorDialogController,
@@ -484,10 +512,6 @@ AI_TUTOR_LATENCY_ADAPT_P90_WARN_MS = 45000
 AI_TUTOR_LATENCY_ADAPT_P90_CRITICAL_MS = 80000
 AI_TUTOR_LATENCY_ADAPT_RATIO_WARN = 2.4
 AI_TUTOR_LATENCY_ADAPT_RATIO_CRITICAL = 3.1
-AI_TUTOR_LATENCY_SLO_P50_MS = 25000
-AI_TUTOR_LATENCY_SLO_P90_MS = 60000
-AI_TUTOR_LATENCY_SLO_SPREAD_RATIO = 2.4
-AI_TUTOR_LATENCY_SLO_MIN_SAMPLES = 8
 AI_TUTOR_MODEL_SWITCH_SCORE_MARGIN = 0.05
 AI_TUTOR_MODEL_SWITCH_COOLDOWN_SECONDS = 300
 AI_TUTOR_MODEL_FAILOVER_MAX = 3
@@ -580,7 +604,6 @@ DEFAULT_SHORT_BREAK_MINUTES = 5
 DEFAULT_LONG_BREAK_MINUTES = 15
 DEFAULT_LONG_BREAK_EVERY = 4
 DEFAULT_MAX_BREAK_SKIPS = 1
-DEFAULT_OUTCOME_GAP_QUIZ_RATIO = 0.5
 DEFAULT_OUTCOME_GAP_MIN_QUESTIONS = 1
 COACH_AGGRESSIVE_MIN_DWELL = 1
 COACH_AGGRESSIVE_TARGET_DWELL = 2
@@ -589,20 +612,6 @@ COACH_ROTATION_MARGIN = 0.08
 COACH_WEAK_TIE_WINDOW = 4.0
 # Prevent rapid sticky-release ping-pong between near-equal chapters.
 COACH_POST_RELEASE_HOLD_SECONDS = 150
-SMOKE_REPORT_PATH = os.path.expanduser("~/.config/studyplan/smoke_last.json")
-SMOKE_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
-    "coach_pick_consistency_rate": {"op": ">=", "value": 0.999},
-    "coach_only_toggle_integrity_rate": {"op": "==", "value": 1.0},
-    "coach_next_burst_integrity_rate": {"op": "==", "value": 1.0},
-    "ui_trigger_integrity_rate": {"op": "==", "value": 1.0},
-}
-SOAK_REPORT_PATH = os.path.expanduser("~/.config/studyplan/soak_last.json")
-SOAK_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
-    "samples": {"op": ">=", "value": float(AI_TUTOR_LATENCY_SLO_MIN_SAMPLES)},
-    "p50_latency_ms": {"op": "<=", "value": float(AI_TUTOR_LATENCY_SLO_P50_MS)},
-    "p90_latency_ms": {"op": "<=", "value": float(AI_TUTOR_LATENCY_SLO_P90_MS)},
-    "latency_spread_ratio": {"op": "<=", "value": float(AI_TUTOR_LATENCY_SLO_SPREAD_RATIO)},
-}
 UI_DENSITY_MODES = ("progressive",)
 DEFAULT_UI_DENSITY_MODE = "progressive"
 UI_LEGACY_MODE_ALLOWED = str(os.environ.get("STUDYPLAN_UI_LEGACY_ALLOWED", "0") or "0").strip().lower() in {
@@ -628,197 +637,6 @@ DEFAULT_UI_SIDEBAR_VISIBLE = str(os.environ.get("STUDYPLAN_UI_SIDEBAR_VISIBLE", 
     "yes",
     "on",
 }
-
-
-def _merge_gap_and_srs_indices(gap_indices: list[int], srs_indices: list[int], total: int) -> list[int]:
-    """Return ordered unique indices with gap-first precedence."""
-    try:
-        target = max(0, int(total))
-    except Exception:
-        target = 0
-    if target <= 0:
-        return []
-    merged: list[int] = []
-    seen: set[int] = set()
-    for idx in list(gap_indices or []) + list(srs_indices or []):
-        if not isinstance(idx, int):
-            continue
-        if idx in seen:
-            continue
-        seen.add(idx)
-        merged.append(idx)
-        if len(merged) >= target:
-            break
-    return merged[:target]
-
-
-def _combine_quiz_indices(kind: str, primary_indices: list[int], total: int, gap_indices: list[int] | None = None) -> list[int]:
-    """Combine selector outputs for a quiz session while preserving review semantics."""
-    if str(kind or "").strip().lower() == "review":
-        try:
-            target = max(0, int(total))
-        except Exception:
-            target = 0
-        return [idx for idx in list(primary_indices or [])[:target] if isinstance(idx, int)]
-    return _merge_gap_and_srs_indices(list(gap_indices or []), list(primary_indices or []), total)
-
-
-def _adjust_outcome_gap_ratio(base_ratio: float, capability_hit_rate: float | None) -> float:
-    """Adjust outcome-gap quota ratio using recent capability-level KPI hit rate."""
-    try:
-        ratio = float(base_ratio)
-    except Exception:
-        ratio = DEFAULT_OUTCOME_GAP_QUIZ_RATIO
-    ratio = max(0.0, min(1.0, ratio))
-    if capability_hit_rate is None:
-        return ratio
-    try:
-        hit_rate = float(capability_hit_rate)
-    except Exception:
-        return ratio
-    if not math.isfinite(hit_rate):
-        return ratio
-    hit_rate = max(0.0, min(1.0, hit_rate))
-    if hit_rate < 0.45:
-        ratio += 0.20
-    elif hit_rate < 0.60:
-        ratio += 0.10
-    elif hit_rate >= 0.85:
-        ratio -= 0.10
-    return max(0.20, min(0.90, ratio))
-
-
-def _build_gap_routing_meta(
-    kind: str,
-    session_indices: list[int],
-    gap_indices: list[int],
-    requested_quota: int,
-    eligible: bool,
-    capability: str = "",
-    capability_hit_rate: float | None = None,
-) -> dict[str, Any]:
-    """Build deterministic telemetry for outcome-gap routing quality."""
-    kind_norm = str(kind or "").strip().lower()
-    requested = max(0, int(requested_quota or 0))
-    session_clean = [i for i in list(session_indices or []) if isinstance(i, int)]
-    gap_unique: list[int] = []
-    seen_gap: set[int] = set()
-    for idx in list(gap_indices or []):
-        if not isinstance(idx, int):
-            continue
-        if idx in seen_gap:
-            continue
-        seen_gap.add(idx)
-        gap_unique.append(idx)
-    gap_set = set(gap_unique)
-    hit = sum(1 for idx in session_clean if idx in gap_set)
-    denominator = max(1, requested)
-    return {
-        "kind": kind_norm,
-        "eligible": bool(eligible),
-        "requested": requested,
-        "available": len(gap_unique),
-        "hit": int(hit),
-        "selected_total": len(session_clean),
-        "hit_ratio": float(hit / denominator),
-        "active": kind_norm in {"quiz", "drill", "leech"} and bool(eligible) and requested > 0,
-        "capability": str(capability or "").strip().upper(),
-        "capability_hit_rate": capability_hit_rate if isinstance(capability_hit_rate, (int, float)) else None,
-    }
-
-
-def _evaluate_smoke_kpi_thresholds(kpi: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return threshold failures for smoke KPI metrics."""
-    failures: list[dict[str, Any]] = []
-    metrics = kpi if isinstance(kpi, dict) else {}
-    for metric, rule in SMOKE_KPI_THRESHOLDS.items():
-        try:
-            actual = float(metrics.get(metric, 0.0) or 0.0)
-        except Exception:
-            actual = 0.0
-        op = str(rule.get("op", ">=") or ">=").strip()
-        try:
-            expected = float(rule.get("value", 0.0) or 0.0)
-        except Exception:
-            expected = 0.0
-        if op == "==":
-            passed = abs(actual - expected) <= 1e-9
-        else:
-            passed = actual >= expected
-        if not passed:
-            failures.append(
-                {
-                    "metric": metric,
-                    "actual": actual,
-                    "op": op,
-                    "threshold": expected,
-                }
-            )
-    return failures
-
-
-def _compute_strict_smoke_exit_code(report_path: str = SMOKE_REPORT_PATH) -> int:
-    """Return process exit code for strict smoke mode."""
-    try:
-        with open(report_path, "r", encoding="utf-8") as f:
-            report = json.load(f)
-    except Exception:
-        return 1
-    if not isinstance(report, dict):
-        return 1
-    status = str(report.get("status", "") or "").strip().lower()
-    if status != "passed":
-        return 1
-    failures = _evaluate_smoke_kpi_thresholds(report.get("kpi", {}))
-    return 0 if not failures else 1
-
-
-def _evaluate_soak_kpi_thresholds(kpi: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return threshold failures for latency soak KPI metrics."""
-    failures: list[dict[str, Any]] = []
-    metrics = kpi if isinstance(kpi, dict) else {}
-    for metric, rule in SOAK_KPI_THRESHOLDS.items():
-        try:
-            actual = float(metrics.get(metric, 0.0) or 0.0)
-        except Exception:
-            actual = 0.0
-        op = str(rule.get("op", "<=") or "<=").strip()
-        try:
-            expected = float(rule.get("value", 0.0) or 0.0)
-        except Exception:
-            expected = 0.0
-        if op == "==":
-            passed = abs(actual - expected) <= 1e-9
-        elif op == ">=":
-            passed = actual >= expected
-        else:
-            passed = actual <= expected
-        if not passed:
-            failures.append(
-                {
-                    "metric": metric,
-                    "actual": actual,
-                    "op": op,
-                    "threshold": expected,
-                }
-            )
-    return failures
-
-
-def _compute_strict_soak_exit_code(report_path: str = SOAK_REPORT_PATH) -> int:
-    """Return process exit code for strict soak mode."""
-    try:
-        with open(report_path, "r", encoding="utf-8") as f:
-            report = json.load(f)
-    except Exception:
-        return 1
-    if not isinstance(report, dict):
-        return 1
-    status = str(report.get("status", "") or "").strip().lower()
-    if status != "passed":
-        return 1
-    failures = _evaluate_soak_kpi_thresholds(report.get("kpi", {}))
-    return 0 if not failures else 1
 
 DEFAULT_FOCUS_ALLOWLIST = [
     "com.studyplan.assistant",
@@ -1222,6 +1040,51 @@ set_theme_runtime_options(
 apply_theme(True)
 
 
+class AICapableTutorPracticeService:
+    """Practice service that tries AI-generated items (with app context) then falls back to deterministic."""
+
+    def __init__(self, app: "StudyPlanGUI", deterministic_service: Any):
+        self._app = app
+        self._fallback = deterministic_service
+
+    def build_practice_items(
+        self,
+        *,
+        session_state: Any,
+        learner_profile: Any,
+        app_snapshot: Any,
+        max_items: int = 3,
+    ) -> tuple[Any, ...]:
+        items = self._app._try_build_ai_practice_items(
+            session_state, learner_profile, app_snapshot, max_items=max_items
+        )
+        if items:
+            return items
+        return self._fallback.build_practice_items(
+            session_state=session_state,
+            learner_profile=learner_profile,
+            app_snapshot=app_snapshot,
+            max_items=max_items,
+        )
+
+    def build_retest_variant(
+        self,
+        *,
+        item: Any,
+        assessment_result: Any,
+        session_state: Any,
+        learner_profile: Any,
+        app_snapshot: Any,
+    ) -> Any:
+        return self._fallback.build_retest_variant(
+            item=item,
+            assessment_result=assessment_result,
+            session_state=session_state,
+            learner_profile=learner_profile,
+            app_snapshot=app_snapshot,
+        )
+
+
 class StudyPlanGUI(Gtk.ApplicationWindow):
     def __init__(self, app, exam_date=None):
         super().__init__(application=app)
@@ -1247,6 +1110,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.ui_modern_enabled = bool(DEFAULT_UI_MODERN_ENABLED)
         self.ui_density_mode = str(DEFAULT_UI_DENSITY_MODE)
         self.ui_reduce_motion = bool(DEFAULT_UI_REDUCE_MOTION)
+        self.ui_high_contrast = False
+        self.semantic_warmup_delay_ms = 4000
         self.ui_legacy_fallback_enabled = bool(DEFAULT_UI_LEGACY_FALLBACK_ENABLED)
         self.ui_sidebar_visible = bool(DEFAULT_UI_SIDEBAR_VISIBLE)
         self._tiling_wm_hint = self._detect_tiling_wm_hint()
@@ -1263,6 +1128,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._last_coach_mismatch_key = None
         self.onboarding_dismissed = False
         self.first_run_completed = False
+        self.outcome_micro_summaries: dict[str, dict[str, str]] = {}  # chapter -> outcome_id -> summary
         self._last_session_recap = None
         self._last_pomodoro_counted = False
         self.short_pomodoro_today_count = 0
@@ -1583,7 +1449,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._tutor_learner_model_store = InMemoryTutorLearnerModelStore()
         self._module_adapter_registry = build_default_module_adapter_registry()
         self._module_adapter = self._resolve_active_module_adapter()
-        self._tutor_practice_service = DeterministicTutorPracticeService(module_adapter=self._module_adapter)
+        _deterministic_practice = DeterministicTutorPracticeService(module_adapter=self._module_adapter)
+        self._tutor_practice_service = AICapableTutorPracticeService(self, _deterministic_practice)
         self._tutor_assessment_service = DeterministicTutorAssessmentService()
         self._tutor_intervention_policy_service = DeterministicTutorInterventionPolicyService(
             module_adapter=self._module_adapter
@@ -2440,6 +2307,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         file_menu.append("Import PDF scores…", "win.import_pdf")
         file_menu.append("Import AI questions…", "win.import_ai")
         file_menu.append("Import Data Snapshot…", "win.import_snapshot")
+        file_menu.append("Backup now…", "win.backup_now")
         file_menu.append("Recover from Snapshot…", "win.recover_snapshot")
         file_menu.append("Restore Latest Snapshot…", "win.restore_latest_snapshot")
         file_menu.append("Export data (CSV)…", "win.export_csv")
@@ -3126,6 +2994,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         quick_prompt_scroll.set_child(quick_prompts_box)
         page_box.append(quick_prompt_scroll)
 
+        outcome_prompts_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        outcome_prompts_box.add_css_class("inline-toolbar")
+        outcome_prompts_label = Gtk.Label(label="Outcome prompts")
+        outcome_prompts_label.set_halign(Gtk.Align.START)
+        outcome_prompts_label.add_css_class("muted")
+        outcome_prompts_box.append(outcome_prompts_label)
+        outcome_suggestions: list[dict[str, str]] = []
+        try:
+            eng = getattr(self, "engine", None)
+            topic = str(getattr(self, "current_topic", "") or "").strip()
+            if eng and topic and hasattr(eng, "get_outcome_tutor_prompt_suggestions"):
+                outcome_suggestions = list(eng.get_outcome_tutor_prompt_suggestions(topic) or [])[:15]
+        except Exception:
+            outcome_suggestions = []
+        for sug in outcome_suggestions:
+            lab = str(sug.get("label", "") or "").strip() or "Outcome"
+            prompt_text = str(sug.get("prompt", "") or "").strip()
+            btn = Gtk.Button(label=lab[:20] + ("…" if len(lab) > 20 else ""))
+            btn.add_css_class("flat")
+            btn.set_tooltip_text(prompt_text[:200] + ("…" if len(prompt_text) > 200 else ""))
+            def _set_prompt(buf: Gtk.TextBuffer, text: str):
+                buf.set_text(text)
+
+            btn.connect("clicked", lambda _b, t=prompt_text: _set_prompt(prompt_buf, t))
+            outcome_prompts_box.append(btn)
+        if outcome_suggestions:
+            outcome_prompts_scroll = Gtk.ScrolledWindow()
+            outcome_prompts_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+            outcome_prompts_scroll.set_min_content_height(40)
+            outcome_prompts_scroll.set_child(outcome_prompts_box)
+            page_box.append(outcome_prompts_scroll)
+
         prompt_scroller = Gtk.ScrolledWindow()
         prompt_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         prompt_scroller.set_min_content_height(130)
@@ -3144,6 +3044,40 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._tutor_workspace_prompt_scroller = prompt_scroller
         self._tutor_workspace_prompt_view = prompt_view
         page_box.append(prompt_scroller)
+
+        topic_for_summaries = str(getattr(self, "current_topic", "") or "").strip()
+        outcome_ids_for_summaries: list[str] = []
+        seen_oid: set[str] = set()
+        for sug in outcome_suggestions:
+            oid = str(sug.get("outcome_id", "") or "").strip()
+            if oid and oid not in seen_oid:
+                seen_oid.add(oid)
+                outcome_ids_for_summaries.append(oid)
+        if outcome_ids_for_summaries and topic_for_summaries:
+            micro_expander = Gtk.Expander(label="Micro-summaries (what I must know)")
+            micro_expander.add_css_class("muted")
+            micro_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            for oid in outcome_ids_for_summaries[:12]:
+                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                lbl = Gtk.Label(label=f"{oid}:")
+                lbl.set_halign(Gtk.Align.START)
+                lbl.set_size_request(48, -1)
+                entry = Gtk.Entry()
+                entry.set_placeholder_text("One line: what I must know…")
+                entry.set_hexpand(True)
+                entry.set_text(self._get_outcome_micro_summary(topic_for_summaries, oid))
+
+                def _make_summary_handler(chapter: str, outcome_id: str):
+                    def _on_changed(ent: Gtk.Entry) -> None:
+                        self._set_outcome_micro_summary(chapter, outcome_id, ent.get_text() or "", persist=True)
+                    return _on_changed
+
+                entry.connect("changed", _make_summary_handler(topic_for_summaries, oid))
+                row.append(lbl)
+                row.append(entry)
+                micro_inner.append(row)
+            micro_expander.set_child(micro_inner)
+            page_box.append(micro_expander)
 
         action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         action_row.add_css_class("inline-toolbar")
@@ -3262,6 +3196,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         practice_item_meta_label.set_hexpand(True)
         practice_item_meta_label.set_wrap(False)
         practice_item_meta_label.set_ellipsize(Pango.EllipsizeMode.END)
+        practice_item_meta_label.set_max_width_chars(56)
         practice_item_meta_label.add_css_class("muted")
         practice_meta_row.append(practice_conf_label)
         practice_meta_row.append(practice_conf_dropdown)
@@ -3396,23 +3331,30 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         practice_action_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         practice_action_box.add_css_class("subtle-panel")
+        practice_action_box.add_css_class("tutor-action-console")
         practice_action_title = Gtk.Label(label="Tutor Action Console")
         practice_action_title.set_halign(Gtk.Align.START)
+        practice_action_title.set_ellipsize(Pango.EllipsizeMode.END)
+        practice_action_title.set_max_width_chars(56)
         practice_action_title.add_css_class("muted")
         practice_action_title.add_css_class("single-line-lock")
         practice_action_box.append(practice_action_title)
 
         practice_action_label = Gtk.Label(label="No tutor action suggested yet.")
         practice_action_label.set_halign(Gtk.Align.START)
-        practice_action_label.set_wrap(True)
-        practice_action_label.add_css_class("allow-wrap")
+        practice_action_label.set_wrap(False)
+        practice_action_label.set_ellipsize(Pango.EllipsizeMode.END)
+        practice_action_label.set_max_width_chars(72)
+        practice_action_label.add_css_class("tutor-console-action-line")
         practice_action_box.append(practice_action_label)
 
         practice_action_status_label = Gtk.Label(label="Action status: waiting for plan.")
         practice_action_status_label.set_halign(Gtk.Align.START)
-        practice_action_status_label.set_wrap(True)
+        practice_action_status_label.set_wrap(False)
+        practice_action_status_label.set_ellipsize(Pango.EllipsizeMode.END)
+        practice_action_status_label.set_max_width_chars(72)
         practice_action_status_label.add_css_class("muted")
-        practice_action_status_label.add_css_class("allow-wrap")
+        practice_action_status_label.add_css_class("tutor-console-status-line")
         practice_action_box.append(practice_action_status_label)
 
         practice_action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -4583,6 +4525,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if action_intent_obj is None:
                 self._set_label_text_if_changed(practice_action_label, "No tutor action suggested yet.")
                 self._set_label_text_if_changed(practice_action_status_label, "Action status: waiting for plan.")
+                try:
+                    practice_action_label.set_tooltip_text("No tutor action suggested yet.")
+                    practice_action_status_label.set_tooltip_text("Action status: waiting for plan.")
+                except Exception:
+                    pass
                 practice_action_run_btn.set_sensitive(False)
             else:
                 try:
@@ -4603,10 +4550,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         ev = ", ".join(str(x) for x in evidence_vals[:3] if str(x or "").strip())
                         if ev:
                             body_parts.append(f"Evidence: {ev}")
-                    self._set_label_text_if_changed(
-                        practice_action_label,
-                        header + (("\n" + "\n".join(body_parts)) if body_parts else ""),
-                    )
+                    action_text = header + (("\n" + "\n".join(body_parts)) if body_parts else "")
+                    self._set_label_text_if_changed(practice_action_label, action_text)
+                    try:
+                        practice_action_label.set_tooltip_text(action_text or "")
+                    except Exception:
+                        pass
                     mode_now = str(self._effective_ai_tutor_autonomy_mode() or "assist")
                     can_auto = bool(self._can_auto_execute_ai_tutor_action(action_name, mode_now, requires_confirmation))
                     policy_status = "auto-allowed now" if can_auto else (
@@ -4617,10 +4566,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if last_status:
                         status_line += f"\nLast: {last_status}"
                     self._set_label_text_if_changed(practice_action_status_label, status_line)
+                    try:
+                        practice_action_status_label.set_tooltip_text(status_line or "")
+                    except Exception:
+                        pass
                     practice_action_run_btn.set_sensitive((not running_now) and bool(action_name))
                 except Exception:
                     self._set_label_text_if_changed(practice_action_label, "Tutor action suggested.")
                     self._set_label_text_if_changed(practice_action_status_label, "Action status: unavailable.")
+                    try:
+                        practice_action_label.set_tooltip_text("Tutor action suggested.")
+                        practice_action_status_label.set_tooltip_text("Action status: unavailable.")
+                    except Exception:
+                        pass
                     practice_action_run_btn.set_sensitive(False)
 
         def _plan_tutor_practice_loop(*_args) -> None:
@@ -4743,11 +4701,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         )
                         summary = fb.render(DisclosureLevel.SUMMARY)
                         details = fb.render(DisclosureLevel.STANDARD)
-                        self._set_label_text_if_changed(practice_action_label, str(summary.get("summary", str(guidance.get("next_action", "")))))
+                        action_summary_text = str(summary.get("summary", str(guidance.get("next_action", ""))))
+                        self._set_label_text_if_changed(practice_action_label, action_summary_text)
+                        try:
+                            practice_action_label.set_tooltip_text(action_summary_text or "")
+                        except Exception:
+                            pass
                         status_text = str(details.get("details", str(guidance.get("reason", ""))))
                         if status_text:
                             status_text = f"Reason: {status_text}"
                         self._set_label_text_if_changed(practice_action_status_label, status_text or "Action status: waiting for plan.")
+                        try:
+                            practice_action_status_label.set_tooltip_text(status_text or "Action status: waiting for plan.")
+                        except Exception:
+                            pass
                         run_state["practice_next_guidance"] = dict(guidance)
                     except Exception:
                         pass
@@ -6291,6 +6258,32 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     f"{planner_brief}\n{learner_profile_brief}".strip()
                     if planner_brief
                     else learner_profile_brief
+                )
+            outcome_summaries_brief = ""
+            outcome_builder = getattr(self, "_build_outcome_summaries_brief", None)
+            if callable(outcome_builder):
+                try:
+                    outcome_summaries_brief = str(outcome_builder(chapter, max_chars=400) or "").strip()
+                except Exception:
+                    outcome_summaries_brief = ""
+            if outcome_summaries_brief:
+                planner_brief = (
+                    f"{planner_brief}\n{outcome_summaries_brief}".strip()
+                    if planner_brief
+                    else outcome_summaries_brief
+                )
+            engine_brief = ""
+            engine_builder = getattr(self, "_build_ai_tutor_engine_brief", None)
+            if callable(engine_builder):
+                try:
+                    engine_brief = str(engine_builder(chapter, max_chars=420) or "").strip()
+                except Exception:
+                    engine_brief = ""
+            if engine_brief:
+                planner_brief = (
+                    f"{planner_brief}\n{engine_brief}".strip()
+                    if planner_brief
+                    else engine_brief
                 )
             if cognitive_runtime_brief:
                 planner_brief = (
@@ -7937,6 +7930,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def on_menu_import_snapshot(self, _action, _param):
         self.on_import_data_snapshot(None)
 
+    def on_menu_backup_now(self, _action, _param):
+        try:
+            self.save_preferences()
+            path = os.path.expanduser("~/.config/studyplan")
+            self.send_notification("Backup", f"Preferences and state saved to {path}")
+        except Exception as e:
+            self.send_notification("Backup", f"Save failed: {e}")
+
     def on_menu_recover_snapshot(self, _action, _param):
         self.on_recover_snapshot_picker(None)
 
@@ -9146,6 +9147,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             )
         )
+        ui_high_contrast = Gtk.CheckButton(label="High contrast")
+        ui_high_contrast.set_active(bool(getattr(self, "ui_high_contrast", False)))
+        ui_high_contrast.set_tooltip_text("Increase contrast for text and borders.")
         ui_legacy_fallback = Gtk.CheckButton(label="Allow emergency fallback to legacy UI")
         ui_legacy_fallback.set_active(
             bool(
@@ -9200,6 +9204,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         ui_state_info.add_css_class("muted")
         content.append(ui_modern_enabled)
         content.append(ui_reduce_motion)
+        content.append(ui_high_contrast)
         content.append(ui_legacy_fallback)
         content.append(ui_sidebar_visible)
         content.append(ui_density_row)
@@ -9609,6 +9614,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.ui_modern_enabled = bool(ui_modern_enabled.get_active())
                 self.ui_legacy_fallback_enabled = bool(ui_legacy_fallback.get_active())
             self.ui_reduce_motion = bool(ui_reduce_motion.get_active())
+            self.ui_high_contrast = bool(ui_high_contrast.get_active())
             self.ui_sidebar_visible = bool(ui_sidebar_visible.get_active())
             self.ui_density_mode = str(DEFAULT_UI_DENSITY_MODE)
             self._refresh_ui_style_runtime()
@@ -9723,6 +9729,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.ui_legacy_fallback_enabled = bool(ui_legacy_fallback.get_active())
             self.ui_density_mode = str(DEFAULT_UI_DENSITY_MODE)
             self.ui_reduce_motion = bool(ui_reduce_motion.get_active())
+            self.ui_high_contrast = bool(ui_high_contrast.get_active())
             self.ui_sidebar_visible = bool(ui_sidebar_visible.get_active())
             self.coach_only_view = bool(coach_only.get_active())
             self.sticky_coach_pick = bool(sticky_pick.get_active())
@@ -9786,6 +9793,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.menu_bar.set_visible(self.menu_bar_visible)
             self._set_coach_only_view(bool(self.coach_only_view), persist=False, animate_badge=False)
             self._refresh_ui_style_runtime()
+            try:
+                self._apply_high_contrast_preference()
+            except Exception:
+                pass
             prefs_vm = PreferencesVM(
                 modern_enabled=bool(self.ui_modern_enabled),
                 density_mode=str(self.ui_density_mode),
@@ -11089,13 +11100,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         secure_path_permissions(path, mode)
 
     def _normalize_user_file_path(self, file_path: str, label: str) -> str:
-        raw = str(file_path or "").strip()
-        if not raw:
-            raise ValueError(f"{label} path is empty.")
-        path = os.path.abspath(os.path.expanduser(raw))
-        if not path:
-            raise ValueError(f"{label} path is invalid.")
-        return path
+        return _path_normalize(file_path, label)
 
     def _validate_import_source_path(
         self,
@@ -11103,20 +11108,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         label: str,
         allowed_extensions: tuple[str, ...] | None = None,
     ) -> str:
-        path = self._normalize_user_file_path(file_path, label)
-        if allowed_extensions:
-            lower = path.lower()
-            allowed = tuple(str(ext).lower() for ext in allowed_extensions if str(ext).strip())
-            if allowed and not any(lower.endswith(ext) for ext in allowed):
-                pretty = ", ".join(allowed)
-                raise ValueError(f"{label} must use one of: {pretty}.")
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"{label} file not found.")
-        if not os.path.isfile(path):
-            raise ValueError(f"{label} path is not a regular file.")
-        if not os.access(path, os.R_OK):
-            raise ValueError(f"{label} file is not readable.")
-        return path
+        return _path_validate_import(file_path, label, allowed_extensions)
 
     def _prepare_export_target_path(
         self,
@@ -11126,62 +11118,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         default_extension: str | None = None,
         allowed_extensions: tuple[str, ...] | None = None,
     ) -> str:
-        path = self._normalize_user_file_path(file_path, label)
-        if default_extension:
-            ext = str(default_extension).strip().lower()
-            if ext and not ext.startswith("."):
-                ext = f".{ext}"
-            if ext and not os.path.splitext(path)[1]:
-                path = f"{path}{ext}"
-        if allowed_extensions:
-            lower = path.lower()
-            allowed = tuple(str(ext).lower() for ext in allowed_extensions if str(ext).strip())
-            if allowed and not any(lower.endswith(ext) for ext in allowed):
-                pretty = ", ".join(allowed)
-                raise ValueError(f"{label} must use one of: {pretty}.")
-        parent = os.path.dirname(path) or "."
-        if not os.path.isdir(parent):
-            raise FileNotFoundError(f"{label} directory does not exist.")
-        if not os.access(parent, os.W_OK):
-            raise PermissionError(f"{label} directory is not writable.")
-        if os.path.exists(path):
-            if os.path.islink(path):
-                raise ValueError(f"{label} cannot overwrite a symbolic link.")
-            if not os.path.isfile(path):
-                raise ValueError(f"{label} target is not a regular file.")
-            if not os.access(path, os.W_OK):
-                raise PermissionError(f"{label} target is not writable.")
-        return path
+        return _path_prepare_export(
+            file_path, label,
+            default_extension=default_extension,
+            allowed_extensions=allowed_extensions,
+        )
 
     def _atomic_write_bytes_file(self, file_path: str, payload: bytes, mode: int = 0o600) -> None:
-        path = self._normalize_user_file_path(file_path, "Write target")
-        parent = os.path.dirname(path) or "."
-        fd = -1
-        tmp_path = ""
-        try:
-            fd, tmp_path = tempfile.mkstemp(prefix=".studyplan-tmp-", dir=parent)
-            with os.fdopen(fd, "wb") as tmp:
-                fd = -1
-                tmp.write(bytes(payload))
-                tmp.flush()
-                try:
-                    os.fsync(tmp.fileno())
-                except Exception:
-                    pass
-            os.replace(tmp_path, path)
-            self._secure_user_path(path, mode)
-        except Exception:
-            if fd >= 0:
-                try:
-                    os.close(fd)
-                except Exception:
-                    pass
-            if tmp_path:
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-            raise
+        _path_atomic_write_bytes(file_path, payload, mode=mode)
 
     def _atomic_write_text_file(
         self,
@@ -11191,8 +11135,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         encoding: str = "utf-8",
         mode: int = 0o600,
     ) -> None:
-        payload = str(text or "").encode(str(encoding or "utf-8"), "replace")
-        self._atomic_write_bytes_file(file_path, payload, mode=mode)
+        _path_atomic_write_text(file_path, text, encoding=encoding, mode=mode)
 
     def _atomic_write_csv_rows(
         self,
@@ -11201,11 +11144,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         *,
         mode: int = 0o600,
     ) -> None:
-        stream = io.StringIO(newline="")
-        writer = csv.writer(stream)
-        for row in rows:
-            writer.writerow(row)
-        self._atomic_write_text_file(file_path, stream.getvalue(), mode=mode)
+        _path_atomic_write_csv(file_path, rows, mode=mode)
 
     def _ai_cache_enabled(self) -> bool:
         if bool(getattr(self, "_ai_cache_disabled", False)):
@@ -12121,6 +12060,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             bool(DEFAULT_UI_REDUCE_MOTION),
                         )
                     )
+                    self.ui_high_contrast = bool(data.get("ui_high_contrast", False))
+                    try:
+                        self.semantic_warmup_delay_ms = max(0, min(300_000, int(data.get("semantic_warmup_delay_ms", 4000) or 4000)))
+                    except Exception:
+                        self.semantic_warmup_delay_ms = 4000
                     self.ui_legacy_fallback_enabled = bool(
                         self._coerce_ui_toggle(
                             data.get("ui_legacy_fallback_enabled", DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
@@ -12223,6 +12167,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.last_coach_pick_date = data.get("last_coach_pick_date")
                     self.onboarding_dismissed = bool(data.get("onboarding_dismissed", False))
                     self.first_run_completed = bool(data.get("first_run_completed", False))
+                    oms = data.get("outcome_micro_summaries", {}) or {}
+                    self.outcome_micro_summaries = oms if isinstance(oms, dict) else {}
                     mod_id = data.get("module_id")
                     mod_title = data.get("module_title")
                     if isinstance(mod_id, str) and mod_id.strip():
@@ -12307,8 +12253,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             if token not in cleaned:
                                 cleaned.append(token)
                         self.focus_allowlist = cleaned
+                    try:
+                        self._apply_high_contrast_preference()
+                    except Exception:
+                        pass
         except Exception:
             pass
+
+    def _apply_high_contrast_preference(self) -> None:
+        if getattr(self, "ui_high_contrast", False):
+            try:
+                self.add_css_class("high-contrast")
+            except Exception:
+                pass
+        else:
+            try:
+                self.remove_css_class("high-contrast")
+            except Exception:
+                pass
 
     def save_preferences(self) -> None:
         try:
@@ -12355,6 +12317,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         bool(DEFAULT_UI_REDUCE_MOTION),
                     )
                 ),
+                "ui_high_contrast": bool(getattr(self, "ui_high_contrast", False)),
+                "semantic_warmup_delay_ms": int(getattr(self, "semantic_warmup_delay_ms", 4000) or 4000),
                 "ui_legacy_fallback_enabled": bool(
                     self._coerce_ui_toggle(
                         getattr(self, "ui_legacy_fallback_enabled", DEFAULT_UI_LEGACY_FALLBACK_ENABLED),
@@ -12397,6 +12361,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "last_coach_pick_date": self.last_coach_pick_date,
                 "onboarding_dismissed": bool(self.onboarding_dismissed),
                 "first_run_completed": bool(self.first_run_completed),
+                "outcome_micro_summaries": dict(getattr(self, "outcome_micro_summaries", {}) or {}),
                 "module_id": str(self.module_id),
                 "module_title": str(self.module_title),
                 "short_pomodoro_today_count": int(self.short_pomodoro_today_count),
@@ -16084,6 +16049,148 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             planner = f"{planner[: max(0, max_chars - 3)].rstrip()}..."
         return planner
 
+    def _build_outcome_summaries_brief(self, chapter: str, max_chars: int = 400) -> str:
+        """Build a short 'what I must know' summary per outcome for the current chapter for tutor context."""
+        if not chapter or not getattr(self, "engine", None):
+            return ""
+        oms = getattr(self, "outcome_micro_summaries", {}) or {}
+        by_chapter = oms.get(chapter) if isinstance(oms, dict) else {}
+        if not by_chapter or not isinstance(by_chapter, dict):
+            return ""
+        suggestions = getattr(self.engine, "get_outcome_tutor_prompt_suggestions", lambda _: [])(chapter)
+        seen: set[str] = set()
+        ordered_ids: list[str] = []
+        for s in suggestions:
+            oid = str(s.get("outcome_id", "") or "").strip()
+            if oid and oid not in seen:
+                seen.add(oid)
+                ordered_ids.append(oid)
+        if not ordered_ids:
+            ordered_ids = sorted(by_chapter.keys())
+        lines = ["Outcome micro-summaries (what I must know):"]
+        used = 0
+        for oid in ordered_ids:
+            summary = (by_chapter.get(oid) or "").strip()
+            if not summary:
+                continue
+            line = f"{oid}: {summary[:120]}{'…' if len(summary) > 120 else ''}"
+            if used + len(line) + 1 > max_chars:
+                break
+            lines.append(line)
+            used += len(line) + 1
+        if len(lines) <= 1:
+            return ""
+        return "\n".join(lines).strip()
+
+    def _build_ai_tutor_engine_brief(self, chapter: str, max_chars: int = 420) -> str:
+        """Build a short engine-fed context block for the AI tutor (mastery, syllabus, due, pace, recommendations)."""
+        if not chapter or not getattr(self, "engine", None):
+            return ""
+        eng = self.engine
+        lines: list[str] = []
+        try:
+            stats = eng.get_mastery_stats(chapter)
+            if isinstance(stats, dict) and int(stats.get("total", 0) or 0) > 0:
+                total = int(stats.get("total", 0) or 0)
+                new_c = int(stats.get("new", 0) or 0)
+                learning = int(stats.get("learning", 0) or 0)
+                reviewing = int(stats.get("reviewing", 0) or 0)
+                mastered = int(stats.get("mastered", 0) or 0)
+                comp = float(stats.get("competence", 0) or 0)
+                lines.append(
+                    f"Mastery ({chapter}): new={new_c} learning={learning} reviewing={reviewing} mastered={mastered} total={total}; competence={comp:.0f}%."
+                )
+        except Exception:
+            pass
+        try:
+            intel = eng.get_syllabus_chapter_intelligence(chapter)
+            if isinstance(intel, dict):
+                outcome_count = int(intel.get("outcome_count", 0) or 0)
+                coverage = float(intel.get("coverage_progress", 0) or 0)
+                outcomes_remaining = int(intel.get("outcomes_remaining", 0) or 0)
+                if outcome_count > 0:
+                    lines.append(
+                        f"Syllabus: {outcome_count} outcomes, {coverage:.0f}% coverage, {outcomes_remaining} remaining."
+                    )
+                lo = list(intel.get("learning_outcomes", []) or [])[:2]
+                for o in lo:
+                    if isinstance(o, dict):
+                        text = str(o.get("text", "") or "").strip()[:80]
+                        if text:
+                            lines.append(f"Outcome: {text}{'…' if len(str(o.get('text', ''))) > 80 else ''}")
+        except Exception:
+            pass
+        try:
+            today = datetime.date.today()
+            due_by_chapter = eng.get_due_today_by_chapter(today)
+            if isinstance(due_by_chapter, dict):
+                due = int(due_by_chapter.get(chapter, 0) or 0)
+                if due > 0:
+                    lines.append(f"Due today (this chapter): {due} items.")
+        except Exception:
+            pass
+        try:
+            risk = eng.get_chapter_recall_risk(chapter)
+            if risk is not None and isinstance(risk, (int, float)):
+                r = float(risk)
+                if 0 <= r <= 1:
+                    lines.append(f"Recall risk: {r:.0%}.")
+        except Exception:
+            pass
+        try:
+            days = eng.get_days_remaining()
+            if isinstance(days, int) and days is not None:
+                lines.append(f"Days to exam: {days}.")
+            pace = eng.get_pace_status()
+            if isinstance(pace, dict):
+                status = str(pace.get("status", "") or "").strip().lower()
+                if status in ("on_track", "behind", "ahead", "unknown"):
+                    lines.append(f"Pace: {status}.")
+        except Exception:
+            pass
+        try:
+            recs = eng.top_recommendations(max(3, len(getattr(eng, "CHAPTERS", []) or [])))
+            if isinstance(recs, list) and recs:
+                for r in recs[:2]:
+                    if isinstance(r, (list, tuple)) and len(r) >= 2 and str(r[0]).strip() == chapter:
+                        lines.append(f"Engine recommends this chapter (priority).")
+                        break
+                else:
+                    top_ch = str(recs[0][0]).strip() if recs and isinstance(recs[0], (list, tuple)) else ""
+                    if top_ch and top_ch != chapter:
+                        lines.append(f"Engine top priority: {top_ch}.")
+        except Exception:
+            pass
+        if not lines:
+            return ""
+        out = "Engine context: " + " ".join(lines).strip()
+        if len(out) > max_chars:
+            out = out[: max(0, max_chars - 3)].rstrip() + "…"
+        return out
+
+    def _get_outcome_micro_summary(self, chapter: str, outcome_id: str) -> str:
+        """Return the user's micro-summary for an outcome, or empty string."""
+        oms = getattr(self, "outcome_micro_summaries", {}) or {}
+        if not isinstance(oms, dict):
+            return ""
+        by_ch = oms.get(chapter) if isinstance(oms.get(chapter), dict) else {}
+        return str((by_ch.get(outcome_id) or "") or "").strip()
+
+    def _set_outcome_micro_summary(self, chapter: str, outcome_id: str, text: str, persist: bool = True) -> None:
+        """Set the micro-summary for an outcome and optionally save preferences."""
+        oms = getattr(self, "outcome_micro_summaries", {}) or {}
+        if not isinstance(oms, dict):
+            self.outcome_micro_summaries = {}
+            oms = self.outcome_micro_summaries
+        if chapter not in oms:
+            oms[chapter] = {}
+        oms[chapter][outcome_id] = str(text or "").strip()
+        if persist:
+            try:
+                self.save_preferences()
+            except Exception:
+                pass
+
     def _build_ai_tutor_learner_profile_brief(
         self,
         *,
@@ -16596,6 +16703,134 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "fsm_state": str(state.working_memory.socratic_state or "DIAGNOSE"),
             "wm_chunks": len(list(state.working_memory.context_chunks or [])),
         }
+
+    def _build_practice_loop_ai_context(
+        self,
+        session_state: Any,
+        learner_profile: Any,
+        app_snapshot: Any,
+    ) -> dict[str, Any]:
+        """Build app context for AI-generated practice items: cognitive state and outcome expectations."""
+        topic = str(
+            getattr(app_snapshot, "current_topic", "")
+            or getattr(session_state, "topic", "")
+            or getattr(self, "current_topic", "")
+            or ""
+        ).strip()
+        weak_topics = list(getattr(app_snapshot, "weak_topics_top3", ()) or ())[:3]
+        misconceptions = list(getattr(learner_profile, "misconception_tags_top", ()) or ())[:5]
+        weak_caps = list(getattr(learner_profile, "weak_capabilities_top", ()) or ())[:3]
+        cog_meta = self._build_tutor_loop_cognitive_runtime_meta(chapter=topic) if topic else {}
+        outcome_expectations: list[str] = []
+        if topic and getattr(self, "engine", None):
+            try:
+                suggestions = getattr(self.engine, "get_outcome_tutor_prompt_suggestions", lambda _: [])(topic)
+                for s in (suggestions or [])[:6]:
+                    oid = str(s.get("outcome_id", "") or "").strip()
+                    label = str(s.get("label", "") or "").strip()
+                    if oid or label:
+                        outcome_expectations.append(f"{oid or label}: {str(s.get('prompt', '') or '')[:100]}")
+            except Exception:
+                outcome_expectations = []
+        return {
+            "topic": topic or "current topic",
+            "weak_topics_top3": weak_topics,
+            "misconception_tags_top": misconceptions,
+            "weak_capabilities_top": weak_caps,
+            "cognitive": {
+                "posterior_mean": float(cog_meta.get("posterior_mean", 0.5) or 0.5),
+                "struggle_mode": bool(cog_meta.get("struggle_mode", False)),
+                "fsm_state": str(cog_meta.get("fsm_state", "") or "DIAGNOSE"),
+            },
+            "outcome_expectations": outcome_expectations[:8],
+            "must_review_due": int(getattr(app_snapshot, "must_review_due", 0) or 0),
+        }
+
+    def _build_practice_items_ai_prompt(self, context: dict[str, Any], max_items: int = 3) -> str:
+        """Build prompt for LLM to generate practice items using app context."""
+        payload = {
+            "topic": context.get("topic", "current topic"),
+            "weak_topics": context.get("weak_topics_top3", []),
+            "misconceptions": context.get("misconception_tags_top", []),
+            "weak_capabilities": context.get("weak_capabilities_top", []),
+            "cognitive": context.get("cognitive", {}),
+            "outcome_expectations": context.get("outcome_expectations", []),
+            "max_items": max(1, min(5, int(max_items or 3))),
+        }
+        return "\n".join(
+            [
+                "Generate ACCA practice-loop items as JSON only (no prose). Use the app context to target weak areas and syllabus outcomes.",
+                "Schema:",
+                '{"items":[{"item_id":"topic-slug-1","item_type":"short_answer|teach_back|mcq","prompt":"question or task text","topic":"chapter","expected_format":"1-3 lines","difficulty":"easy|medium|hard","rubric_hints":["keyword"],"meta":{"keywords":["a","b"],"marks_max":2.0}}]}',
+                "Rules:",
+                "- item_type: short_answer, teach_back, or mcq. For mcq include meta.options (list of 4) and meta.correct_option (A/B/C/D).",
+                "- prompt: one clear, compelling question that applies to the topic and (if present) targets weak_topics/misconceptions/outcome_expectations.",
+                "- Difficulty: align with cognitive.posterior_mean (low→easier, high→harder); if struggle_mode prefer easy/medium.",
+                "- outcome_expectations: prefer questions that address these syllabus outcomes when listed.",
+                "- Generate exactly max_items items; each prompt must be distinct and exam-relevant.",
+                "Payload JSON:",
+                json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True),
+            ]
+        ).strip()
+
+    def _parse_ai_practice_items(self, text: str, topic: str) -> tuple[Any, ...]:
+        """Parse LLM JSON into TutorPracticeItem list. Returns empty tuple on parse failure."""
+        raw = self._extract_first_json_object(str(text or "").strip())
+        if not raw:
+            return ()
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return ()
+        items_raw = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items_raw, list):
+            return ()
+        out: list[Any] = []
+        base_topic = str(topic or "").strip() or "topic"
+        slug = re.sub(r"[^a-z0-9]+", "-", base_topic.lower()).strip("-") or "topic"
+        for idx, row in enumerate(items_raw[:5]):
+            if not isinstance(row, dict):
+                continue
+            item_id = str(row.get("item_id", "") or "").strip()
+            if not item_id:
+                item_id = f"{slug}-ai-{idx + 1}"
+            row["item_id"] = item_id
+            row["topic"] = str(row.get("topic", "") or "").strip() or base_topic
+            row["source"] = "ai_practice_loop"
+            if not str(row.get("prompt", "") or "").strip():
+                continue
+            try:
+                out.append(TutorPracticeItem.from_dict(row))
+            except Exception:
+                continue
+        return tuple(out)
+
+    def _try_build_ai_practice_items(
+        self,
+        session_state: Any,
+        learner_profile: Any,
+        app_snapshot: Any,
+        max_items: int = 3,
+    ) -> tuple[Any, ...] | None:
+        """Try to build practice items via AI using app context. Returns None on failure or when LLM disabled."""
+        if not bool(getattr(self, "local_llm_enabled", False)):
+            return None
+        context = self._build_practice_loop_ai_context(session_state, learner_profile, app_snapshot)
+        prompt = self._build_practice_items_ai_prompt(context, max_items=max_items)
+        model_name, _ = self._select_local_llm_model(
+            model_override=None,
+            purpose="tutor",
+            available_models=None,
+            persist=False,
+        )
+        if not model_name:
+            return None
+        text, err = self._ollama_generate_text(model_name, prompt)
+        if err or not str(text or "").strip():
+            return None
+        topic = str(context.get("topic", "") or "").strip() or "current topic"
+        items = self._parse_ai_practice_items(text, topic)
+        return items if items else None
 
     def _infer_transfer_structure_for_practice_item(self, item: TutorPracticeItem | Any) -> Any | None:
         registry = getattr(self, "_transfer_structure_registry", None)
@@ -19358,8 +19593,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if chapter_name not in getattr(self.engine, "CHAPTERS", []):
             return None
         prompt = str(row.get("prompt", "") or "").strip()
-        if len(prompt) < 24:
+        scenario_text = str(row.get("scenario", "") or "").strip()
+        if not scenario_text and len(prompt) < 24:
             return None
+        if scenario_text and not prompt:
+            prompt = scenario_text[:200] + ("…" if len(scenario_text) > 200 else "")
+        requirements_raw = row.get("requirements", [])
+        requirements: list[dict[str, Any]] = []
+        if isinstance(requirements_raw, list):
+            for item in requirements_raw:
+                if isinstance(item, dict):
+                    part = str(item.get("part", "") or "").strip().lower() or None
+                    req_text = str(item.get("requirement_text", "") or item.get("text", "") or "").strip()
+                    try:
+                        marks = max(0, min(20, int(item.get("marks", 0) or 0)))
+                    except Exception:
+                        marks = 0
+                    if req_text and marks > 0:
+                        part = part or ("abcdefgh"[len(requirements)] if len(requirements) < 8 else "x")
+                        requirements.append({"part": part, "requirement_text": req_text[:300], "marks": marks})
+                elif isinstance(item, str) and item.strip():
+                    part = "abcdefgh"[len(requirements)] if len(requirements) < 8 else "x"
+                    requirements.append({"part": part, "requirement_text": item.strip()[:300], "marks": 0})
+        if requirements:
+            total_req_marks = sum(int(r.get("marks", 0) or 0) for r in requirements)
+            if total_req_marks <= 0:
+                n = len(requirements)
+                base, extra = (20 // n), 20 % n
+                for i, r in enumerate(requirements):
+                    r["marks"] = base + (1 if i < extra else 0)
         exhibits_raw = row.get("exhibits", [])
         exhibits: list[str] = []
         if isinstance(exhibits_raw, list):
@@ -19367,9 +19629,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 text = str(item or "").strip()
                 if text:
                     exhibits.append(text[:400])
+        if scenario_text and not exhibits:
+            exhibits = [scenario_text[:1200]]
         tasks_raw = row.get("required_tasks", [])
         required_tasks: list[str] = []
-        if isinstance(tasks_raw, list):
+        if requirements:
+            required_tasks = [str(r.get("requirement_text", "") or "").strip() for r in requirements if str(r.get("requirement_text", "") or "").strip()]
+        if not required_tasks and isinstance(tasks_raw, list):
             for item in tasks_raw:
                 text = str(item or "").strip()
                 if text:
@@ -19380,8 +19646,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "Show relevant formulas or assumptions and conclude with a recommendation.",
             ]
         rubric_rows: list[dict[str, Any]] = []
+        if requirements:
+            for r in requirements:
+                part = str(r.get("part", "") or "").strip().upper()
+                req_text = str(r.get("requirement_text", "") or "").strip()
+                marks = int(r.get("marks", 0) or 0)
+                if marks <= 0:
+                    continue
+                criterion = f"Part ({part}): {req_text[:100]}" if req_text else f"Part ({part})"
+                rubric_rows.append({"criterion": criterion[:160], "max_marks": min(20, marks)})
         rubric_raw = row.get("marking_rubric", [])
-        if isinstance(rubric_raw, list):
+        if not rubric_rows and isinstance(rubric_raw, list):
             for item in rubric_raw:
                 if not isinstance(item, dict):
                     continue
@@ -19428,10 +19703,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         qid = str(row.get("id", "") or "").strip()
         if not qid:
             qid = self._section_c_question_id(chapter_name, prompt)
+        total_marks = sum(int(r.get("max_marks", 0) or 0) for r in rubric_rows)
+        if total_marks <= 0:
+            total_marks = 20
         return {
             "id": qid[:40],
             "chapter": chapter_name,
             "prompt": prompt[:2400],
+            "scenario": scenario_text[:2400] if scenario_text else "",
+            "requirements": requirements[:8] if requirements else [],
+            "total_marks": min(20, max(1, total_marks)),
             "exhibits": exhibits[:8],
             "required_tasks": required_tasks[:8],
             "marking_rubric": rubric_rows[:8],
@@ -19442,33 +19723,31 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         }
 
     def _default_section_c_question(self, chapter: str) -> dict[str, Any]:
-        prompt = (
-            f"Section C case on {chapter}: advise the finance director using a structured, exam-style response. "
-            "Use concise calculations where relevant and justify assumptions."
+        scenario = (
+            f"ACCA Section C style case – {chapter}. "
+            "A company scenario with figures and context is given. "
+            "Respond in exam format: address each requirement (a), (b), (c) with clear workings and recommendation."
         )
         row = {
             "chapter": str(chapter or ""),
-            "prompt": prompt,
-            "exhibits": [
-                "Exhibit 1: Brief case facts with numerical assumptions.",
-                "Exhibit 2: Policy constraints and risk context.",
+            "prompt": scenario,
+            "scenario": scenario,
+            "requirements": [
+                {"part": "a", "requirement_text": "Calculate or evaluate the key metric. Show assumptions and workings.", "marks": 8},
+                {"part": "b", "requirement_text": "Discuss the implications and compare options where relevant.", "marks": 8},
+                {"part": "c", "requirement_text": "Recommend a course of action and state risks or limitations.", "marks": 4},
             ],
             "required_tasks": [
-                "State the decision objective and the relevant financial framework.",
-                "Show key workings or formulas and explain assumptions.",
-                "Conclude with recommendation, risks, and sensitivity comment.",
+                "Part (a): Calculate or evaluate with workings.",
+                "Part (b): Discuss implications.",
+                "Part (c): Recommend and state risks.",
             ],
             "marking_rubric": [
-                {"criterion": "Technical application to case facts", "max_marks": 8},
-                {"criterion": "Method, workings, and assumptions", "max_marks": 6},
-                {"criterion": "Evaluation and recommendation", "max_marks": 4},
-                {"criterion": "Structure and exam communication", "max_marks": 2},
+                {"criterion": "Part (a): Calculation and application", "max_marks": 8},
+                {"criterion": "Part (b): Discussion and analysis", "max_marks": 8},
+                {"criterion": "Part (c): Recommendation and caveats", "max_marks": 4},
             ],
-            "model_answer_outline": [
-                "Objective + context",
-                "Workings + assumptions",
-                "Recommendation + risk caveat",
-            ],
+            "model_answer_outline": ["Part (a): Workings and result.", "Part (b): Key points.", "Part (c): Recommendation + risk."],
             "time_budget_minutes": SECTION_C_DEFAULT_TIME_BUDGET_MINUTES,
             "source": "template",
         }
@@ -19476,12 +19755,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if isinstance(normalized, dict):
             return normalized
         return {
-            "id": self._section_c_question_id(chapter, prompt),
+            "id": self._section_c_question_id(chapter, scenario),
             "chapter": str(chapter or ""),
-            "prompt": prompt,
+            "prompt": scenario,
+            "scenario": scenario,
+            "requirements": [],
+            "total_marks": 20,
             "exhibits": [],
             "required_tasks": ["Answer the requirement directly."],
-            "marking_rubric": [{"criterion": "Relevance and structure", "max_marks": 10}],
+            "marking_rubric": [{"criterion": "Relevance and structure", "max_marks": 20}],
             "model_answer_outline": ["Direct answer with key steps."],
             "time_budget_minutes": int(SECTION_C_DEFAULT_TIME_BUDGET_MINUTES),
             "source": "template",
@@ -19603,20 +19885,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         }
         return "\n".join(
             [
-                "Generate one Section C constructed-response case as JSON only (no prose).",
+                "Generate one ACCA Section C constructed-response case as JSON only (no prose).",
+                "Output must match live exam format: one scenario narrative and requirements (a), (b), (c) with mark allocation. Do not use empty exhibits.",
                 "Schema:",
-                '{"chapter":"chapter","prompt":"case prompt","exhibits":["..."],"required_tasks":["..."],"marking_rubric":[{"criterion":"name","max_marks":8}],"model_answer_outline":["..."],"time_budget_minutes":45}',
+                '{"chapter":"...","scenario":"Full case narrative (company, situation, numbers). 150-400 words. No placeholders.","requirements":[{"part":"a","requirement_text":"Requirement with command verb (e.g. Calculate, Evaluate, Recommend).","marks":8},{"part":"b","requirement_text":"...","marks":8},{"part":"c","requirement_text":"...","marks":4}],"model_answer_outline":["...","...","..."],"time_budget_minutes":45}',
                 "Rules:",
-                "- Keep prompt practical and exam-style (case facts + clear requirement).",
-                "- required_tasks must have at least 2 entries.",
-                "- marking_rubric must have at least 2 rows.",
-                "- max_marks must be positive integers.",
-                "- time_budget_minutes between 20 and 90.",
-                "- Include command-verb requirements (e.g., evaluate, calculate, recommend, discuss).",
-                "- Rubric should reward application to case facts, technical workings, evaluation, and structure.",
-                "- Target total marks around 20 for one Section C case.",
-                "- Use payload.section_c_intelligence.target_difficulty to tune complexity/support level.",
-                "- If payload.section_c_intelligence.rubric_emphasis is present, include a requirement that trains it without narrowing the whole case.",
+                "- scenario: Single narrative with case facts, figures, and context. No empty exhibits or [Exhibit 1] placeholders.",
+                "- requirements: Exactly 3 parts (a), (b), (c). Each has part (a/b/c), requirement_text (one clear task with command verb), and marks. Total marks must equal 20.",
+                "- Command verbs: Calculate, Evaluate, Recommend, Discuss, Explain, Assess, Compare, Advise.",
+                "- Part (a) often 8 marks (calculation/application), (b) 8 marks (discussion), (c) 4 marks (recommendation). Adjust so total = 20.",
+                "- model_answer_outline: 3 short bullets matching (a)(b)(c).",
+                "- time_budget_minutes: 20-90 (typically 45).",
+                "- Use payload.section_c_intelligence.target_difficulty to tune scenario complexity.",
+                "- If payload.section_c_intelligence.rubric_emphasis is set, emphasise that skill in one requirement.",
                 "Payload JSON:",
                 json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True),
             ]
@@ -20250,10 +20531,42 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return "Section C intelligence: " + " • ".join(bits[:5])
 
     def _format_section_c_question_text(self, question: dict[str, Any]) -> str:
+        time_budget = int(question.get("time_budget_minutes", SECTION_C_DEFAULT_TIME_BUDGET_MINUTES) or SECTION_C_DEFAULT_TIME_BUDGET_MINUTES)
+        total_marks = int(question.get("total_marks", 0) or 0)
+        if total_marks <= 0:
+            rubric = list(question.get("marking_rubric", []) or [])
+            total_marks = sum(int(r.get("max_marks", 0) or 0) for r in rubric if isinstance(r, dict)) or 20
+        scenario = str(question.get("scenario", "") or "").strip()
+        requirements = list(question.get("requirements", []) or [])
+        if scenario or requirements:
+            lines = ["Scenario", "--------"]
+            if scenario:
+                lines.append(scenario)
+            else:
+                lines.append(str(question.get("prompt", "") or "").strip())
+            lines.append("")
+            lines.append("Requirements")
+            lines.append("------------")
+            if requirements:
+                for r in requirements:
+                    if not isinstance(r, dict):
+                        continue
+                    part = str(r.get("part", "") or "").strip().upper()
+                    req_text = str(r.get("requirement_text", "") or "").strip()
+                    marks = int(r.get("marks", 0) or 0)
+                    if part and req_text:
+                        lines.append(f"({part}) {req_text} ({marks} marks)")
+            else:
+                tasks = list(question.get("required_tasks", []) or [])
+                for idx, item in enumerate(tasks, start=1):
+                    lines.append(f"({chr(96 + idx)}) {str(item or '').strip()}")
+            lines.append("")
+            lines.append(f"Total marks: {total_marks}  |  Time: {time_budget} minutes")
+            return "\n".join(lines).strip()
         lines = [
             f"Prompt: {str(question.get('prompt', '') or '').strip()}",
             "",
-            f"Time budget: {int(question.get('time_budget_minutes', SECTION_C_DEFAULT_TIME_BUDGET_MINUTES) or SECTION_C_DEFAULT_TIME_BUDGET_MINUTES)} min",
+            f"Time budget: {time_budget} min",
             "",
         ]
         exhibits = list(question.get("exhibits", []) or [])
@@ -20723,11 +21036,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if not model_name:
             return deterministic, str(model_err or "No local model available for Section C evaluation.")
 
+        rubric_list = list(question.get("marking_rubric", []) or [])[:8]
+        total_marks = int(question.get("total_marks", 0) or 0)
+        if total_marks <= 0:
+            total_marks = sum(int(r.get("max_marks", 0) or 0) for r in rubric_list if isinstance(r, dict)) or 20
         question_payload = {
             "chapter": str(question.get("chapter", "") or "").strip(),
+            "scenario": str(question.get("scenario", "") or question.get("prompt", "") or "").strip()[:1800],
             "prompt": str(question.get("prompt", "") or "").strip()[:1800],
+            "requirements": list(question.get("requirements", []) or [])[:8],
             "required_tasks": list(question.get("required_tasks", []) or [])[:8],
-            "marking_rubric": list(question.get("marking_rubric", []) or [])[:8],
+            "marking_rubric": rubric_list,
+            "total_marks": total_marks,
             "time_budget_minutes": int(
                 question.get(
                     "time_budget_minutes",
@@ -20738,11 +21058,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         }
         prompt = "\n".join(
             [
-                "Grade this constructed-response attempt and return JSON only (no prose).",
+                "Grade this ACCA Section C constructed-response. Return JSON only (no prose). Total marks = 20.",
                 "Schema:",
-                '{"total_mark":12,"max_mark":20,"criterion_scores":[{"criterion":"name","score":4,"max_mark":8,"feedback":"short"}],"strengths":["..."],"improvements":["..."],"next_drill":"..."}',
+                '{"total_mark":12,"max_mark":20,"criterion_scores":[{"criterion":"Part (a) or criterion name","score":4,"max_mark":8,"feedback":"short"}],"strengths":["..."],"improvements":["..."],"next_drill":"..."}',
                 "Rules:",
-                "- Mark like an examiner: reward application to case facts, technical workings, evaluation, and communication.",
+                "- Mark like an examiner: one criterion_scores row per requirement (a)(b)(c); scores must sum to total_mark; max_mark = 20.",
+                "- Reward application to scenario facts, technical workings, evaluation, and communication.",
                 "- Keep criterion_scores aligned to every rubric row; include one row for each rubric criterion.",
                 "- score must be integer 0..max_mark for each row.",
                 "- Do not award marks for generic theory that is not linked to the case facts.",
@@ -20784,15 +21105,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         content = dialog.get_content_area()
         content.set_spacing(8)
 
-        title = Gtk.Label(label="Section C Constructed-Response Practice")
+        title = Gtk.Label(label="Section C – Constructed response (ACCA exam format)")
         title.set_halign(Gtk.Align.START)
         title.add_css_class("section-title")
         content.append(title)
 
         subtitle = Gtk.Label(
             label=(
-                "Practice exam-style written responses. Generate cases from local AI or use saved cases, "
-                "then evaluate your answer with deterministic + AI-assisted marking."
+                "Scenario + requirements (a), (b), (c) with mark allocation (20 marks total). "
+                "Generate a case with local AI (no empty exhibits) or load saved; write your answer and evaluate with criterion-level marking."
             )
         )
         subtitle.set_halign(Gtk.Align.START)
@@ -20835,7 +21156,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         status_label.add_css_class("muted")
         content.append(status_label)
 
-        question_label = Gtk.Label(label="Case question")
+        question_label = Gtk.Label(label="Scenario & requirements (20 marks)")
         question_label.set_halign(Gtk.Align.START)
         question_label.add_css_class("caption")
         content.append(question_label)
@@ -20849,7 +21170,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         question_scroll.set_child(question_view)
         content.append(question_scroll)
 
-        answer_label = Gtk.Label(label="Your response")
+        answer_label = Gtk.Label(label="Your response (address (a), (b), (c) in order)")
         answer_label.set_halign(Gtk.Align.START)
         answer_label.add_css_class("caption")
         content.append(answer_label)
@@ -26354,9 +26675,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             schedule_items.extend(
                 [
                     ("_auto_train_timer_id", 60_000, self._auto_train_ml_tick),
-                    ("_semantic_warmup_timer_id", 4_000, self._semantic_warmup_tick),
                 ]
             )
+            delay_ms = max(0, int(getattr(self, "semantic_warmup_delay_ms", 4000) or 4000))
+            if delay_ms > 0:
+                schedule_items.append(("_semantic_warmup_timer_id", delay_ms, self._semantic_warmup_tick))
         else:
             _log_loky_diagnostics("semantic_warmup_skipped")
         schedule_items.append(("_window_poll_timer_id", 2000, self._poll_window_size))
@@ -29673,6 +29996,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _flash_window_title(self, seconds: int = 18, interval: int = 2) -> None:
         if not self.pomodoro_title_flash_enabled:
+            return
+        if bool(getattr(self, "ui_reduce_motion", False)):
             return
         if self._title_flash_id:
             try:
@@ -34709,6 +35034,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if not focus_mode and self._should_show_onboarding():
             self.dashboard.append(self._build_onboarding_card())
 
+        # Exam countdown & on-track (when exam date is set)
+        if isinstance(days_remaining, int) and days_remaining > 0 and self._has_chapters():
+            try:
+                readiness_info = self._compute_exam_readiness_details()
+                mastery_pct = float(readiness_info.get("mastery_pct", 0) or readiness_info.get("score", 0) or 0)
+                coverage_pct = max(0, min(100, int(round(mastery_pct))))
+                countdown_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                countdown_card.add_css_class("card")
+                countdown_card.add_css_class("exam-countdown-card")
+                countdown_title = self._ui.section_title("Exam countdown")
+                countdown_card.append(countdown_title)
+                countdown_body = Gtk.Label(
+                    label=f"{days_remaining} days to exam • At current pace: ~{coverage_pct}% coverage by exam day"
+                )
+                countdown_body.set_halign(Gtk.Align.START)
+                countdown_body.set_wrap(True)
+                countdown_body.add_css_class("muted")
+                countdown_card.append(countdown_body)
+                self.dashboard.append(countdown_card)
+            except Exception:
+                pass
+
         if not self._has_chapters():
             empty_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
             empty_card.add_css_class("card")
@@ -34716,7 +35063,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             empty_card.append(empty_title)
             empty_text = Gtk.Label(
                 label="Add a module JSON to unlock chapters, quizzes, and schedules.\n"
-                "Menu: Module → Manage Modules"
+                "Menu: Module → Manage Modules\n"
+                "Or File → Recover from Snapshot to restore a backup."
             )
             empty_text.set_halign(Gtk.Align.START)
             empty_text.set_wrap(True)
@@ -35785,13 +36133,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 leaderboard = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                 leaderboard.add_css_class("card")
                 leaderboard.add_css_class("insight-card")
+                leaderboard.add_css_class("dashboard-focus-topics")
                 title = self._ui.section_title("Focus Topics (7 days)")
                 leaderboard.append(title)
                 label = Gtk.Label(label="\n".join(focus_lines))
                 label.set_halign(Gtk.Align.START)
-                label.set_wrap(True)
+                label.set_wrap(False)
+                label.set_ellipsize(Pango.EllipsizeMode.END)
+                label.set_max_width_chars(42)
                 label.add_css_class("muted")
                 label.add_css_class("dashboard-block-body")
+                self._sync_single_line_label_tooltip(label, "\n".join(focus_lines))
                 leaderboard.append(label)
                 self.dashboard.append(leaderboard)
 
@@ -35800,13 +36152,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 leaderboard = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                 leaderboard.add_css_class("card")
                 leaderboard.add_css_class("insight-card")
+                leaderboard.add_css_class("dashboard-retrieval-topics")
                 title = self._ui.section_title("Retrieval Topics (7 days)")
                 leaderboard.append(title)
                 label = Gtk.Label(label="\n".join(retrieval_lines))
                 label.set_halign(Gtk.Align.START)
-                label.set_wrap(True)
+                label.set_wrap(False)
+                label.set_ellipsize(Pango.EllipsizeMode.END)
+                label.set_max_width_chars(42)
                 label.add_css_class("muted")
                 label.add_css_class("dashboard-block-body")
+                self._sync_single_line_label_tooltip(label, "\n".join(retrieval_lines))
                 leaderboard.append(label)
                 self.dashboard.append(leaderboard)
 
@@ -35815,13 +36171,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 leaderboard = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                 leaderboard.add_css_class("card")
                 leaderboard.add_css_class("insight-card")
+                leaderboard.add_css_class("dashboard-today-topics")
                 title = self._ui.section_title("Today's Top Topics")
                 leaderboard.append(title)
                 label = Gtk.Label(label="\n".join(today_lines))
                 label.set_halign(Gtk.Align.START)
-                label.set_wrap(True)
+                label.set_wrap(False)
+                label.set_ellipsize(Pango.EllipsizeMode.END)
+                label.set_max_width_chars(42)
                 label.add_css_class("muted")
                 label.add_css_class("dashboard-block-body")
+                self._sync_single_line_label_tooltip(label, "\n".join(today_lines))
                 leaderboard.append(label)
                 self.dashboard.append(leaderboard)
         except Exception:
@@ -37017,14 +37377,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     top_due = sorted(due_today.items(), key=lambda x: x[1], reverse=True)[:5]
                     due_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                     due_card.add_css_class("card")
+                    due_card.add_css_class("dashboard-reviews-due")
                     due_title = self._ui.section_title("Reviews Due Today")
                     due_card.append(due_title)
                     lines = [f"Total due: {int(total_due)}"]
                     lines.extend([f"{i+1}. {ch} — {int(cnt)}" for i, (ch, cnt) in enumerate(top_due)])
                     due_label = Gtk.Label(label="\n".join(lines))
                     due_label.set_halign(Gtk.Align.START)
-                    due_label.set_wrap(True)
+                    due_label.set_wrap(False)
+                    due_label.set_ellipsize(Pango.EllipsizeMode.END)
+                    due_label.set_max_width_chars(42)
                     due_label.add_css_class("muted")
+                    due_label.add_css_class("dashboard-block-body")
+                    self._sync_single_line_label_tooltip(due_label, "\n".join(lines))
                     due_card.append(due_label)
                     self.dashboard.append(due_card)
 
@@ -37048,6 +37413,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     leech_label.set_max_width_chars(72)
                     leech_label.add_css_class("muted")
                     leech_label.add_css_class("allow-wrap")
+                    leech_label.add_css_class("dashboard-block-body")
+                    self._sync_single_line_label_tooltip(leech_label, "\n".join(lines))
                     leech_card.append(leech_label)
                     self.dashboard.append(leech_card)
             except Exception:

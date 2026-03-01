@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import types
 import builtins
 import json
@@ -1664,6 +1665,32 @@ def test_syllabus_parser_extracts_outcomes_and_levels(engine_no_io):
     assert 3 in levels
 
 
+def test_get_outcome_tutor_prompt_suggestions_returns_label_prompt_outcome_id(engine_no_io):
+    eng = engine_no_io
+    chapter = eng.CHAPTERS[0] if eng.CHAPTERS else "A. Test chapter"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Explain the concept of risk and return.", "level": 2},
+                {"id": "A.2", "text": "Apply the CAPM formula.", "level": 3},
+            ],
+        }
+    }
+    suggestions = eng.get_outcome_tutor_prompt_suggestions(chapter)
+    assert isinstance(suggestions, list)
+    assert len(suggestions) >= 6
+    for s in suggestions:
+        assert "outcome_id" in s
+        assert "label" in s
+        assert "prompt" in s
+        assert s["outcome_id"] in ("A.1", "A.2")
+        assert s["label"].startswith(("Explain ", "Pitfalls ", "Drill "))
+    outcome_ids = [s["outcome_id"] for s in suggestions]
+    assert "A.1" in outcome_ids
+    assert "A.2" in outcome_ids
+
+
 def test_weight_derivation_is_deterministic_and_bounded(engine_no_io):
     eng = engine_no_io
     parsed = eng.parse_syllabus_pdf_text(SAMPLE_SYLLABUS_TEXT)
@@ -1799,6 +1826,39 @@ def test_semantic_tfidf_assets_reused_on_repeated_queries(engine_no_io, monkeypa
     monkeypatch.setattr(eng, "_semantic_get_model", lambda: None)
     monkeypatch.setattr(eng, "_semantic_get_reranker", lambda: None)
     eng.semantic_min_score = 0.30
+
+    # When sklearn is missing, _semantic_build_chapter_assets returns None so assets are never
+    # stored and the second call cannot get a cache hit. Mock it to return a minimal asset
+    # with the same signature _semantic_get_chapter_assets expects, so we get 1 miss then 1 hit.
+    # Note: when patched on the instance, the engine calls this as (chapter_key, outcome_lookup, ordered_ids, normalized_outcome_texts) (no self).
+    def fake_build(ch, _outcome_lookup, ordered_ids, normalized_outcome_texts):
+        alias_sig = ""
+        try:
+            alias_sig = json.dumps(getattr(eng, "semantic_aliases", {}), sort_keys=True, default=str)
+        except Exception:
+            alias_sig = "alias-unknown"
+        min_score = float(getattr(eng, "semantic_min_score", getattr(StudyPlanEngine, "SEMANTIC_MIN_SCORE", 0.42)))
+        sig = hashlib.sha1(
+            (
+                "|".join(ordered_ids)
+                + "||"
+                + "|".join(normalized_outcome_texts)
+                + f"||{min_score:.6f}"
+                + "||"
+                + alias_sig
+            ).encode("utf-8")
+        ).hexdigest()
+        return {
+            "chapter": ch,
+            "ordered_ids": list(ordered_ids),
+            "normalized_outcome_texts": list(normalized_outcome_texts),
+            "signature": sig,
+            "vectorizer": None,
+            "outcome_matrix": None,
+            "built_at": "test",
+        }
+
+    monkeypatch.setattr(eng, "_semantic_build_chapter_assets", fake_build)
 
     first = eng._semantic_best_outcome_match(chapter, "What is the role of financial management?", outcome_lookup)
     second = eng._semantic_best_outcome_match(chapter, "How do policy choices affect financial objectives?", outcome_lookup)

@@ -1,4 +1,4 @@
-from studyplan_app import _adjust_outcome_gap_ratio, _build_gap_routing_meta, _combine_quiz_indices
+from studyplan_app_kpi_routing import _adjust_outcome_gap_ratio, _build_gap_routing_meta, _combine_quiz_indices
 
 
 def test_start_quiz_session_gap_quota_merge_quiz_kind():

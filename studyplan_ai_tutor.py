@@ -886,6 +886,35 @@ class AITutorDialogController:
         quick_prompts_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
         quick_prompts_scroller.set_min_content_height(44)
         quick_prompts_scroller.set_child(quick_prompts_box)
+        content.append(quick_prompts_scroller)
+        outcome_suggestions: list[dict[str, str]] = []
+        try:
+            eng = getattr(app, "engine", None)
+            topic = str(getattr(app, "current_topic", "") or "").strip()
+            if eng and topic and hasattr(eng, "get_outcome_tutor_prompt_suggestions"):
+                outcome_suggestions = list(eng.get_outcome_tutor_prompt_suggestions(topic) or [])[:15]
+        except Exception:
+            outcome_suggestions = []
+        if outcome_suggestions:
+            outcome_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            outcome_row.add_css_class("inline-toolbar")
+            outcome_lbl = Gtk.Label(label="Outcome prompts")
+            outcome_lbl.set_halign(Gtk.Align.START)
+            outcome_lbl.add_css_class("muted")
+            outcome_row.append(outcome_lbl)
+            for sug in outcome_suggestions:
+                lab = str(sug.get("label", "") or "").strip() or "Outcome"
+                prompt_text = str(sug.get("prompt", "") or "").strip()
+                btn = Gtk.Button(label=lab[:18] + ("…" if len(lab) > 18 else ""))
+                btn.add_css_class("flat")
+                btn.set_tooltip_text(prompt_text[:180] + ("…" if len(prompt_text) > 180 else ""))
+                btn.connect("clicked", lambda _b, t=prompt_text: prompt_buf.set_text(t))
+                outcome_row.append(btn)
+            outcome_scroll = Gtk.ScrolledWindow()
+            outcome_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+            outcome_scroll.set_min_content_height(36)
+            outcome_scroll.set_child(outcome_row)
+            content.append(outcome_scroll)
         prompt_scroller = Gtk.ScrolledWindow()
         prompt_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         prompt_scroller.set_min_content_height(120)
@@ -899,7 +928,6 @@ class AITutorDialogController:
             )
         )
         prompt_scroller.set_child(prompt_view)
-        content.append(quick_prompts_scroller)
         content.append(prompt_scroller)
 
         action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)

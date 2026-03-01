@@ -55,6 +55,12 @@ def _make_dummy(host: str = "127.0.0.1:11434"):
     dummy._normalize_gpt4all_filename_to_ollama_model = types.MethodType(
         StudyPlanGUI._normalize_gpt4all_filename_to_ollama_model, dummy
     )
+    # Stub llama.cpp path so tests that mock Ollama hit the Ollama code path
+    dummy._generate_via_llama_server = lambda _prompt: ("", "llama_server_not_healthy")
+    dummy._generate_via_llama_server_stream = lambda _prompt, on_chunk=None, cancel_check=None: (
+        "",
+        "llama_server_not_healthy",
+    )
     return dummy
 
 
@@ -3589,7 +3595,7 @@ def test_start_stop_core_housekeeping_timers_registers_and_cleans_sources(monkey
 
     StudyPlanGUI._start_core_housekeeping_timers(dummy)
 
-    assert [row[0] for row in timer_calls] == [30000, 4000, 700]
+    assert [row[0] for row in timer_calls] == [60000, 4000, 2000]
     assert registered == [101, 102, 103]
     assert int(dummy._auto_train_timer_id) == 101
     assert int(dummy._semantic_warmup_timer_id) == 102
@@ -3636,7 +3642,7 @@ def test_start_core_housekeeping_timers_skips_semantic_and_auto_train_in_smoke_m
 
     StudyPlanGUI._start_core_housekeeping_timers(dummy)
 
-    assert [row[0] for row in timer_calls] == [700]
+    assert [row[0] for row in timer_calls] == [2000]
     assert registered == [201]
     assert int(dummy._auto_train_timer_id) == 0
     assert int(dummy._semantic_warmup_timer_id) == 0

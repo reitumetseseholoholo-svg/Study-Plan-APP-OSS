@@ -1,6 +1,6 @@
 import json
 
-from studyplan_app import _compute_strict_soak_exit_code, _evaluate_soak_kpi_thresholds
+from studyplan_app_kpi_routing import _compute_strict_soak_exit_code, _evaluate_soak_kpi_thresholds
 
 
 def test_evaluate_soak_kpi_thresholds_passes_when_metrics_meet_thresholds():

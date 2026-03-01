@@ -4,7 +4,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gtk, Gdk  # type: ignore[reportAttributeAccessIssue,import-untyped]
 
-SYSTEM_THEME_CSS = b"""
+SYSTEM_THEME_CSS = """
 @define-color app_accent alpha(@theme_selected_bg_color, 0.98);
 @define-color app_border alpha(@theme_fg_color, 0.30);
 @define-color app_border_strong alpha(@theme_fg_color, 0.48);
@@ -461,6 +461,28 @@ scrollbar slider:hover {
 scrollbar slider:active {
     background-color: alpha(@theme_fg_color, 0.5);
 }
+/* GUI pass: navigation (templates/main_window.ui) */
+.navigation-bar {
+    background: alpha(@theme_bg_color, 0.92);
+    border-bottom: 1px solid app_border;
+    padding: 6px 10px;
+    min-height: 44px;
+}
+.nav-button {
+    min-height: 36px;
+    padding: 6px 12px;
+    font-weight: 600;
+    border-radius: 10px;
+}
+.nav-button:hover {
+    background: alpha(@theme_fg_color, 0.08);
+}
+.nav-button:focus-visible {
+    box-shadow: 0 0 0 2px alpha(@theme_selected_bg_color, 0.4);
+}
+dropdown > button:focus-visible {
+    box-shadow: 0 0 0 2px alpha(@theme_selected_bg_color, 0.35);
+}
 /* polish pass */
 .card {
     border-color: alpha(@theme_fg_color, 0.30);
@@ -487,6 +509,24 @@ spinbutton entry:focus,
 textview:focus {
     border-color: alpha(@theme_selected_bg_color, 0.72);
     box-shadow: 0 0 0 2px alpha(@theme_selected_bg_color, 0.22);
+}
+entry:focus-visible,
+spinbutton entry:focus-visible,
+textview:focus-visible {
+    outline: none;
+    border-color: alpha(@theme_selected_bg_color, 0.78);
+    box-shadow: 0 0 0 2px alpha(@theme_selected_bg_color, 0.35);
+}
+.inline-toolbar button.flat {
+    min-height: 32px;
+    padding: 4px 8px;
+}
+expander.muted {
+    margin-top: 4px;
+    margin-bottom: 4px;
+}
+expander.muted label {
+    font-size: 12px;
 }
 dropdown > button {
     border-radius: 10px;
@@ -883,9 +923,31 @@ window.app-dialog-window .dialog-content {
 .quiz-progress trough {
     min-height: 8px;
 }
+/* High-contrast mode (Preferences → High contrast) */
+window.high-contrast .panel,
+window.high-contrast .panel-left,
+window.high-contrast .panel-right {
+    border-color: alpha(@theme_fg_color, 0.58);
+}
+window.high-contrast .card {
+    border-color: alpha(@theme_fg_color, 0.68);
+}
+window.high-contrast .muted {
+    color: alpha(@theme_fg_color, 0.90);
+}
+window.high-contrast .section-title,
+window.high-contrast .coach-title,
+window.high-contrast label.section-title,
+window.high-contrast label.coach-title {
+    color: @theme_fg_color;
+    border-color: alpha(@theme_fg_color, 0.72);
+}
+window.high-contrast .hint {
+    color: alpha(@theme_fg_color, 0.82);
+}
 """
 
-COACH_THEME_CSS = b"""
+COACH_THEME_CSS = """
 @define-color coach_bg #121724;
 @define-color coach_panel #1a2233;
 @define-color coach_card #212d43;
@@ -1344,6 +1406,28 @@ scrollbar slider:hover {
 scrollbar slider:active {
     background-color: #7189b5;
 }
+/* GUI pass: navigation (templates/main_window.ui) */
+.navigation-bar {
+    background: rgba(26, 34, 51, 0.95);
+    border-bottom: 1px solid coach_border;
+    padding: 6px 10px;
+    min-height: 44px;
+}
+.nav-button {
+    min-height: 36px;
+    padding: 6px 12px;
+    font-weight: 600;
+    border-radius: 10px;
+}
+.nav-button:hover {
+    background: rgba(79, 209, 197, 0.12);
+}
+.nav-button:focus-visible {
+    box-shadow: 0 0 0 2px rgba(79, 209, 197, 0.45);
+}
+dropdown > button:focus-visible {
+    box-shadow: 0 0 0 2px rgba(79, 209, 197, 0.4);
+}
 /* polish pass */
 .card {
     border-color: #6986be;
@@ -1371,6 +1455,24 @@ spinbutton entry:focus,
 textview:focus {
     border-color: #8fb4ff;
     box-shadow: 0 0 0 2px rgba(139, 175, 255, 0.30);
+}
+entry:focus-visible,
+spinbutton entry:focus-visible,
+textview:focus-visible {
+    outline: none;
+    border-color: #b2caff;
+    box-shadow: 0 0 0 2px rgba(139, 175, 255, 0.45);
+}
+.inline-toolbar button.flat {
+    min-height: 32px;
+    padding: 4px 8px;
+}
+expander.muted {
+    margin-top: 4px;
+    margin-bottom: 4px;
+}
+expander.muted label {
+    font-size: 12px;
 }
 dropdown > button {
     border-radius: 10px;
@@ -1763,6 +1865,28 @@ window.app-dialog-window .dialog-content {
 }
 .quiz-progress trough {
     min-height: 8px;
+}
+/* High-contrast mode (Preferences → High contrast) */
+window.high-contrast .panel,
+window.high-contrast .panel-left,
+window.high-contrast .panel-right {
+    border-color: #9bb8ef;
+}
+window.high-contrast .card {
+    border-color: #b2caff;
+}
+window.high-contrast .muted {
+    color: #d4dff5;
+}
+window.high-contrast .section-title,
+window.high-contrast .coach-title,
+window.high-contrast label.section-title,
+window.high-contrast label.coach-title {
+    color: #f5f8ff;
+    border-color: #b2caff;
+}
+window.high-contrast .hint {
+    color: #c8d4eb;
 }
 """
 

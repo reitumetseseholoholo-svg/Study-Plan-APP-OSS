@@ -27,6 +27,19 @@ STUDYPLAN_MODULE_TITLE="Your Module" python studyplan_app.py
   - **hyprctl** (Hyprland) for focus tracking
   - **hypridle** (optional hook for idle file)
 
+## Testing
+
+Run the test suite:
+
+```bash
+pytest
+# or explicitly
+pytest tests/ studyplan/testing/
+```
+
+- **Default (no GTK):** **388 tests** run. Path helpers live in `studyplan_app_path_utils.py`, so `tests/test_studyplan_app_paths.py` no longer needs `studyplan_app`. The remaining gap is `tests/test_studyplan_app_ollama.py` (157 tests), which requires `studyplan_app` and thus PyGObject/GTK4.
+- **Full suite (500+ tests):** install the optional extra and system GTK4 so the ollama app tests run: `pip install -e ".[test-full]"` (or `poetry install -E test-full`). Requires system libraries (e.g. Debian/Ubuntu: `apt install python3-gi gir1.2-gtk-4.0`). Then `pytest` runs **545 tests**.
+
 ## Core features
 
 - **Coach Briefing**: readiness score, mission checklist, pace status, daily target
