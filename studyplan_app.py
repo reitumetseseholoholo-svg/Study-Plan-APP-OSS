@@ -3745,20 +3745,30 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         def _scroll_response_end_deferred() -> None:
             def _apply_scroll() -> bool:
                 try:
-                    adj = response_scroller.get_vadjustment()
-                    if adj is None:
-                        return False
                     run_state["ignore_scroll_event"] = True
-                    upper = float(adj.get_upper() or 0.0)
-                    page = float(adj.get_page_size() or 0.0)
-                    adj.set_value(max(0.0, upper - page))
+                    end_iter = response_buf.get_end_iter()
+                    if response_view.scroll_to_iter(end_iter, 0.0, True, 0.0, 1.0):
+                        pass
+                    else:
+                        adj = response_scroller.get_vadjustment()
+                        if adj is not None:
+                            upper = float(adj.get_upper() or 0.0)
+                            page = float(adj.get_page_size() or 0.0)
+                            adj.set_value(max(0.0, upper - page))
                 except Exception:
-                    pass
+                    try:
+                        adj = response_scroller.get_vadjustment()
+                        if adj is not None:
+                            upper = float(adj.get_upper() or 0.0)
+                            page = float(adj.get_page_size() or 0.0)
+                            adj.set_value(max(0.0, upper - page))
+                    except Exception:
+                        pass
                 finally:
                     run_state["ignore_scroll_event"] = False
                 return False
 
-            GLib.idle_add(_apply_scroll, priority=GLib.PRIORITY_LOW)
+            GLib.idle_add(_apply_scroll, priority=GLib.PRIORITY_HIGH)
 
         def _persist_history() -> None:
             compact: list[dict[str, str]] = []
@@ -5342,8 +5352,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not bool(run_state.get("active", False)):
                 _render_transcript(force_scroll=force_scroll)
                 return
+            follow_live = bool(run_state.get("follow_live", True))
             should_keep_bottom = should_keep_response_bottom(
-                auto_scroll_enabled=bool(run_state.get("follow_live", True)),
+                auto_scroll_enabled=follow_live,
                 force_scroll=bool(force_scroll),
                 near_bottom=_response_is_near_bottom(56.0),
             )
@@ -5353,7 +5364,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not cleaned_full:
                 run_state["stream_last_clean_text"] = ""
                 run_state["stream_label_inserted"] = False
-                if should_keep_bottom:
+                if follow_live or should_keep_bottom:
                     _scroll_response_end_deferred()
                 return
             if not bool(run_state.get("stream_label_inserted", False)):
@@ -5372,7 +5383,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 _render_transcript(force_scroll=False)
             run_state["stream_last_clean_text"] = cleaned_full
             run_state["stream_last_render_at"] = float(time.monotonic())
-            if should_keep_bottom:
+            if follow_live or should_keep_bottom:
                 _scroll_response_end_deferred()
             _update_follow_button()
 
