@@ -156,6 +156,7 @@ from studyplan.practice_loop_controller import PracticeLoopController, PracticeL
 
 import datetime
 import fcntl
+import importlib
 import json
 import os
 import sys
@@ -742,11 +743,41 @@ HAVE_SKIMAGE_OCR = bool(
     and morphology is not None
 )
 
+
+def _remove_small_objects_safe(binary: Any, size: int) -> Any:
+    if morphology is None:
+        return binary
+    remover = cast(Any, getattr(morphology, "remove_small_objects", None))
+    if not callable(remover):
+        return binary
+    try:
+        # skimage >= 0.26
+        return remover(binary, max_size=int(size))
+    except TypeError:
+        # skimage < 0.26
+        return remover(binary, min_size=int(size))
+
+
+def _remove_small_holes_safe(binary: Any, size: int) -> Any:
+    if morphology is None:
+        return binary
+    remover = cast(Any, getattr(morphology, "remove_small_holes", None))
+    if not callable(remover):
+        return binary
+    try:
+        # skimage >= 0.26
+        return remover(binary, max_size=int(size))
+    except TypeError:
+        # skimage < 0.26
+        return remover(binary, area_threshold=int(size))
+
+
 plt: Any | None = None
 FigureCanvas: type[Any] | None = None
 try:
-    import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_gtk4agg import FigureCanvasGTK4Agg as _FigureCanvasGTK4Agg
+    plt = cast(Any, importlib.import_module("matplotlib.pyplot"))
+    _backend_gtk4agg = importlib.import_module("matplotlib.backends.backend_gtk4agg")
+    _FigureCanvasGTK4Agg = cast(Any, getattr(_backend_gtk4agg, "FigureCanvasGTK4Agg"))
 
     class _StudyPlanFigureCanvas(_FigureCanvasGTK4Agg):
         def _update_device_pixel_ratio(self, *args, **kwargs):
@@ -785,6 +816,115 @@ def configure_font_rendering() -> None:
         settings.props.gtk_xft_hinting = 1
     if hasattr(settings.props, "gtk_xft_hintstyle"):
         settings.props.gtk_xft_hintstyle = "hintslight"
+
+
+class TutorWorkspaceState(dict[str, Any]):
+    """Structured tutor workspace runtime state with centralized defaults."""
+
+    def __init__(
+        self,
+        *,
+        tutor_help_feedback: str = "",
+        tutor_help_feedback_at: str = "",
+        practice_session_id: str = "tutor-workspace",
+    ) -> None:
+        super().__init__()
+        self.update(
+            {
+                "active": False,
+                "job_id": 0,
+                "cancel_event": None,
+                "model": "",
+                "draft_user": "",
+                "draft_assistant": "",
+                "stream_render_pending": False,
+                "stream_render_force": False,
+                "stream_last_clean_text": "",
+                "stream_label_inserted": False,
+                "stream_last_chunk_at": 0.0,
+                "stream_last_render_at": 0.0,
+                "stream_watchdog_last_force_at": 0.0,
+                "stream_watchdog_forced_flushes": 0,
+                "stream_watchdog_id": 0,
+                "model_poll_id": 0,
+                "models": [],
+                "model_poll_errors": 0,
+                "follow_live": True,
+                "follow_manual_override": False,
+                "ignore_scroll_event": False,
+                "refresh_runtime": None,
+                "refresh_status": None,
+                "refresh_practice": None,
+                "refresh_layout": None,
+                "set_running": None,
+                "gap_generation_active": False,
+                "practice_session_id": str(practice_session_id or "tutor-workspace"),
+                "tutor_trust_summary": "",
+                "tutor_trust_details": "",
+                "tutor_help_feedback": str(tutor_help_feedback or ""),
+                "tutor_help_feedback_at": str(tutor_help_feedback_at or ""),
+                "tutor_help_feedback_turn": 0,
+                "tutor_help_followup_prompt": "",
+            }
+        )
+        self.clear_practice_plan()
+
+    def reset_stream_runtime(self, *, clear_drafts: bool = False) -> None:
+        self["stream_render_pending"] = False
+        self["stream_render_force"] = False
+        self["stream_last_clean_text"] = ""
+        self["stream_label_inserted"] = False
+        self["stream_last_chunk_at"] = 0.0
+        self["stream_last_render_at"] = 0.0
+        self["stream_watchdog_last_force_at"] = 0.0
+        self["stream_watchdog_forced_flushes"] = 0
+        if clear_drafts:
+            self["draft_user"] = ""
+            self["draft_assistant"] = ""
+
+    def clear_practice_plan(self) -> None:
+        self["practice_plan_result"] = None
+        self["practice_session_state"] = None
+        self["practice_learner_profile"] = None
+        self["practice_item"] = None
+        self["practice_action_plan"] = None
+        self["practice_action_status"] = ""
+        self.reset_practice_attempt_state()
+
+    def reset_practice_attempt_state(self) -> None:
+        self["practice_result"] = None
+        self["practice_variant_candidate"] = None
+        self["practice_intervention_policy"] = None
+        self["practice_hint_policy_state"] = {}
+        self["practice_hint_policy_last_decision"] = None
+        self["practice_hint_policy_tick_id"] = 0
+        self["practice_hint_policy_cooldown_active"] = False
+        self["practice_hint_use_count"] = 0
+        self["practice_transfer_base"] = None
+        self["practice_last_transfer_summary"] = None
+        self["practice_next_guidance"] = None
+        self["practice_session_quality_summary"] = {}
+
+    def set_practice_plan(
+        self,
+        *,
+        plan_result: Any,
+        session_state: Any,
+        learner_profile: Any,
+        practice_item: Any,
+        action_plan: Any,
+    ) -> None:
+        self["practice_plan_result"] = plan_result
+        self["practice_session_state"] = session_state
+        self["practice_learner_profile"] = learner_profile
+        self["practice_item"] = practice_item
+        self["practice_action_plan"] = action_plan
+        self["practice_action_status"] = ""
+        self.reset_practice_attempt_state()
+
+    def activate_variant(self, variant_item: Any) -> None:
+        self["practice_item"] = variant_item
+        self.reset_practice_attempt_state()
 
 
 class AppDialog(Gtk.Window):
@@ -1426,7 +1566,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._tutor_workspace_jump_btn: Gtk.Button | None = None
         self._tutor_workspace_cockpit_label: Gtk.Label | None = None
         self._tutor_workspace_context_label: Gtk.Label | None = None
-        self._tutor_workspace_state: dict[str, Any] = {}
+        self._tutor_workspace_state: TutorWorkspaceState = TutorWorkspaceState()
         self._coach_workspace_status_label: Gtk.Label | None = None
         self._coach_workspace_model_label: Gtk.Label | None = None
         self._coach_workspace_view: Gtk.TextView | None = None
@@ -3523,59 +3663,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         memory_snapshot = self._sanitize_ai_tutor_working_memory(getattr(self, "_ai_tutor_working_memory", {}))
         stored_help_feedback = self._normalize_ai_tutor_help_feedback(memory_snapshot.get("last_help_feedback", ""))
-        run_state: dict[str, Any] = {
-            "active": False,
-            "job_id": 0,
-            "cancel_event": None,
-            "model": "",
-            "draft_user": "",
-            "draft_assistant": "",
-            "stream_render_pending": False,
-            "stream_render_force": False,
-            "stream_last_clean_text": "",
-            "stream_label_inserted": False,
-            "stream_last_chunk_at": 0.0,
-            "stream_last_render_at": 0.0,
-            "stream_watchdog_last_force_at": 0.0,
-            "stream_watchdog_forced_flushes": 0,
-            "stream_watchdog_id": 0,
-            "model_poll_id": 0,
-            "models": [],
-            "model_poll_errors": 0,
-            "follow_live": True,
-            "follow_manual_override": False,
-            "ignore_scroll_event": False,
-            "refresh_runtime": None,
-            "refresh_status": None,
-            "refresh_practice": None,
-            "set_running": None,
-            "gap_generation_active": False,
-            "practice_session_id": "tutor-workspace",
-            "practice_session_state": None,
-            "practice_learner_profile": None,
-            "practice_plan_result": None,
-            "practice_item": None,
-            "practice_result": None,
-            "practice_variant_candidate": None,
-            "practice_intervention_policy": None,
-            "practice_action_plan": None,
-            "practice_action_status": "",
-            "practice_hint_policy_state": {},
-            "practice_hint_policy_last_decision": None,
-            "practice_hint_policy_tick_id": 0,
-            "practice_hint_policy_cooldown_active": False,
-            "practice_hint_use_count": 0,
-            "practice_transfer_base": None,
-            "practice_last_transfer_summary": None,
-            "practice_next_guidance": None,
-            "practice_session_quality_summary": {},
-            "tutor_trust_summary": "",
-            "tutor_trust_details": "",
-            "tutor_help_feedback": stored_help_feedback,
-            "tutor_help_feedback_at": str(memory_snapshot.get("last_help_feedback_at", "") or "").strip(),
-            "tutor_help_feedback_turn": 0,
-            "tutor_help_followup_prompt": "",
-        }
+        run_state = TutorWorkspaceState(
+            tutor_help_feedback=stored_help_feedback,
+            tutor_help_feedback_at=str(memory_snapshot.get("last_help_feedback_at", "") or "").strip(),
+            practice_session_id="tutor-workspace",
+        )
         self._tutor_workspace_state = run_state
 
         history: list[dict[str, str]] = []
@@ -4690,42 +4782,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     },
                 )
                 result = cast(Any, loop_service.run_turn(turn_request))
-            except Exception as exc:
+            except (AttributeError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+                logging.getLogger(__name__).warning(
+                    "practice planner run_turn failed",
+                    extra={"error": str(exc), "topic": str(getattr(app_snapshot, "current_topic", "") or "")},
+                )
                 _set_status(f"Practice planner error: {exc}")
                 return
             try:
-                run_state["practice_plan_result"] = result
-                run_state["practice_session_state"] = getattr(result, "session_state", None)
-                run_state["practice_learner_profile"] = getattr(result, "learner_profile", None)
                 practice_items = tuple(getattr(result, "practice_items", ()) or ())
-                run_state["practice_item"] = practice_items[0] if practice_items else None
-                run_state["practice_result"] = None
-                run_state["practice_variant_candidate"] = None
-                run_state["practice_intervention_policy"] = None
-                run_state["practice_action_plan"] = getattr(result, "action_intent", None)
-                run_state["practice_action_status"] = ""
-                run_state["practice_hint_policy_state"] = {}
-                run_state["practice_hint_policy_last_decision"] = None
-                run_state["practice_hint_use_count"] = 0
-                run_state["practice_transfer_base"] = None
-                run_state["practice_last_transfer_summary"] = None
-                run_state["practice_next_guidance"] = None
-                run_state["practice_session_quality_summary"] = {}
-            except Exception:
-                run_state["practice_plan_result"] = None
-                run_state["practice_item"] = None
-                run_state["practice_result"] = None
-                run_state["practice_variant_candidate"] = None
-                run_state["practice_intervention_policy"] = None
-                run_state["practice_action_plan"] = None
-                run_state["practice_action_status"] = ""
-                run_state["practice_hint_policy_state"] = {}
-                run_state["practice_hint_policy_last_decision"] = None
-                run_state["practice_hint_use_count"] = 0
-                run_state["practice_transfer_base"] = None
-                run_state["practice_last_transfer_summary"] = None
-                run_state["practice_next_guidance"] = None
-                run_state["practice_session_quality_summary"] = {}
+                run_state.set_practice_plan(
+                    plan_result=result,
+                    session_state=getattr(result, "session_state", None),
+                    learner_profile=getattr(result, "learner_profile", None),
+                    practice_item=practice_items[0] if practice_items else None,
+                    action_plan=getattr(result, "action_intent", None),
+                )
+            except (TypeError, ValueError, KeyError) as exc:
+                logging.getLogger(__name__).warning(
+                    "practice planner state update failed",
+                    extra={"error": str(exc)},
+                )
+                run_state.clear_practice_plan()
             _reset_practice_answer_box()
             _refresh_practice_panel()
             # Render explicit next-action guidance only when an assessed result exists.
@@ -4735,7 +4813,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if isinstance(current_item, TutorPracticeItem) and isinstance(current_result, TutorAssessmentResult):
                     try:
                         cog = self._cognitive_state()
-                    except Exception:
+                    except (AttributeError, RuntimeError, TypeError, ValueError):
                         cog = None
                     safe_session = (
                         session_state
@@ -4790,7 +4868,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         except Exception:
                             pass
                         run_state["practice_next_guidance"] = dict(guidance)
-            except Exception:
+            except (AttributeError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+                logging.getLogger(__name__).warning(
+                    "practice next guidance render failed",
+                    extra={"error": str(exc)},
+                )
                 # Non-fatal: leave practice action UI as-is.
                 pass
             try:
@@ -5155,14 +5237,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if variant_item is None:
                 _set_status("No deterministic variant available for this item yet.")
                 return
-            run_state["practice_item"] = variant_item
-            run_state["practice_result"] = None
-            run_state["practice_intervention_policy"] = None
-            run_state["practice_hint_policy_state"] = {}
-            run_state["practice_hint_policy_last_decision"] = None
-            run_state["practice_hint_use_count"] = 0
-            run_state["practice_next_guidance"] = None
-            run_state["practice_session_quality_summary"] = {}
+            run_state.activate_variant(variant_item)
             _reset_practice_answer_box()
             _refresh_practice_panel()
             try:
@@ -5531,13 +5606,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         def _set_running(running: bool) -> None:
             run_state["active"] = bool(running)
             if not running:
-                run_state["stream_render_force"] = False
-                run_state["stream_render_pending"] = False
-                run_state["stream_last_clean_text"] = ""
-                run_state["stream_label_inserted"] = False
-                run_state["stream_last_chunk_at"] = 0.0
-                run_state["stream_last_render_at"] = 0.0
-                run_state["stream_watchdog_last_force_at"] = 0.0
+                run_state.reset_stream_runtime()
                 stream_watchdog_id = int(run_state.get("stream_watchdog_id", 0) or 0)
                 if stream_watchdog_id > 0:
                     try:
@@ -6472,12 +6541,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             run_state["model"] = model_name
             run_state["draft_user"] = user_prompt
             run_state["draft_assistant"] = ""
-            run_state["stream_last_clean_text"] = ""
-            run_state["stream_label_inserted"] = False
-            run_state["stream_last_chunk_at"] = 0.0
-            run_state["stream_last_render_at"] = 0.0
-            run_state["stream_watchdog_last_force_at"] = 0.0
-            run_state["stream_watchdog_forced_flushes"] = 0
+            run_state.reset_stream_runtime()
             run_state["practice_hint_policy_state"] = {}
             run_state["tutor_trust_summary"] = ""
             run_state["tutor_trust_details"] = ""
@@ -6983,7 +7047,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _refresh_tutor_workspace_page(self) -> None:
         state = getattr(self, "_tutor_workspace_state", None)
-        if not isinstance(state, dict):
+        if not isinstance(state, TutorWorkspaceState):
             return
         concise_check = getattr(self, "_tutor_workspace_concise_check", None)
         exam_tech_check = getattr(self, "_tutor_workspace_exam_technique_check", None)
@@ -10320,7 +10384,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         run_state = getattr(self, "_tutor_workspace_state", None)
         session_state: TutorSessionState | None = None
         learner_profile: TutorLearnerProfileSnapshot | None = None
-        if isinstance(run_state, dict):
+        if isinstance(run_state, TutorWorkspaceState):
             session_candidate = run_state.get("practice_session_state")
             if isinstance(session_candidate, TutorSessionState):
                 session_state = session_candidate
@@ -16509,7 +16573,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         practice_result: Any = None
 
         run_state = getattr(self, "_tutor_workspace_state", None)
-        if isinstance(run_state, dict):
+        if isinstance(run_state, TutorWorkspaceState):
             session_candidate = run_state.get("practice_session_state")
             if isinstance(session_candidate, TutorSessionState):
                 session_state = session_candidate
@@ -23406,7 +23470,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 profiles.append(value)
 
         run_state = getattr(self, "_tutor_workspace_state", None)
-        if isinstance(run_state, dict):
+        if isinstance(run_state, TutorWorkspaceState):
             candidate = run_state.get("practice_learner_profile")
             if isinstance(candidate, TutorLearnerProfileSnapshot):
                 learner_key = (
@@ -32952,16 +33016,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     return []
 
-            try:
-                # skimage >= 0.26 uses max_size instead of min_size
-                binary = morphology.remove_small_objects(binary, max_size=24)
-            except TypeError:
-                binary = morphology.remove_small_objects(binary, min_size=24)
-            try:
-                # skimage >= 0.26 uses max_size instead of area_threshold
-                binary = morphology.remove_small_holes(binary, max_size=48)
-            except TypeError:
-                binary = morphology.remove_small_holes(binary, area_threshold=48)
+            binary = _remove_small_objects_safe(binary, 24)
+            binary = _remove_small_holes_safe(binary, 48)
             ocr_img = np.where(binary, 255, 0).astype("uint8")
             text = pytesseract.image_to_string(Image.fromarray(ocr_img), config="--oem 3 --psm 6")
             lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -35499,7 +35555,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _stop_tutor_workspace_runtime(self) -> None:
         state = getattr(self, "_tutor_workspace_state", None)
-        if not isinstance(state, dict):
+        if not isinstance(state, TutorWorkspaceState):
             return
         try:
             state["active"] = False
