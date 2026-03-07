@@ -926,6 +926,71 @@ class TutorWorkspaceState(dict[str, Any]):
         self["practice_item"] = variant_item
         self.reset_practice_attempt_state()
 
+    def practice_session_id(self) -> str:
+        return str(self.get("practice_session_id", "tutor-workspace") or "tutor-workspace")
+
+    def practice_session_state(self) -> TutorSessionState | None:
+        candidate = self.get("practice_session_state")
+        return candidate if isinstance(candidate, TutorSessionState) else None
+
+    def set_practice_session_state(self, session_state: Any) -> None:
+        self["practice_session_state"] = session_state if isinstance(session_state, TutorSessionState) else None
+
+    def practice_learner_profile(self) -> TutorLearnerProfileSnapshot | None:
+        candidate = self.get("practice_learner_profile")
+        return candidate if isinstance(candidate, TutorLearnerProfileSnapshot) else None
+
+    def set_practice_learner_profile(self, learner_profile: Any) -> None:
+        self["practice_learner_profile"] = (
+            learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else None
+        )
+
+    def practice_item(self) -> TutorPracticeItem | None:
+        candidate = self.get("practice_item")
+        return candidate if isinstance(candidate, TutorPracticeItem) else None
+
+    def set_practice_item(self, practice_item: Any) -> None:
+        self["practice_item"] = practice_item if isinstance(practice_item, TutorPracticeItem) else None
+
+    def practice_result(self) -> TutorAssessmentResult | None:
+        candidate = self.get("practice_result")
+        return candidate if isinstance(candidate, TutorAssessmentResult) else None
+
+    def record_practice_result(self, result: Any) -> TutorAssessmentResult | None:
+        self["practice_result"] = result if isinstance(result, TutorAssessmentResult) else None
+        self["practice_variant_candidate"] = None
+        self["practice_intervention_policy"] = None
+        self["practice_hint_policy_last_decision"] = None
+        return self.practice_result()
+
+    def practice_variant_candidate(self) -> TutorPracticeItem | None:
+        candidate = self.get("practice_variant_candidate")
+        return candidate if isinstance(candidate, TutorPracticeItem) else None
+
+    def set_practice_variant_candidate(self, variant_item: Any) -> None:
+        self["practice_variant_candidate"] = variant_item if isinstance(variant_item, TutorPracticeItem) else None
+
+    def practice_intervention_policy(self) -> dict[str, Any] | None:
+        candidate = self.get("practice_intervention_policy")
+        return dict(candidate) if isinstance(candidate, dict) else None
+
+    def set_practice_intervention_policy(self, policy: Any) -> None:
+        self["practice_intervention_policy"] = dict(policy) if isinstance(policy, dict) else None
+
+    def practice_next_guidance(self) -> dict[str, Any] | None:
+        candidate = self.get("practice_next_guidance")
+        return dict(candidate) if isinstance(candidate, dict) else None
+
+    def set_practice_next_guidance(self, guidance: Any) -> None:
+        self["practice_next_guidance"] = dict(guidance) if isinstance(guidance, dict) else None
+
+    def practice_session_quality_summary(self) -> dict[str, Any]:
+        candidate = self.get("practice_session_quality_summary")
+        return dict(candidate) if isinstance(candidate, dict) else {}
+
+    def set_practice_session_quality_summary(self, summary: Any) -> None:
+        self["practice_session_quality_summary"] = dict(summary) if isinstance(summary, dict) else {}
+
 
 class AppDialog(Gtk.Window):
     def __init__(self, title: str | None = None, transient_for=None, modal: bool = False):
@@ -4043,12 +4108,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         def _get_tutor_loop_session_profile() -> tuple[TutorSessionState, TutorLearnerProfileSnapshot, AppStateSnapshot]:
             app_snapshot = _build_tutor_loop_app_snapshot()
             learner_id = "local-user"
-            try:
-                session_id = str(run_state.get("practice_session_id", "tutor-workspace") or "tutor-workspace")
-            except Exception:
-                session_id = "tutor-workspace"
-            session_state = run_state.get("practice_session_state")
-            if not isinstance(session_state, TutorSessionState):
+            session_id = run_state.practice_session_id()
+            session_state = run_state.practice_session_state()
+            if session_state is None:
                 session_state = TutorSessionState(
                     session_id=session_id,
                     module=app_snapshot.module,
@@ -4057,8 +4119,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     loop_phase="observe",
                     active=False,
                 )
-            learner_profile = run_state.get("practice_learner_profile")
-            if not isinstance(learner_profile, TutorLearnerProfileSnapshot):
+            learner_profile = run_state.practice_learner_profile()
+            if learner_profile is None:
                 learner_profile = TutorLearnerProfileSnapshot(
                     learner_id=learner_id,
                     module=app_snapshot.module,
@@ -4121,11 +4183,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             run_state["practice_hint_policy_tick_id"] = int(source_id)
 
         def _refresh_practice_panel() -> None:
-            item = run_state.get("practice_item")
-            result_obj = run_state.get("practice_result")
+            item = run_state.practice_item()
+            result_obj = run_state.practice_result()
             plan_result = run_state.get("practice_plan_result")
-            session_state = run_state.get("practice_session_state")
-            learner_profile = run_state.get("practice_learner_profile")
+            session_state = run_state.practice_session_state()
+            learner_profile = run_state.practice_learner_profile()
 
             mode_text = "—"
             phase_text = "—"
@@ -4224,7 +4286,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     self._set_label_text_if_changed(practice_feedback_label, "Assessment complete.")
 
-            intervention_obj = run_state.get("practice_intervention_policy")
+            intervention_obj = run_state.practice_intervention_policy()
             if isinstance(intervention_obj, dict) and intervention_obj:
                 intervention_type = str(intervention_obj.get("intervention_type", "") or "").strip()
                 rationale_short = str(intervention_obj.get("rationale_short", "") or "").strip()
@@ -4233,7 +4295,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     for x in list(intervention_obj.get("evidence", ()) or [])
                     if str(x or "").strip()
                 ]
-                variant_ready = run_state.get("practice_variant_candidate") is not None
+                variant_ready = run_state.practice_variant_candidate() is not None
                 line_parts: list[str] = []
                 line = "Correction policy: "
                 if intervention_type:
@@ -4336,7 +4398,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             next_line = "Next: submit an assessed answer to get guidance."
             reason_line = "Reason: guidance is based on your latest assessed result."
             meta_line = ""
-            guidance_obj = run_state.get("practice_next_guidance")
+            guidance_obj = run_state.practice_next_guidance()
             if isinstance(guidance_obj, dict) and guidance_obj:
                 action_text = str(guidance_obj.get("next_action", "") or "").strip()
                 reason_text = str(guidance_obj.get("reason", "") or "").strip()
@@ -4362,7 +4424,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 practice_next_meta_label.set_visible(bool(meta_line))
             except Exception:
                 pass
-            summary_map = run_state.get("practice_session_quality_summary")
+            summary_map = run_state.practice_session_quality_summary()
             progress_line = "Progress: submit a checked attempt to start tracking."
             weak_line = "Weak spots: none flagged in this check."
             next_step_line = "Next best step: run one checked practice attempt."
@@ -4378,10 +4440,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             transfer_line = "Transfer: no transfer checks recorded yet."
             transfer_tooltip = "Transfer checks test whether you can apply the same structure in a new scenario."
             transfer_summary_obj = run_state.get("practice_last_transfer_summary")
-            try:
-                cached_candidate = run_state.get("practice_variant_candidate")
-            except Exception:
-                cached_candidate = None
+            cached_candidate = run_state.practice_variant_candidate()
             transfer_candidate_ready = False
             transfer_candidate_structure = ""
             if cached_candidate is not None:
@@ -4466,10 +4525,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             hint_policy_line = "Hint policy: awaiting practice item."
             hint_policy_tooltip = "Hint availability is managed by a deterministic productive-struggle policy."
             hint_policy_cooldown_active = False
-            try:
-                hint_item = run_state.get("practice_item")
-            except Exception:
-                hint_item = None
+            hint_item = run_state.practice_item()
             if hint_item is not None:
                 try:
                     hint_state_map = dict(run_state.get("practice_hint_policy_state", {}) or {})
@@ -4486,7 +4542,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     hint_tokens = 0
                     hint_capacity = 0
-                has_assessment_now = bool(run_state.get("practice_result") is not None)
+                has_assessment_now = run_state.practice_result() is not None
                 try:
                     cog_hint_meta = self._build_tutor_loop_cognitive_runtime_meta(
                         chapter=str(getattr(hint_item, "topic", "") or "")
@@ -4651,7 +4707,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             running_now = bool(run_state.get("active", False))
             retry_variant_enabled = False
             retry_variant_label = "Retry variant"
-            cached_candidate = run_state.get("practice_variant_candidate")
+            cached_candidate = run_state.practice_variant_candidate()
             if cached_candidate is not None:
                 try:
                     candidate_meta = dict(getattr(cached_candidate, "meta", {}) or {})
@@ -4808,8 +4864,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             _refresh_practice_panel()
             # Render explicit next-action guidance only when an assessed result exists.
             try:
-                current_item = run_state.get("practice_item")
-                current_result = run_state.get("practice_result")
+                current_item = run_state.practice_item()
+                current_result = run_state.practice_result()
                 if isinstance(current_item, TutorPracticeItem) and isinstance(current_result, TutorAssessmentResult):
                     try:
                         cog = self._cognitive_state()
@@ -4867,7 +4923,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             )
                         except Exception:
                             pass
-                        run_state["practice_next_guidance"] = dict(guidance)
+                        run_state.set_practice_next_guidance(guidance)
             except (AttributeError, RuntimeError, TypeError, ValueError, KeyError) as exc:
                 logging.getLogger(__name__).warning(
                     "practice next guidance render failed",
@@ -4889,7 +4945,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 _set_status("Practice plan ready.")
 
         def _check_tutor_practice_answer(*_args) -> None:
-            item = run_state.get("practice_item")
+            item = run_state.practice_item()
             if item is None:
                 _set_status("Plan a practice step first.")
                 return
@@ -4902,12 +4958,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if assessor is None or not hasattr(assessor, "assess"):
                 _set_status("Tutor assessment service unavailable.")
                 return
-            session_state = run_state.get("practice_session_state")
-            if not isinstance(session_state, TutorSessionState):
+            session_state = run_state.practice_session_state()
+            if session_state is None:
                 session_state, learner_profile, _app_snapshot = _get_tutor_loop_session_profile()
             else:
-                learner_profile = run_state.get("practice_learner_profile")
-                if not isinstance(learner_profile, TutorLearnerProfileSnapshot):
+                learner_profile = run_state.practice_learner_profile()
+                if learner_profile is None:
                     _, learner_profile, _app_snapshot = _get_tutor_loop_session_profile()
             confidence = _selected_practice_confidence()
             try:
@@ -4928,12 +4984,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception as exc:
                 _set_status(f"Assessment error: {exc}")
                 return
-            run_state["practice_result"] = result
-            run_state["practice_variant_candidate"] = None
-            run_state["practice_intervention_policy"] = None
-            run_state["practice_hint_policy_last_decision"] = None
+            result = run_state.record_practice_result(result)
+            if result is None:
+                _set_status("Assessment result payload was invalid.")
+                return
             hint_penalty_for_attempt = self._practice_hint_penalty(run_state)
-            if isinstance(session_state, TutorSessionState):
+            if session_state is not None:
                 try:
                     session_ctrl = getattr(self, "_tutor_session_controller", None)
                     if session_ctrl is not None and hasattr(session_ctrl, "record_assessment_outcome"):
@@ -4946,7 +5002,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 increment_streak=True,
                             ),
                         )
-                        run_state["practice_session_state"] = session_state
+                        run_state.set_practice_session_state(session_state)
                 except Exception:
                     pass
             try:
@@ -4960,7 +5016,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             confidence=confidence,
                         ),
                     )
-                    run_state["practice_learner_profile"] = learner_profile
+                    run_state.set_practice_learner_profile(learner_profile)
             except Exception:
                 pass
             try:
@@ -4976,8 +5032,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             app_snapshot=_build_tutor_loop_app_snapshot(),
                         ),
                     )
-                    if isinstance(policy, dict):
-                        run_state["practice_intervention_policy"] = dict(policy)
+                    run_state.set_practice_intervention_policy(policy)
             except Exception:
                 pass
             transfer_summary: dict[str, Any] | None = None
@@ -5011,7 +5066,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     transfer_summary = None
             try:
-                policy_map = run_state.get("practice_intervention_policy")
+                policy_map = run_state.practice_intervention_policy()
                 policy_variant_ok = bool(isinstance(policy_map, dict) and policy_map.get("recommended_variant", False))
                 outcome_now = str(getattr(result, "outcome", "") or "").strip().lower()
                 retry_now = bool(getattr(result, "retry_recommended", False))
@@ -5029,7 +5084,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         ),
                     )
                     if variant_item is not None:
-                        run_state["practice_variant_candidate"] = variant_item
+                        run_state.set_practice_variant_candidate(variant_item)
             except Exception:
                 pass
             try:
@@ -5037,7 +5092,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if (
                     structure_obj is not None
                     and not bool(item_meta_now.get("transfer_variant", False))
-                    and run_state.get("practice_variant_candidate") is None
+                    and run_state.practice_variant_candidate() is None
                 ):
                     outcome_now = str(getattr(result, "outcome", "") or "").strip().lower()
                     if outcome_now == "correct":
@@ -5064,7 +5119,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 seed_offset=seed_offset,
                             )
                             if transfer_item is not None:
-                                run_state["practice_variant_candidate"] = transfer_item
+                                run_state.set_practice_variant_candidate(transfer_item)
                                 run_state["practice_transfer_base"] = {
                                     "structure_id": structure_id,
                                     "base_question_id": str(getattr(item, "item_id", "") or ""),
@@ -5075,25 +5130,29 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
             try:
-                run_state["practice_next_guidance"] = self._build_practice_next_action_guidance(
+                run_state.set_practice_next_guidance(
+                    self._build_practice_next_action_guidance(
                     session_state=session_state if isinstance(session_state, TutorSessionState) else None,
                     learner_profile=learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else None,
                     item=cast(TutorPracticeItem, item),
                     result_obj=result,
                     hints_used=max(0, int(run_state.get("practice_hint_use_count", 0) or 0)),
+                    )
                 )
             except Exception:
-                run_state["practice_next_guidance"] = None
+                run_state.set_practice_next_guidance(None)
             try:
-                run_state["practice_session_quality_summary"] = self._build_practice_session_quality_summary(
+                run_state.set_practice_session_quality_summary(
+                    self._build_practice_session_quality_summary(
                     session_state=session_state if isinstance(session_state, TutorSessionState) else None,
                     learner_profile=learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else None,
                     item=cast(TutorPracticeItem, item),
                     result_obj=result,
-                    guidance=run_state.get("practice_next_guidance"),
+                    guidance=run_state.practice_next_guidance(),
+                    )
                 )
             except Exception:
-                run_state["practice_session_quality_summary"] = {}
+                run_state.set_practice_session_quality_summary(None)
             _refresh_practice_panel()
             try:
                 out = str(getattr(result, "outcome", "") or "").strip()
@@ -5102,7 +5161,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if isinstance(transfer_summary, dict) and transfer_summary:
                     _set_status(self._format_transfer_score_status(transfer_summary))
                     return
-                candidate_obj = run_state.get("practice_variant_candidate")
+                candidate_obj = run_state.practice_variant_candidate()
                 if candidate_obj is not None:
                     try:
                         cand_meta = dict(getattr(candidate_obj, "meta", {}) or {})
@@ -5123,7 +5182,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
 
         def _hint_tutor_practice_item(*_args) -> None:
-            item = run_state.get("practice_item")
+            item = run_state.practice_item()
             if item is None:
                 _set_status("No practice item loaded.")
                 return
@@ -5133,7 +5192,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     item_id = str(getattr(item, "item_id", "") or "practice-item")
                 except Exception:
                     item_id = "practice-item"
-                has_assessment = bool(run_state.get("practice_result") is not None)
+                has_assessment = run_state.practice_result() is not None
                 hint_state = run_state.get("practice_hint_policy_state")
                 if not isinstance(hint_state, dict):
                     hint_state = {}
@@ -5202,8 +5261,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 _set_status(msg)
 
         def _retry_tutor_practice_variant(*_args) -> None:
-            item = run_state.get("practice_item")
-            result_obj = run_state.get("practice_result")
+            item = run_state.practice_item()
+            result_obj = run_state.practice_result()
             if item is None:
                 _set_status("No practice item loaded.")
                 return
@@ -5214,10 +5273,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if practice_service is None or not hasattr(practice_service, "build_retest_variant"):
                 _set_status("Tutor variant generator unavailable.")
                 return
-            cached_variant = run_state.get("practice_variant_candidate")
+            cached_variant = run_state.practice_variant_candidate()
             if cached_variant is not None:
                 variant_item = cached_variant
-                run_state["practice_variant_candidate"] = None
+                run_state.set_practice_variant_candidate(None)
             else:
                 session_state, learner_profile, app_snapshot = _get_tutor_loop_session_profile()
                 try:
@@ -5257,7 +5316,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 _set_status("Variant re-test queued.")
 
         def _use_practice_item_in_prompt(*_args) -> None:
-            item = run_state.get("practice_item")
+            item = run_state.practice_item()
             if item is None:
                 _set_status("No practice item loaded.")
                 return
@@ -10385,12 +10444,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         session_state: TutorSessionState | None = None
         learner_profile: TutorLearnerProfileSnapshot | None = None
         if isinstance(run_state, TutorWorkspaceState):
-            session_candidate = run_state.get("practice_session_state")
-            if isinstance(session_candidate, TutorSessionState):
-                session_state = session_candidate
-            profile_candidate = run_state.get("practice_learner_profile")
-            if isinstance(profile_candidate, TutorLearnerProfileSnapshot):
-                learner_profile = profile_candidate
+            session_state = run_state.practice_session_state()
+            learner_profile = run_state.practice_learner_profile()
 
         if learner_profile is None:
             learner_store = getattr(self, "_tutor_learner_model_store", None)
@@ -16574,13 +16629,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         run_state = getattr(self, "_tutor_workspace_state", None)
         if isinstance(run_state, TutorWorkspaceState):
-            session_candidate = run_state.get("practice_session_state")
-            if isinstance(session_candidate, TutorSessionState):
-                session_state = session_candidate
-            profile_candidate = run_state.get("practice_learner_profile")
-            if isinstance(profile_candidate, TutorLearnerProfileSnapshot):
-                learner_profile = profile_candidate
-            practice_result = run_state.get("practice_result")
+            session_state = run_state.practice_session_state()
+            learner_profile = run_state.practice_learner_profile()
+            practice_result = run_state.practice_result()
 
         if learner_profile is None:
             learner_store = getattr(self, "_tutor_learner_model_store", None)
@@ -23471,7 +23522,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         run_state = getattr(self, "_tutor_workspace_state", None)
         if isinstance(run_state, TutorWorkspaceState):
-            candidate = run_state.get("practice_learner_profile")
+            candidate = run_state.practice_learner_profile()
             if isinstance(candidate, TutorLearnerProfileSnapshot):
                 learner_key = (
                     str(getattr(candidate, "learner_id", "") or "").strip(),
