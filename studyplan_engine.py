@@ -17,9 +17,11 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Dict, Any, List, Union, Set, Tuple, cast
+from typing import Callable, Dict, Any, List, Union, Set, Tuple, cast
+from studyplan.config import Config as StudyPlanConfig
 from studyplan.cognitive_state import CognitiveState
 from studyplan.mastery_kernel import MasteryKernel
+from studyplan.question_quality import get_poor_quality_indices, option_looks_like_see_explanation
 from studyplan.working_memory_service import WorkingMemoryService
 from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
 
@@ -146,7 +148,9 @@ class StudyPlanEngine:
         "Equity Finance": ["Debt Finance"],
         "Debt Finance": ["Cost of Capital"],
     }
-    DEFAULT_DATA_DIR = os.path.expanduser("~/.config/studyplan")
+    DEFAULT_DATA_DIR = getattr(
+        StudyPlanConfig, "CONFIG_HOME", os.path.expanduser("~/.config/studyplan")
+    )
     DEFAULT_DATA_FILE = os.path.join(DEFAULT_DATA_DIR, "data.json")
     DEFAULT_QUESTIONS_FILE = os.path.join(DEFAULT_DATA_DIR, "questions.json")
     MODULES_DIR = os.path.join(DEFAULT_DATA_DIR, "modules")
@@ -1140,10 +1144,11 @@ class StudyPlanEngine:
 
     def _load_module_config(self, module_id: str) -> dict | None:
         safe_id = self._sanitize_module_id(module_id)
-        candidates = [
-            os.path.join(self.MODULES_DIR, f"{safe_id}.json"),
-            os.path.join(os.path.dirname(__file__), "modules", f"{safe_id}.json"),
-        ]
+        repo_modules = os.path.join(os.path.dirname(__file__), "modules")
+        candidates = []
+        if os.path.isdir(repo_modules):
+            candidates.append(os.path.join(repo_modules, f"{safe_id}.json"))
+        candidates.append(os.path.join(self.MODULES_DIR, f"{safe_id}.json"))
         for path in candidates:
             if not os.path.exists(path):
                 continue
@@ -1162,6 +1167,14 @@ class StudyPlanEngine:
         if isinstance(chapters, list) and chapters:
             self.CHAPTERS = [str(ch) for ch in chapters if str(ch).strip()]
             self.CHAPTER_NUMBER_MAP = {i + 1: ch for i, ch in enumerate(self.CHAPTERS)}
+        # Auto-inject FR (F7) syllabus_structure when missing so no script or manual merge is needed
+        if self._sanitize_module_id(self.module_id) == "acca_f7" and not config.get("syllabus_structure"):
+            try:
+                from studyplan.syllabus_f7 import get_f7_syllabus_structure
+                config = dict(config)
+                config["syllabus_structure"] = get_f7_syllabus_structure(self.CHAPTERS)
+            except Exception:
+                pass
         flow = config.get("chapter_flow")
         if isinstance(flow, dict):
             self.CHAPTER_FLOW = {str(k): list(v) for k, v in flow.items() if isinstance(v, list)}
@@ -1172,7 +1185,7 @@ class StudyPlanEngine:
                 if key and v:
                     self.CHAPTER_ALIASES[key] = str(v)
         questions = config.get("questions")
-        if isinstance(questions, dict) and questions:
+        if isinstance(questions, dict):
             self.QUESTIONS_DEFAULT = copy.deepcopy(questions)
         weights = config.get("importance_weights")
         if isinstance(weights, dict) and weights:
@@ -1265,19 +1278,22 @@ class StudyPlanEngine:
             self.outcome_cluster_edges = [dict(x) for x in outcome_cluster_edges if isinstance(x, dict)]
 
     def _chapter_semantic_alias_map(self, chapter: str) -> dict[str, str]:
-        """Return merged semantic alias map (built-in + module + chapter-specific)."""
+        """Return merged semantic alias map. When the module defines semantic_aliases (e.g. F7), use only
+        those so FM-built-in aliases (WACC, CAPM, NPV, etc.) are not applied to other modules."""
         merged: dict[str, str] = {}
-        for key, value in getattr(self, "SEMANTIC_CANONICAL_ALIASES", {}).items():
-            k = str(key).strip().lower()
-            v = str(value).strip().lower()
-            if k and v:
-                merged[k] = v
-
         aliases = getattr(self, "semantic_aliases", {})
         if not isinstance(aliases, dict):
-            return merged
+            aliases = {}
 
-        # Global alias map in module config.
+        # Only add engine built-in (FM) aliases when the module has not defined its own.
+        if not aliases:
+            for key, value in getattr(self, "SEMANTIC_CANONICAL_ALIASES", {}).items():
+                k = str(key).strip().lower()
+                v = str(value).strip().lower()
+                if k and v:
+                    merged[k] = v
+
+        # Global alias map in module config (overrides/adds to built-in when present).
         for key, value in aliases.items():
             if isinstance(value, dict):
                 continue
@@ -1350,8 +1366,104 @@ class StudyPlanEngine:
                     break
         return lines[start_idx:end_idx]
 
+    def _parse_syllabus_generic(
+        self, lines: List[str]
+    ) -> tuple[List[str], Dict[str, str], Dict[str, List[Dict[str, Any]]], Dict[str, List[str]], List[str]]:
+        """Module-agnostic extraction: detect section headings (A–Z, 1–N, Chapter N) and outcomes from full text.
+        Returns (section_ids, section_titles, outcomes_by_section, subtopics_by_section, warnings).
+        """
+        warnings: List[str] = []
+        # Match: single uppercase letter (A–Z), number, or "Chapter N" / "Part N". Lowercase a) b) are outcomes.
+        heading_re = re.compile(
+            r"^(?:([A-Z])[\)\.\s\-]+|(\d+)[\)\.\s\-]+|(?:[Cc]hapter|[Pp]art)\s+(\d+|[A-Za-z])[\:\s]*)\s*(.+)$",
+        )
+        bullet_re = re.compile(r"^([a-z]|[ivx]+|\d+)[\)\.]\s*(.*)$", re.IGNORECASE)
+        section_ids: List[str] = []
+        section_titles: Dict[str, str] = {}
+        outcomes_by_section: Dict[str, List[Dict[str, Any]]] = {}
+        subtopics_by_section: Dict[str, List[str]] = {}
+        current_id: str | None = None
+        current_title: str | None = None
+        outcome_text: str | None = None
+        outcome_level: int | None = None
+        pending_bullet = False
+
+        def flush_outcome() -> None:
+            nonlocal outcome_text, outcome_level
+            if not current_id or not outcome_text:
+                outcome_text = None
+                outcome_level = None
+                return
+            t = outcome_text.strip()
+            if t:
+                outcomes_by_section.setdefault(current_id, []).append(
+                    {"text": t, "level": int(outcome_level or 2)}
+                )
+            outcome_text = None
+            outcome_level = None
+
+        for i, line in enumerate(lines):
+            m = heading_re.match(line.strip())
+            if m:
+                flush_outcome()
+                letter, num, part, title = m.group(1), m.group(2), m.group(3), (m.group(4) or "").strip()
+                if letter:
+                    sid = letter.upper()
+                elif num:
+                    sid = str(int(num))
+                elif part:
+                    sid = part.upper() if part.isalpha() else str(int(part))
+                else:
+                    continue
+                if not title or len(title) < 2:
+                    title = f"Section {sid}"
+                if sid not in section_titles:
+                    section_ids.append(sid)
+                section_titles[sid] = title
+                current_id = sid
+                current_title = title
+                pending_bullet = False
+                continue
+
+            if current_id is None:
+                continue
+
+            bullet_m = bullet_re.match(line.strip())
+            if bullet_m:
+                flush_outcome()
+                bt = (bullet_m.group(2) or "").strip()
+                if bt:
+                    outcome_text = bt
+                else:
+                    outcome_text = None
+                    pending_bullet = True
+                outcome_level = None
+                continue
+            if outcome_text is not None:
+                if not re.match(r"^\d+\.\s+.+$", line.strip()):
+                    outcome_text = f"{outcome_text} {line}".strip()
+            elif pending_bullet and line.strip():
+                outcome_text = line.strip()
+                pending_bullet = False
+
+            if outcome_text:
+                lev_m = re.search(r"[\[\(](\d)[\]\)]\s*$", outcome_text)
+                if lev_m:
+                    try:
+                        outcome_level = int(lev_m.group(1))
+                    except Exception:
+                        outcome_level = 2
+                    outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", outcome_text).strip()
+                    flush_outcome()
+        flush_outcome()
+
+        if section_ids:
+            warnings.append("Used generic section detection (module-agnostic).")
+        return section_ids, section_titles, outcomes_by_section, subtopics_by_section, warnings
+
     def parse_syllabus_pdf_text(self, pdf_text: str) -> Dict[str, Any]:
-        """Parse syllabus PDF text into capabilities, chapters, and outcomes."""
+        """Parse syllabus PDF text into capabilities, chapters, and outcomes. Supports ACCA-style (e.g. FM)
+        and generic formats (numbered chapters, Chapter N, single-letter sections A–Z)."""
         if not isinstance(pdf_text, str) or not pdf_text.strip():
             raise ValueError("pdf_text must be a non-empty string")
         cache_key = hashlib.sha1(pdf_text.encode("utf-8", errors="ignore")).hexdigest()
@@ -1382,18 +1494,22 @@ class StudyPlanEngine:
         if m_window:
             effective_window = m_window.group(1).strip().title().replace(" To ", " - ")
 
-        capabilities_section = self._extract_between(
-            lines,
-            start_pattern=r"^\s*2\.\s*main\s+capab\w*\b",
-            end_patterns=[
-                r"^\s*3\.\s*int\w+\s+levels?\b",
-                r"^\s*4\.\s*the\s+syllabus\b",
-            ],
-            use_last_start=True,
-        )
+        # Main capabilities: try multiple section titles (ACCA variants, OCR-friendly, other modules)
+        capabilities_section: List[str] = []
+        for start_pat, end_pats in [
+            (r"^\s*2\.\s*main\s+capab\w*\b", [r"^\s*3\.\s*int\w+\s+levels?\b", r"^\s*4\.\s*the\s+syllabus\b"]),
+            (r"^\s*2\.\s*main\s+areas?\b", [r"^\s*3\.\s*", r"^\s*4\.\s*"]),
+            (r"^\s*2\.\s*capab\w*\b", [r"^\s*3\.\s*", r"^\s*4\.\s*"]),
+            (r"^\s*main\s+capab\w*\b", [r"^\s*3\.\s*", r"^\s*4\.\s*", r"intellectual\s+level"]),
+            (r"^\s*capabilities\s*$", [r"^\s*3\.\s*", r"^\s*4\.\s*", r"the\s+syllabus"]),
+        ]:
+            section = self._extract_between(lines, start_pattern=start_pat, end_patterns=end_pats, use_last_start=True)
+            if section:
+                capabilities_section = section
+                break
         capabilities: Dict[str, str] = {}
         for line in capabilities_section:
-            m = re.match(r"^([A-H])[\)\.\s-]+(.+)$", line)
+            m = re.match(r"^([A-H])[\)\.\s\-]+(.+)$", line)
             if m:
                 capabilities[m.group(1)] = m.group(2).strip()
 
@@ -1420,6 +1536,11 @@ class StudyPlanEngine:
             m_sub = re.match(r"^\d+\.\s+(.+)$", line)
             if m_sub and current_letter:
                 syllabus_subtopics.setdefault(current_letter, []).append(m_sub.group(1).strip())
+
+        # Backfill capabilities from syllabus section if "2. Main capabilities" was missing or sparse
+        for letter, title in syllabus_titles.items():
+            if letter and title and letter not in capabilities:
+                capabilities[letter] = title
 
         detailed_section = self._extract_between(
             lines,
@@ -1551,7 +1672,7 @@ class StudyPlanEngine:
 
         letters = sorted(set(capabilities.keys()) | set(syllabus_titles.keys()) | set(outcomes_by_letter.keys()))
         if not letters:
-            # Best-effort fallback for OCR/noisy extracts: scan the full text for capability-like headings.
+            # Best-effort fallback for OCR/noisy ACCA: scan for A–H headings only.
             fallback_titles: Dict[str, str] = {}
             for line in lines:
                 m_fallback = re.match(r"^([A-H])[\)\.\s-]+(.+)$", line)
@@ -1561,7 +1682,6 @@ class StudyPlanEngine:
                 title = str(m_fallback.group(2) or "").strip()
                 if not letter or not title:
                     continue
-                # Ignore pure list-like fragments.
                 if len(title) < 4:
                     continue
                 fallback_titles.setdefault(letter, title)
@@ -1570,6 +1690,17 @@ class StudyPlanEngine:
                     capabilities.setdefault(k, v)
                 letters = sorted(fallback_titles.keys())
                 warnings.append("Used fallback heading detection due to weak section parsing.")
+        if not letters:
+            # Module-agnostic: numbered sections, Chapter N, or single-letter A–Z anywhere in text.
+            gen_ids, gen_titles, gen_outcomes, gen_subtopics, gen_warnings = self._parse_syllabus_generic(lines)
+            if gen_ids:
+                letters = gen_ids
+                for sid in letters:
+                    capabilities.setdefault(sid, gen_titles.get(sid, f"Section {sid}"))
+                    syllabus_titles.setdefault(sid, gen_titles.get(sid, f"Section {sid}"))
+                outcomes_by_letter = dict(gen_outcomes)
+                syllabus_subtopics = dict(gen_subtopics)
+                warnings.extend(gen_warnings)
         chapters: List[str] = []
         chapter_map: Dict[str, str] = {}
         syllabus_structure: Dict[str, Dict[str, Any]] = {}
@@ -1613,11 +1744,15 @@ class StudyPlanEngine:
                 "outcome_count": len(normalized_outcomes),
             }
 
-        expected = 8 if letters else 1
-        cap_ratio = min(1.0, len(capabilities) / float(expected))
+        expected = max(1, len(letters))
+        # Use sections we actually found (letters), not only "2. Main capabilities", so missing that section doesn't penalise
+        sections_found = max(len(capabilities), len(syllabus_titles), len(outcomes_by_letter), len(letters))
+        cap_ratio = min(1.0, float(sections_found) / float(expected))
         chapter_ratio = min(1.0, len(chapters) / float(expected))
         total_outcomes = sum(len(v) for v in outcomes_by_letter.values())
-        outcome_ratio = min(1.0, total_outcomes / float(max(1, len(chapters) * 3)))
+        # 1 outcome per chapter is enough for 100% outcome component (so real syllabi reach 1.0 more often)
+        min_outcomes_for_full = max(1, len(chapters))
+        outcome_ratio = min(1.0, total_outcomes / float(min_outcomes_for_full))
         confidence = max(0.0, min(1.0, (0.40 * cap_ratio) + (0.35 * chapter_ratio) + (0.25 * outcome_ratio)))
 
         if not capabilities:
@@ -1655,6 +1790,144 @@ class StudyPlanEngine:
             stale = self._syllabus_parse_cache_order.pop(0)
             self._syllabus_parse_cache.pop(stale, None)
         return result
+
+    def parse_syllabus_with_ai(
+        self,
+        pdf_text: str,
+        chapters: List[str],
+        llm_generate: Callable[[str, int], str],
+        *,
+        max_input_chars: int = 14000,
+        max_tokens: int = 4096,
+    ) -> Dict[str, Any]:
+        """Use an LLM to extract learning outcomes from syllabus text and map each to a chapter.
+        Works with any syllabus structure; chapters list is the only required structure.
+        llm_generate(prompt, max_tokens) should return the model output string (or raise/return empty on error).
+        """
+        if not isinstance(pdf_text, str) or not pdf_text.strip():
+            return {"syllabus_structure": {}, "warnings": ["Empty syllabus text"], "confidence": 0.0, "stats": {}}
+        if not isinstance(chapters, list) or not chapters:
+            return {"syllabus_structure": {}, "warnings": ["No chapters provided"], "confidence": 0.0, "stats": {}}
+        chapter_set = {str(ch).strip() for ch in chapters if str(ch).strip()}
+        if not chapter_set:
+            return {"syllabus_structure": {}, "warnings": ["No valid chapter titles"], "confidence": 0.0, "stats": {}}
+        text = pdf_text.strip()
+        if len(text) > max_input_chars:
+            text = text[:max_input_chars] + "\n\n[... text truncated for context ...]"
+        chapters_blob = "\n".join(f"- {ch}" for ch in chapters if str(ch).strip())
+        try:
+            from studyplan.ai.prompt_design import (
+                JSON_ONLY_NO_MARKDOWN,
+                append_retry_suffix,
+                build_syllabus_extraction_prompt,
+            )
+        except ImportError:
+            build_syllabus_extraction_prompt = None
+        if build_syllabus_extraction_prompt is not None:
+            prompt = build_syllabus_extraction_prompt(
+                syllabus_text=text,
+                chapters_blob=chapters_blob,
+            )
+        else:
+            prompt = (
+                "You are parsing a syllabus document. Extract every learning outcome. For each: id, text, level (1/2/3), chapter (exact title from list).\n"
+                "Schema:\n{\"outcomes\":[{\"id\":\"...\",\"text\":\"...\",\"level\":1 or 2 or 3,\"chapter\":\"<exact chapter title>\"}],\"warnings\":[]}\n"
+                "Rules:\n- " + "Return valid JSON only, no markdown.\n"
+                "Syllabus text:\n---\n" + text + "\n---\nChapters (use exact strings):\n" + chapters_blob
+            )
+        warnings: List[str] = []
+        raw = ""
+        for attempt in range(2):
+            try:
+                raw = llm_generate(prompt, max_tokens)
+            except Exception as exc:
+                warnings.append(f"LLM call failed: {exc}")
+                return {"syllabus_structure": {}, "warnings": warnings, "confidence": 0.0, "stats": {}}
+            if not isinstance(raw, str) or not raw.strip():
+                if attempt == 0 and build_syllabus_extraction_prompt is not None:
+                    prompt = append_retry_suffix(prompt, JSON_ONLY_NO_MARKDOWN)
+                    continue
+                warnings.append("LLM returned empty response")
+                return {"syllabus_structure": {}, "warnings": warnings, "confidence": 0.0, "stats": {}}
+            break
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```\w*\n?", "", raw)
+            raw = re.sub(r"\n?```\s*$", "", raw)
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            data = {}
+            if build_syllabus_extraction_prompt is not None:
+                prompt = append_retry_suffix(prompt, JSON_ONLY_NO_MARKDOWN)
+                try:
+                    raw2 = llm_generate(prompt, max_tokens)
+                    if isinstance(raw2, str) and raw2.strip():
+                        raw2 = raw2.strip()
+                        if raw2.startswith("```"):
+                            raw2 = re.sub(r"^```\w*\n?", "", raw2)
+                            raw2 = re.sub(r"\n?```\s*$", "", raw2)
+                        data = json.loads(raw2)
+                except Exception:
+                    pass
+            if not isinstance(data, dict) or not data:
+                warnings.append(f"Invalid JSON from LLM: {e}")
+                return {"syllabus_structure": {}, "warnings": warnings, "confidence": 0.0, "stats": {}}
+        outcomes_list = data.get("outcomes")
+        if not isinstance(outcomes_list, list):
+            outcomes_list = []
+        if isinstance(data.get("warnings"), list):
+            warnings.extend(str(w) for w in data["warnings"] if w)
+        by_chapter: Dict[str, List[Dict[str, Any]]] = {ch: [] for ch in chapters if str(ch).strip()}
+        for item in outcomes_list:
+            if not isinstance(item, dict):
+                continue
+            ch = str(item.get("chapter", "") or "").strip()
+            if ch not in chapter_set:
+                continue
+            try:
+                level = int(item.get("level", 2) or 2)
+            except (TypeError, ValueError):
+                level = 2
+            level = max(1, min(3, level))
+            oid = str(item.get("id", "") or "").strip() or f"outcome_{len(by_chapter[ch]) + 1}"
+            txt = str(item.get("text", "") or "").strip()
+            if not txt:
+                continue
+            by_chapter[ch].append({"id": oid, "text": txt, "level": level})
+        def _cap(ch_title: str) -> str:
+            t = (ch_title or "").lower()
+            if "framework" in t or "concept" in t or "international" in t:
+                return "A"
+            if any(x in t for x in ["ias ", "ifrs ", "impairment", "lease", "tax", "revenue", "instrument", "ppe", "intangible", "inventor", "provision", "foreign", "government", "eps"]):
+                return "B"
+            if "analysis" in t or "interpretation" in t:
+                return "C"
+            if "consolidat" in t or "cash flow" in t or "presentation" in t:
+                return "D"
+            return "A"
+        syllabus_structure: Dict[str, Dict[str, Any]] = {}
+        for ch in chapters:
+            if not ch or ch not in by_chapter:
+                syllabus_structure[ch] = {"capability": _cap(ch), "learning_outcomes": [], "outcome_count": 0}
+                continue
+            los = by_chapter[ch]
+            syllabus_structure[ch] = {
+                "capability": _cap(ch),
+                "learning_outcomes": los,
+                "outcome_count": len(los),
+            }
+        total_outcomes = sum(len(los) for los in by_chapter.values())
+        outcome_ratio = min(1.0, total_outcomes / max(1, len(chapters)))
+        confidence = 0.5 + 0.4 * outcome_ratio if total_outcomes > 0 else 0.5
+        if total_outcomes == 0:
+            warnings.append("No outcomes could be mapped to the given chapters.")
+        return {
+            "syllabus_structure": syllabus_structure,
+            "warnings": warnings,
+            "confidence": min(1.0, confidence),
+            "stats": {"outcomes_found": total_outcomes, "chapters_found": len(chapters), "capabilities_found": len(set(s.get("capability", "A") for s in syllabus_structure.values()))},
+        }
 
     def _load_syllabus_import_cache_disk(self) -> None:
         path = str(getattr(self, "syllabus_import_cache_file", "") or "").strip()
@@ -1895,11 +2168,16 @@ class StudyPlanEngine:
                 v = str(value).strip()
                 if k and v:
                     aliases[k] = v
+        section_prefix_re = re.compile(
+            r"^(?:[A-Z]\.\s*|\d+\.\s*|(?:Chapter|Part)\s+\d+\s*[\:\-]?\s*)",
+            re.IGNORECASE,
+        )
+
         for chapter in chapters:
             low = chapter.strip().lower()
             if low:
                 aliases.setdefault(low, chapter)
-            stripped = re.sub(r"^[A-H]\.\s*", "", chapter).strip()
+            stripped = section_prefix_re.sub("", chapter).strip()
             if stripped:
                 aliases.setdefault(stripped.lower(), chapter)
             cap_letter = chapter[:1].upper()
@@ -1949,11 +2227,21 @@ class StudyPlanEngine:
 
         if preserve_existing:
             # Map capability chapters to the closest existing chapters.
+            def _strip_section_prefix(name: str) -> str:
+                """Remove module-agnostic section prefix (A. 1. Chapter 1: etc.)."""
+                s = name.strip()
+                return re.sub(
+                    r"^(?:[A-Z]\.\s*|\d+\.\s*|(?:Chapter|Part)\s+\d+\s*[\:\-]?\s*)",
+                    "",
+                    s,
+                    flags=re.IGNORECASE,
+                ).strip().lower()
+
             def _best_match_to_existing(name: str) -> tuple[str | None, float]:
                 if not name or not existing_chapters:
                     return None, 0.0
                 name_low = name.strip().lower()
-                stripped = re.sub(r"^[A-H]\.\s*", "", name_low).strip()
+                stripped = _strip_section_prefix(name)
                 best_ch = None
                 best_score = 0.0
                 for ch in existing_chapters:
@@ -1967,6 +2255,7 @@ class StudyPlanEngine:
                         best_ch = ch
                 # Rule-based fallback for broad capability labels.
                 if best_score < 0.45:
+                    mapped: str | None = None
                     def _has(kw: str) -> bool:
                         return kw in name_low
                     def _pick(*candidates: str) -> str | None:
@@ -1975,6 +2264,14 @@ class StudyPlanEngine:
                                 if ch.lower() == cand.lower():
                                     return ch
                         return None
+                    def _pick_by_substring(*substrings: str) -> str | None:
+                        for ch in existing_chapters:
+                            ch_low = ch.lower()
+                            for sub in substrings:
+                                if sub.lower() in ch_low:
+                                    return ch
+                        return None
+                    # FM (F9) fallbacks: exact chapter names.
                     if _has("environment"):
                         mapped = _pick("FM Environment")
                         if mapped:
@@ -2001,6 +2298,76 @@ class StudyPlanEngine:
                             return mapped, 0.5
                     if _has("cash management"):
                         mapped = _pick("Cash Management")
+                        if mapped:
+                            return mapped, 0.5
+                    # FR (F7) fallbacks: match by substring so study-hub style chapters map correctly.
+                    fr_like = any(
+                        "conceptual framework" in ch.lower() or "ifrs" in ch.lower() or "consolidat" in ch.lower()
+                        for ch in existing_chapters
+                    )
+                    if fr_like:
+                        if not mapped and (_has("framework") or _has("conceptual")):
+                            mapped = _pick_by_substring("conceptual framework", "ifrs 18", "international financial reporting")
+                        if not mapped and (_has("revenue") or "ifrs 15" in name_low or "ifrs15" in name_low):
+                            mapped = _pick_by_substring("ifrs 15", "revenue")
+                        if not mapped and (_has("consolidat") or _has("group")):
+                            mapped = _pick_by_substring("consolidat", "group", "consolidated statement")
+                        if not mapped and _has("goodwill"):
+                            mapped = _pick_by_substring("consolidat", "goodwill")
+                        if not mapped and _has("associate"):
+                            mapped = _pick_by_substring("associate")
+                        if not mapped and (_has("cash flow") or "ias 7" in name_low or "ias7" in name_low):
+                            mapped = _pick_by_substring("cash flow", "ias 7")
+                        if not mapped and (_has("impairment") or "ias 36" in name_low):
+                            mapped = _pick_by_substring("impairment", "ias 36")
+                        if not mapped and (_has("lease") or "ifrs 16" in name_low or "ifrs16" in name_low):
+                            mapped = _pick_by_substring("ifrs 16", "lease")
+                        if not mapped and (_has("provision") or "ias 37" in name_low):
+                            mapped = _pick_by_substring("ias 37", "provision")
+                        if not mapped and (_has("tax") or "income tax" in name_low):
+                            mapped = _pick_by_substring("ias 12", "income tax")
+                        if not mapped and (_has("analysis") or _has("interpretation")):
+                            mapped = _pick_by_substring("analysis", "interpretation")
+                        if mapped:
+                            return mapped, 0.5
+                    # AA (F8) fallbacks: audit and assurance syllabus.
+                    aa_like = any(
+                        "audit" in ch.lower() or "assurance" in ch.lower() or "internal control" in ch.lower()
+                        for ch in existing_chapters
+                    )
+                    if aa_like:
+                        if not mapped and (_has("framework") or _has("audit") or _has("regulation")):
+                            mapped = _pick_by_substring("audit framework", "regulation")
+                        if not mapped and (_has("planning") or _has("risk") or _has("assessment")):
+                            mapped = _pick_by_substring("planning", "risk assessment")
+                        if not mapped and (_has("internal control") or _has("control")):
+                            mapped = _pick_by_substring("internal control")
+                        if not mapped and (_has("evidence") or _has("audit evidence")):
+                            mapped = _pick_by_substring("audit evidence", "evidence")
+                        if not mapped and (_has("review") or _has("reporting")):
+                            mapped = _pick_by_substring("review", "reporting")
+                        if not mapped and _has("employability"):
+                            mapped = _pick_by_substring("employability", "technology")
+                        if mapped:
+                            return mapped, 0.5
+                    # TX (F6) fallbacks: taxation syllabus.
+                    tx_like = any(
+                        "tax" in ch.lower() or "vat" in ch.lower() or "allowance" in ch.lower() or "corporation" in ch.lower()
+                        for ch in existing_chapters
+                    )
+                    if tx_like:
+                        if not mapped and (_has("income tax") or _has("income") and _has("tax")):
+                            mapped = _pick_by_substring("income tax", "income")
+                        if not mapped and (_has("corporation") or _has("company") or _has("ct")):
+                            mapped = _pick_by_substring("corporation", "company tax")
+                        if not mapped and _has("vat"):
+                            mapped = _pick_by_substring("vat")
+                        if not mapped and (_has("capital gain") or _has("cgt")):
+                            mapped = _pick_by_substring("capital gain", "cgt")
+                        if not mapped and (_has("allowance") or _has("relief") or _has("deduction")):
+                            mapped = _pick_by_substring("allowance", "relief", "deduction")
+                        if not mapped and _has("tax"):
+                            mapped = _pick_by_substring("tax")
                         if mapped:
                             return mapped, 0.5
                 return best_ch, best_score
@@ -2222,8 +2589,13 @@ class StudyPlanEngine:
 
         return {"config": cleaned, "notes": notes}
 
-    def import_syllabus_from_pdf_text(self, pdf_text: str, module_id: str | None = None) -> Dict[str, Any]:
-        """Parse syllabus text and return a validated draft module config (no file writes)."""
+    def import_syllabus_from_pdf_text(
+        self, pdf_text: str, module_id: str | None = None, *, force_confidence: bool = False
+    ) -> Dict[str, Any]:
+        """Parse syllabus text and return a validated draft module config (no file writes).
+
+        If force_confidence is True, diagnostics['confidence'] is set to 1.0 (e.g. after user verification).
+        """
         t0 = time.perf_counter()
         metrics = getattr(self, "_syllabus_cache_metrics", {}) or {}
         target_module_id = self._sanitize_module_id(module_id or self.module_id)
@@ -2232,27 +2604,8 @@ class StudyPlanEngine:
             base_config = {}
         else:
             base_config = cast(Dict[str, Any], base_config)
-        # Prefer existing question-bank chapters if they are richer than the module config.
-        q_chapters: list[str] = []
-        base_chapters: list[str] = []
-        try:
-            _, questions_path = self._resolve_module_paths(target_module_id)
-            if questions_path and os.path.exists(questions_path):
-                with open(questions_path, "r", encoding="utf-8") as f:
-                    payload = json.load(f)
-                if isinstance(payload, dict):
-                    q_chapters = [str(k).strip() for k in payload.keys() if str(k).strip()]
-            raw_base_chapters = base_config.get("chapters") if isinstance(base_config, dict) else None
-            if isinstance(raw_base_chapters, list):
-                base_chapters = [str(ch).strip() for ch in raw_base_chapters if str(ch).strip()]
-            else:
-                base_chapters = []
-            if len(q_chapters) > len(base_chapters):
-                base_config = copy.deepcopy(base_config)
-                base_config["chapters"] = q_chapters
-                base_chapters = list(q_chapters)
-        except Exception:
-            pass
+        # Module file chapters are the source of truth (study-hub aligned). Syllabus import adds intelligence
+        # (capabilities, outcomes, mapping, importance) and must never overwrite chapters.
         text_hash = hashlib.sha1(str(pdf_text).encode("utf-8", errors="ignore")).hexdigest()
         try:
             base_signature = hashlib.sha1(
@@ -2260,7 +2613,7 @@ class StudyPlanEngine:
             ).hexdigest()
         except Exception:
             base_signature = hashlib.sha1(repr(base_config).encode("utf-8", errors="ignore")).hexdigest()
-        cache_key = f"{target_module_id}:{text_hash}:{base_signature}"
+        cache_key = f"{target_module_id}:{text_hash}:{base_signature}:force_conf_{force_confidence}"
         cached = self._syllabus_import_cache.get(cache_key)
         if isinstance(cached, dict):
             metrics["import_hits"] = int(metrics.get("import_hits", 0) or 0) + 1
@@ -2289,26 +2642,27 @@ class StudyPlanEngine:
         if not base_config:
             base_config = {"title": str(parsed.get("exam_code") or target_module_id).upper()}
         else:
-            def _looks_like_capabilities(chs: list[str]) -> bool:
+            _chapters = base_config.get("chapters")
+            base_chapters = [str(ch).strip() for ch in _chapters if str(ch).strip()] if isinstance(_chapters, list) else []
+            q_raw = base_config.get("questions")
+            q_chapters = list(q_raw.keys()) if isinstance(q_raw, dict) and q_raw else []
+            def _looks_like_section_headings(chs: list[str]) -> bool:
+                """True if most chapters look like section headings (e.g. A. Title, 1. Title, Chapter 1: Title)."""
                 if not chs:
                     return False
                 hits = 0
                 for ch in chs:
-                    if re.match(r"^[A-H]\.\s+", ch.strip()):
+                    s = ch.strip()
+                    if re.match(r"^[A-Z]\.\s+", s) or re.match(r"^\d+\.\s+", s) or re.match(r"^(?:Chapter|Part)\s+\d+", s, re.IGNORECASE):
                         hits += 1
                 return hits >= max(2, int(len(chs) * 0.6))
 
-            exam_code = str(parsed.get("exam_code") or "").strip().upper()
-            if _looks_like_capabilities(base_chapters):
-                # If a syllabus import already overwrote chapters, prefer richer question-bank or defaults.
+            if _looks_like_section_headings(base_chapters):
+                # Prefer richer question-bank chapters if present; do not overwrite with any module-specific default.
                 if q_chapters and len(q_chapters) > len(base_chapters):
                     base_config = copy.deepcopy(base_config)
                     base_config["chapters"] = q_chapters
                     base_chapters = list(q_chapters)
-                elif exam_code in {"FM", "F9"} and len(self.__class__.CHAPTERS) > len(base_chapters):
-                    base_config = copy.deepcopy(base_config)
-                    base_config["chapters"] = list(self.__class__.CHAPTERS)
-                    base_chapters = list(self.__class__.CHAPTERS)
         t_build_start = time.perf_counter()
         try:
             draft = self.build_module_config_from_syllabus(parsed, base_config=base_config)
@@ -2367,6 +2721,11 @@ class StudyPlanEngine:
                 },
             },
         }
+        if force_confidence:
+            result["diagnostics"]["confidence"] = 1.0
+            if isinstance(result.get("parsed"), dict):
+                result["parsed"] = dict(result["parsed"])
+                result["parsed"]["confidence"] = 1.0
         self._syllabus_import_cache[cache_key] = copy.deepcopy(result)
         if cache_key in self._syllabus_import_cache_order:
             self._syllabus_import_cache_order.remove(cache_key)
@@ -2504,6 +2863,116 @@ class StudyPlanEngine:
         data_path = legacy_data if os.path.exists(legacy_data) and not os.path.exists(module_data) else module_data
         questions_path = legacy_questions if os.path.exists(legacy_questions) and not os.path.exists(module_questions) else module_questions
         return data_path, questions_path
+
+    def _question_quality_meta_path(self) -> str:
+        """Per-module sidecar for lazy question quality (quarantine, error streak)."""
+        data_dir = os.path.dirname(self.DATA_FILE) or self.DEFAULT_DATA_DIR
+        return os.path.join(data_dir, "question_quality_meta.json")
+
+    def _load_question_quality_meta(self) -> Dict[str, Dict[str, Any]]:
+        """Lazy-load quality meta; keys are chapter, then question_index str -> {quarantine, error_streak, last_used_iso}."""
+        path = self._question_quality_meta_path()
+        if not os.path.isfile(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            return dict(raw) if isinstance(raw, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_question_quality_meta(self, meta: Dict[str, Dict[str, Any]]) -> None:
+        path = self._question_quality_meta_path()
+        parent = os.path.dirname(path) or "."
+        try:
+            os.makedirs(parent, mode=0o700, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=0, ensure_ascii=True, sort_keys=True)
+        except Exception:
+            pass
+
+    def get_quarantined_question_indices(self, chapter: str) -> Set[int]:
+        """Return set of question indices for this chapter that are quarantined (poor quality / repeated errors)."""
+        meta = self._load_question_quality_meta()
+        by_chapter = meta.get(str(chapter or "").strip(), {})
+        if not isinstance(by_chapter, dict):
+            return set()
+        out: Set[int] = set()
+        for key, val in by_chapter.items():
+            if not isinstance(val, dict):
+                continue
+            if val.get("quarantine"):
+                try:
+                    out.add(int(key))
+                except (TypeError, ValueError):
+                    pass
+        return out
+
+    def apply_question_quality_quarantine(self) -> None:
+        """
+        Scan the question bank and quarantine poor-quality questions in meta.
+        Targets: options containing 'see explanation' (any wording), and similar/duplicate questions.
+        Quarantined indices are excluded from quizzes via get_quarantined_question_indices.
+        """
+        meta = self._load_question_quality_meta()
+        changed = False
+        for chapter in getattr(self, "CHAPTERS", []) or []:
+            items = (self.QUESTIONS or {}).get(chapter, [])
+            if not items:
+                continue
+            poor = get_poor_quality_indices(
+                chapter,
+                items,
+                detect_see_explanation=True,
+                detect_similar=True,
+                similar_min_words=8,
+            )
+            if not poor:
+                continue
+            by_chapter = meta.setdefault(str(chapter), {})
+            if not isinstance(by_chapter, dict):
+                by_chapter = {}
+                meta[str(chapter)] = by_chapter
+            for idx, reason in poor:
+                key = str(idx)
+                entry = by_chapter.get(key)
+                if not isinstance(entry, dict):
+                    entry = {"quarantine": False, "error_streak": 0, "last_used_iso": ""}
+                entry["quarantine"] = True
+                entry["quality_reason"] = str(reason)
+                by_chapter[key] = entry
+                meta[str(chapter)] = by_chapter
+                changed = True
+        if changed:
+            self._save_question_quality_meta(meta)
+
+    def record_question_outcome(self, chapter: str, question_index: int, correct: bool) -> None:
+        """Record a quiz outcome for lazy quality tracking; quarantine after repeated errors."""
+        chapter_key = str(chapter or "").strip()
+        if not chapter_key or chapter_key not in self.CHAPTERS:
+            return
+        qidx = int(question_index)
+        if qidx < 0:
+            return
+        meta = self._load_question_quality_meta()
+        by_chapter = meta.setdefault(chapter_key, {})
+        key = str(qidx)
+        entry = by_chapter.get(key)
+        if not isinstance(entry, dict):
+            entry = {"quarantine": False, "error_streak": 0, "last_used_iso": ""}
+        entry["last_used_iso"] = datetime.datetime.now().isoformat(timespec="seconds")
+        if correct:
+            entry["error_streak"] = 0
+        else:
+            entry["error_streak"] = int(entry.get("error_streak", 0) or 0) + 1
+            if int(entry["error_streak"]) >= 3:
+                entry["quarantine"] = True
+        by_chapter[key] = entry
+        meta[chapter_key] = by_chapter
+        self._save_question_quality_meta(meta)
 
 
     def __init__(self, exam_date=None, default_exam_date_to_today: bool = True, module_id: str | None = None, module_title: str | None = None):
@@ -3039,8 +3508,8 @@ class StudyPlanEngine:
         for key, value in raw.items():
             if not isinstance(value, list):
                 continue
-            chapter = key if key in self.QUESTIONS_DEFAULT else self.CHAPTER_ALIASES.get(str(key).strip().lower())
-            if chapter not in self.QUESTIONS_DEFAULT:
+            chapter = key if (key in self.QUESTIONS_DEFAULT or key in self.CHAPTERS) else self.CHAPTER_ALIASES.get(str(key).strip().lower())
+            if not chapter or (chapter not in self.QUESTIONS_DEFAULT and chapter not in self.CHAPTERS):
                 continue
             cleaned_count = 0
             for item in value:
@@ -6830,8 +7299,8 @@ class StudyPlanEngine:
                         for k, v in raw.items():
                             if not isinstance(v, list):
                                 continue
-                            nk = k if k in self.QUESTIONS_DEFAULT else self.CHAPTER_ALIASES.get(str(k).strip().lower())
-                            if nk in self.QUESTIONS_DEFAULT:
+                            nk = k if (k in self.QUESTIONS_DEFAULT or k in self.CHAPTERS) else self.CHAPTER_ALIASES.get(str(k).strip().lower())
+                            if nk and (nk in self.QUESTIONS_DEFAULT or nk in self.CHAPTERS):
                                 cleaned: list[dict] = []
                                 for q in v:
                                     if not isinstance(q, dict):
@@ -6849,7 +7318,8 @@ class StudyPlanEngine:
                 print(f"Error loading questions from JSON: {e}")
             except OSError as e:
                 print(f"Error loading questions from JSON: {e}")
-        self.QUESTIONS = {k: self.QUESTIONS_DEFAULT.get(k, []) + questions_from_json.get(k, []) for k in self.QUESTIONS_DEFAULT}
+        _qkeys = list(self.QUESTIONS_DEFAULT.keys()) if self.QUESTIONS_DEFAULT else list(self.CHAPTERS)
+        self.QUESTIONS = {k: self.QUESTIONS_DEFAULT.get(k, []) + questions_from_json.get(k, []) for k in _qkeys}
         self._semantic_invalidate_chapter_assets(None)
 
         # If syllabus-only chapters are active but the question bank has legacy chapters, restore them.
@@ -6864,6 +7334,12 @@ class StudyPlanEngine:
 
         # Step 3: Sync SRS data with merged questions
         self.sync_srs_with_questions()
+
+        # Step 4: Quarantine poor-quality questions (see explanation in options, similar questions)
+        try:
+            self.apply_question_quality_quarantine()
+        except Exception:
+            pass
 
         # Debug output
         self._print_question_summary()
@@ -7305,6 +7781,10 @@ class StudyPlanEngine:
         else:
             if any(not str(opt or "").strip() for opt in options):
                 issues.append("empty_option")
+            for o in options:
+                if option_looks_like_see_explanation(str(o or "")):
+                    issues.append("see_explanation_in_options")
+                    break
             lowered = [str(opt or "").strip().lower() for opt in options]
             if len(set(lowered)) != len(lowered):
                 issues.append("duplicate_options")
@@ -8779,6 +9259,15 @@ class StudyPlanEngine:
     def get_questions(self, chapter):
         """Get all questions for a chapter."""
         return self.QUESTIONS.get(chapter, [])
+
+    def get_total_question_count(self) -> int:
+        """Return total number of questions (cards) across all chapters for the current module."""
+        total = 0
+        for ch in getattr(self, "CHAPTERS", []) or []:
+            qs = self.QUESTIONS.get(ch, [])
+            if isinstance(qs, list):
+                total += len(qs)
+        return max(0, total)
 
     def get_question_breakdown(self):
         """

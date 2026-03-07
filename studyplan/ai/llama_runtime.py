@@ -54,8 +54,17 @@ class LlamaRuntime:
     _last_purpose: str = field(default="", init=False, repr=False)
 
     @classmethod
-    def from_config(cls, config: type[Config] | None = None) -> LlamaRuntime:
-        """Build a LlamaRuntime from the centralized Config."""
+    def from_config(
+        cls,
+        config: type[Config] | None = None,
+        *,
+        ollama_host_override: str | None = None,
+    ) -> LlamaRuntime:
+        """Build a LlamaRuntime from the centralized Config.
+
+        Pass ollama_host_override (e.g. from app Preferences) to unify the Ollama
+        fallback host with the rest of the app; otherwise LLAMA_CPP_OLLAMA_HOST is used.
+        """
         cfg = config or Config
 
         extra_dirs: list[str] = []
@@ -88,6 +97,14 @@ class LlamaRuntime:
         ram_mb = int(getattr(cfg, "LLAMA_CPP_RAM_BUDGET_MB", 0) or 0)
         ram_bytes = ram_mb * 1024 * 1024 if ram_mb > 0 else _detect_available_ram()
 
+        default_host = str(
+            getattr(cfg, "LLAMA_CPP_OLLAMA_HOST", "http://127.0.0.1:11434") or ""
+        ).rstrip("/") or "http://127.0.0.1:11434"
+        host = (
+            str(ollama_host_override or "").strip().rstrip("/")
+            or default_host
+        )
+
         return cls(
             registry=GgufRegistry(config=registry_cfg),
             selector=ModelSelector(ram_budget_bytes=ram_bytes),
@@ -95,9 +112,7 @@ class LlamaRuntime:
             ollama_fallback_enabled=bool(
                 getattr(cfg, "LLAMA_CPP_OLLAMA_FALLBACK", True)
             ),
-            ollama_host=str(
-                getattr(cfg, "LLAMA_CPP_OLLAMA_HOST", "http://127.0.0.1:11434") or ""
-            ).rstrip("/"),
+            ollama_host=host,
         )
 
     def ensure_ready(self, purpose: str = Purpose.GENERAL) -> RuntimeStatus:
@@ -234,18 +249,7 @@ class LlamaRuntime:
     # ------------------------------------------------------------------
 
     def _try_ollama_fallback(self, purpose: str) -> RuntimeStatus:
-        host = self.ollama_host.rstrip("/") if self.ollama_host else ""
-        if not host:
-            return RuntimeStatus(
-                backend="none",
-                model_name="",
-                model_path="",
-                endpoint="",
-                healthy=False,
-                startup_latency_ms=0,
-                catalog_size=0,
-                error="Ollama fallback disabled (no host)",
-            )
+        host = (self.ollama_host or "").strip().rstrip("/") or "http://127.0.0.1:11434"
 
         if not _ollama_is_reachable(host):
             return RuntimeStatus(
@@ -272,8 +276,12 @@ class LlamaRuntime:
                 error="Ollama reachable but no models found",
             )
 
-        model_name = models[0]
-        log.info("Falling back to Ollama with model=%s", model_name)
+        model_name = _pick_ollama_model_safe_for_ram(models, purpose)
+        log.info(
+            "Using Ollama backend at %s (model=%s, RAM-safe selection)",
+            host,
+            model_name or "(auto)",
+        )
         return RuntimeStatus(
             backend="ollama",
             model_name=model_name,
@@ -288,6 +296,82 @@ class LlamaRuntime:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+def _get_ollama_ram_budget_bytes() -> int:
+    """RAM budget for Ollama model choice (bytes). 0 = no filter."""
+    try:
+        env_mb = os.environ.get("STUDYPLAN_OLLAMA_RAM_BUDGET_MB", "").strip()
+        if env_mb:
+            mb = int(env_mb)
+            if mb > 0:
+                return mb * 1024 * 1024
+    except (ValueError, TypeError):
+        pass
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    parts = line.split()
+                    available_kb = int(parts[1])
+                    return int(available_kb * 1024 * 0.75)
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def _estimate_ollama_model_ram_bytes(model_name: str) -> int:
+    """Estimate RAM (bytes) to load this Ollama model. 0 = unknown."""
+    import re
+    raw = str(model_name or "").strip().lower()
+    if not raw:
+        return 0
+    m = re.search(r"(?<![a-z0-9])(\d+(?:\.\d+)?)\s*(?:b|bn)(?![a-z0-9])", raw)
+    if not m:
+        return 0
+    try:
+        size_b = float(m.group(1))
+    except (ValueError, TypeError):
+        return 0
+    if size_b <= 0:
+        return 0
+    if "q2" in raw or "q2_k" in raw:
+        bpp = 0.35
+    elif "q3" in raw or "q3_k" in raw:
+        bpp = 0.45
+    elif "q4" in raw or "q4_0" in raw or "q4_k" in raw:
+        bpp = 0.58
+    elif "q5" in raw or "q5_k" in raw:
+        bpp = 0.75
+    elif "q6" in raw or "q8" in raw or "f16" in raw or "fp16" in raw:
+        bpp = 1.0
+    else:
+        bpp = 0.58
+    model_bytes = int(size_b * 1e9 * bpp)
+    return model_bytes + 550_000_000
+
+
+def _pick_ollama_model_safe_for_ram(models: list[str], purpose: str) -> str:
+    """Pick an Ollama model that fits in RAM, preferring higher quality (larger) when safe."""
+    if not models:
+        return ""
+    budget = _get_ollama_ram_budget_bytes()
+    if budget <= 0:
+        return models[0]
+    fitting = []
+    for name in models:
+        need = _estimate_ollama_model_ram_bytes(name)
+        if need <= 0 or need <= budget:
+            fitting.append(name)
+    if fitting:
+        fitting.sort(key=lambda n: -_estimate_ollama_model_ram_bytes(n))
+        return fitting[0]
+    # None fit: pick smallest estimated to reduce OOM risk (treat unknown as large)
+    def _ram_key(name: str) -> tuple[int, int]:
+        est = _estimate_ollama_model_ram_bytes(name)
+        return (1 if est == 0 else 0, est or 0)
+    all_sorted = sorted(models, key=_ram_key)
+    return all_sorted[0]
+
 
 def _detect_available_ram() -> int:
     try:

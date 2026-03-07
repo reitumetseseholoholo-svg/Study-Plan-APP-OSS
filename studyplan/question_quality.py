@@ -2,6 +2,8 @@
 
 Analyzes JSON structures that contain questions/options/correct/explanation
 and emits quality metrics so domain experts can fix or enrich weak items.
+Poor-quality questions (e.g. "see explanation" in options, duplicates) can
+be quarantined and removed from the active bank.
 """
 
 from __future__ import annotations
@@ -14,6 +16,32 @@ from typing import Any, Dict, List, Tuple
 from .logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# Option text that indicates a placeholder / poor question (any phrasing like "see explanation").
+SEE_EXPLANATION_PATTERN = re.compile(
+    r"\b(see|refer\s+to|view|check|read)\s+(the\s+)?(explanation|answer|solution|rationale)\b",
+    re.IGNORECASE,
+)
+# Also match "explanation below", "see below", "answer in explanation", etc.
+SEE_EXPLANATION_LOOSE = re.compile(
+    r"\b(explanation|solution|rationale|answer)\s*(below|above|in\s+text|attached)?\b|\bsee\s+below\b",
+    re.IGNORECASE,
+)
+
+
+def option_looks_like_see_explanation(option_text: str) -> bool:
+    """True if the option is a placeholder like 'See explanation' (any wording)."""
+    if not option_text or not isinstance(option_text, str):
+        return False
+    text = " ".join(str(option_text).split()).strip()
+    if len(text) < 6:
+        return False
+    if SEE_EXPLANATION_PATTERN.search(text):
+        return True
+    # Short options that are only "see explanation" style
+    if len(text) < 35 and SEE_EXPLANATION_LOOSE.search(text):
+        return True
+    return False
 
 
 class QuestionQuality:
@@ -50,6 +78,12 @@ class QuestionQuality:
         if len(opts) != len(unique):
             self.warnings.append("duplicate option text")
             self.score -= 0.2
+        # Option that says "see explanation" (any wording) = poor quality, remove from bank
+        for o in opts:
+            if option_looks_like_see_explanation(o):
+                self.errors.append("option is 'see explanation' placeholder")
+                self.score -= 0.5
+                break
         correct = str(self.item.get("correct", "")).strip()
         if correct not in opts:
             self.errors.append("correct answer not present in options")
@@ -146,6 +180,76 @@ class QuestionBankEvaluator:
 
     def report_bad(self, threshold: float = 0.6) -> List[Tuple[str, dict[str, Any]]]:
         return [(loc, q.report()) for loc, q in self.results if q.score < threshold]
+
+
+def _normalize_question_text_for_similarity(text: str) -> str:
+    """Normalize for duplicate/similarity detection."""
+    if not text or not isinstance(text, str):
+        return ""
+    t = " ".join(str(text).lower().split())
+    t = re.sub(r"[^\w\s]", "", t)
+    return t.strip()
+
+
+def get_poor_quality_indices(
+    chapter: str,
+    items: List[dict[str, Any]],
+    *,
+    detect_see_explanation: bool = True,
+    detect_similar: bool = True,
+    similar_min_words: int = 8,
+) -> List[Tuple[int, str]]:
+    """
+    Return indices of poor-quality questions that should be removed from the bank.
+    Each element is (index, reason). Reasons: 'see_explanation_in_options', 'similar_question'.
+    """
+    poor: List[Tuple[int, str]] = []
+    if not items:
+        return poor
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        opts = item.get("options") or []
+        if isinstance(opts, dict):
+            opts = [opts.get(k) for k in ("A", "B", "C", "D") if opts.get(k) is not None]
+        if not isinstance(opts, list):
+            opts = []
+        if detect_see_explanation:
+            for o in opts:
+                if option_looks_like_see_explanation(str(o or "")):
+                    poor.append((idx, "see_explanation_in_options"))
+                    break
+    if not detect_similar or similar_min_words < 1:
+        return sorted(poor, key=lambda x: x[0])
+    # Build normalized question text; mark later duplicates/similar as poor
+    seen_normalized: Dict[str, int] = {}
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        if any(i == idx for i, _ in poor):
+            continue
+        qtext = _normalize_question_text_for_similarity(item.get("question") or "")
+        if len(qtext.split()) < similar_min_words:
+            continue
+        if qtext in seen_normalized:
+            poor.append((idx, "similar_question"))
+            continue
+        duplicate_of = None
+        for prev_norm, prev_idx in list(seen_normalized.items()):
+            words_prev = set(prev_norm.split())
+            words_cur = set(qtext.split())
+            if not words_prev or not words_cur:
+                continue
+            inter = len(words_prev & words_cur)
+            union = len(words_prev | words_cur)
+            if union > 0 and (inter / union) >= 0.85:
+                duplicate_of = prev_idx
+                break
+        if duplicate_of is not None:
+            poor.append((idx, "similar_question"))
+            continue
+        seen_normalized[qtext] = idx
+    return sorted(poor, key=lambda x: x[0])
 
 
 if __name__ == "__main__":

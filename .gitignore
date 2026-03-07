@@ -1,4 +1,20 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Test / lint / type-check
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+pyrightconfig.json
+
+# Project-specific
 ai_questions_acccafm_core50.json

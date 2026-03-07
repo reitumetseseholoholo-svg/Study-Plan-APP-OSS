@@ -204,6 +204,8 @@ class PracticeSessionWindow(Gtk.Box):
             
     def _update_cognitive_state(self, result: TutorAssessmentResult):
         """Update cognitive state based on assessment result."""
+        if self.current_item is None:
+            return
         # Update posterior for the topic
         topic = self.current_item.topic
         if topic not in self.cognitive_state.posteriors:

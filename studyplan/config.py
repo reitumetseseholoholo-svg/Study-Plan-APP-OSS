@@ -61,10 +61,24 @@ def _parse_float(
     return value
 
 
+def _config_home() -> str:
+    raw = _env_text("STUDYPLAN_CONFIG_HOME", "~/.config/studyplan") or "~/.config/studyplan"
+    return os.path.expanduser(raw)
+
+
+def _ollama_models_dir() -> str:
+    raw = _env_text("STUDYPLAN_OLLAMA_MODELS_DIR", "~/.ollama/models") or "~/.ollama/models"
+    return os.path.expanduser(raw)
+
+
 class Config:
     """Centralized configuration with environment-aware defaults."""
 
     ENV = _parse_environment()
+
+    # Base paths (single source of truth for app data and Ollama model discovery)
+    CONFIG_HOME = _config_home()
+    OLLAMA_MODELS_DIR = _ollama_models_dir()
 
     # Performance monitoring
     PERF_MONITOR_ENABLED = ENV in {Environment.DEV, Environment.STAGING}
@@ -182,13 +196,14 @@ class Config:
     LLAMA_CPP_SERVER_STARTUP_TIMEOUT = _parse_float(
         "STUDYPLAN_LLAMA_SERVER_STARTUP_TIMEOUT", 60.0, min_value=10.0, max_value=180.0,
     )
+    # Ollama model dirs: default from OLLAMA_MODELS_DIR; override with full paths if needed
     LLAMA_CPP_OLLAMA_MANIFESTS_DIR = _env_text(
         "STUDYPLAN_LLAMA_CPP_OLLAMA_MANIFESTS_DIR",
-        os.path.expanduser("~/.ollama/models/manifests/registry.ollama.ai/library"),
+        os.path.join(OLLAMA_MODELS_DIR, "manifests", "registry.ollama.ai", "library"),
     )
     LLAMA_CPP_OLLAMA_BLOBS_DIR = _env_text(
         "STUDYPLAN_LLAMA_CPP_OLLAMA_BLOBS_DIR",
-        os.path.expanduser("~/.ollama/models/blobs"),
+        os.path.join(OLLAMA_MODELS_DIR, "blobs"),
     )
     LLAMA_CPP_EXTRA_GGUF_DIR = _env_text("STUDYPLAN_LLAMA_CPP_EXTRA_GGUF_DIR", "")
     LLAMA_CPP_OLLAMA_FALLBACK = _parse_bool(
@@ -196,6 +211,15 @@ class Config:
     )
     LLAMA_CPP_RAM_BUDGET_MB = _parse_int(
         "STUDYPLAN_LLAMA_CPP_RAM_BUDGET_MB", 0, min_value=0, max_value=65536,
+    )
+
+    # In-app question generation: daily auto-generation runs until this cap (cards/questions) is reached; after that, generation is on user demand or when the tutor deems it necessary (e.g. topic has very few questions).
+    AUTO_QUESTION_GENERATION_CAP = _parse_int(
+        "STUDYPLAN_AUTO_QUESTION_GENERATION_CAP", 1500, min_value=100, max_value=50000
+    )
+    # Max questions to generate per calendar day during the auto phase (below cap), to avoid long runs.
+    AUTO_QUESTION_GENERATION_DAILY_BUDGET = _parse_int(
+        "STUDYPLAN_AUTO_QUESTION_GENERATION_DAILY_BUDGET", 30, min_value=1, max_value=200
     )
 
     # Performance caching configuration

@@ -6,6 +6,8 @@ import threading
 import time
 from typing import Any, TYPE_CHECKING, cast
 
+from studyplan.services import get_module_display_code, get_syllabus_scope_instruction
+
 if TYPE_CHECKING:  # pragma: no cover - reserved for future editor hints
     pass
 
@@ -14,13 +16,27 @@ AI_TUTOR_MAX_RESPONSE_CHARS = 12000
 AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS = 90
 AI_TUTOR_MIN_TURN_TIMEOUT_SECONDS = 20
 AI_TUTOR_MAX_TURN_TIMEOUT_SECONDS = 900
-AI_TUTOR_PROMPT_CONTRACT_VERSION = 4
+AI_TUTOR_PROMPT_CONTRACT_VERSION = 5
 AI_TUTOR_STREAM_STALL_MS = 900
 AI_TUTOR_STREAM_WATCHDOG_INTERVAL_MS = 240
 AI_TUTOR_RAG_USAGE_HINT = (
-    "Use snippets when relevant and cite IDs like [S1] for snippet-backed facts. "
+    "Use snippets when relevant. RAG snippets are from reference materials (course notes, textbooks) for tutoring: "
+    "use them to explain concepts, give examples, and cite [S1] etc. when backing facts. Do not cite or quote the "
+    "syllabus document unless the learner asks why a topic or subtopic is important (e.g. exam relevance). "
     "If snippets are insufficient, answer with model knowledge and state assumptions clearly."
 )
+# Single source for repeated tutor rules (economy + consistency).
+AI_TUTOR_NEXT_STEP_RULE = (
+    "End with one concrete next step (topic + mode + duration); suggest topic-based practice or in-app drill."
+)
+AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE = (
+    "Never suggest a specific study-guide question or textbook page number."
+)
+# When conversation length exceeds this, use adaptive recent_limit and a richer older summary.
+AI_TUTOR_LONG_HISTORY_THRESHOLD = 16
+AI_TUTOR_LONG_HISTORY_RECENT_LIMIT = 6
+AI_TUTOR_LONG_HISTORY_SUMMARY_MAX_CHARS = 900
+AI_TUTOR_LONG_HISTORY_SUMMARY_MAX_ITEMS = 10
 
 
 def infer_tutor_prompt_mode_hint(user_prompt: str) -> str:
@@ -564,15 +580,28 @@ def compute_tutor_control_state(
     }
 
 
-def build_ai_tutor_seed_prompt(topic: str, module_title: str = "selected module") -> str:
+def build_ai_tutor_seed_prompt(
+    topic: str,
+    module_title: str = "selected module",
+    chapter: str | None = None,
+) -> str:
     topic_val = str(topic or "").strip()
     module_val = str(module_title or "selected module").strip() or "selected module"
+    chapter_val = str(chapter or "").strip()
+    scope = f" for {module_val}"
+    if chapter_val:
+        scope = f" for {module_val} (chapter: {chapter_val})"
     if topic_val:
         return (
-            f"Explain '{topic_val}' for {module_val} in exam-focused terms. "
-            "Include: key rules/formulas, common mistakes, and 3 practice questions with short answers."
+            f"As my ACCA coach: explain '{topic_val}'{scope} in exam-focused terms. "
+            "Include: key rules/formulas, common mistakes, and 2–3 short practice checks with brief answers. "
+            f"{AI_TUTOR_NEXT_STEP_RULE} {AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE}"
         )
-    return f"Help me revise {module_val} efficiently. Give a concise explanation, key formulas, and a short practice drill."
+    return (
+        f"As my ACCA coach: help me revise{scope} efficiently. "
+        "Give a concise explanation, key formulas, and a short practice drill. "
+        f"{AI_TUTOR_NEXT_STEP_RULE} {AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE}"
+    )
 
 
 def _summarize_older_tutor_messages(
@@ -580,13 +609,14 @@ def _summarize_older_tutor_messages(
     max_items: int = 6,
     max_chars: int = 520,
 ) -> str:
+    """Summarize older conversation turns into a compact block so context stays within limits."""
     rows: list[str] = []
     try:
-        item_cap = max(1, min(12, int(max_items)))
+        item_cap = max(1, min(20, int(max_items)))
     except Exception:
         item_cap = 6
     try:
-        char_cap = max(160, min(2000, int(max_chars)))
+        char_cap = max(160, min(2400, int(max_chars)))
     except Exception:
         char_cap = 520
     used_chars = 0
@@ -621,6 +651,10 @@ def build_ai_tutor_context_prompt_details(
     module_title: str,
     chapter: str,
     recent_limit: int = 10,
+    syllabus_scope_instruction: str | None = None,
+    module_id: str | None = None,
+    concise_mode: bool = False,
+    exam_technique_only: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     cleaned_history: list[dict[str, str]] = []
     for msg in list(history or []):
@@ -635,34 +669,81 @@ def build_ai_tutor_context_prompt_details(
         recent_cap = max(2, min(20, int(recent_limit)))
     except Exception:
         recent_cap = 10
+    summary_max_chars = 520
+    summary_max_items = 6
+    if len(cleaned_history) > AI_TUTOR_LONG_HISTORY_THRESHOLD:
+        recent_cap = min(recent_cap, AI_TUTOR_LONG_HISTORY_RECENT_LIMIT)
+        summary_max_chars = AI_TUTOR_LONG_HISTORY_SUMMARY_MAX_CHARS
+        summary_max_items = AI_TUTOR_LONG_HISTORY_SUMMARY_MAX_ITEMS
     older_messages = cleaned_history[:-recent_cap] if len(cleaned_history) > recent_cap else []
     recent_messages = cleaned_history[-recent_cap:]
-    older_summary = _summarize_older_tutor_messages(older_messages)
+    older_summary = _summarize_older_tutor_messages(
+        older_messages,
+        max_items=summary_max_items,
+        max_chars=summary_max_chars,
+    )
     coverage_targets = extract_tutor_coverage_targets(user_prompt, max_targets=6)
     mode_hint = infer_tutor_prompt_mode_hint(user_prompt)
+    display_code = get_module_display_code(str(module_id or "").strip()) if module_id else ""
+    module_label = f"{display_code} — {module_title}" if display_code and (module_title or "").strip() else (module_title or "selected module")
     lines = [
-        "You are a first-class local ACCA tutor embedded inside the StudyPlan app.",
-        f"Module: {module_title or 'selected module'}",
+        "You are the in-app ACCA professional coach (first-class local ACCA tutor) for this learner. Speak in one coherent, syllabus-bound voice.",
+        f"Module: {module_label}",
         f"Current chapter: {chapter or 'not selected'}",
-        "Mission: maximize exam readiness per minute using the learner state and current syllabus context.",
-        "Priority order: must-review pressure -> weak-topic repair -> retrieval practice -> formula accuracy -> exam-style clarity.",
-        "Operate as the session pilot: diagnose gaps, prescribe actions, drill, and finish with a concrete next move.",
-        "Use short sections, bullets, formulas when relevant, and exam-focused tips.",
-        "Be concise, but include brief reasoning so the learner understands why each step or formula applies.",
-        "Avoid generic motivation; be operational and exam-hard.",
-        "When useful, end with one concrete next step (topic + mode + duration).",
-        "If assumptions are required, state them explicitly.",
-        "Default learning-loop response contract (practice-first unless the user opts out):",
-        "- Direct answer / teach the concept briefly",
-        "- Method or worked example (when calculations/procedures apply)",
-        "- Micro-check (1-3 practical checks or prompts)",
-        "- What to look for / common pitfall",
-        "- Next step (topic + mode + duration)",
-        "- When the learner answers a check, mark it as correct/partial/incorrect and correct the specific gap",
         "",
-        *_build_tutor_mode_guidance(mode_hint),
+        "Coach identity:",
+        "- maximize exam readiness per minute using learner state and syllabus context.",
+        "- Priority: must-review pressure → weak-topic repair → retrieval practice → formula accuracy → exam-style clarity.",
+        "- Act as session pilot: diagnose gaps, prescribe actions, drill, then give one concrete next move.",
+        "- Use short sections, bullets, and formulas when relevant; be concise but include brief reasoning.",
+        "- Write formulas and math as humans do: use a/b for fractions, x² for squared, plain words for Greek (e.g. alpha, beta). Do not use LaTeX (e.g. \\frac, $$) or code blocks for equations.",
+        "- Avoid generic motivation; be operational and exam-focused.",
+        "- Do not introduce non-examinable methods, metrics, or content; stay strictly within syllabus.",
+        f"- {AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE} Suggest topic-based practice or in-app drills instead.",
+        f"- When useful, {AI_TUTOR_NEXT_STEP_RULE} If assumptions are needed, state them explicitly.",
         "",
     ]
+    if concise_mode:
+        lines.append("Concise mode: keep responses short (under 6–8 sentences) unless the user explicitly asks for more depth.")
+        lines.append("")
+    if exam_technique_only:
+        lines.extend([
+            "Exam technique only: do not add micro-checks, practice questions, or retrieval drills. "
+            "Focus only on command verbs, mark allocation, time management, and what earns marks.",
+            "",
+        ])
+    if syllabus_scope_instruction and syllabus_scope_instruction.strip():
+        lines.append("Syllabus scope (strict — do not use non-examinable content):")
+        lines.append(syllabus_scope_instruction.strip())
+        lines.append("")
+    lines.append(
+        "Syllabus-derived context (outcomes, scope, importance) is for guiding what to teach and priority only; "
+        "do not quote or cite the syllabus document. Use snippets when relevant from reference materials for explanations and citations."
+    )
+    lines.append("")
+    if exam_technique_only:
+        lines.extend([
+            "Response contract (exam technique only — no practice checks):",
+            "- Direct answer on exam technique: command verbs, mark allocation, time management",
+            "- What earns marks and common presentation mistakes",
+            f"- {AI_TUTOR_NEXT_STEP_RULE} {AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE}",
+            "",
+            *_build_tutor_mode_guidance("exam_technique"),
+            "",
+        ])
+    else:
+        lines.extend([
+            "Default learning-loop response contract (practice-first unless the user opts out):",
+            "- Direct answer / teach the concept briefly",
+            "- Method or worked example (when calculations/procedures apply)",
+            "- Micro-check (1-3 practical checks or prompts)",
+            "- What to look for / common pitfall",
+            f"- {AI_TUTOR_NEXT_STEP_RULE} {AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE}",
+            "- When the learner answers a check, mark it as correct/partial/incorrect and correct the specific gap",
+            "",
+            *_build_tutor_mode_guidance(mode_hint),
+            "",
+        ])
     if len(coverage_targets) >= 2:
         lines.append("Multi-concept coverage targets:")
         for idx, target in enumerate(coverage_targets, start=1):
@@ -701,7 +782,9 @@ def build_ai_tutor_context_prompt_details(
         "coverage_targets": coverage_targets,
         "coverage_target_count": int(len(coverage_targets)),
         "mode_hint": str(mode_hint),
-        "practice_first_contract": True,
+        "practice_first_contract": not exam_technique_only,
+        "concise_mode": bool(concise_mode),
+        "exam_technique_only": bool(exam_technique_only),
     }
     return prompt, meta
 
@@ -711,23 +794,186 @@ def build_ai_tutor_context_prompt(
     user_prompt: str,
     module_title: str,
     chapter: str,
+    syllabus_scope_instruction: str | None = None,
+    module_id: str | None = None,
 ) -> str:
     prompt, _meta = build_ai_tutor_context_prompt_details(
         history=history,
         user_prompt=user_prompt,
         module_title=module_title,
         chapter=chapter,
+        syllabus_scope_instruction=syllabus_scope_instruction,
+        module_id=module_id,
     )
     return prompt
 
 
+def strip_study_guide_question_refs(text: str) -> str:
+    """Remove or neutralize phrases that ask the learner to do a specific study-guide question or page."""
+    raw = str(text or "").strip()
+    if not raw:
+        return raw
+    # Patterns that suggest "do question N" or "see page N" (often wrong references).
+    # Match full sentences or bullet lines containing these, then remove or shorten.
+    patterns = [
+        # "Try/Do/Attempt question 3" or "see page 42"
+        re.compile(
+            r"\b(?:try|do|attempt|refer to|see|check)\s+"
+            r"(?:question\s*#?\s*\d+|page\s*(?:#?\s*)?\d+)[^.!?\n]*(?:[.!?\n]|$)",
+            re.IGNORECASE,
+        ),
+        # "Question 3 on page 42" or "question 5 from the study guide"
+        re.compile(
+            r"\bquestion\s*#?\s*\d+\s*(?:on|from)\s*(?:page\s*(?:#?\s*)?\d+|the\s+study\s+guide)[^.!?\n]*(?:[.!?\n]|$)",
+            re.IGNORECASE,
+        ),
+        # "Refer to page 42" / "See page 12" (instructional reference; skip explanatory "on page X, ...")
+        re.compile(
+            r"\b(?:refer to|see|check|look at)\s+page\s*(?:#?\s*)?\d+[^.!?\n]*(?:[.!?\n]|$)",
+            re.IGNORECASE,
+        ),
+        # "study guide question 3"
+        re.compile(
+            r"\bstudy\s+guide\s+(?:question|q\.?)\s*#?\s*\d+[^.!?\n]*(?:[.!?\n]|$)",
+            re.IGNORECASE,
+        ),
+    ]
+    result = raw
+    for pat in patterns:
+        result = pat.sub(" ", result)
+    # Collapse repeated spaces and clean empty lines
+    result = re.sub(r"[ \t]+", " ", result)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+
+
+def _strip_ai_disclaimers(text: str) -> str:
+    """Remove common AI assistant disclaimers so output reads as direct, human advice."""
+    if not text or not isinstance(text, str):
+        return text
+    # Sentences or blocks to remove (case-insensitive start).
+    disclaimer_starts = (
+        "As an AI ",
+        "As a language model",
+        "I'm an AI ",
+        "I am an AI ",
+        "I cannot provide ",
+        "I'm not able to ",
+        "I am not able to ",
+        "Note: As an AI",
+        "Note: I am an AI",
+        "Disclaimer: ",
+        "I don't have the ability to ",
+        "I do not have the ability to ",
+    )
+    lines = text.split("\n")
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            out.append(line)
+            continue
+        low = stripped.lower()
+        skip = False
+        for start in disclaimer_starts:
+            if low.startswith(start.lower()):
+                skip = True
+                break
+        if skip:
+            continue
+        # Trim leading "However, " / "That said, " after removing disclaimer above.
+        if out and re.match(r"^(However|That said|Still),?\s+", stripped, re.IGNORECASE):
+            stripped = re.sub(r"^(However|That said|Still),?\s+", "", stripped, flags=re.IGNORECASE)
+        out.append(line)
+    return "\n".join(out)
+
+
+def _latex_to_human_readable(text: str) -> str:
+    """Convert LaTeX and code-style math to human-readable form (how we write formulas)."""
+    if not text or not isinstance(text, str):
+        return text
+    t = text
+    # Unescape braces first so \frac\{a\}\{b\} is matchable.
+    t = t.replace(r"\{", "{").replace(r"\}", "}")
+
+    # \frac{a}{b} -> (a/b) human style
+    frac = re.compile(r"\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}")
+    for _ in range(10):
+        nxt = frac.sub(r"(\1/\2)", t)
+        if nxt == t:
+            break
+        t = nxt
+
+    # \sqrt{x} -> sqrt(x)
+    t = re.sub(r"\\sqrt\s*\{([^{}]*)\}", r"sqrt(\1)", t)
+    # \sum -> sum of, \prod -> product of
+    t = re.sub(r"\\sum\b", "sum of ", t)
+    t = re.sub(r"\\prod\b", "product of ", t)
+    # \int -> integral of
+    t = re.sub(r"\\int\b", "integral of ", t)
+
+    # Subscripts: x_1 -> x₁ or x_1 (keep underscore for readability), x_{12} -> x_12
+    t = re.sub(r"\_\{([^{}]*)\}", r"_\1", t)
+    # Superscripts for powers: x^2 -> x², x^3 -> x³, x^{10} -> x^10 (keep caret for big numbers)
+    def _sup(m: re.Match[str]) -> str:
+        inner = m.group(1).strip()
+        if inner == "2":
+            return "²"
+        if inner == "3":
+            return "³"
+        if inner == "1":
+            return "¹"
+        return f"^{inner}"
+    t = re.sub(r"\^\{([^{}]*)\}", _sup, t)
+    t = re.sub(r"\^2\b", "²", t)
+    t = re.sub(r"\^3\b", "³", t)
+    t = re.sub(r"\^1\b", "¹", t)
+
+    # Greek letters: \alpha -> alpha, \beta -> beta, etc.
+    greek = {
+        r"\alpha": "alpha", r"\beta": "beta", r"\gamma": "gamma", r"\delta": "delta",
+        r"\epsilon": "epsilon", r"\theta": "theta", r"\lambda": "lambda", r"\mu": "mu",
+        r"\sigma": "sigma", r"\rho": "rho", r"\omega": "omega", r"\pi": "pi",
+        r"\infty": "infinity", r"\partial": "d",
+    }
+    for src, dst in greek.items():
+        t = t.replace(src, dst)
+
+    # Operators (human style: as we write them)
+    t = re.sub(r"\\times", " x ", t)
+    t = re.sub(r"\\cdot", " · ", t)
+    t = re.sub(r"\\approx", " ≈ ", t)
+    t = re.sub(r"\\leq", " ≤ ", t)
+    t = re.sub(r"\\geq", " ≥ ", t)
+    t = re.sub(r"\\neq", " ≠ ", t)
+    t = re.sub(r"\\pm", " ± ", t)
+    t = re.sub(r"\\div", " ÷ ", t)
+    t = re.sub(r"\\%", "%", t)  # literal backslash-percent -> percent
+    t = re.sub(r"\\left\s*\(?", "(", t)
+    t = re.sub(r"\\right\s*\)?", ")", t)
+    t = re.sub(r"\\text\s*\{([^{}]*)\}", r"\1", t)
+    t = re.sub(r"\\quad", " ", t)
+    t = re.sub(r"\\,", " ", t)
+    t = re.sub(r"\\;", " ", t)
+    t = re.sub(r"\\:", " ", t)
+    # Strip remaining backslash-math like \( \) \[ \]
+    t = re.sub(r"\\\(", "(", t).replace(r"\)", ")")
+    t = re.sub(r"\\\[", "", t).replace(r"\]", "")
+    return t
+
+
 def clean_ai_tutor_text(text: str) -> str:
+    """Clean AI output to human-readable text: formulas as humans write them, no LaTeX/code noise."""
     cleaned = str(text or "")
     if not cleaned:
         return ""
+    cleaned = strip_study_guide_question_refs(cleaned)
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
 
-    # Remove fenced code wrappers while preserving inner content.
+    # Remove AI disclaimers so it reads as direct advice.
+    cleaned = _strip_ai_disclaimers(cleaned)
+
+    # Remove fenced code wrappers but keep inner content (often formulas).
     cleaned = re.sub(r"```[A-Za-z0-9_-]*\n?", "", cleaned)
     cleaned = cleaned.replace("```", "")
 
@@ -737,39 +983,21 @@ def clean_ai_tutor_text(text: str) -> str:
     cleaned = re.sub(r"__([^_]+)__", r"\1", cleaned)
     cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
 
-    # Convert common LaTeX fragments into readable plain text.
+    # Convert LaTeX and math to human-readable form.
     cleaned = re.sub(r"\\{2,}", r"\\", cleaned)
-    cleaned = cleaned.replace(r"\{", "{").replace(r"\}", "}")
-    frac_pattern = re.compile(r"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}")
-    for _ in range(8):
-        nxt = frac_pattern.sub(lambda m: f"({m.group(1).strip()}/{m.group(2).strip()})", cleaned)
-        if nxt == cleaned:
-            break
-        cleaned = nxt
-    latex_literals = {
-        r"\times": " x ",
-        r"\cdot": " * ",
-        r"\approx": "~",
-        r"\leq": "<=",
-        r"\geq": ">=",
-        r"\neq": "!=",
-        r"\%": "%",
-        r"\$": "$",
-        r"\_": "_",
-        r"\#": "#",
-        r"\&": "&",
-        r"\{": "{",
-        r"\}": "}",
-        r"\(": "",
-        r"\)": "",
-        r"\[": "",
-        r"\]": "",
-    }
-    for src, dst in latex_literals.items():
-        cleaned = cleaned.replace(src, dst)
+    cleaned = _latex_to_human_readable(cleaned)
 
-    # Remove lightweight math delimiters and normalize spacing.
+    # Inline math $...$: convert contents then strip delimiters.
+    def _replace_inline_math(m: re.Match[str]) -> str:
+        inner = _latex_to_human_readable(m.group(1) or "")
+        return inner.strip()
+    cleaned = re.sub(r"\$\$?([^$]+)\$\$?", _replace_inline_math, cleaned)
+
+    # Remove remaining $ and normalize spacing around = + - for readability.
     cleaned = cleaned.replace("$", "")
+    cleaned = re.sub(r"(\d)\s*([=+\-])\s*(\d)", r"\1 \2 \3", cleaned)
+    cleaned = re.sub(r"([a-zA-Z0-9_)])\s*=\s*", r"\1 = ", cleaned)
+
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     cleaned = re.sub(r" {2,}", " ", cleaned)
@@ -925,6 +1153,7 @@ class AITutorDialogController:
             build_ai_tutor_seed_prompt(
                 topic=str(getattr(app, "current_topic", "") or "").strip(),
                 module_title=str(getattr(app, "module_title", "") or "").strip() or "selected module",
+                chapter=str(getattr(app, "current_topic", "") or "").strip() or None,
             )
         )
         prompt_scroller.set_child(prompt_view)
@@ -1819,11 +2048,16 @@ class AITutorDialogController:
             prompt_stage_started_at = float(time.monotonic())
             module_title = str(getattr(app, "module_title", "") or "").strip() or "selected module"
             chapter = str(getattr(app, "current_topic", "") or "").strip()
+            syllabus_scope = get_syllabus_scope_instruction(str(getattr(app, "module_id", "") or ""))
             full_prompt, prompt_meta = build_ai_tutor_context_prompt_details(
                 history=history,
                 user_prompt=user_prompt,
                 module_title=module_title,
                 chapter=chapter,
+                syllabus_scope_instruction=syllabus_scope or None,
+                module_id=str(getattr(app, "module_id", "") or "").strip() or None,
+                concise_mode=bool(getattr(app, "ai_tutor_concise_mode", False)),
+                exam_technique_only=bool(getattr(app, "ai_tutor_exam_technique_only", False)),
             )
             coverage_targets = [
                 str(item or "").strip()

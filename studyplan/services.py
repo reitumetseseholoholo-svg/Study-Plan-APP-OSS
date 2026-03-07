@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import logging
 import os
 import re
 import random
@@ -11,8 +12,14 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
-from typing import Any, Protocol, Sequence
+from typing import Any, Callable, Protocol, Sequence
 
+logger = logging.getLogger(__name__)
+
+from .ai.prompt_design import (
+    ASSESSMENT_JUDGE_SCHEMA_ONE_LINE,
+    JUDGE_JSON_ONLY,
+)
 from .ai.recovery import build_deterministic_fallback_response
 from .config import Config
 from .contracts import (
@@ -1172,9 +1179,461 @@ class FMModuleAdapter:
         return None
 
 
+@dataclass(frozen=True)
+class FRModuleAdapter:
+    """Adapter for ACCA FR (F7) Financial Reporting: rubrics and RAG tuned for IFRS/consolidation."""
+
+    _descriptor: ModuleDescriptor = field(
+        default_factory=lambda: ModuleDescriptor(
+            module_code="FR",
+            module_title="Financial Reporting",
+            domain_family="reporting",
+            supports_section_c=True,
+            supports_judgment_modes=True,
+        )
+    )
+
+    def descriptor(self) -> ModuleDescriptor:
+        return self._descriptor
+
+    def competency_nodes(self) -> Sequence[CompetencyNode]:
+        return ()
+
+    def competency_edges(self) -> Sequence[CompetencyEdge]:
+        return ()
+
+    def supported_tutor_modes(self) -> Sequence[str]:
+        return (
+            "teach",
+            "guided_practice",
+            "retrieval_drill",
+            "error_clinic",
+            "exam_technique",
+            "section_c_coach",
+            "revision_planner",
+        )
+
+    def default_tutor_mode_for_topic(self, topic_id: str) -> str:
+        topic = str(topic_id or "").strip().lower()
+        if any(
+            token in topic
+            for token in ("consolidat", "ifrs", "ias ", "group", "associate", "goodwill", "cash flow")
+        ):
+            return "guided_practice"
+        return "teach"
+
+    def misconception_patterns(self) -> Sequence[MisconceptionPattern]:
+        return ()
+
+    def map_error_to_misconceptions(
+        self,
+        *,
+        topic_id: str,
+        error_tags: Sequence[str],
+        user_answer: str = "",
+        expected_answer: str = "",
+    ) -> Sequence[str]:
+        _ = (topic_id, user_answer, expected_answer)
+        seen: set[str] = set()
+        mapped: list[str] = []
+        for tag in error_tags:
+            text = str(tag or "").strip().lower()
+            if not text:
+                continue
+            if text.startswith("missing_"):
+                candidate = f"{text}_concept"
+                if candidate not in seen:
+                    seen.add(candidate)
+                    mapped.append(candidate)
+            if len(mapped) >= 3:
+                break
+        return tuple(mapped)
+
+    def section_c_rubric_templates(self, topic_id: str | None = None) -> Sequence[JudgmentRubricTemplate]:
+        topic = str(topic_id or "").strip()
+        label = f"FR constructed response ({topic})" if topic else "FR constructed response"
+        return (
+            JudgmentRubricTemplate(
+                rubric_id="fr_constructed_20",
+                label=label,
+                mode="section_c",
+                criteria=(
+                    ("Technical application (IFRS/standards)", 8),
+                    ("Method / workings / disclosure", 5),
+                    ("Evaluation / conclusion", 4),
+                    ("Structure / exam communication", 3),
+                ),
+            ),
+        )
+
+    def rag_source_hints(self) -> Sequence[RagSourceHint]:
+        return (
+            RagSourceHint(source_key="syllabus", tier="syllabus", priority=10, topic_tags=("all",)),
+            RagSourceHint(source_key="course_notes", tier="notes", priority=30, topic_tags=("reporting", "ifrs")),
+        )
+
+    def build_rag_query_variants(
+        self,
+        *,
+        topic_id: str,
+        user_prompt: str,
+        mode: str,
+        weak_competencies: Sequence[str] = (),
+    ) -> Sequence[str]:
+        topic = str(topic_id or "").strip()
+        prompt = str(user_prompt or "").strip()
+        mode_text = str(mode or "").strip()
+        variants: list[str] = []
+        for candidate in (
+            prompt,
+            f"{topic} ACCA FR Financial Reporting exam {mode_text}".strip(),
+            f"{topic} IFRS IAS standards application pitfalls".strip(),
+            f"{topic} consolidation group accounting worked example".strip(),
+            (" ".join(str(x or "").strip() for x in weak_competencies if str(x or "").strip())[:180]).strip(),
+        ):
+            text = str(candidate or "").strip()
+            if text and text not in variants:
+                variants.append(text)
+        return tuple(variants)
+
+    def infer_transfer_structure(
+        self,
+        *,
+        topic_id: str,
+        question_type: str,
+        tags: Sequence[str] = (),
+        meta: dict[str, Any] | None = None,
+    ) -> str | ProblemStructure | None:
+        _ = (topic_id, question_type, tags, meta)
+        return None
+
+
+@dataclass(frozen=True)
+class AAModuleAdapter:
+    """Adapter for ACCA AA (F8) Audit and Assurance: rubrics and RAG tuned for audit/assurance."""
+
+    _descriptor: ModuleDescriptor = field(
+        default_factory=lambda: ModuleDescriptor(
+            module_code="AA",
+            module_title="Audit and Assurance",
+            domain_family="assurance",
+            supports_section_c=True,
+            supports_judgment_modes=True,
+        )
+    )
+
+    def descriptor(self) -> ModuleDescriptor:
+        return self._descriptor
+
+    def competency_nodes(self) -> Sequence[CompetencyNode]:
+        return ()
+
+    def competency_edges(self) -> Sequence[CompetencyEdge]:
+        return ()
+
+    def supported_tutor_modes(self) -> Sequence[str]:
+        return (
+            "teach",
+            "guided_practice",
+            "retrieval_drill",
+            "error_clinic",
+            "exam_technique",
+            "section_c_coach",
+            "revision_planner",
+        )
+
+    def default_tutor_mode_for_topic(self, topic_id: str) -> str:
+        topic = str(topic_id or "").strip().lower()
+        if any(
+            token in topic
+            for token in ("risk", "internal control", "evidence", "reporting", "materiality")
+        ):
+            return "guided_practice"
+        return "teach"
+
+    def misconception_patterns(self) -> Sequence[MisconceptionPattern]:
+        return ()
+
+    def map_error_to_misconceptions(
+        self,
+        *,
+        topic_id: str,
+        error_tags: Sequence[str],
+        user_answer: str = "",
+        expected_answer: str = "",
+    ) -> Sequence[str]:
+        _ = (topic_id, user_answer, expected_answer)
+        seen: set[str] = set()
+        mapped: list[str] = []
+        for tag in error_tags:
+            text = str(tag or "").strip().lower()
+            if not text:
+                continue
+            if text.startswith("missing_"):
+                candidate = f"{text}_concept"
+                if candidate not in seen:
+                    seen.add(candidate)
+                    mapped.append(candidate)
+            if len(mapped) >= 3:
+                break
+        return tuple(mapped)
+
+    def section_c_rubric_templates(self, topic_id: str | None = None) -> Sequence[JudgmentRubricTemplate]:
+        topic = str(topic_id or "").strip()
+        label = f"AA constructed response ({topic})" if topic else "AA constructed response"
+        return (
+            JudgmentRubricTemplate(
+                rubric_id="aa_constructed_20",
+                label=label,
+                mode="section_c",
+                criteria=(
+                    ("Audit/assurance application to scenario", 8),
+                    ("Method / procedures / rationale", 5),
+                    ("Evaluation / conclusion / reporting", 4),
+                    ("Structure / exam communication", 3),
+                ),
+            ),
+        )
+
+    def rag_source_hints(self) -> Sequence[RagSourceHint]:
+        return (
+            RagSourceHint(source_key="syllabus", tier="syllabus", priority=10, topic_tags=("all",)),
+            RagSourceHint(source_key="course_notes", tier="notes", priority=30, topic_tags=("audit", "assurance")),
+        )
+
+    def build_rag_query_variants(
+        self,
+        *,
+        topic_id: str,
+        user_prompt: str,
+        mode: str,
+        weak_competencies: Sequence[str] = (),
+    ) -> Sequence[str]:
+        topic = str(topic_id or "").strip()
+        prompt = str(user_prompt or "").strip()
+        mode_text = str(mode or "").strip()
+        variants: list[str] = []
+        for candidate in (
+            prompt,
+            f"{topic} ACCA AA Audit and Assurance exam {mode_text}".strip(),
+            f"{topic} audit procedures evidence materiality".strip(),
+            f"{topic} internal control risk assessment reporting".strip(),
+            (" ".join(str(x or "").strip() for x in weak_competencies if str(x or "").strip())[:180]).strip(),
+        ):
+            text = str(candidate or "").strip()
+            if text and text not in variants:
+                variants.append(text)
+        return tuple(variants)
+
+    def infer_transfer_structure(
+        self,
+        *,
+        topic_id: str,
+        question_type: str,
+        tags: Sequence[str] = (),
+        meta: dict[str, Any] | None = None,
+    ) -> str | ProblemStructure | None:
+        _ = (topic_id, question_type, tags, meta)
+        return None
+
+
+@dataclass(frozen=True)
+class TXModuleAdapter:
+    """Adapter for ACCA TX (F6) Taxation: rubrics and RAG tuned for tax."""
+
+    _descriptor: ModuleDescriptor = field(
+        default_factory=lambda: ModuleDescriptor(
+            module_code="TX",
+            module_title="Taxation",
+            domain_family="tax",
+            supports_section_c=True,
+            supports_judgment_modes=True,
+        )
+    )
+
+    def descriptor(self) -> ModuleDescriptor:
+        return self._descriptor
+
+    def competency_nodes(self) -> Sequence[CompetencyNode]:
+        return ()
+
+    def competency_edges(self) -> Sequence[CompetencyEdge]:
+        return ()
+
+    def supported_tutor_modes(self) -> Sequence[str]:
+        return (
+            "teach",
+            "guided_practice",
+            "retrieval_drill",
+            "error_clinic",
+            "exam_technique",
+            "section_c_coach",
+            "revision_planner",
+        )
+
+    def default_tutor_mode_for_topic(self, topic_id: str) -> str:
+        topic = str(topic_id or "").strip().lower()
+        if any(
+            token in topic
+            for token in ("computation", "tax", "vat", "allowance", "relief", "corporation")
+        ):
+            return "guided_practice"
+        return "teach"
+
+    def misconception_patterns(self) -> Sequence[MisconceptionPattern]:
+        return ()
+
+    def map_error_to_misconceptions(
+        self,
+        *,
+        topic_id: str,
+        error_tags: Sequence[str],
+        user_answer: str = "",
+        expected_answer: str = "",
+    ) -> Sequence[str]:
+        _ = (topic_id, user_answer, expected_answer)
+        seen: set[str] = set()
+        mapped: list[str] = []
+        for tag in error_tags:
+            text = str(tag or "").strip().lower()
+            if not text:
+                continue
+            if text.startswith("missing_"):
+                candidate = f"{text}_concept"
+                if candidate not in seen:
+                    seen.add(candidate)
+                    mapped.append(candidate)
+            if len(mapped) >= 3:
+                break
+        return tuple(mapped)
+
+    def section_c_rubric_templates(self, topic_id: str | None = None) -> Sequence[JudgmentRubricTemplate]:
+        topic = str(topic_id or "").strip()
+        label = f"TX constructed response ({topic})" if topic else "TX constructed response"
+        return (
+            JudgmentRubricTemplate(
+                rubric_id="tx_constructed_20",
+                label=label,
+                mode="section_c",
+                criteria=(
+                    ("Tax technical application to scenario", 8),
+                    ("Computation / workings / allowances", 5),
+                    ("Evaluation / recommendation", 4),
+                    ("Structure / exam communication", 3),
+                ),
+            ),
+        )
+
+    def rag_source_hints(self) -> Sequence[RagSourceHint]:
+        return (
+            RagSourceHint(source_key="syllabus", tier="syllabus", priority=10, topic_tags=("all",)),
+            RagSourceHint(source_key="course_notes", tier="notes", priority=30, topic_tags=("tax", "taxation")),
+        )
+
+    def build_rag_query_variants(
+        self,
+        *,
+        topic_id: str,
+        user_prompt: str,
+        mode: str,
+        weak_competencies: Sequence[str] = (),
+    ) -> Sequence[str]:
+        topic = str(topic_id or "").strip()
+        prompt = str(user_prompt or "").strip()
+        mode_text = str(mode or "").strip()
+        variants: list[str] = []
+        for candidate in (
+            prompt,
+            f"{topic} ACCA TX Taxation exam {mode_text}".strip(),
+            f"{topic} tax computation allowances relief pitfalls".strip(),
+            f"{topic} income tax corporation tax VAT worked example".strip(),
+            (" ".join(str(x or "").strip() for x in weak_competencies if str(x or "").strip())[:180]).strip(),
+        ):
+            text = str(candidate or "").strip()
+            if text and text not in variants:
+                variants.append(text)
+        return tuple(variants)
+
+    def infer_transfer_structure(
+        self,
+        *,
+        topic_id: str,
+        question_type: str,
+        tags: Sequence[str] = (),
+        meta: dict[str, Any] | None = None,
+    ) -> str | ProblemStructure | None:
+        _ = (topic_id, question_type, tags, meta)
+        return None
+
+
+def _normalize_module_code_for_adapter(module_code: str) -> str:
+    """Map app module_id (e.g. acca_f7) to adapter registry code (e.g. FR)."""
+    raw = str(module_code or "").strip().upper().replace("-", "_")
+    if raw in ("ACCA_F9", "F9", "FM"):
+        return "FM"
+    if raw in ("ACCA_F7", "F7", "FR"):
+        return "FR"
+    if raw in ("ACCA_F8", "F8", "AA"):
+        return "AA"
+    if raw in ("ACCA_F6", "F6", "TX"):
+        return "TX"
+    return raw
+
+
+# ACCA syllabus-aligned scope for each module: in-scope calculations/concepts and out-of-scope.
+# Used to constrain AI-generated questions and tutor responses to examinable content only.
+ACCA_SYLLABUS_SCOPE_INSTRUCTIONS: dict[str, str] = {
+    "FM": (
+        "ACCA FM (Financial Management) syllabus scope — use ONLY these examinable methods: "
+        "Total Shareholder Return TSR = (P₁ - P₀ + D₁) / P₀; Cost of equity Ke (Dividend Growth Model: Ke = D₁/P₀ + g); "
+        "Weighted Average Cost of Capital (WACC); NPV and IRR for investment appraisal; "
+        "two-stage and variable growth models for share valuation when dividends grow non-constantly. "
+        "Do NOT use: equity multiple, MOIC, cash-on-cash return, or other private-equity-style multiples — they are not in the FM syllabus."
+    ),
+    "FR": (
+        "ACCA FR (Financial Reporting) syllabus scope — use only IFRS/IAS standards and examinable content: "
+        "conceptual framework, presentation (IFRS 18), revenue (IFRS 15), consolidation, associates, "
+        "leases (IFRS 16), provisions (IAS 37), impairment (IAS 36), income taxes (IAS 12), EPS (IAS 33), "
+        "cash flows (IAS 7), financial instruments. Do not introduce non-syllabus or non-examinable treatments."
+    ),
+    "AA": (
+        "ACCA AA (Audit and Assurance) syllabus scope — use only examinable content: audit framework and regulation, "
+        "planning and risk assessment, internal control, audit evidence, review and reporting. "
+        "Stick to ISA and exam guide terminology and procedures."
+    ),
+    "TX": (
+        "ACCA TX (Taxation) syllabus scope — use only examinable content for the chosen variant (e.g. UK): "
+        "income tax and NIC, chargeable gains, corporation tax, VAT. Use only syllabus tax rules and rates."
+    ),
+}
+
+
+def get_syllabus_scope_instruction(module_id: str) -> str:
+    """Return ACCA syllabus-scope instruction for the given module (e.g. acca_f9, acca_f7)."""
+    code = _normalize_module_code_for_adapter(module_id or "")
+    return ACCA_SYLLABUS_SCOPE_INSTRUCTIONS.get(code, "")
+
+
+def get_module_display_code(module_id: str) -> str:
+    """Return a short display label for the module for tutor/coach context (e.g. 'ACCA FM', 'ACCA FR')."""
+    code = _normalize_module_code_for_adapter(module_id or "")
+    if not code:
+        return ""
+    labels: dict[str, str] = {
+        "FM": "ACCA FM",
+        "FR": "ACCA FR",
+        "AA": "ACCA AA",
+        "TX": "ACCA TX",
+    }
+    return labels.get(code, f"ACCA {code}")
+
+
 def build_default_module_adapter_registry() -> ModuleAdapterRegistry:
     registry = ModuleAdapterRegistry()
     registry.register(FMModuleAdapter())
+    registry.register(FRModuleAdapter())
+    registry.register(AAModuleAdapter())
+    registry.register(TXModuleAdapter())
     return registry
 
 
@@ -1184,7 +1643,8 @@ def resolve_module_adapter(
     registry: ModuleAdapterRegistry | None = None,
 ) -> ModuleAdapter:
     reg = registry if isinstance(registry, ModuleAdapterRegistry) else build_default_module_adapter_registry()
-    adapter = reg.get(module_code)
+    adapter_code = _normalize_module_code_for_adapter(module_code)
+    adapter = reg.get(adapter_code)
     if adapter is not None:
         return adapter
     code = str(module_code or "").strip().upper()
@@ -2687,11 +3147,17 @@ class DeterministicTutorAssessmentService:
             return self._assess_mcq(item, answer_text)
         if item_type == "calculation_step":
             return self._assess_numeric(item, answer_text)
-        return self._assess_keyword_based(
-            item=item,
-            answer_text=answer_text,
-            session_state=session_state,
-            learner_profile=learner_profile,
+        # Open-ended items: no keyword matching; use AI judge (see AITutorAssessmentService).
+        marks_max = float(meta.get("marks_max", 2.0) or 2.0)
+        return TutorAssessmentResult(
+            item_id=item.item_id,
+            outcome="partial",
+            marks_awarded=round(marks_max * 0.5, 2),
+            marks_max=marks_max,
+            feedback="Open-ended assessment requires AI judge. Enable a local model for expert grading.",
+            error_tags=("ai_judge_required",),
+            retry_recommended=True,
+            next_difficulty="same",
         )
 
     def _assess_mcq(self, item: TutorPracticeItem, answer_text: str) -> TutorAssessmentResult:
@@ -2984,6 +3450,274 @@ class DeterministicTutorAssessmentService:
             if len(out) >= 4:
                 break
         return tuple(out)
+
+
+def _extract_first_json_object(text: str) -> str | None:
+    """Extract first {...} or [...] from text. Returns None if not found."""
+    if not text or not isinstance(text, str):
+        return None
+    start = text.find("{")
+    if start < 0:
+        start = text.find("[")
+    if start < 0:
+        return None
+    depth = 0
+    open_ch, close_ch = ("{", "}") if text[start] == "{" else ("[", "]")
+    for i in range(start, len(text)):
+        if text[i] == open_ch:
+            depth += 1
+        elif text[i] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+@dataclass
+class AITutorAssessmentService:
+    """Practice loop assessment using AI judge only. No keyword matching."""
+
+    generate_fn: Callable[[str], tuple[str, str | None]]
+    deterministic_fallback: DeterministicTutorAssessmentService = field(
+        default_factory=DeterministicTutorAssessmentService
+    )
+    get_suggested_tags: Callable[[str, str], Sequence[str]] | None = None
+
+    def assess(
+        self,
+        *,
+        item: TutorPracticeItem,
+        submission: TutorAssessmentSubmission,
+        session_state: TutorSessionState,
+        learner_profile: TutorLearnerProfileSnapshot,
+    ) -> TutorAssessmentResult:
+        item_type = str(getattr(item, "item_type", "") or "").strip().lower()
+        answer_text = str(getattr(submission, "answer_text", "") or "")
+        # MCQ and numeric: use deterministic (no keywords).
+        if item_type == "mcq" or item_type == "calculation_step":
+            return self.deterministic_fallback.assess(
+                item=item,
+                submission=submission,
+                session_state=session_state,
+                learner_profile=learner_profile,
+            )
+        # Open-ended: AI judge only (expertise-based, no keyword matching).
+        return self._assess_with_ai(
+            item=item,
+            submission=submission,
+            answer_text=answer_text,
+            session_state=session_state,
+            learner_profile=learner_profile,
+        )
+
+    def _assess_with_ai(
+        self,
+        *,
+        item: TutorPracticeItem,
+        submission: TutorAssessmentSubmission,
+        answer_text: str,
+        session_state: TutorSessionState,
+        learner_profile: TutorLearnerProfileSnapshot,
+    ) -> TutorAssessmentResult:
+        meta = dict(getattr(item, "meta", {}) or {})
+        marks_max = float(meta.get("marks_max", 2.0) or 2.0)
+        if not str(answer_text or "").strip():
+            return TutorAssessmentResult(
+                item_id=item.item_id,
+                outcome="incorrect",
+                marks_awarded=0.0,
+                marks_max=marks_max,
+                feedback="No answer provided yet.",
+                error_tags=("empty_answer",),
+                retry_recommended=True,
+                next_difficulty="same",
+            )
+        prompt = self._build_judge_prompt(
+            item=item,
+            submission=submission,
+            answer_text=answer_text,
+            session_state=session_state,
+            learner_profile=learner_profile,
+        )
+        text, err = self.generate_fn(prompt)
+        if err or not (text or "").strip():
+            return TutorAssessmentResult(
+                item_id=item.item_id,
+                outcome="partial",
+                marks_awarded=round(marks_max * 0.5, 2),
+                marks_max=marks_max,
+                feedback="Assessment unavailable; try again or enable local model.",
+                error_tags=("ai_judge_unavailable",),
+                retry_recommended=True,
+                next_difficulty="same",
+            )
+        payload = self._parse_judge_response(text, item.item_id, marks_max)
+        if payload is not None:
+            logger.info(
+                "assessment_audit",
+                extra={
+                    "item_id": item.item_id,
+                    "outcome": payload.outcome,
+                    "marks_awarded": payload.marks_awarded,
+                    "marks_max": payload.marks_max,
+                    "source": "ai_judge",
+                },
+            )
+            return payload
+        # Stricter fallback: retry with JSON-only instruction and shorter prompt.
+        retry_prompt = self._build_judge_prompt_json_only(
+            item=item, answer_text=answer_text, session_state=session_state, learner_profile=learner_profile
+        )
+        text2, err2 = self.generate_fn(retry_prompt)
+        if not err2 and (text2 or "").strip():
+            payload = self._parse_judge_response(text2, item.item_id, marks_max)
+            if payload is not None:
+                logger.info(
+                    "assessment_audit",
+                    extra={
+                        "item_id": item.item_id,
+                        "outcome": payload.outcome,
+                        "marks_awarded": payload.marks_awarded,
+                        "marks_max": payload.marks_max,
+                        "source": "ai_judge_retry",
+                    },
+                )
+                return payload
+        return TutorAssessmentResult(
+            item_id=item.item_id,
+            outcome="partial",
+            marks_awarded=round(marks_max * 0.5, 2),
+            marks_max=marks_max,
+            feedback="Could not parse AI judgement; answer recorded.",
+            retry_recommended=True,
+            next_difficulty="same",
+        )
+
+    def _build_judge_prompt(
+        self,
+        *,
+        item: TutorPracticeItem,
+        submission: TutorAssessmentSubmission | None,
+        answer_text: str,
+        session_state: TutorSessionState,
+        learner_profile: TutorLearnerProfileSnapshot,
+    ) -> str:
+        module = str(getattr(learner_profile, "module", "") or getattr(session_state, "module", "") or "").strip()
+        topic = str(getattr(item, "topic", "") or "").strip()
+        prompt = str(getattr(item, "prompt", "") or "").strip()
+        rubric_hints = tuple(getattr(item, "rubric_hints", ()) or ())
+        lines = [
+            "You are an ACCA examiner. Judge the learner's answer for correctness and quality. Use syllabus expertise only; do not match keywords.",
+            "Use examiner-style wording: brief, constructive, and focused on what to improve (no praise without substance).",
+            "Return JSON only (no prose). Schema:",
+            ASSESSMENT_JUDGE_SCHEMA_ONE_LINE,
+            "",
+            "Rules: outcome correct = full marks for accurate, complete answer; partial = some right ideas; incorrect = wrong or irrelevant. feedback must be brief, constructive, and plain human-readable text (no LaTeX, no code blocks; write formulas as humans do, e.g. a/b, x²).",
+            "",
+            f"Module: {module or 'ACCA'}",
+            f"Topic: {topic or 'n/a'}",
+            "",
+        ]
+        if submission is not None:
+            conf = getattr(submission, "confidence", None)
+            if conf is not None and isinstance(conf, (int, float)):
+                try:
+                    c = max(1, min(5, int(conf)))
+                    lines.append(f"Learner confidence (1–5): {c}")
+                    lines.append("")
+                except Exception:
+                    pass
+        get_tags = self.get_suggested_tags
+        if get_tags is not None and module and topic:
+            try:
+                suggested = list(get_tags(module, topic))[:12]
+                if suggested:
+                    lines.append("Suggested tags for this topic (choose or align with): " + ", ".join(str(t) for t in suggested))
+                    lines.append("")
+            except Exception:
+                pass
+        lines.append("Question:")
+        lines.append(prompt[:2000] or "n/a")
+        lines.append("")
+        if rubric_hints:
+            focus_parts = [str(h) for h in list(rubric_hints)[:5]]
+            lines.append("Marking focus: " + ", ".join(focus_parts))
+            lines.append("")
+        lines.append("Learner answer:")
+        lines.append((answer_text or "")[:3000].strip() or "n/a")
+        lines.append("")
+        lines.append("JSON:")
+        return "\n".join(lines)
+
+    def _build_judge_prompt_json_only(
+        self,
+        *,
+        item: TutorPracticeItem,
+        answer_text: str,
+        session_state: TutorSessionState,
+        learner_profile: TutorLearnerProfileSnapshot,
+    ) -> str:
+        """Shorter prompt for parse retry: insist on JSON only."""
+        module = str(getattr(learner_profile, "module", "") or getattr(session_state, "module", "") or "").strip()
+        topic = str(getattr(item, "topic", "") or "").strip()
+        prompt = str(getattr(item, "prompt", "") or "").strip()
+        lines = [
+            JUDGE_JSON_ONLY,
+            "Schema: " + ASSESSMENT_JUDGE_SCHEMA_ONE_LINE,
+            "",
+            f"Module: {module or 'ACCA'} Topic: {topic or 'n/a'}",
+            "Question: " + (prompt[:800] or "n/a"),
+            "Learner answer: " + (str(answer_text or "").strip()[:1500] or "n/a"),
+            "",
+            "JSON:",
+        ]
+        return "\n".join(lines)
+
+    def _parse_judge_response(self, text: str, item_id: str, marks_max: float) -> TutorAssessmentResult | None:
+        raw = _extract_first_json_object(text)
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        outcome = str(data.get("outcome", "") or "incorrect").strip().lower()
+        if outcome not in ("correct", "partial", "incorrect"):
+            outcome = "incorrect"
+        try:
+            marks_awarded = float(data.get("marks_awarded", 0.0) or 0.0)
+        except Exception:
+            marks_awarded = 0.0
+        marks_awarded = max(0.0, min(marks_max, round(marks_awarded, 2)))
+        feedback = str(data.get("feedback", "") or "").strip() or "Assessed."
+        error_tags_raw = data.get("error_tags")
+        if isinstance(error_tags_raw, list):
+            error_tags = tuple(str(x).strip() for x in error_tags_raw if str(x).strip())[:6]
+        else:
+            error_tags = ()
+        misconception_tags: tuple[str, ...] = ()
+        mis_raw = data.get("misconception_tags")
+        if isinstance(mis_raw, list):
+            misconception_tags = tuple(str(x).strip() for x in mis_raw if str(x).strip())[:6]
+        else:
+            main_mis = data.get("main_misconception")
+            if isinstance(main_mis, str) and main_mis.strip():
+                misconception_tags = (main_mis.strip(),)
+        suggested_next_step = str(data.get("suggested_next_step", "") or "").strip()[:300] or ""
+        return TutorAssessmentResult(
+            item_id=item_id,
+            outcome=outcome,
+            marks_awarded=marks_awarded,
+            marks_max=marks_max,
+            feedback=feedback[:500],
+            error_tags=error_tags,
+            misconception_tags=misconception_tags,
+            suggested_next_step=suggested_next_step,
+            retry_recommended=outcome != "correct",
+            next_difficulty="harder" if outcome == "correct" else ("easier" if outcome == "incorrect" else "same"),
+        )
 
 
 @dataclass

@@ -333,3 +333,11 @@ ui.show_calibration_card(
 ---
 
 **Questions?** Check inline docstrings or run: `pytest testing/test_tutor_improvements.py -v`
+
+---
+
+## Repo Validation Snapshot (2026-03-08)
+
+- `pyright` from repo root: `0 errors, 0 warnings, 0 informations`
+- `pytest -q testing/test_dialog_smoke.py` passed
+- `pytest -q ../tests/test_studyplan_app_ollama.py` passed

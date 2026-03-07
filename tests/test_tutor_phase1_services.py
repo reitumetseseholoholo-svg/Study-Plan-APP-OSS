@@ -451,9 +451,9 @@ def test_phase3_assessment_service_marks_mcq_and_keyword_short_answer():
         session_state=TutorSessionState(session_id="s", module="FM", topic="Working Capital Management"),
         learner_profile=TutorLearnerProfileSnapshot(learner_id="u", module="FM"),
     )
-    assert short_partial.outcome in {"partial", "correct"}
-    if short_partial.outcome != "correct":
-        assert "wc_policy_risk_ignored" in short_partial.misconception_tags
+    # Open-ended items use AI judge only; deterministic returns fallback (no keyword matching).
+    assert short_partial.outcome == "partial"
+    assert "ai_judge_required" in short_partial.error_tags
 
 
 def test_phase3_assessment_service_marks_calculation_with_tolerance():

@@ -235,6 +235,7 @@ class LlamaServerManager:
                         return data.get("status") == "ok"
                     except (json.JSONDecodeError, AttributeError):
                         return True
+                return False
         except Exception:
             return False
 

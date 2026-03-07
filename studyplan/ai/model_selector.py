@@ -69,12 +69,23 @@ class ModelSelector:
         models: list[GgufModel],
         purpose: str = Purpose.GENERAL,
     ) -> list[ModelRanking]:
-        """Return models ranked best-first for the given purpose."""
+        """Return models ranked best-first for the given purpose.
+        When ram_budget_bytes is set, only models that fit in RAM are considered,
+        so the top pick is the best quality that won't OOM.
+        """
         if not models:
             return []
 
+        candidates = list(models)
+        if self.ram_budget_bytes > 0:
+            overhead = 500_000_000  # ~500MB for llama-server runtime
+            available = self.ram_budget_bytes - overhead
+            fitting = [m for m in models if m.size_bytes <= available]
+            if fitting:
+                candidates = fitting
+
         tier = self._resolve_tier(purpose)
-        rankings = [self._score_model(m, tier, purpose) for m in models]
+        rankings = [self._score_model(m, tier, purpose) for m in candidates]
         rankings.sort(key=lambda r: -r.score)
         return rankings
 
@@ -83,6 +94,7 @@ class ModelSelector:
         models: list[GgufModel],
         purpose: str = Purpose.GENERAL,
     ) -> GgufModel | None:
+        """Pick the best model that fits in RAM (if budget set), then by quality."""
         ranked = self.rank(models, purpose)
         return ranked[0].model if ranked else None
 
@@ -229,12 +241,13 @@ class ModelSelector:
         return bonuses.get(model.architecture, 0.0)
 
     def _score_ram_fit(self, model: GgufModel) -> float:
+        """Bonus for fitting in RAM; only used when not filtering by fit (e.g. no budget)."""
         if self.ram_budget_bytes <= 0:
             return 0.0
         overhead = 500_000_000  # ~500MB for llama-server runtime
         available = self.ram_budget_bytes - overhead
         if model.size_bytes > available:
-            return -20.0
+            return -20.0  # excluded by rank() when budget set; kept for fallback
         headroom = (available - model.size_bytes) / available
         if headroom > 0.3:
             return 2.0

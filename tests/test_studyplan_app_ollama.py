@@ -1189,6 +1189,25 @@ def test_build_ai_tutor_context_prompt_details_adds_retrieval_mode_hint():
     assert str(meta.get("mode_hint", "")) == "retrieval_drill"
 
 
+def test_build_ai_tutor_context_prompt_details_concise_and_exam_technique_only():
+    prompt, meta = build_ai_tutor_context_prompt_details(
+        history=[],
+        user_prompt="How do I approach Section C time allocation?",
+        module_title="FM",
+        chapter="Section C",
+        concise_mode=True,
+        exam_technique_only=True,
+    )
+    assert "Concise mode" in prompt
+    assert "under 6" in prompt or "6–8" in prompt
+    assert "Exam technique only" in prompt
+    assert "do not add micro-checks" in prompt or "no practice" in prompt.lower()
+    assert "Response contract (exam technique only" in prompt
+    assert bool(meta.get("exam_technique_only", False)) is True
+    assert bool(meta.get("concise_mode", False)) is True
+    assert bool(meta.get("practice_first_contract", True)) is False
+
+
 def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
     save_calls = {"count": 0}
     dummy = types.SimpleNamespace(
@@ -2417,9 +2436,13 @@ def test_generate_gap_drill_questions_uses_recovery_status_on_ollama_error():
         engine=engine,
         ai_tutor_gap_generation_enabled=True,
         local_llm_enabled=True,
+        _build_local_llm_model_failover_sequence=lambda **_kw: (["model-a"], None),
         _select_local_llm_model=lambda **_kw: ("model-a", None),
         _build_gap_generation_prompt=lambda chapter, count, snapshot: "prompt",
         _ollama_generate_text=lambda model, prompt: ("", "connection refused"),
+        _append_gap_question_quarantine=lambda *_args, **_kw: None,
+        _record_ai_tutor_autopilot_metrics=lambda *_args, **_kw: None,
+        _ai_tutor_autopilot_stats={},
         _compose_ollama_recovery_status=lambda err, **_kw: "RECOVERY STATUS",
     )
 
@@ -2435,6 +2458,7 @@ def test_generate_gap_drill_questions_uses_guardrail_status_for_parse_reject():
         engine=engine,
         ai_tutor_gap_generation_enabled=True,
         local_llm_enabled=True,
+        _build_local_llm_model_failover_sequence=lambda **_kw: (["model-a"], None),
         _select_local_llm_model=lambda **_kw: ("model-a", None),
         _build_gap_generation_prompt=lambda chapter, count, snapshot: "prompt",
         _ollama_generate_text=lambda model, prompt: ("{}", None),
@@ -2449,6 +2473,119 @@ def test_generate_gap_drill_questions_uses_guardrail_status_for_parse_reject():
 
     assert ok is False
     assert msg == "GUARDRAIL STATUS"
+
+
+def test_generate_gap_drill_questions_failover_uses_second_model():
+    """When first model returns LLM error, second model is tried and success uses its response."""
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    valid_json = json.dumps({
+        "chapter": "Topic A",
+        "questions": [
+            {
+                "question": "What is the primary objective of financial reporting?",
+                "options": ["A", "B", "C", "D"],
+                "correct": "A",
+                "explanation": "Because.",
+            },
+        ],
+    })
+    calls = []
+
+    def _ollama(model, prompt):
+        calls.append(model)
+        if model == "model-1":
+            return ("", "connection refused")
+        return (valid_json, None)
+
+    def _parse(text):
+        if not text or "connection refused" in str(text):
+            return ("Topic A", [], "No JSON")
+        data = json.loads(text)
+        ch = data.get("chapter", "")
+        qs = data.get("questions", [])
+        return (ch, qs, None)
+
+    valid_row = {
+        "question": "What is the primary objective of financial reporting?",
+        "options": ["A", "B", "C", "D"],
+        "correct": "A",
+        "explanation": "Because.",
+    }
+
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        ai_tutor_gap_generation_enabled=True,
+        local_llm_enabled=True,
+        ai_tutor_gap_autosave_strict_gate=True,
+        ai_tutor_gap_autosave_enabled=True,
+        _build_local_llm_model_failover_sequence=lambda **_kw: (["model-1", "model-2"], None),
+        _build_gap_generation_prompt=lambda chapter, count, snapshot: "prompt",
+        _ollama_generate_text=_ollama,
+        _parse_generated_gap_questions=lambda text: _parse(text),
+        _validate_generated_gap_questions=lambda ch, q, **kw: ([valid_row] if q else [], []),
+        _save_generated_gap_questions=lambda ch, rows: (len(rows), False),
+        _record_ai_tutor_autopilot_metrics=lambda *_args, **_kw: None,
+        _ai_tutor_autopilot_stats={},
+    )
+
+    ok, msg = StudyPlanGUI._generate_gap_drill_questions(dummy, "Topic A", snapshot={})
+
+    assert ok is True
+    assert "1" in msg or "saved" in msg.lower()
+    assert "model-1" in calls and "model-2" in calls
+
+
+def test_generate_gap_drill_questions_shows_storage_error_when_save_fails():
+    """When _save_generated_gap_questions returns (0, True), user sees storage error message."""
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    valid_json = json.dumps({
+        "chapter": "Topic A",
+        "questions": [
+            {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."},
+        ],
+    })
+    valid_row = {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."}
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        ai_tutor_gap_generation_enabled=True,
+        local_llm_enabled=True,
+        ai_tutor_gap_autosave_strict_gate=True,
+        ai_tutor_gap_autosave_enabled=True,
+        _build_local_llm_model_failover_sequence=lambda **_kw: (["model-a"], None),
+        _build_gap_generation_prompt=lambda chapter, count, snapshot: "prompt",
+        _ollama_generate_text=lambda model, prompt: (valid_json, None),
+        _parse_generated_gap_questions=lambda text: ("Topic A", [valid_row], None),
+        _validate_generated_gap_questions=lambda ch, q, **kw: ([valid_row], []),
+        _save_generated_gap_questions=lambda ch, rows: (0, True),
+        _record_ai_tutor_autopilot_metrics=lambda *_args, **_kw: None,
+        _append_gap_question_quarantine=lambda *_args, **_kw: None,
+        _ai_tutor_autopilot_stats={},
+    )
+    ok, msg = StudyPlanGUI._generate_gap_drill_questions(dummy, "Topic A", snapshot={})
+    assert ok is False
+    assert "could not be saved" in msg or "storage error" in msg.lower()
+
+
+def test_run_daily_auto_question_generation_if_due_does_not_advance_date_on_failure():
+    """When _generate_gap_drill_questions returns False, last_auto_question_generation_date is not updated."""
+    today = datetime.date.today().isoformat()
+    yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    engine = types.SimpleNamespace(CHAPTERS=["Chapter 1"])
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        _core_runtime_shutdown=False,
+        last_auto_question_generation_date=yesterday,
+        ai_tutor_gap_generation_enabled=True,
+        local_llm_enabled=True,
+        current_topic="Chapter 1",
+        coach_pick="Chapter 1",
+        _get_total_question_count=lambda: 100,
+        _build_ai_tutor_autopilot_snapshot=lambda: {},
+        _generate_gap_drill_questions=lambda topic, snapshot, requested_count=5: (False, "mock failure"),
+        save_preferences=lambda: None,
+    )
+    StudyPlanGUI._run_daily_auto_question_generation_if_due(dummy)
+    assert getattr(dummy, "last_auto_question_generation_date", "") == yesterday
 
 
 def test_normalize_ai_tutor_action_plan_section_c_requires_confirmation():
@@ -2840,6 +2977,7 @@ def test_generate_section_c_question_uses_recovery_status_on_ollama_error():
     dummy = types.SimpleNamespace(
         engine=engine,
         local_llm_enabled=True,
+        _build_local_llm_model_failover_sequence=lambda **_kw: (["model-a"], None),
         _select_local_llm_model=lambda **_kw: ("model-a", None),
         _build_section_c_generation_prompt=lambda chapter, snapshot=None: "prompt",
         _ollama_generate_text=lambda model, prompt: ("", "timeout"),
@@ -2860,6 +2998,7 @@ def test_generate_section_c_question_uses_guardrail_status_on_parse_failure():
     dummy = types.SimpleNamespace(
         engine=engine,
         local_llm_enabled=True,
+        _build_local_llm_model_failover_sequence=lambda **_kw: (["model-a"], None),
         _select_local_llm_model=lambda **_kw: ("model-a", None),
         _build_section_c_generation_prompt=lambda chapter, snapshot=None: "prompt",
         _ollama_generate_text=lambda model, prompt: ("{}", None),
@@ -2874,6 +3013,42 @@ def test_generate_section_c_question_uses_guardrail_status_on_parse_failure():
     assert isinstance(row, dict)
     assert row.get("prompt") == "fallback"
     assert warn == "GUARDRAIL STATUS"
+
+
+def test_generate_section_c_question_failover_uses_second_model():
+    """When first model returns LLM error, second model is tried and success uses its response."""
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    valid_row = {"chapter": "Topic A", "scenario": "Generated case", "prompt": "Generated case"}
+    calls = []
+
+    def _ollama(model, prompt):
+        calls.append(model)
+        if model == "sec-1":
+            return ("", "timeout")
+        return ("{}", None)
+
+    def _parse(text, chapter):
+        if not (text or "").strip():
+            return (None, "No JSON")
+        return (dict(valid_row), None)
+
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        local_llm_enabled=True,
+        _build_local_llm_model_failover_sequence=lambda **_kw: (["sec-1", "sec-2"], None),
+        _select_local_llm_model=lambda **_kw: ("sec-1", None),
+        _build_section_c_generation_prompt=lambda chapter, snapshot=None: "prompt",
+        _ollama_generate_text=_ollama,
+        _parse_generated_section_c_question=_parse,
+        _upsert_section_c_question=lambda chapter, row, persist=True: row,
+    )
+
+    row, warn = StudyPlanGUI._generate_section_c_question(dummy, "Topic A", snapshot={})
+
+    assert isinstance(row, dict)
+    assert row.get("scenario") == "Generated case"
+    assert warn is None
+    assert "sec-1" in calls and "sec-2" in calls
 
 
 def test_format_ai_tutor_transcript_labels_roles():
@@ -2922,6 +3097,33 @@ def test_format_ai_tutor_transcript_cleans_assistant_content():
         ],
     )
     assert "Tutor:\nA: (1/2) x 100%" in transcript
+
+
+def test_clean_ai_tutor_text_strips_disclaimers():
+    """AI output is cleaned so disclaimers are removed and text reads as direct advice."""
+    from studyplan_ai_tutor import clean_ai_tutor_text
+
+    raw = "As an AI assistant I cannot give financial advice.\n\nUse WACC = (E/V)*Re + (D/V)*Rd."
+    cleaned = clean_ai_tutor_text(raw)
+    assert "As an AI" not in cleaned
+    assert "I cannot" not in cleaned
+    assert "Use WACC" in cleaned
+
+
+def test_clean_ai_tutor_text_human_readable_math():
+    """Formulas and math are converted to human-readable form (fractions, powers, sqrt)."""
+    from studyplan_ai_tutor import clean_ai_tutor_text
+
+    raw = "NPV = \\\\frac{CF_1}{(1+r)} + \\\\sqrt{x}; variance \\\\leq 0.05; x^2 and \\\\beta."
+    cleaned = clean_ai_tutor_text(raw)
+    assert "\\frac" not in cleaned
+    assert "\\sqrt" not in cleaned
+    assert "\\leq" not in cleaned
+    assert "\\beta" not in cleaned
+    assert "/" in cleaned or "(" in cleaned
+    assert "sqrt(" in cleaned or "sqrt " in cleaned
+    assert "²" in cleaned or "^2" in cleaned
+    assert "beta" in cleaned
 
 
 def test_ollama_generate_text_stream_parses_ndjson_and_emits_chunks(monkeypatch):
@@ -3586,6 +3788,7 @@ def test_start_stop_core_housekeeping_timers_registers_and_cleans_sources(monkey
         _auto_train_timer_id=0,
         _semantic_warmup_timer_id=0,
         _window_poll_timer_id=0,
+        _daily_question_generation_timer_id=0,
         _auto_train_ml_tick=lambda: True,
         _semantic_warmup_tick=lambda: False,
         _poll_window_size=lambda: True,
@@ -3595,18 +3798,20 @@ def test_start_stop_core_housekeeping_timers_registers_and_cleans_sources(monkey
 
     StudyPlanGUI._start_core_housekeeping_timers(dummy)
 
-    assert [row[0] for row in timer_calls] == [60000, 4000, 2000]
-    assert registered == [101, 102, 103]
+    assert [row[0] for row in timer_calls] == [60000, 4000, 2000, 90000]
+    assert registered == [101, 102, 103, 104]
     assert int(dummy._auto_train_timer_id) == 101
     assert int(dummy._semantic_warmup_timer_id) == 102
     assert int(dummy._window_poll_timer_id) == 103
+    assert int(dummy._daily_question_generation_timer_id) == 104
 
     StudyPlanGUI._stop_core_housekeeping_timers(dummy)
 
-    assert removed == [101, 102, 103]
+    assert removed == [101, 102, 103, 104]
     assert int(dummy._auto_train_timer_id) == 0
     assert int(dummy._semantic_warmup_timer_id) == 0
     assert int(dummy._window_poll_timer_id) == 0
+    assert int(getattr(dummy, "_daily_question_generation_timer_id", 0) or 0) == 0
 
 
 def test_start_core_housekeeping_timers_skips_semantic_and_auto_train_in_smoke_mode(monkeypatch):
@@ -3633,6 +3838,7 @@ def test_start_core_housekeeping_timers_skips_semantic_and_auto_train_in_smoke_m
         _auto_train_timer_id=0,
         _semantic_warmup_timer_id=0,
         _window_poll_timer_id=0,
+        _daily_question_generation_timer_id=0,
         _auto_train_ml_tick=lambda: True,
         _semantic_warmup_tick=lambda: False,
         _poll_window_size=lambda: True,
@@ -3642,11 +3848,12 @@ def test_start_core_housekeeping_timers_skips_semantic_and_auto_train_in_smoke_m
 
     StudyPlanGUI._start_core_housekeeping_timers(dummy)
 
-    assert [row[0] for row in timer_calls] == [2000]
-    assert registered == [201]
+    assert [row[0] for row in timer_calls] == [2000, 90000]
+    assert registered == [201, 202]
     assert int(dummy._auto_train_timer_id) == 0
     assert int(dummy._semantic_warmup_timer_id) == 0
     assert int(dummy._window_poll_timer_id) == 201
+    assert int(dummy._daily_question_generation_timer_id) == 202
     assert loky_diag_labels == ["semantic_warmup_skipped"]
 
 

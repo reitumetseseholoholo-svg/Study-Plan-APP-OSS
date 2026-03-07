@@ -62,10 +62,15 @@ class PracticeLoopState:
 class PracticeLoopController:
     """Orchestrates practice loop flow: build → attempt → assess → update."""
 
-    def __init__(self, perf_monitor: PerformanceMonitor | None = None, qgen_svc=None):
+    def __init__(
+        self,
+        perf_monitor: PerformanceMonitor | None = None,
+        qgen_svc=None,
+        assess_svc: TutorAssessmentService | None = None,
+    ):
         self.perf_monitor = perf_monitor or PerformanceMonitor(enabled=False)
         self.practice_svc: TutorPracticeService = DeterministicTutorPracticeService()
-        self.assess_svc: TutorAssessmentService = DeterministicTutorAssessmentService()
+        self.assess_svc: TutorAssessmentService = assess_svc or DeterministicTutorAssessmentService()
         # question generation service (can be real or dummy)
         from .question_generator import get_qgen_service
         self.qgen_svc = qgen_svc or get_qgen_service()
@@ -525,6 +530,7 @@ class PracticeLoopController:
         loop_state: PracticeLoopState,
         session_duration_minutes: int,
         attempts_history: list[tuple[str, bool]],  # (topic, correct)
+        latencies_ms: list[float] | None = None,
     ) -> str:
         """End-of-session summary for metacognition (reflection principle)."""
         safe_history = attempts_history if isinstance(attempts_history, list) else []
@@ -557,16 +563,32 @@ class PracticeLoopController:
             < 0.4
         ]
         
+        # Confidence calibration: signed (predicted - actual) from session tracker
+        cal = loop_state.confidence_tracker.assess_calibration()
+        if cal.sample_size >= 3:
+            confidence_calibration = cal.predicted_confidence - cal.actual_accuracy
+        else:
+            confidence_calibration = getattr(
+                loop_state.learner_profile, "confidence_calibration_bias", 0.0
+            )
+        
+        # Average latency: from history when provided, else default
+        if latencies_ms and len(latencies_ms) > 0:
+            avg_latency_ms = sum(latencies_ms) / len(latencies_ms)
+            avg_latency_ms = max(1000.0, min(120_000.0, avg_latency_ms))
+        else:
+            avg_latency_ms = 25000.0
+        
         try:
             reflection = SessionReflection(
                 session_id=loop_state.session_state.session_id,
                 topics_covered=topics_covered,
                 topics_mastered=topics_mastered,
                 topics_struggling=topics_struggling,
-                confidence_calibration=0.0,  # TODO: compute from learner profile
+                confidence_calibration=confidence_calibration,
                 total_attempts=total_count,
                 correct_rate=correct_rate,
-                avg_latency_ms=25000,  # TODO: compute from history
+                avg_latency_ms=avg_latency_ms,
                 session_duration_minutes=session_duration_minutes,
             )
             feedback = reflection.generate_feedback()

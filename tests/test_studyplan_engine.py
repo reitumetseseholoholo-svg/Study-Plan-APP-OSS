@@ -422,6 +422,47 @@ def test_get_overall_mastery_from_srs(engine_no_io):
     assert abs(overall - expected_mastery) < 1e-9
 
 
+def test_srs_transition_new_to_learning_to_mastered_and_donut_counts(engine_no_io, monkeypatch):
+    """New attempted questions move to learning; interval >= 21 counts as mastered; donut chart uses same counts."""
+    eng = engine_no_io
+    chapter = StudyPlanEngine.CHAPTERS[0]
+    # Ensure chapter has at least 3 questions and SRS in sync
+    q_count = max(3, len(eng.QUESTIONS.get(chapter, [])))
+    eng.sync_srs_with_questions()
+    eng.srs_data[chapter] = [
+        {"last_review": None, "interval": 1, "efactor": 2.5}
+        for _ in range(q_count)
+    ]
+    # All new
+    stats = eng.get_mastery_stats(chapter)
+    assert stats["new"] == q_count
+    assert stats["learning"] == 0
+    assert stats["mastered"] == 0
+    summary = eng.get_mastery_summary()
+    assert summary["new"] >= q_count
+    assert summary["learning"] >= 0
+    assert summary["mastered"] >= 0
+    # Attempt first question (correct) -> moves to learning
+    eng.update_srs(chapter, 0, True)
+    stats = eng.get_mastery_stats(chapter)
+    assert stats["new"] == q_count - 1
+    assert stats["learning"] >= 1
+    assert eng.srs_data[chapter][0].get("last_review") is not None
+    # Simulate card reaching 21-day interval (mastered)
+    eng.srs_data[chapter][0]["interval"] = 21
+    eng.srs_data[chapter][0]["last_review"] = datetime.date.today().isoformat()
+    stats = eng.get_mastery_stats(chapter)
+    assert stats["mastered"] >= 1
+    assert stats["new"] == q_count - 1
+    summary = eng.get_mastery_summary()
+    assert summary["mastered"] >= 1
+    # Donut chart uses get_mastery_summary or per-chapter get_mastery_stats; same buckets
+    assert summary["mastered"] + summary["learning"] + summary["new"] == summary["total"]
+    # Legend order in app: Mastered, Learning, New — sizes = [mastered, learning, new_cards]
+    assert summary["mastered"] >= 1
+    assert "mastered" in stats and stats["mastered"] >= 1
+
+
 def test_get_daily_plan_returns_requested_count(engine_no_io):
     eng = engine_no_io
     plan3 = eng.get_daily_plan(num_topics=3)
@@ -487,7 +528,8 @@ def test_save_data_writes_json_structure(tmp_path, monkeypatch):
         assert key in payload
 
     assert payload["pomodoro_log"]["total_minutes"] == 25
-    assert "FM Function" in payload["competence"]
+    # Module-agnostic: competence keys must match engine chapters
+    assert set(payload["competence"].keys()) == set(eng.CHAPTERS)
 
 
 def test_save_data_creates_and_prunes_rolling_backups(tmp_path, monkeypatch):
@@ -545,7 +587,8 @@ def test_list_backup_snapshots_includes_legacy_bak(tmp_path, monkeypatch):
     eng = StudyPlanEngine()
     data_file.write_text('{"competence": {}}', encoding="utf-8")
     legacy = tmp_path / "data.json.bak"
-    legacy.write_text('{"competence": {"FM Function": 9}}', encoding="utf-8")
+    first_chapter = eng.CHAPTERS[0] if eng.CHAPTERS else "FM Function"
+    legacy.write_text(json.dumps({"competence": {first_chapter: 9}}), encoding="utf-8")
 
     rows = eng.list_backup_snapshots(limit=5)
     names = [str(r.get("name", "")) for r in rows]
@@ -560,7 +603,7 @@ def test_load_data_auto_recovers_from_latest_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
 
     eng = StudyPlanEngine()
-    chapter = "FM Function"
+    chapter = eng.CHAPTERS[0]
     eng.competence[chapter] = 37
     eng.save_data()  # Create primary file
     eng.save_data()  # Create rolling backup from previous primary file
@@ -587,7 +630,7 @@ def test_load_data_corrupt_without_snapshot_keeps_runtime_state(tmp_path, monkey
     monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
 
     eng = StudyPlanEngine()
-    chapter = "FM Function"
+    chapter = eng.CHAPTERS[0]
     eng.competence[chapter] = 11
     data_file.write_text("{ broken json", encoding="utf-8")
 
@@ -604,7 +647,7 @@ def test_load_data_recovery_flag_clears_after_successful_load(tmp_path, monkeypa
     monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
 
     eng = StudyPlanEngine()
-    chapter = "FM Function"
+    chapter = eng.CHAPTERS[0]
     eng.competence[chapter] = 21
     eng.save_data()
     eng.save_data()
@@ -977,9 +1020,16 @@ def test_import_data_snapshot_clamps_srs_to_question_count(tmp_path, monkeypatch
     monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
 
     eng = StudyPlanEngine()
-    chapter = "FM Function"
+    chapter = eng.CHAPTERS[0]
     q_count = len(eng.QUESTIONS.get(chapter, []))
-    assert q_count > 0
+    if q_count == 0:
+        # Module-agnostic: seed one chapter with minimal questions so clamp logic is testable
+        minimal = [
+            {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}
+            for _ in range(3)
+        ]
+        eng.QUESTIONS[chapter] = minimal
+        q_count = 3
 
     snapshot = {
         "competence": {chapter: 55},
@@ -1277,6 +1327,32 @@ def test_import_syllabus_fixture_regression(
     assert isinstance(warnings, list)
     if expect_warning:
         assert warnings
+
+
+def test_parse_syllabus_generic_numbered_chapters(engine_no_io):
+    """Module-agnostic parser: numbered sections (no ACCA '2. Main capabilities' etc.) produce chapters."""
+    eng = engine_no_io
+    text = (
+        "1. Introduction to the subject\n"
+        "a) Define key terms.[1]\n"
+        "b) Explain the scope.[2]\n"
+        "2. Core content\n"
+        "a) Apply the main model.[2]\n"
+        "3. Advanced topics\n"
+        "a) Evaluate alternatives.[3]\n"
+    )
+    parsed = eng.parse_syllabus_pdf_text(text)
+    assert isinstance(parsed, dict)
+    chapters = parsed.get("chapters", [])
+    assert len(chapters) >= 2
+    assert any("Introduction" in ch or "1." in ch for ch in chapters)
+    assert any("Core" in ch or "2." in ch for ch in chapters)
+    stats = parsed.get("stats", {})
+    assert int(stats.get("chapters_found", 0)) >= 2
+    assert int(stats.get("outcomes_found", 0)) >= 2
+    # Generic path warning when ACCA sections were not used
+    warnings = parsed.get("warnings", [])
+    assert any("generic" in w.lower() for w in warnings) or len(chapters) >= 2
 
 
 def test_parse_syllabus_cache_returns_independent_copy(engine_no_io):

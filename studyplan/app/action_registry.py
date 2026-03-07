@@ -41,6 +41,7 @@ DEFAULT_UI_ACTION_BINDINGS: tuple[ActionBinding, ...] = (
     ActionBinding("open_ai_tutor", "on_open_ai_tutor"),
     ActionBinding("open_ai_coach", "on_open_ai_coach"),
     ActionBinding("section_c_practice", "on_menu_section_c_practice"),
+    ActionBinding("section_c_browse", "on_menu_section_c_browse"),
     ActionBinding("train_ml_models", "on_train_ml_models"),
     ActionBinding("toggle_sidebar", "on_toggle_sidebar_action"),
     ActionBinding("toggle_menu", "on_toggle_menu_action"),
