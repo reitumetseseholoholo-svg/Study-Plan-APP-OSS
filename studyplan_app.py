@@ -991,6 +991,42 @@ class TutorWorkspaceState(dict[str, Any]):
     def set_practice_session_quality_summary(self, summary: Any) -> None:
         self["practice_session_quality_summary"] = dict(summary) if isinstance(summary, dict) else {}
 
+    def tutor_help_feedback(self) -> str:
+        return str(self.get("tutor_help_feedback", "") or "").strip()
+
+    def set_tutor_help_feedback(self, signal: Any, *, turn: int | None = None, at: str | None = None) -> None:
+        self["tutor_help_feedback"] = str(signal or "").strip()
+        if at is not None:
+            self["tutor_help_feedback_at"] = str(at or "").strip()
+        if turn is not None:
+            try:
+                self["tutor_help_feedback_turn"] = max(0, int(turn))
+            except Exception:
+                self["tutor_help_feedback_turn"] = 0
+
+    def tutor_help_feedback_at(self) -> str:
+        return str(self.get("tutor_help_feedback_at", "") or "").strip()
+
+    def tutor_help_feedback_turn(self) -> int:
+        try:
+            return max(0, int(self.get("tutor_help_feedback_turn", 0) or 0))
+        except Exception:
+            return 0
+
+    def tutor_trust_summary(self) -> str:
+        return str(self.get("tutor_trust_summary", "") or "").strip()
+
+    def tutor_trust_details(self) -> str:
+        return str(self.get("tutor_trust_details", "") or "").strip()
+
+    def clear_tutor_trust(self) -> None:
+        self["tutor_trust_summary"] = ""
+        self["tutor_trust_details"] = ""
+
+    def set_tutor_trust(self, *, summary: Any = "", details: Any = "") -> None:
+        self["tutor_trust_summary"] = str(summary or "").strip()
+        self["tutor_trust_details"] = str(details or "").strip()
+
 
 class AppDialog(Gtk.Window):
     def __init__(self, title: str | None = None, transient_for=None, modal: bool = False):
@@ -5440,7 +5476,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         def _refresh_help_feedback_buttons() -> None:
             has_answer = bool(_latest_assistant_answer())
             is_active = bool(run_state.get("active", False))
-            selected = self._normalize_ai_tutor_help_feedback(run_state.get("tutor_help_feedback", ""))
+            selected = self._normalize_ai_tutor_help_feedback(run_state.tutor_help_feedback())
             enabled = has_answer and (not is_active)
             mapping = (
                 (help_feedback_clear_btn, "clear"),
@@ -5467,9 +5503,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             normalized = self._normalize_ai_tutor_help_feedback(signal)
             if not normalized:
                 return
-            run_state["tutor_help_feedback"] = normalized
-            run_state["tutor_help_feedback_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-            run_state["tutor_help_feedback_turn"] = _turn_count()
+            run_state.set_tutor_help_feedback(
+                normalized,
+                at=datetime.datetime.now().isoformat(timespec="seconds"),
+                turn=_turn_count(),
+            )
             feedback_recorder = getattr(self, "_record_ai_tutor_help_feedback", None)
             if callable(feedback_recorder):
                 try:
@@ -5477,7 +5515,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         Any,
                         feedback_recorder(
                             normalized,
-                            at=str(run_state.get("tutor_help_feedback_at", "") or ""),
+                            at=run_state.tutor_help_feedback_at(),
                             persist=True,
                         ),
                     )
@@ -5817,8 +5855,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     )
                 else:
                     summary_text = summary_full
-            trust_summary = str(run_state.get("tutor_trust_summary", "") or "").strip()
-            trust_details = str(run_state.get("tutor_trust_details", "") or "").strip()
+            trust_summary = run_state.tutor_trust_summary()
+            trust_details = run_state.tutor_trust_details()
             if trust_summary:
                 trust_summary_display = trust_summary
                 if very_narrow:
@@ -6041,8 +6079,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return
             history.clear()
             _persist_history()
-            run_state["tutor_trust_summary"] = ""
-            run_state["tutor_trust_details"] = ""
+            run_state.clear_tutor_trust()
             _set_status("New chat started.")
             run_state["follow_live"] = True
             run_state["follow_manual_override"] = False
@@ -6440,7 +6477,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         cast(
                             Any,
                             help_feedback_builder(
-                                feedback=run_state.get("tutor_help_feedback", ""),
+                                feedback=run_state.tutor_help_feedback(),
                             ),
                         )
                         or ""
@@ -6602,8 +6639,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             run_state["draft_assistant"] = ""
             run_state.reset_stream_runtime()
             run_state["practice_hint_policy_state"] = {}
-            run_state["tutor_trust_summary"] = ""
-            run_state["tutor_trust_details"] = ""
+            run_state.clear_tutor_trust()
             self.local_llm_model = model_name
             self.save_preferences()
             rag_count = int(rag_meta.get("snippet_count", 0) or 0)
@@ -6765,8 +6801,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     except Exception:
                         pass
                     if err == "cancelled":
-                        run_state["tutor_trust_summary"] = ""
-                        run_state["tutor_trust_details"] = ""
+                        run_state.clear_tutor_trust()
                         telemetry_error = "cancelled"
                         if bool(guard_state.get("timeout_hit", False)):
                             telemetry_error = "timeout"
@@ -6821,8 +6856,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             pass
                         return False
                     if err:
-                        run_state["tutor_trust_summary"] = ""
-                        run_state["tutor_trust_details"] = ""
+                        run_state.clear_tutor_trust()
                         _code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
                         _record_turn_telemetry(
                             model_name=str(model_name or ""),
@@ -6903,8 +6937,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         evidence_confidence=evidence_confidence,
                         citations_count=rag_count,
                     )
-                    run_state["tutor_trust_summary"] = str(grounded_feedback.get("trust_summary", "") or "")
-                    run_state["tutor_trust_details"] = str(grounded_feedback.get("details_text", "") or "")
+                    run_state.set_tutor_trust(
+                        summary=grounded_feedback.get("trust_summary", ""),
+                        details=grounded_feedback.get("details_text", ""),
+                    )
                     _record_turn_telemetry(
                         model_name=str(model_name or ""),
                         outcome="success",
