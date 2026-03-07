@@ -4728,47 +4728,40 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 run_state["practice_session_quality_summary"] = {}
             _reset_practice_answer_box()
             _refresh_practice_panel()
-            # Render explicit next-action guidance into the practice action UI.
+            # Render explicit next-action guidance only when an assessed result exists.
             try:
-                from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopState
-                from studyplan.dialog_ux import TutorDialogRenderer, DisclosureLevel
-
-                try:
-                    cog = self._cognitive_state()
-                except Exception:
-                    cog = None
-
-                try:
+                current_item = run_state.get("practice_item")
+                current_result = run_state.get("practice_result")
+                if isinstance(current_item, TutorPracticeItem) and isinstance(current_result, TutorAssessmentResult):
+                    try:
+                        cog = self._cognitive_state()
+                    except Exception:
+                        cog = None
+                    safe_session = (
+                        session_state
+                        if isinstance(session_state, TutorSessionState)
+                        else TutorSessionState(session_id="tutor-workspace", module="", topic="")
+                    )
+                    safe_learner = (
+                        learner_profile
+                        if isinstance(learner_profile, TutorLearnerProfileSnapshot)
+                        else TutorLearnerProfileSnapshot(learner_id="local-user", module="")
+                    )
                     loop_state_obj = PracticeLoopState(
                         cognitive_state=cog if cog is not None else CognitiveState(),
-                        session_state=session_state if isinstance(session_state, TutorSessionState) else session_state,
-                        learner_profile=learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else learner_profile,
+                        session_state=safe_session,
+                        learner_profile=safe_learner,
                         app_snapshot=_build_tutor_loop_app_snapshot(),
-                        current_item=cast(TutorPracticeItem, item),
-                        current_result=result,
+                        current_item=current_item,
+                        current_result=current_result,
                     )
-                except Exception:
-                    # Fallback minimal loop object for recommender
-                    loop_state_obj = PracticeLoopState(
-                        cognitive_state=cog or CognitiveState(),
-                        session_state=session_state if isinstance(session_state, TutorSessionState) else TutorSessionState(session_id="tutor-workspace", module="", topic=""),
-                        learner_profile=learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else TutorLearnerProfileSnapshot(learner_id="local-user", module=""),
-                        app_snapshot=_build_tutor_loop_app_snapshot(),
-                    )
-
-                try:
-                    controller = PracticeLoopController()
-                    guidance = controller.recommend_next_action(
+                    guidance = self._get_practice_loop_controller().recommend_next_action(
                         loop_state_obj,
-                        cast(TutorPracticeItem, item),
-                        result,
+                        current_item,
+                        current_result,
                         hints_used=max(0, int(run_state.get("practice_hint_use_count", 0) or 0)),
                     )
-                except Exception:
-                    guidance = None
-
-                if isinstance(guidance, dict):
-                    try:
+                    if isinstance(guidance, dict):
                         fb = TutorDialogRenderer.render_next_action_guidance(
                             outcome=guidance.get("outcome", "unknown"),
                             reason=guidance.get("reason", ""),
@@ -4786,16 +4779,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         status_text = str(details.get("details", str(guidance.get("reason", ""))))
                         if status_text:
                             status_text = f"Reason: {status_text}"
-                        self._set_label_text_if_changed(practice_action_status_label, status_text or "Action status: waiting for plan.")
+                        self._set_label_text_if_changed(
+                            practice_action_status_label,
+                            status_text or "Action status: waiting for plan.",
+                        )
                         try:
-                            practice_action_status_label.set_tooltip_text(status_text or "Action status: waiting for plan.")
+                            practice_action_status_label.set_tooltip_text(
+                                status_text or "Action status: waiting for plan.",
+                            )
                         except Exception:
                             pass
                         run_state["practice_next_guidance"] = dict(guidance)
-                    except Exception:
-                        pass
             except Exception:
-                # Non-fatal: leave practice action UI as-is
+                # Non-fatal: leave practice action UI as-is.
                 pass
             try:
                 mode_used = str(getattr(result, "mode_used", "") or "").strip()
@@ -12586,12 +12582,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "weak_cleared_notified": sorted(self.weak_cleared_notified),
                 "focus_allowlist": list(self.focus_allowlist),
             }
-            with open(prefs_path, "w", encoding="utf-8") as f:
-                json.dump(data, f)
+            self._atomic_write_text_file(
+                prefs_path,
+                json.dumps(data, ensure_ascii=True),
+                encoding="utf-8",
+                mode=0o600,
+            )
             self._secure_user_path(prefs_dir, 0o700)
             self._secure_user_path(prefs_path, 0o600)
-        except Exception:
-            pass
+            self._last_preferences_save_error = ""
+        except Exception as exc:
+            self._last_preferences_save_error = str(exc)
+            logging.getLogger(__name__).warning(
+                "save_preferences failed",
+                extra={"path": str(prefs_path), "error": str(exc)},
+            )
 
     def _allow_remote_ollama_hosts(self) -> bool:
         val = str(os.environ.get("STUDYPLAN_ALLOW_REMOTE_OLLAMA", "") or "").strip().lower()
@@ -37284,6 +37289,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             return float(val)
                         except Exception:
                             return 0.0
+                    def _chart_topic_label(chapter_title: str, index_1based: int) -> str:
+                        """Module-agnostic short label: chapter number + abbrev (e.g. 1 IFRS, 2 CF, 3 Inv)."""
+                        rest = (chapter_title or "").strip()
+                        for pattern in (r"^Chapter\s+\d+\s*:\s*", r"^Chapter\s+\d+\s*:", r"^\d+\.\s*", r"^Part\s+\d+\s*:\s*", r"^[A-Z]\s*\.\s*"):
+                            rest = re.sub(pattern, "", rest, flags=re.IGNORECASE).strip()
+                        if not rest:
+                            return str(index_1based)
+                        words = re.split(r"[\s,]+", rest)
+                        chars = []
+                        for w in words:
+                            if not w:
+                                continue
+                            if w.isdigit():
+                                chars.append(w[0])
+                            elif len(w) <= 2 and w.isalpha():
+                                chars.append(w.upper())
+                            else:
+                                chars.append(w[0].upper())
+                            if len(chars) >= 4:
+                                break
+                        abbrev = "".join(chars)[:4]
+                        return f"{index_1based} {abbrev}" if abbrev else str(index_1based)
                     competence_vals = [_safe_float(comp.get(t, 0)) for t in topics]
                     mastery_vals = []
                     for t in topics:
@@ -37301,8 +37328,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if top:
                         top_indices = [i for i, _ in top]
                         labels = [topics[i] for i in top_indices]
+                        labels_short = [_chart_topic_label(topics[i], i + 1) for i in top_indices]
                         values = [drift_vals[i] for i in top_indices]
-                        sig = (tuple(labels), tuple(round(v, 2) for v in values))
+                        sig = (tuple(labels_short), tuple(round(v, 2) for v in values))
                         if self._cached_drift_chart_sig == sig and self._cached_drift_chart_widget is not None:
                             self.dashboard.append(self._cached_drift_chart_widget)
                         else:
@@ -37317,7 +37345,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             ax.set_ylim(0, 100)
                             ax.set_ylabel("Gap %", color=chart_style["text"])
                             ax.set_xticks(range(len(labels)))
-                            ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8, color=chart_style["text"])
+                            ax.set_xticklabels(labels_short, rotation=30, ha="right", fontsize=8, color=chart_style["text"])
                             ax.tick_params(axis="y", colors=chart_style["text"])
                             for spine in ax.spines.values():
                                 spine.set_color(chart_style["spine"])

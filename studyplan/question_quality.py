@@ -47,20 +47,26 @@ def option_looks_like_see_explanation(option_text: str) -> bool:
 class QuestionQuality:
     """Holds quality assessment results for a single question."""
 
-    def __init__(self, item: dict[str, Any]):
-        self.item = item
+    def __init__(self, item: Any):
+        self._invalid_payload = not isinstance(item, dict)
+        self.item: dict[str, Any] = item if isinstance(item, dict) else {}
         self.errors: List[str] = []
         self.warnings: List[str] = []
         self.score = 1.0  # start perfect, deduct for issues
 
     def assess(self) -> None:
+        if self._invalid_payload:
+            self.errors.append("question item is not an object")
+            self.score = 0.0
+            return
         self._check_structure()
         self._check_options()
         self._check_explanation()
         self._check_readability()
 
     def _check_structure(self) -> None:
-        if "question" not in self.item or not self.item["question"].strip():
+        question_text = str(self.item.get("question", "") or "").strip()
+        if not question_text:
             self.errors.append("missing question text")
             self.score -= 0.5
         if "options" not in self.item or not isinstance(self.item["options"], list):
@@ -111,7 +117,7 @@ class QuestionQuality:
             self.score -= 0.1
 
     def _check_readability(self) -> None:
-        text = self.item.get("question", "")
+        text = str(self.item.get("question", "") or "")
         # basic readability: sentence length
         sentences = re.split(r"[.!?]", text)
         if any(len(s.split()) > 30 for s in sentences):
