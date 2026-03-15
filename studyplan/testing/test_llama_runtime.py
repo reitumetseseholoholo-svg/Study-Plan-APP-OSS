@@ -2,10 +2,14 @@
 
 import os
 import tempfile
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from studyplan.ai.gguf_registry import GgufRegistry, GgufRegistryConfig
-from studyplan.ai.llama_runtime import LlamaRuntime, _detect_available_ram
+from studyplan.ai.llama_runtime import (
+    LlamaRuntime,
+    _detect_available_ram,
+    _pick_ollama_model_safe_for_ram,
+)
 from studyplan.ai.llama_server import LlamaServerConfig, LlamaServerManager
 from studyplan.ai.model_selector import ModelSelector, Purpose
 
@@ -172,3 +176,42 @@ class TestRuntimeFromConfig:
         rt = LlamaRuntime.from_config()
         rt.shutdown()
         rt.shutdown()
+
+
+class TestOllamaPurposeSelection:
+    def test_no_budget_picks_by_purpose_tier(self):
+        models = ["tiny", "medium", "large"]
+        estimates = {
+            "tiny": 1_000_000_000,
+            "medium": 2_000_000_000,
+            "large": 3_000_000_000,
+        }
+        with patch(
+            "studyplan.ai.llama_runtime._get_ollama_ram_budget_bytes",
+            return_value=0,
+        ), patch(
+            "studyplan.ai.llama_runtime._estimate_ollama_model_ram_bytes",
+            side_effect=lambda name: estimates.get(name, 0),
+        ):
+            assert _pick_ollama_model_safe_for_ram(models, Purpose.HINT) == "tiny"
+            assert _pick_ollama_model_safe_for_ram(models, Purpose.DEEP_REASON) == "large"
+            assert _pick_ollama_model_safe_for_ram(models, Purpose.TUTOR) == "medium"
+
+    def test_budget_filtered_picks_by_purpose_tier(self):
+        models = ["tiny", "medium", "large"]
+        estimates = {
+            "tiny": 1_000_000_000,
+            "medium": 2_000_000_000,
+            "large": 3_000_000_000,
+        }
+        with patch(
+            "studyplan.ai.llama_runtime._get_ollama_ram_budget_bytes",
+            return_value=2_500_000_000,
+        ), patch(
+            "studyplan.ai.llama_runtime._estimate_ollama_model_ram_bytes",
+            side_effect=lambda name: estimates.get(name, 0),
+        ):
+            # large filtered out by RAM budget
+            assert _pick_ollama_model_safe_for_ram(models, Purpose.HINT) == "tiny"
+            assert _pick_ollama_model_safe_for_ram(models, Purpose.DEEP_REASON) == "medium"
+            assert _pick_ollama_model_safe_for_ram(models, Purpose.TUTOR) == "medium"

@@ -2,6 +2,14 @@
 
 A focused module-aware study coach built around Pomodoro discipline, SRS‑based quizzes, and a mission‑driven dashboard. It adapts to whichever module you load.
 
+## Documentation map
+
+- Full feature inventory: `FEATURES.md`
+- Setup and operations: `README.md`
+- Day-to-day usage: `USER_GUIDE.md`
+- Fast onboarding: `QUICK_START.md`
+- Developer details and architecture notes: `DEVELOPER_DOC.md`
+
 ## Quick start
 
 ```bash
@@ -40,6 +48,11 @@ pytest tests/ studyplan/testing/
 - **Default (no GTK):** **388 tests** run. Path helpers live in `studyplan_app_path_utils.py`, so `tests/test_studyplan_app_paths.py` no longer needs `studyplan_app`. The remaining gap is `tests/test_studyplan_app_ollama.py` (157 tests), which requires `studyplan_app` and thus PyGObject/GTK4.
 - **Full suite (500+ tests):** install the optional extra and system GTK4 so the ollama app tests run: `pip install -e ".[test-full]"` (or `poetry install -E test-full`). Requires system libraries (e.g. Debian/Ubuntu: `apt install python3-gi gir1.2-gtk-4.0`). Then `pytest` runs **545 tests**.
 
+## Terminology
+
+- **Coach**: what to do next and mission (Coach Pick, Coach Next, Briefing, daily plan).
+- **Tutor**: in-app AI (Ollama) for explanations and practice (AI Tutor chat, Section C, practice loop). UI uses “Coach” for planning and “Tutor” for chat/practice.
+
 ## Core features
 
 - **Coach Briefing**: readiness score, mission checklist, pace status, daily target
@@ -70,9 +83,10 @@ pytest tests/ studyplan/testing/
 - **Confidence Drift chart**: top gap visualization
 - **Data Health Check**: one‑click normalization + health summary in Tools
 - **Syllabus cache tools**: view cache stats and clear parse/import caches
-- **Weekly summary export**: auto writes `~/.config/studyplan/weekly_report.txt`
+- **Weekly summary export**: auto writes `weekly_report.txt` under config home (see Data locations)
 - **Study Hub import**: parse Study Hub PDFs (practice/quiz reports)
 - **Syllabus import (draft-first)**: parse syllabus PDFs into module intelligence
+- **Import Syllabus (JSON)**: seed syllabus_meta from JSON to reduce AI work in Reconfigure from RAG (see `docs/CORE_FEATURE_IMPROVEMENT_OUTCOME_LINKING.md`)
 - **Modules**: switch or edit modules via JSON configs
 - **Snapshot recovery**: auto-recovery on load failure + manual snapshot import/restore
 
@@ -140,14 +154,20 @@ Global app files:
 
 **Edit modules**: Module → Edit Module… (GUI editor for title/chapters/weights/flow/JSON)
 
+Use **Tools → More → Module** to view the metadata/paths that the app has loaded for the active module or to reload the configuration after editing the JSON on disk.
+
 **Import syllabus intelligence**:
 1. Module → Import Syllabus PDF…
 2. Select syllabus PDF
 3. Review the draft in the import review wizard (confidence, warnings, preserve question-bank toggle)
-4. A low-confidence parse requires explicit acknowledgment before opening the draft
-5. Module Editor opens with draft JSON (no automatic save)
-6. Save explicitly when ready
-7. Optional: use **View Syllabus Cache Stats** in Tools to inspect cache hit rates and disk status
+4. Optional: use **Improve with AI (RAG)** to run retrieval-assisted outcome extraction against the PDF text (chunked retrieval so long PDFs are not truncated)
+5. For automated or low-confidence runs, set `STUDYPLAN_AUTO_IMPROVE_SYLLABUS_AI=1` to auto-run RAG improvement when confidence &lt; 75% and a local LLM is available
+6. A low-confidence parse requires explicit acknowledgment before opening the draft
+7. Module Editor opens with draft JSON (no automatic save)
+8. Save explicitly when ready
+9. Optional: use **View Syllabus Cache Stats** in Tools to inspect cache hit rates and disk status
+
+For stable setups, prefer versioned module JSON as the source of truth and use PDF import + RAG to review or update when new syllabi are published (see DEVELOPER_DOC § Syllabus ingestion strategy).
 
 ### Module JSON format
 
@@ -198,6 +218,8 @@ Global app files:
 }
 ```
 
+Grab the schema reference from `module_schema.json` in the repo root; the app uses it to surface metadata and validation warnings before saving module edits.
+
 ## Focus tracking (Hyprland)
 
 - Uses `hyprctl activewindow -j` and **class matching**
@@ -237,6 +259,12 @@ Dialog smoke (strict gate, non-zero on KPI/report failure):
 
 ```bash
 timeout 40s python studyplan_app.py --dialog-smoke-strict
+```
+
+**Isolated smoke/soak runs:** Set `STUDYPLAN_CONFIG_HOME` to a separate directory (e.g. a temp dir) so the run uses its own data and lock file. The smoke report is written to `smoke_last.json` under that config home, and `--dialog-smoke-strict` reads the report from the same path. Example:
+
+```bash
+STUDYPLAN_CONFIG_HOME=$(mktemp -d) timeout 40s python studyplan_app.py --dialog-smoke-strict
 ```
 
 Strict smoke KPI thresholds:

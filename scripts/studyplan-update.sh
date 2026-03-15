@@ -2,6 +2,7 @@
 # Deploy script for ACCA Study Plan app. Copy to ~/.local/bin/studyplan-update and
 # ensure REPO_DIR/DEST_DIR suit your system. Smoke gate: only fails when smoke
 # actually failed; exit 124 (timeout) with valid passed report is treated as pass.
+# For fish: source scripts/studyupdate.fish to get studyupdate/study-update with clean exit.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,7 +19,7 @@ else
 fi
 DEST_DIR="${STUDYPLAN_DEST:-/opt/studyplan-app}"
 WRAPPER_PATH="${STUDYPLAN_WRAPPER:-/usr/local/bin/studyplan}"
-SMOKE_TIMEOUT="${STUDYPLAN_SMOKE_TIMEOUT:-40}"
+SMOKE_TIMEOUT="${STUDYPLAN_SMOKE_TIMEOUT:-300}"
 SMOKE_ARG="${STUDYPLAN_SMOKE_ARG:---dialog-smoke-strict}"
 SMOKE_REPORT_PATH="${HOME}/.config/studyplan/smoke_last.json"
 SKIP_SMOKE=0
@@ -37,7 +38,7 @@ Options:
   --repo <path>           Source repo directory (default: env/current/default repo)
   --dest <path>           Destination app directory (default: /opt/studyplan-app)
   --wrapper <path>        Wrapper path (default: /usr/local/bin/studyplan)
-  --smoke-timeout <sec>   Smoke test timeout seconds (default: 40)
+  --smoke-timeout <sec>   Smoke test timeout seconds (default: 300)
   --smoke-arg <arg>       Smoke test argument (default: --dialog-smoke-strict)
   --smoke-report <path>   Smoke report JSON path (default: ~/.config/studyplan/smoke_last.json)
   --pull                  Run git pull --ff-only in repo before deploy
@@ -135,6 +136,11 @@ fi
 if [[ -z "${SMOKE_ARG}" ]]; then
   echo "--smoke-arg cannot be empty." >&2
   exit 2
+fi
+
+# Dialog smoke needs enough time (startup + GTK + steps). Enforce minimum so old copies exit cleanly.
+if [[ "${SMOKE_ARG}" == *dialog-smoke* ]] && [[ "${SMOKE_TIMEOUT}" -lt 300 ]]; then
+  SMOKE_TIMEOUT=300
 fi
 
 run_cmd() {

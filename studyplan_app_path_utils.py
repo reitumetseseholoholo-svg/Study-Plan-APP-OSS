@@ -29,6 +29,18 @@ def validate_import_source_path(
     allowed_extensions: tuple[str, ...] | None = None,
 ) -> str:
     path = normalize_user_file_path(file_path, label)
+    # Prevent path traversal: resolve symlinks and ensure under permitted roots
+    try:
+        real = os.path.realpath(path)
+        home = os.path.realpath(os.path.expanduser("~"))
+        tmp = os.path.realpath(tempfile.gettempdir())
+        under_home = real == home or real.startswith(home + os.sep)
+        under_tmp = real.startswith(tmp + os.sep)
+        under_media = real.startswith(os.path.join(os.sep, "media") + os.sep)  # removable drives
+        if not (under_home or under_tmp or under_media):
+            raise ValueError(f"{label} path must be under your home, /tmp, or /media.")
+    except (OSError, ValueError):
+        raise ValueError(f"{label} path is not allowed (path traversal or invalid).")
     if allowed_extensions:
         lower = path.lower()
         allowed = tuple(str(ext).lower() for ext in allowed_extensions if str(ext).strip())

@@ -40,6 +40,7 @@ from .confidence_tracking import (
 )
 
 logger = get_logger(__name__)
+RECOVERABLE_LOOP_ERRORS = (AttributeError, RuntimeError, TypeError, ValueError, KeyError)
 
 
 @dataclass
@@ -308,8 +309,15 @@ class PracticeLoopController:
                     app_snapshot=loop_state.app_snapshot,
                     max_items=safe_max_items,
                 )
-            except Exception as exc:
-                logger.warning("practice item build failed", extra={"error": str(exc)})
+            except RECOVERABLE_LOOP_ERRORS as exc:
+                logger.warning(
+                    "practice item build failed",
+                    extra={
+                        "error": str(exc),
+                        "session": str(getattr(loop_state.session_state, "session_id", "") or ""),
+                        "topic": str(getattr(loop_state.session_state, "topic", "") or ""),
+                    },
+                )
                 return ()
             items = self._normalize_practice_items(raw_items)
             logger.info(f"built {len(items)} practice items")
@@ -333,7 +341,7 @@ class PracticeLoopController:
 
         try:
             requested_count = int(count)
-        except Exception:
+        except (TypeError, ValueError):
             requested_count = 5
         requested_count = max(1, min(requested_count, 20))
 
@@ -347,7 +355,7 @@ class PracticeLoopController:
                 source_text=source_text,
                 count=requested_count,
             )
-        except Exception as exc:
+        except RECOVERABLE_LOOP_ERRORS as exc:
             logger.warning(
                 "question generation backend failed, falling back to empty list",
                 extra={"topic": clean_topic, "error": str(exc)},
@@ -388,8 +396,15 @@ class PracticeLoopController:
                     session_state=loop_state.session_state,
                     learner_profile=loop_state.learner_profile,
                 )
-            except Exception as exc:
-                logger.warning("assessment failed", extra={"error": str(exc), "item_id": item.item_id})
+            except RECOVERABLE_LOOP_ERRORS as exc:
+                logger.warning(
+                    "assessment failed",
+                    extra={
+                        "error": str(exc),
+                        "item_id": item.item_id,
+                        "session": str(getattr(loop_state.session_state, "session_id", "") or ""),
+                    },
+                )
                 raw_result = None
             result = self._normalize_assessment_result(raw_result, fallback_item_id=item.item_id)
             logger.info(f"assessment result", extra={"outcome": result.outcome, "marks": result.marks_awarded})
@@ -415,7 +430,7 @@ class PracticeLoopController:
         try:
             decision = fsm.transition(event, metadata)
             next_state = self._coerce_str(getattr(decision, "state", ""), "DIAGNOSE")
-        except Exception as exc:
+        except RECOVERABLE_LOOP_ERRORS as exc:
             next_state = self._coerce_str(loop_state.cognitive_state.working_memory.socratic_state, "DIAGNOSE")
             logger.warning("fsm transition failed", extra={"event": event, "error": str(exc)})
         logger.info(f"fsm transition", extra={"event": event, "next_state": next_state})
@@ -426,7 +441,7 @@ class PracticeLoopController:
         with self.perf_monitor.context("state_validation"):
             try:
                 valid, errors = CognitiveStateValidator.validate(loop_state.cognitive_state)
-            except Exception as exc:
+            except RECOVERABLE_LOOP_ERRORS as exc:
                 valid, errors = False, [f"validator_error:{str(exc)}"]
             normalized_errors = [self._coerce_str(e) for e in (errors or []) if self._coerce_str(e)]
             if not valid:

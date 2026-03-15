@@ -1,0 +1,292 @@
+{
+  "version": "0.1.0",
+  "slice": "slice1_baseline_matrix",
+  "created_on": "2026-03-08",
+  "description": "Baseline tutor quality matrix for ACCA modules and core action types.",
+  "modules": [
+    "acca_f9",
+    "acca_f7",
+    "acca_f8",
+    "acca_f6"
+  ],
+  "action_types": [
+    "explain",
+    "apply",
+    "exam_technique",
+    "drill"
+  ],
+  "cases": [
+    {
+      "id": "f9_explain_wacc",
+      "module_id": "acca_f9",
+      "chapter": "WACC",
+      "action_type": "explain",
+      "prompt": "Explain WACC in simple exam-ready terms and why after-tax debt is used.",
+      "expected": {
+        "must_include": [
+          "weighted average",
+          "cost of equity",
+          "after-tax cost of debt"
+        ],
+        "disallow": [
+          "guaranteed pass"
+        ]
+      }
+    },
+    {
+      "id": "f9_apply_npv",
+      "module_id": "acca_f9",
+      "chapter": "DCF Applications",
+      "action_type": "apply",
+      "prompt": "Apply NPV steps to a short project appraisal and state the decision rule.",
+      "expected": {
+        "must_include": [
+          "discount",
+          "present value",
+          "accept if NPV"
+        ],
+        "disallow": [
+          "ignore cash flows"
+        ]
+      }
+    },
+    {
+      "id": "f9_exam_technique_risk",
+      "module_id": "acca_f9",
+      "chapter": "Project Appraisal Under Risk",
+      "action_type": "exam_technique",
+      "prompt": "Give exam technique for risk appraisal questions with timing and structure advice.",
+      "expected": {
+        "must_include": [
+          "structure",
+          "show workings",
+          "time"
+        ],
+        "disallow": [
+          "write everything you know"
+        ]
+      }
+    },
+    {
+      "id": "f9_drill_capm",
+      "module_id": "acca_f9",
+      "chapter": "CAPM",
+      "action_type": "drill",
+      "prompt": "Create a short CAPM drill with answer and one common mistake to avoid.",
+      "expected": {
+        "must_include": [
+          "beta",
+          "risk free",
+          "market return"
+        ],
+        "disallow": [
+          "no answer provided"
+        ]
+      }
+    },
+    {
+      "id": "f7_explain_ifrs15",
+      "module_id": "acca_f7",
+      "chapter": "Chapter 5: IFRS 15 Revenue from Contracts with Customers",
+      "action_type": "explain",
+      "prompt": "Explain IFRS 15 revenue recognition using the five-step model in plain language.",
+      "expected": {
+        "must_include": [
+          "contract",
+          "performance obligation",
+          "transaction price"
+        ],
+        "disallow": [
+          "cash received always equals revenue"
+        ]
+      }
+    },
+    {
+      "id": "f7_apply_consolidation",
+      "module_id": "acca_f7",
+      "chapter": "Chapter 22: Consolidated Statement of Financial Position",
+      "action_type": "apply",
+      "prompt": "Apply consolidation basics for a parent-subsidiary case and list key adjustments.",
+      "expected": {
+        "must_include": [
+          "elimination",
+          "goodwill",
+          "non-controlling interest"
+        ],
+        "disallow": [
+          "add investments without adjustment"
+        ]
+      }
+    },
+    {
+      "id": "f7_exam_technique_ratios",
+      "module_id": "acca_f7",
+      "chapter": "Chapter 26: Analysis and Interpretation",
+      "action_type": "exam_technique",
+      "prompt": "Give exam technique for ratio analysis narrative answers in FR.",
+      "expected": {
+        "must_include": [
+          "trend",
+          "benchmark",
+          "link to scenario"
+        ],
+        "disallow": [
+          "list ratios only"
+        ]
+      }
+    },
+    {
+      "id": "f7_drill_ias16",
+      "module_id": "acca_f7",
+      "chapter": "Chapter 7: IAS 16 Property, Plant and Equipment",
+      "action_type": "drill",
+      "prompt": "Generate a quick IAS 16 drill on depreciation and carrying amount with answer.",
+      "expected": {
+        "must_include": [
+          "depreciation",
+          "carrying amount",
+          "answer"
+        ],
+        "disallow": [
+          "skip workings"
+        ]
+      }
+    },
+    {
+      "id": "f8_explain_materiality",
+      "module_id": "acca_f8",
+      "chapter": "Chapter 10: Audit Materiality",
+      "action_type": "explain",
+      "prompt": "Explain audit materiality and performance materiality with a simple contrast.",
+      "expected": {
+        "must_include": [
+          "materiality",
+          "performance materiality",
+          "misstatement"
+        ],
+        "disallow": [
+          "materiality never changes"
+        ]
+      }
+    },
+    {
+      "id": "f8_apply_control_test",
+      "module_id": "acca_f8",
+      "chapter": "Chapter 12: Tests of Control",
+      "action_type": "apply",
+      "prompt": "Apply tests of control to a purchases cycle example and state expected evidence.",
+      "expected": {
+        "must_include": [
+          "control objective",
+          "test of control",
+          "evidence"
+        ],
+        "disallow": [
+          "substantive only always"
+        ]
+      }
+    },
+    {
+      "id": "f8_exam_technique_report",
+      "module_id": "acca_f8",
+      "chapter": "Chapter 24: The Audit Report",
+      "action_type": "exam_technique",
+      "prompt": "Give exam technique for audit report requirement questions, including structure.",
+      "expected": {
+        "must_include": [
+          "opinion",
+          "basis for opinion",
+          "scenario linkage"
+        ],
+        "disallow": [
+          "generic textbook dump"
+        ]
+      }
+    },
+    {
+      "id": "f8_drill_sampling",
+      "module_id": "acca_f8",
+      "chapter": "Chapter 19: Audit Sampling",
+      "action_type": "drill",
+      "prompt": "Create a short audit sampling drill with answer and one pitfall.",
+      "expected": {
+        "must_include": [
+          "sample",
+          "risk",
+          "answer"
+        ],
+        "disallow": [
+          "no pitfall"
+        ]
+      }
+    },
+    {
+      "id": "f6_explain_cgt",
+      "module_id": "acca_f6",
+      "chapter": "Chapter 12: Chargeable Gains for Individuals - Basic Principles",
+      "action_type": "explain",
+      "prompt": "Explain chargeable gains basics for individuals, including allowable costs.",
+      "expected": {
+        "must_include": [
+          "disposal proceeds",
+          "allowable cost",
+          "chargeable gain"
+        ],
+        "disallow": [
+          "ignore reliefs entirely"
+        ]
+      }
+    },
+    {
+      "id": "f6_apply_income_tax",
+      "module_id": "acca_f6",
+      "chapter": "Chapter 2: Income Tax Computations",
+      "action_type": "apply",
+      "prompt": "Apply income tax computation steps for a UK resident individual.",
+      "expected": {
+        "must_include": [
+          "total income",
+          "personal allowance",
+          "tax bands"
+        ],
+        "disallow": [
+          "single flat rate only"
+        ]
+      }
+    },
+    {
+      "id": "f6_exam_technique_vat",
+      "module_id": "acca_f6",
+      "chapter": "Chapter 22: Value Added Tax",
+      "action_type": "exam_technique",
+      "prompt": "Give exam technique for VAT requirement parts with common traps.",
+      "expected": {
+        "must_include": [
+          "tax point",
+          "input tax",
+          "output tax"
+        ],
+        "disallow": [
+          "ignore dates"
+        ]
+      }
+    },
+    {
+      "id": "f6_drill_corporation_tax",
+      "module_id": "acca_f6",
+      "chapter": "Chapter 16: Corporation Tax - The Tax Computation & Administration",
+      "action_type": "drill",
+      "prompt": "Generate a short corporation tax drill with answer and one examiner-style warning.",
+      "expected": {
+        "must_include": [
+          "taxable total profits",
+          "corporation tax",
+          "answer"
+        ],
+        "disallow": [
+          "warning omitted"
+        ]
+      }
+    }
+  ]
+}

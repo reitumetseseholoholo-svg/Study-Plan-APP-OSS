@@ -1,6 +1,7 @@
 """
 KPI thresholds and quiz gap routing helpers used by studyplan_app.
 Extracted so tests can import them without pulling in GTK (gi).
+Report paths respect STUDYPLAN_CONFIG_HOME for isolated smoke/soak runs.
 """
 from __future__ import annotations
 
@@ -8,6 +9,8 @@ import json
 import math
 import os
 from typing import Any
+
+from studyplan.config import Config
 
 # Latency SLO constants (used by SOAK_KPI_THRESHOLDS)
 AI_TUTOR_LATENCY_SLO_P50_MS = 25000
@@ -17,7 +20,7 @@ AI_TUTOR_LATENCY_SLO_MIN_SAMPLES = 8
 
 DEFAULT_OUTCOME_GAP_QUIZ_RATIO = 0.5
 
-SMOKE_REPORT_PATH = os.path.expanduser("~/.config/studyplan/smoke_last.json")
+SMOKE_REPORT_PATH = os.path.join(Config.CONFIG_HOME, "smoke_last.json")
 SMOKE_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
     "coach_pick_consistency_rate": {"op": ">=", "value": 0.999},
     "coach_only_toggle_integrity_rate": {"op": "==", "value": 1.0},
@@ -25,7 +28,7 @@ SMOKE_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
     "ui_trigger_integrity_rate": {"op": "==", "value": 1.0},
 }
 
-SOAK_REPORT_PATH = os.path.expanduser("~/.config/studyplan/soak_last.json")
+SOAK_REPORT_PATH = os.path.join(Config.CONFIG_HOME, "soak_last.json")
 SOAK_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
     "samples": {"op": ">=", "value": float(AI_TUTOR_LATENCY_SLO_MIN_SAMPLES)},
     "p50_latency_ms": {"op": "<=", "value": float(AI_TUTOR_LATENCY_SLO_P50_MS)},

@@ -17,8 +17,11 @@ from typing import Any, Callable, Protocol, Sequence
 logger = logging.getLogger(__name__)
 
 from .ai.prompt_design import (
+    ASSESSMENT_JUDGE_ROLE_BASE,
+    ASSESSMENT_JUDGE_RULES,
     ASSESSMENT_JUDGE_SCHEMA_ONE_LINE,
     JUDGE_JSON_ONLY,
+    build_judge_prompt_3es,
 )
 from .ai.recovery import build_deterministic_fallback_response
 from .config import Config
@@ -3606,25 +3609,16 @@ class AITutorAssessmentService:
         topic = str(getattr(item, "topic", "") or "").strip()
         prompt = str(getattr(item, "prompt", "") or "").strip()
         rubric_hints = tuple(getattr(item, "rubric_hints", ()) or ())
-        lines = [
-            "You are an ACCA examiner. Judge the learner's answer for correctness and quality. Use syllabus expertise only; do not match keywords.",
-            "Use examiner-style wording: brief, constructive, and focused on what to improve (no praise without substance).",
-            "Return JSON only (no prose). Schema:",
-            ASSESSMENT_JUDGE_SCHEMA_ONE_LINE,
-            "",
-            "Rules: outcome correct = full marks for accurate, complete answer; partial = some right ideas; incorrect = wrong or irrelevant. feedback must be brief, constructive, and plain human-readable text (no LaTeX, no code blocks; write formulas as humans do, e.g. a/b, x²).",
-            "",
-            f"Module: {module or 'ACCA'}",
-            f"Topic: {topic or 'n/a'}",
-            "",
+        payload_blocks: list[tuple[str, str]] = [
+            ("Module", module or "ACCA"),
+            ("Topic", topic or "n/a"),
         ]
         if submission is not None:
             conf = getattr(submission, "confidence", None)
             if conf is not None and isinstance(conf, (int, float)):
                 try:
                     c = max(1, min(5, int(conf)))
-                    lines.append(f"Learner confidence (1–5): {c}")
-                    lines.append("")
+                    payload_blocks.append(("Learner confidence (1–5)", str(c)))
                 except Exception:
                     pass
         get_tags = self.get_suggested_tags
@@ -3632,22 +3626,22 @@ class AITutorAssessmentService:
             try:
                 suggested = list(get_tags(module, topic))[:12]
                 if suggested:
-                    lines.append("Suggested tags for this topic (choose or align with): " + ", ".join(str(t) for t in suggested))
-                    lines.append("")
+                    payload_blocks.append(
+                        ("Suggested tags for this topic (choose or align with)", ", ".join(str(t) for t in suggested))
+                    )
             except Exception:
                 pass
-        lines.append("Question:")
-        lines.append(prompt[:2000] or "n/a")
-        lines.append("")
+        payload_blocks.append(("Question", prompt[:2000] or "n/a"))
         if rubric_hints:
             focus_parts = [str(h) for h in list(rubric_hints)[:5]]
-            lines.append("Marking focus: " + ", ".join(focus_parts))
-            lines.append("")
-        lines.append("Learner answer:")
-        lines.append((answer_text or "")[:3000].strip() or "n/a")
-        lines.append("")
-        lines.append("JSON:")
-        return "\n".join(lines)
+            payload_blocks.append(("Marking focus", ", ".join(focus_parts)))
+        payload_blocks.append(("Learner answer", (answer_text or "")[:3000].strip() or "n/a"))
+        return build_judge_prompt_3es(
+            role_base=ASSESSMENT_JUDGE_ROLE_BASE,
+            schema_one_line=ASSESSMENT_JUDGE_SCHEMA_ONE_LINE,
+            rules=list(ASSESSMENT_JUDGE_RULES or []),
+            payload_blocks=payload_blocks,
+        )
 
     def _build_judge_prompt_json_only(
         self,
@@ -3657,21 +3651,21 @@ class AITutorAssessmentService:
         session_state: TutorSessionState,
         learner_profile: TutorLearnerProfileSnapshot,
     ) -> str:
-        """Shorter prompt for parse retry: insist on JSON only."""
+        """Shorter prompt for parse retry: insist on JSON only (3Es order, minimal payload)."""
         module = str(getattr(learner_profile, "module", "") or getattr(session_state, "module", "") or "").strip()
         topic = str(getattr(item, "topic", "") or "").strip()
         prompt = str(getattr(item, "prompt", "") or "").strip()
-        lines = [
-            JUDGE_JSON_ONLY,
-            "Schema: " + ASSESSMENT_JUDGE_SCHEMA_ONE_LINE,
-            "",
-            f"Module: {module or 'ACCA'} Topic: {topic or 'n/a'}",
-            "Question: " + (prompt[:800] or "n/a"),
-            "Learner answer: " + (str(answer_text or "").strip()[:1500] or "n/a"),
-            "",
-            "JSON:",
+        payload_blocks = [
+            ("Module", f"{module or 'ACCA'} Topic: {topic or 'n/a'}"),
+            ("Question", (prompt or "")[:800] or "n/a"),
+            ("Learner answer", (str(answer_text or "").strip())[:1500] or "n/a"),
         ]
-        return "\n".join(lines)
+        return build_judge_prompt_3es(
+            role_base=JUDGE_JSON_ONLY,
+            schema_one_line=ASSESSMENT_JUDGE_SCHEMA_ONE_LINE,
+            rules=[],
+            payload_blocks=payload_blocks,
+        )
 
     def _parse_judge_response(self, text: str, item_id: str, marks_max: float) -> TutorAssessmentResult | None:
         raw = _extract_first_json_object(text)

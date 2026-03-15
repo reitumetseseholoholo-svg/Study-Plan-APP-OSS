@@ -2,6 +2,15 @@
 
 This guide focuses on day‑to‑day use as a disciplined study coach.
 
+For the complete feature inventory, see `FEATURES.md`.
+
+### Coach vs Tutor (terminology)
+
+- **Coach** — Decides *what* to do next and keeps you on mission: Coach Pick, Coach Briefing, Coach Next, daily plan, mission checklist. The coach is the planning and prioritization layer; it does not run chat or generate answers.
+- **Tutor** — The in-app AI (local Ollama) that *explains* and *practices* with you: AI Tutor chat, Section C practice, gap questions, practice loop. The tutor uses your chosen model to answer questions and give feedback.
+
+UI labels and menus use these terms consistently: “Coach” for planning/next-action surfaces, “Tutor” (or “AI Tutor”) for the chat and practice flows.
+
 ## 1) First run
 
 1. **Choose module** (default is your selected module).
@@ -128,6 +137,18 @@ If OCR ran, the summary dialog reports OCR page counts.
 - Existing module questions are preserved by default in the draft.
 - Parse report shows confidence and warnings. Review before saving.
 - Tools include **View Syllabus Cache Stats** and **Clear Syllabus Cache** for diagnostics/reset.
+
+### Import Syllabus (JSON)
+
+- **Module → Import Syllabus (JSON)…** loads a JSON file that contains `syllabus_meta`, and optionally `syllabus_structure`, `chapters`, `capabilities`, or `aliases`.
+- Use this to seed or fix syllabus metadata without parsing a PDF; Reconfigure from RAG can then do less work.
+- The merged config is applied to the current module and, when possible, saved to the module file.
+- **Example shape**: `{"syllabus_meta":{"exam_code":"FM","effective_window":"Sep 2024"},"title":"Financial Management","chapters":["Ch1","Ch2"]}` — any subset of these keys is valid; missing keys are left unchanged.
+
+### Outcome coverage
+
+- Only questions that resolve to at least one syllabus outcome count toward **Outcome Mastery** (see DEVELOPER_DOC for resolution order).
+- **Module → View Module Metadata** shows **Outcome coverage**: "Questions with resolved outcome: N / M" and "Questions with explicit outcome_ids", plus per-chapter linked counts. Use it to see how well your question bank is linked to the syllabus.
 
 ## 10) Keyboard shortcuts
 

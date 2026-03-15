@@ -1,5 +1,7 @@
 # Study Assistant — Quick Start Cheat Sheet
 
+For a complete list of capabilities, see `FEATURES.md`.
+
 ## 60‑Second Setup
 
 1. **Run the app**
@@ -51,14 +53,22 @@
 - **Ctrl+,** Preferences
 - **Ctrl+Q** Quit
 
+## Outcome coverage
+
+- **Module → View Module Metadata** shows how many questions are linked to syllabus outcomes (e.g. "Questions with resolved outcome: N / M"). Use it to see whether your question bank is driving Outcome Mastery.
+
 ## Data Locations
 
-- Module data: `~/.config/studyplan/<module_id>/data.json`
-- Questions: `~/.config/studyplan/<module_id>/questions.json`
-- Preferences: `~/.config/studyplan/preferences.json`
-- Weekly summary: `~/.config/studyplan/weekly_report.txt`
-- Smoke report: `~/.config/studyplan/smoke_last.json`
-- Backups: `~/.config/studyplan/<module_id>/backups/*.bak`
+All paths are under config home (default `~/.config/studyplan`; override with `STUDYPLAN_CONFIG_HOME`):
+
+- Module data: `<config_home>/<module_id>/data.json`
+- Questions: `<config_home>/<module_id>/questions.json`
+- Preferences: `<config_home>/preferences.json`
+- **Module → View Module Metadata**: paths plus outcome coverage (questions linked to outcomes).
+- Weekly summary: `<config_home>/weekly_report.txt`
+- Smoke report: `<config_home>/smoke_last.json`
+- Soak report: `<config_home>/soak_last.json`
+- Backups: `<config_home>/<module_id>/backups/*.bak`
 
 ## Quick Stability Gate
 
@@ -66,7 +76,7 @@
 timeout 40s python studyplan_app.py --dialog-smoke-strict
 ```
 
-This runs dialog smoke with coach-only stress and fails fast if KPI thresholds are not met.
+This runs dialog smoke with coach-only stress and fails fast if KPI thresholds are not met. For an isolated run (separate lock and report), use `STUDYPLAN_CONFIG_HOME=$(mktemp -d)` before the command; strict mode reads the report from that config home.
 
 ## Quick fixes
 

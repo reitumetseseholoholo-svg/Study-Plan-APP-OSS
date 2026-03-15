@@ -34,8 +34,13 @@ from studyplan.module_chapters import (
 
 
 def _load_module_config(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except OSError as e:
+        raise ValueError(f"Cannot read module config {path!r}: {e}") from e
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in module config {path!r}: {e}") from e
     if not isinstance(data, dict):
         raise ValueError("Module JSON must be an object")
     return data

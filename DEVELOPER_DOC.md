@@ -17,6 +17,14 @@ When adding or changing features, prefer an **AI‑first flow with a determinist
 
 - **Tutor / practice**: `AICapableTutorPracticeService` uses AI when available and falls back to `DeterministicTutorPracticeService`; Section C and gap generation use LLM with strict JSON parsing and retries.
 - **Syllabus**: Regex/rule-based parser first; "Improve with AI" uses `parse_syllabus_with_ai` with schema-validated JSON and chapter-list constraints; F7 has built-in outcome→chapter mapping when no AI result is used.
+
+### Syllabus ingestion strategy (reducing parse errors)
+
+Syllabus parsing from PDFs can be error-prone (OCR, layout, section titles). Prefer:
+
+1. **Versioned syllabus manifests as source of truth** — For stable or automated setups, maintain module JSON (chapters, `syllabus_structure`, capabilities) in version control or a known path. Update these when the exam body publishes a new syllabus; use the app’s Module Editor to load and tweak.
+2. **PDF + RAG for review and updates** — Use **Module → Import Syllabus PDF** when you receive a new PDF: the deterministic parser produces a draft; then use **Improve with AI (RAG)** to run retrieval-assisted outcome extraction over the PDF text so late or noisy sections are still covered. RAG chunks the PDF and retrieves chapter-relevant excerpts before calling the LLM, avoiding first-N-character truncation.
+3. **Optional auto-improve** — Set `STUDYPLAN_AUTO_IMPROVE_SYLLABUS_AI=1` to automatically run the RAG-based improvement when the initial parse confidence is below 0.75 and a local LLM is available. The import wizard then opens with the AI-refined draft.
 - **Assessment**: `_parse_judge_response` / `_extract_first_json_object` extract and validate JSON from model output; fallback prompts and retries if the response is invalid.
 - **Recall / difficulty**: Optional ML models with metadata checks and heuristic fallbacks when the model is missing or mismatched.
 
@@ -48,7 +56,7 @@ Use a consistent order so the model and maintainers see the same shape every tim
 4. **Payload**: “Payload JSON:” + compact JSON (context, topic, counts, intelligence hints). Sort keys for stable caching if needed.
 5. **Retry suffix** (only on relaxed retry): “Return only the JSON object. No markdown, no code block, no explanation. [Optional: Generate exactly one item.]”
 
-Shared snippets (e.g. `JSON_ONLY_NO_MARKDOWN`, `RETRY_SUFFIX_ONE_ITEM`) live in `studyplan/ai/prompt_design.py` so all actions stay aligned and changes are one-place.
+Shared snippets (e.g. `JSON_ONLY_NO_MARKDOWN`, `RETRY_SUFFIX_ONE_ITEM`) live in `studyplan/ai/prompt_design.py` so all actions stay aligned and changes are one-place. **Full implementation map** (which builder per action, no duplication): **docs/THREE_ES_PROMPT_IMPLEMENTATION.md**.
 
 ### Content and prompts (contributor guide)
 
@@ -86,6 +94,15 @@ The UI stays responsive and defers planning/scoring logic to the engine.
 - **Cache**: Performance cache and AI runtime cache are under config home (e.g. `ai_runtime_cache_v1.sqlite3`). Optional ML models: `recall_model.pkl`, `difficulty_model.pkl`, etc.
 - **Backups**: Snapshots and backups use config home; retention and paths are engine constants.
 - **First run**: Welcome tour shows config home and suggests Module → Manage Modules and Module → Import Syllabus PDF. Help → About shows the same data/module path summary.
+- **Outcome coverage**: Module → View Module Metadata shows question–outcome linking stats; see *Outcome coverage and question bank schema* below.
+
+### Outcome coverage and question bank schema
+
+- **Outcome coverage**: Only questions that resolve to at least one syllabus outcome (via `resolve_question_outcomes`) count toward **covered outcomes**. Resolution order: (1) explicit `question.outcome_ids`, (2) `question.outcomes` (id or text match, then semantic), (3) capability + semantic match, (4) deterministic bucket. Unlinked questions do not affect coverage; they still appear in quizzes but do not update Outcome Mastery.
+- **Question bank schema** (per-question objects in `questions.json`): Each question may include:
+  - **`outcome_ids`**: array of strings — exact outcome ids from `syllabus_structure.<chapter>.learning_outcomes[].id`. When present, resolution uses these and coverage is explicit.
+  - **`outcomes`**: array of objects `{ "id": "...", "text": "..." }` — backward compatibility and semantic matching when id is missing. Prefer `outcome_ids` for new data.
+  - These fields are preserved by `_sanitize_question_bank_row` and round-trip on load/save. See **docs/CORE_FEATURE_IMPROVEMENT_OUTCOME_LINKING.md** for the full improvement plan.
 
 ## UX and accessibility
 
@@ -95,10 +112,11 @@ The UI stays responsive and defers planning/scoring logic to the engine.
 - **Tooltips**: Primary actions, status labels, and controls use `set_tooltip_text()` so hover reveals purpose or state. Keep tooltips short; use a second line only when needed.
 - **Focus**: Critical flows (e.g. practice answer input, dialogs) call `grab_focus()` on the main interactive widget so keyboard users can continue without tabbing.
 - **Contributors**: When adding buttons or status widgets, add a concise tooltip and ensure the widget has a clear label (GTK uses it for accessibility). Prefer descriptive action labels over icons-only where possible.
+- **LANGUAGE / LOCALE**: User-facing strings are currently in English and inline. For future i18n, consider extracting to a messages module. Date/number formatting does not yet respect system locale everywhere; contributions welcome.
 
 ## Maintainability baseline
 
-- **Clean caches:** From repo root, `bash scripts/clean.sh` removes `__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`, `build`, `dist` (keeps `.venv` intact).
+- **Clean caches:** From repo root, `bash scripts/clean.sh` removes `__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`, `build`, `dist` (keeps `.venv` intact). Use `bash scripts/clean.sh --dest` to also clean the install path (default `/opt/studyplan-app`; override with `STUDYPLAN_DEST` or `--dest /path`). Cleaning `/opt` may require `sudo`.
 - **Action wiring is declarative**: GTK window actions are registered via `studyplan/app/action_registry.py`.
 - Add new menu/window actions by editing the registry first, then adding handlers on `StudyPlanGUI`.
 - Startup should not crash on missing handlers during refactors; missing bindings are tracked in
@@ -220,6 +238,13 @@ Modules can include:
   - `parsed_at`
   - `parse_confidence`
 
+### Module reconfiguration from RAG
+- **RAG-amplified reconfig**: Official syllabus and study guide PDFs (already in RAG) can be used to refresh module structure without re-uploading: learning outcomes, main sections, aliases, importance weights. See **MODULE_RECONFIG_PLAN.md** and the `studyplan.module_reconfig` package (`reconfigure_from_rag`, `validate_syllabus_structure`). Lightweight: reuses cached RAG chunks, batched retrieval, schema-bound LLM extraction. App entry point: Module → “Reconfigure from RAG…” (when implemented).
+
+### FR and statement preparation
+
+For papers like **FR (Financial Reporting)** where learning outcomes include **financial statement preparation** (SoFP, SoPL, SoCF, notes), a phased implementation plan covers: outcome tagging and preparation-type visibility, FR-oriented Section C (e.g. "Prepare the statement of financial position"), format checklists and "where does it go?" drills, statement templates and fill-in practice, and optional statement builder and marking. See **docs/FR_STATEMENT_PREPARATION_PLAN.md**.
+
 ### Syllabus PDF import pipeline
 
 Engine APIs:
@@ -290,6 +315,7 @@ Parser rules:
 ### Outcome-centric planning and routing
 - Outcome progress is tracked per chapter in `outcome_stats`.
 - Quiz answer confirmation records outcome events via question-to-outcome mapping.
+- **Question–outcome linking**: Only questions that resolve to at least one syllabus outcome id (via `resolve_question_outcomes`) update coverage when the user answers. Resolution order: explicit `question.outcome_ids` or `question.outcomes` → capability + semantic match → deterministic bucket. **Unlinked questions do not affect coverage.** Tag questions with `outcome_ids` (array of strings) or `outcomes` (array of `{id, text}`) in the module question bank for accurate coverage; see `module_schema.json` and MODULE_RECONFIG_PLAN.md.
 - `select_srs_questions` and `select_due_review_questions` prioritize questions linked to uncovered outcomes.
 - `get_daily_plan` enforces at least one chapter from under-covered capabilities when available.
 
@@ -351,6 +377,198 @@ Parser rules:
 - PDF parsing updates quiz/practice stats and competence
 - Import history logged to `import_history.jsonl`
 
+## Tutor quality sprint slices
+
+The tutor quality program is delivered in slices so each phase is testable and CI-friendly.
+
+### Slice 1: baseline matrix (implemented)
+
+Purpose:
+
+- Establish a deterministic baseline set of tutor prompts across modules and tutor action types.
+- Enforce matrix integrity in automated tests before any scoring harness is added.
+
+Artifacts:
+
+- `tests/tutor_quality/matrix_v1.json`
+- `tests/tutor_quality/test_tutor_quality_matrix.py`
+- `tests/tutor_quality/README.md`
+
+Current contract gates:
+
+- Matrix file must include required top-level keys and non-empty metadata.
+- Case IDs must be unique.
+- Case shape is validated (`id`, `module_id`, `chapter`, `action_type`, `prompt`, `expected`).
+- Coverage includes all required modules:
+  - `acca_f9`, `acca_f7`, `acca_f8`, `acca_f6`
+- Coverage includes all required action types:
+  - `explain`, `apply`, `exam_technique`, `drill`
+- Full module x action-type grid coverage is required.
+
+Run:
+
+```bash
+pytest tests/tutor_quality -q
+```
+
+### Slice 2: response scorer harness (implemented)
+
+- Deterministic scoring helpers added (must-include, disallow, action-keyword signals):
+  - `tests/tutor_quality/quality_scorer.py`
+- Fixture-based expected scoring outputs added:
+  - `tests/tutor_quality/expected_scores_v1.json`
+- Regression tests assert case-level and summary-level score stability:
+  - `tests/tutor_quality/test_tutor_quality_scorer.py`
+
+### Slice 3: offline benchmark runner (implemented)
+
+- Local benchmark runner added:
+  - `tools/run_tutor_quality_benchmark.py`
+- Runner modes:
+  - `reference` (deterministic offline baseline)
+  - `ollama` (execute matrix prompts against local Ollama models)
+- JSON report output with gate status and per-model summaries.
+- Gate controls:
+  - `--min-pass-rate`
+  - `--min-avg-score`
+  - `--max-disallow-violations`
+  - `--require-all-models-pass`
+- Non-zero exit on gate failure for release/CI integration.
+
+Run examples:
+
+```bash
+python tools/run_tutor_quality_benchmark.py --mode reference --report tutor_quality_report.json
+python tools/run_tutor_quality_benchmark.py --mode ollama --models "llama3.1:8b" --report tutor_quality_report.json
+```
+
+### Slice 4: versioned quality gates + CI hook (implemented)
+
+- Added versioned gate profile fixture:
+  - `tests/tutor_quality/gates_v1.json`
+- Benchmark runner now supports loading gate profiles:
+  - `--gates-file tests/tutor_quality/gates_v1.json`
+- Gate precedence:
+  - expected fixture defaults -> env defaults -> gate profile -> CLI flags
+- Added runner regression tests for gate profile loading and CLI overrides:
+  - `tests/tutor_quality/test_tutor_quality_runner.py`
+- Added Linux CI tutor quality reference gate job + report artifact upload.
+
+Run:
+
+```bash
+python tools/run_tutor_quality_benchmark.py --mode reference --gates-file tests/tutor_quality/gates_v1.json --report tutor_quality_report.json
+```
+
+### Slice 5: report regression comparator + baseline lock (implemented)
+
+- Added report comparator CLI:
+  - `tools/compare_tutor_quality_reports.py`
+- Added pinned reference benchmark baseline:
+  - `tests/tutor_quality/reference_report_v1.json`
+- Comparator supports regression budgets:
+  - `--max-pass-rate-drop`
+  - `--max-avg-score-drop`
+  - `--max-disallow-increase`
+- Added comparator regression tests:
+  - `tests/tutor_quality/test_tutor_quality_compare_reports.py`
+- Linux CI tutor-quality job now:
+  - runs reference benchmark
+  - compares candidate report vs pinned baseline
+  - uploads benchmark + comparison reports as artifacts
+
+Run:
+
+```bash
+python tools/compare_tutor_quality_reports.py --baseline tests/tutor_quality/reference_report_v1.json --candidate tutor_quality_report.json --model reference_baseline --report tutor_quality_compare_report.json
+```
+
+### Slice 6: rolling trend analysis + window gates (implemented)
+
+- Added trend analysis CLI for rolling benchmark windows:
+  - `tools/analyze_tutor_quality_trends.py`
+- Trend gates include:
+  - `--max-failed-runs`
+  - `--max-regression-events`
+  - `--max-pass-rate-drop`
+  - `--max-avg-score-drop`
+  - `--max-disallow-increase`
+  - `--min-latest-pass-rate`
+  - `--min-latest-avg-score`
+- Added trend regression tests:
+  - `tests/tutor_quality/test_tutor_quality_trends.py`
+- Linux CI tutor-quality job now includes trend analysis and uploads `tutor_quality_trend_report.json`.
+
+Run:
+
+```bash
+python tools/analyze_tutor_quality_trends.py --reports "tests/tutor_quality/reference_report_v1.json,tutor_quality_report.json" --model reference_baseline --window-size 2 --report tutor_quality_trend_report.json
+```
+
+### Slice 7: branch-aware quality policies (implemented)
+
+- Added policy profile fixture:
+  - `tests/tutor_quality/policy_profiles_v1.json`
+- Compare and trend tools now support:
+  - `--policy-file`
+  - `--policy`
+- Threshold precedence in compare/trend:
+  - defaults -> env -> policy profile -> CLI flags
+- Added policy regression tests:
+  - `tests/tutor_quality/test_tutor_quality_compare_reports.py`
+  - `tests/tutor_quality/test_tutor_quality_trends.py`
+- Linux CI tutor-quality job selects profile by branch:
+  - `release/*` -> `strict_release`
+  - `main` -> `balanced_main`
+  - others -> `feature_relaxed`
+
+Run:
+
+```bash
+python tools/compare_tutor_quality_reports.py --baseline tests/tutor_quality/reference_report_v1.json --candidate tutor_quality_report.json --model reference_baseline --policy-file tests/tutor_quality/policy_profiles_v1.json --policy balanced_main --report tutor_quality_compare_report.json
+python tools/analyze_tutor_quality_trends.py --reports "tests/tutor_quality/reference_report_v1.json,tutor_quality_report.json" --model reference_baseline --policy-file tests/tutor_quality/policy_profiles_v1.json --policy balanced_main --report tutor_quality_trend_report.json
+```
+
+### Slice 8: artifact contract validator (implemented)
+
+- Added report contract validator:
+  - `tools/validate_tutor_quality_reports.py`
+- Validates required fields and invariants for:
+  - benchmark report
+  - compare report
+  - trend report
+- Added validator regression tests:
+  - `tests/tutor_quality/test_tutor_quality_report_validation.py`
+- Linux CI tutor-quality job now validates generated artifacts before upload.
+
+Run:
+
+```bash
+python tools/validate_tutor_quality_reports.py --benchmark tutor_quality_report.json --compare tutor_quality_compare_report.json --trend tutor_quality_trend_report.json --report tutor_quality_validate_report.json
+```
+
+### Slice 9: unified quality pipeline runner (implemented)
+
+- Added orchestrator script:
+  - `tools/run_tutor_quality_pipeline.py`
+- Runs benchmark -> compare -> trend -> validate sequentially with fail-fast behavior.
+- Produces a single pipeline report:
+  - `tutor_quality_pipeline_report.json`
+- Supports pass-through overrides:
+  - `--benchmark-args`
+  - `--compare-args`
+  - `--trend-args`
+  - `--validate-args`
+- Added pipeline regression tests:
+  - `tests/tutor_quality/test_tutor_quality_pipeline.py`
+- Linux CI tutor-quality job now executes the unified pipeline runner and uploads all generated reports.
+
+Run:
+
+```bash
+python tools/run_tutor_quality_pipeline.py --mode reference --baseline-report tests/tutor_quality/reference_report_v1.json --policy-file tests/tutor_quality/policy_profiles_v1.json --policy balanced_main --output-dir .
+```
+
 ## UI structure
 
 - Left panel: coach pick, plan list, study room, Pomodoro, tools
@@ -405,6 +623,7 @@ Current strict KPI thresholds:
 - Add a module JSON under `~/.config/studyplan/modules/` or `modules/` in repo
 - Update the module editor to include question editing if needed
 - Keep GTK4 API usage (avoid Gtk3‑only methods)
+- For a full technical spec or JSON schema validation, add a `tools/` script and document it here.
 
 ## Style + UX notes
 
@@ -413,8 +632,6 @@ Current strict KPI thresholds:
 - Avoid heavy layout changes unless matching established style
 
 ---
-
-If you want a full technical spec or JSON schema validation, add a `tools/` script and document it here.
 
 ## Latest Validation Snapshot (2026-03-08)
 

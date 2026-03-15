@@ -1,5 +1,5 @@
 {
-  "title": "TX (F6) Taxation – UK",
+  "title": "TX (F6) Taxation \u2013 UK",
   "chapters": [
     "Chapter 1: The UK Tax System",
     "Chapter 2: Income Tax Computations",
@@ -25,27 +25,69 @@
     "Chapter 22: Value Added Tax"
   ],
   "chapter_flow": {
-    "Chapter 1: The UK Tax System": ["Chapter 2: Income Tax Computations"],
-    "Chapter 2: Income Tax Computations": ["Chapter 3: Property and Investment Income"],
-    "Chapter 3: Property and Investment Income": ["Chapter 4: Employment Income"],
-    "Chapter 4: Employment Income": ["Chapter 5: Benefits and the PAYE System"],
-    "Chapter 5: Benefits and the PAYE System": ["Chapter 6: Unincorporated Traders - Assessment and Profits"],
-    "Chapter 6: Unincorporated Traders - Assessment and Profits": ["Chapter 7: Capital Allowances"],
-    "Chapter 7: Capital Allowances": ["Chapter 8: Unincorporated Traders - Relief for Trading Losses"],
-    "Chapter 8: Unincorporated Traders - Relief for Trading Losses": ["Chapter 9: Partnerships"],
-    "Chapter 9: Partnerships": ["Chapter 10: National Insurance"],
-    "Chapter 10: National Insurance": ["Chapter 11: Income Tax Administration"],
-    "Chapter 11: Income Tax Administration": ["Chapter 12: Chargeable Gains for Individuals - Basic Principles"],
-    "Chapter 12: Chargeable Gains for Individuals - Basic Principles": ["Chapter 13: Chargeable Gains - Chattels, Land and Buildings"],
-    "Chapter 13: Chargeable Gains - Chattels, Land and Buildings": ["Chapter 14: Chargeable Gains - Shares"],
-    "Chapter 14: Chargeable Gains - Shares": ["Chapter 15: Chargeable Gains - Business Assets/Reliefs"],
-    "Chapter 15: Chargeable Gains - Business Assets/Reliefs": ["Chapter 16: Corporation Tax - The Tax Computation & Administration"],
-    "Chapter 16: Corporation Tax - The Tax Computation & Administration": ["Chapter 17: Corporation Tax - Taxable Total Profits"],
-    "Chapter 17: Corporation Tax - Taxable Total Profits": ["Chapter 18: Corporation Tax - Chargeable Gains for Companies"],
-    "Chapter 18: Corporation Tax - Chargeable Gains for Companies": ["Chapter 19: Corporation Tax - Loss Reliefs"],
-    "Chapter 19: Corporation Tax - Loss Reliefs": ["Chapter 20: Corporation Tax - Groups of Companies"],
-    "Chapter 20: Corporation Tax - Groups of Companies": ["Chapter 21: Inheritance Tax"],
-    "Chapter 21: Inheritance Tax": ["Chapter 22: Value Added Tax"],
+    "Chapter 1: The UK Tax System": [
+      "Chapter 2: Income Tax Computations"
+    ],
+    "Chapter 2: Income Tax Computations": [
+      "Chapter 3: Property and Investment Income"
+    ],
+    "Chapter 3: Property and Investment Income": [
+      "Chapter 4: Employment Income"
+    ],
+    "Chapter 4: Employment Income": [
+      "Chapter 5: Benefits and the PAYE System"
+    ],
+    "Chapter 5: Benefits and the PAYE System": [
+      "Chapter 6: Unincorporated Traders - Assessment and Profits"
+    ],
+    "Chapter 6: Unincorporated Traders - Assessment and Profits": [
+      "Chapter 7: Capital Allowances"
+    ],
+    "Chapter 7: Capital Allowances": [
+      "Chapter 8: Unincorporated Traders - Relief for Trading Losses"
+    ],
+    "Chapter 8: Unincorporated Traders - Relief for Trading Losses": [
+      "Chapter 9: Partnerships"
+    ],
+    "Chapter 9: Partnerships": [
+      "Chapter 10: National Insurance"
+    ],
+    "Chapter 10: National Insurance": [
+      "Chapter 11: Income Tax Administration"
+    ],
+    "Chapter 11: Income Tax Administration": [
+      "Chapter 12: Chargeable Gains for Individuals - Basic Principles"
+    ],
+    "Chapter 12: Chargeable Gains for Individuals - Basic Principles": [
+      "Chapter 13: Chargeable Gains - Chattels, Land and Buildings"
+    ],
+    "Chapter 13: Chargeable Gains - Chattels, Land and Buildings": [
+      "Chapter 14: Chargeable Gains - Shares"
+    ],
+    "Chapter 14: Chargeable Gains - Shares": [
+      "Chapter 15: Chargeable Gains - Business Assets/Reliefs"
+    ],
+    "Chapter 15: Chargeable Gains - Business Assets/Reliefs": [
+      "Chapter 16: Corporation Tax - The Tax Computation & Administration"
+    ],
+    "Chapter 16: Corporation Tax - The Tax Computation & Administration": [
+      "Chapter 17: Corporation Tax - Taxable Total Profits"
+    ],
+    "Chapter 17: Corporation Tax - Taxable Total Profits": [
+      "Chapter 18: Corporation Tax - Chargeable Gains for Companies"
+    ],
+    "Chapter 18: Corporation Tax - Chargeable Gains for Companies": [
+      "Chapter 19: Corporation Tax - Loss Reliefs"
+    ],
+    "Chapter 19: Corporation Tax - Loss Reliefs": [
+      "Chapter 20: Corporation Tax - Groups of Companies"
+    ],
+    "Chapter 20: Corporation Tax - Groups of Companies": [
+      "Chapter 21: Inheritance Tax"
+    ],
+    "Chapter 21: Inheritance Tax": [
+      "Chapter 22: Value Added Tax"
+    ],
     "Chapter 22: Value Added Tax": []
   },
   "importance_weights": {
@@ -72,7 +114,6 @@
     "Chapter 21: Inheritance Tax": 10,
     "Chapter 22: Value Added Tax": 18
   },
-  "questions": {},
   "semantic_aliases": {
     "income tax": "income tax and nic",
     "nic": "national insurance",

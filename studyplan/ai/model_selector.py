@@ -146,19 +146,82 @@ class ModelSelector:
         self, model: GgufModel, tier: str, purpose: str
     ) -> ModelRanking:
         score = 0.0
-        rationale_parts: list[str] = []
+        rationale_parts: list[str] = [f"tier={tier}", f"purpose={purpose}"]
 
-        score += self._score_size(model, tier)
-        score += self._score_quant(model, tier)
-        score += self._score_instruct(model)
-        score += self._score_architecture(model)
-        score += self._score_ram_fit(model)
-        score += self._score_historical_perf(model, purpose)
+        size_score = self._score_size(model, tier)
+        score += size_score
+        self._append_rationale_part(
+            rationale_parts, "size", size_score, self._describe_size(model)
+        )
 
-        rationale = "; ".join(rationale_parts) if rationale_parts else tier
+        quant_score = self._score_quant(model, tier)
+        score += quant_score
+        self._append_rationale_part(
+            rationale_parts, "quant", quant_score, model.quant_tag
+        )
+
+        instruct_score = self._score_instruct(model)
+        score += instruct_score
+        self._append_rationale_part(
+            rationale_parts,
+            "instruct",
+            instruct_score,
+            "yes" if model.is_instruct else "no",
+        )
+
+        arch_score = self._score_architecture(model)
+        score += arch_score
+        self._append_rationale_part(
+            rationale_parts, "arch", arch_score, model.architecture
+        )
+
+        ram_score = self._score_ram_fit(model)
+        score += ram_score
+        self._append_rationale_part(
+            rationale_parts, "ram_fit", ram_score, self._describe_ram_fit(model)
+        )
+
+        perf_stats = self.get_model_stats(model.name)
+        perf_score = self._score_historical_perf(model, purpose, perf_stats)
+        score += perf_score
+        self._append_rationale_part(
+            rationale_parts, "history", perf_score, self._describe_history(perf_stats)
+        )
+
+        rationale = "; ".join(rationale_parts)
         return ModelRanking(
             model=model, score=round(score, 3), tier=tier, rationale=rationale
         )
+
+    @staticmethod
+    def _append_rationale_part(
+        parts: list[str], label: str, component_score: float, detail: str = ""
+    ) -> None:
+        suffix = f" {detail}" if str(detail or "").strip() else ""
+        parts.append(f"{label}({component_score:+.2f}){suffix}")
+
+    @staticmethod
+    def _describe_size(model: GgufModel) -> str:
+        b = float(model.param_billions or 0.0)
+        if b <= 0.0:
+            return "unknown"
+        return f"{b:.1f}B"
+
+    def _describe_ram_fit(self, model: GgufModel) -> str:
+        if self.ram_budget_bytes <= 0:
+            return "no_budget"
+        overhead = 500_000_000
+        available = max(0, int(self.ram_budget_bytes - overhead))
+        return f"{int(model.size_bytes / 1_000_000)}MB/{int(available / 1_000_000)}MB"
+
+    @staticmethod
+    def _describe_history(stats: dict[str, Any]) -> str:
+        samples = int(stats.get("samples", 0) or 0)
+        if samples <= 0:
+            return "samples=0"
+        success = float(stats.get("success_rate", 0.0) or 0.0) * 100.0
+        avg_latency = float(stats.get("avg_latency_ms", 0.0) or 0.0)
+        return f"samples={samples},success={success:.0f}%,lat={avg_latency:.0f}ms"
 
     def _score_size(self, model: GgufModel, tier: str) -> float:
         b = model.param_billions
@@ -253,8 +316,14 @@ class ModelSelector:
             return 2.0
         return 0.5
 
-    def _score_historical_perf(self, model: GgufModel, purpose: str) -> float:
-        stats = self.get_model_stats(model.name)
+    def _score_historical_perf(
+        self,
+        model: GgufModel,
+        purpose: str,
+        stats: dict[str, Any] | None = None,
+    ) -> float:
+        del purpose  # Reserved for future purpose-specific performance weighting.
+        stats = stats if isinstance(stats, dict) else self.get_model_stats(model.name)
         if stats.get("samples", 0) < 3:
             return 0.0
         success_rate = stats.get("success_rate", 0.0)

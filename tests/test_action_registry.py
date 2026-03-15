@@ -30,14 +30,24 @@ def test_resolve_ui_action_bindings_returns_callables_for_present_handlers():
         on_menu_import_pdf=lambda *_args: None,
         on_menu_add_tutor_rag_pdf=lambda *_args: None,
         on_menu_import_syllabus_pdf=lambda *_args: None,
+        on_menu_import_syllabus_json=lambda *_args: None,
+        on_menu_reconfigure_from_rag=lambda *_args: None,
+        on_menu_refresh_syllabus_intelligence=lambda *_args: None,
+        on_menu_refresh_syllabus_and_link_outcomes=lambda *_args: None,
+        on_menu_link_questions_to_outcomes=lambda *_args: None,
         on_menu_import_ai=lambda *_args: None,
     )
-    subset = tuple(DEFAULT_UI_ACTION_BINDINGS[2:6])
+    subset = tuple(DEFAULT_UI_ACTION_BINDINGS[2:11])
     resolved, missing = resolve_ui_action_bindings(owner, bindings=subset)
     assert not missing
     assert [name for name, _handler in resolved] == [
         "import_pdf",
         "add_tutor_rag_pdf",
         "import_syllabus_pdf",
+        "import_syllabus_json",
+        "reconfigure_from_rag",
+        "refresh_syllabus_intelligence",
+        "refresh_syllabus_and_link_outcomes",
+        "link_questions_to_outcomes",
         "import_ai",
     ]

@@ -899,6 +899,32 @@ def test_get_ai_tutor_rag_source_pdfs_respects_pdf_size_limit_env(tmp_path, monk
     assert os.path.realpath(str(large_pdf)) not in sources
 
 
+def test_load_ai_tutor_rag_doc_handles_bytes_from_extraction(tmp_path, monkeypatch):
+    """When _extract_pdf_text_for_syllabus returns bytes, _load_ai_tutor_rag_doc decodes and produces chunks."""
+    pdf_path = tmp_path / "syllabus.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 minimal")
+    # Path validation requires the file under home or CONFIG_HOME; treat tmp_path as home for this test.
+    _orig_expanduser = os.path.expanduser
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if (p == "~" or p == "~/" or not p) else _orig_expanduser(p))
+    dummy = types.SimpleNamespace(
+        _perf_cache=None,
+        _ai_cache_get_rag_doc=lambda k: None,
+        _ai_cache_put_rag_doc=None,
+        _ai_tutor_rag_doc_cache_key=lambda p: f"key_{os.path.basename(p)}",
+    )
+    dummy._extract_pdf_text_for_syllabus = lambda p: (
+        b"Chapter 1: Introduction. Learning outcome 1.1 explain the framework. Some content.",
+        {},
+    )
+    doc, err = StudyPlanGUI._load_ai_tutor_rag_doc(dummy, str(pdf_path))
+    assert err is None
+    assert isinstance(doc, dict)
+    chunks = doc.get("chunks") or []
+    assert isinstance(chunks, list)
+    assert len(chunks) >= 1
+    assert all(isinstance(c, dict) and c.get("text") for c in chunks)
+
+
 def test_rag_prompt_context_dynamic_target_and_budget(monkeypatch):
     monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_TOP_K_MAX", "12")
     monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_CHAR_BUDGET", "1800")

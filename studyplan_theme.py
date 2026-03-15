@@ -915,6 +915,7 @@ window.app-dialog-window .dialog-content {
 .quiz-option label {
     font-size: 13px;
     line-height: 1.40;
+    -gtk-line-limit: 0;
 }
 /* quiz progress bar thinner */
 .quiz-progress {
@@ -1859,6 +1860,7 @@ window.app-dialog-window .dialog-content {
 .quiz-option label {
     font-size: 13px;
     line-height: 1.40;
+    -gtk-line-limit: 0;
 }
 .quiz-progress {
     min-height: 8px;

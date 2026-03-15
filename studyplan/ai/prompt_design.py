@@ -10,7 +10,16 @@ Design: DEVELOPER_DOC.md § "Prompt engineering design (3Es + fail-safe)".
 """
 from __future__ import annotations
 
+import os
+
 # --- Economy: single source for common phrases (no duplication across actions) ---
+
+# Grammar and style: require correct English in all user-facing text (tutor, generated questions, feedback).
+GRAMMAR_QUALITY_RULE = (
+    "Write in correct, professional English: no grammatical errors, no spelling mistakes, "
+    "and clear sentence structure. Proofread your response before finishing."
+)
+GRAMMAR_QUALITY_RULE_SHORT = "Use correct grammar and spelling; no errors in any text you generate."
 
 JSON_ONLY_NO_PROSE = "JSON only (no prose)."
 JSON_ONLY_NO_MARKDOWN = "Return only the JSON object. No markdown, no code block, no explanation."
@@ -24,7 +33,7 @@ SYLLABUS_JSON_ONLY = "Return valid JSON only, no markdown or explanation."
 
 # --- Schema one-liners (economy: single source for generation prompts) ---
 
-GAP_SCHEMA_ONE_LINE = '{"chapter":"chapter","questions":[{"question":"text","options":["A","B","C","D"],"correct":"A","explanation":"short why"}]}'
+GAP_SCHEMA_ONE_LINE = '{"chapter":"chapter","questions":[{"question":"stem with command verb","options":["A","B","C","D"],"correct":"A","explanation":"short why"}]}'
 SECTION_C_SCHEMA_ONE_LINE = (
     '{"chapter":"...","scenario":"Full case narrative (company, situation, numbers). 150-400 words. No placeholders.",'
     '"requirements":[{"part":"a","requirement_text":"Requirement with command verb (e.g. Calculate, Evaluate, Recommend).","marks":8},'
@@ -49,7 +58,193 @@ AUTOPILOT_ACTION_SCHEMA_ONE_LINE = (
     '"reason":"short reason","confidence":0.0,"requires_confirmation":false,"evidence":["signal=value"]}'
 )
 
-# --- Efficiency: consistent structure = schema first, then rules, then payload ---
+# --- Task prompt library (best prompt per in-app AI task; see PROMPT_QUALITY_SLICE.md) ---
+
+# Autopilot: role and rules live here; app injects runtime_contract (from _build_local_ai_runtime_contract).
+AUTOPILOT_ROLE_BASE = "You are an ACCA AI tutor cockpit controller."
+AUTOPILOT_ROLE_SUFFIX = " Return exactly one JSON object and nothing else."
+AUTOPILOT_RULES = [
+    "Prefer the highest exam-impact safe action with bounded latency.",
+    "Decision bias: high must_review_due -> review_start; weak-topic pressure -> weak_drill_start/drill_start; otherwise focus_start or quiz_start.",
+    "Use only topics found in snapshot weak_topics_top3/current_topic/coach_pick.",
+    "Set requires_confirmation=true for higher-impact actions (review_start, interleave_start, gap_drill_generate, section_c_start, timer_stop).",
+    "Include 1-3 compact evidence items grounded in snapshot fields.",
+    "Use tutor_open when opening/focusing the Tutor dialog would unblock the learner.",
+    "Use coach_open when a coaching recommendation should be shown before further execution.",
+    "If no action should run now, return action='focus_start' with a concise reason.",
+]
+
+# Coach: app injects runtime_contract and learning_context; same pattern as autopilot.
+COACH_ROLE_BASE = "You are an ACCA AI study coach."
+COACH_ROLE_SUFFIX = " Return exactly one JSON object and nothing else."
+COACH_SCHEMA_ONE_LINE = (
+    '{"action":"focus|quiz|drill|interleave|review","topic":"chapter","duration_minutes":25,'
+    '"reason":"short explanation","confidence":0.0}'
+)
+COACH_RULES = [
+    "Choose only one action from: focus, quiz, drill, interleave, review.",
+    "If unsure, pick the safest deterministic action from the payload action_topics map.",
+    "Do not invent topics; use only payload.action_topics values or payload.recommended_topic.",
+    "Keep reason concise, practical, and lightly explanatory (max 220 chars). Use correct grammar and spelling.",
+]
+
+# Gap generation: role + rules; app may add extra_rules (syllabus_scope).
+# Exam-standard: exactly 4 options (one correct + three plausible distractors), structural parity, command verbs.
+GAP_GENERATION_ROLE_BASE = (
+    "Generate ACCA exam-type multiple choice questions (MCQs) as "
+    + JSON_ONLY_NO_PROSE
+    + " "
+    + JSON_ONLY_NO_MARKDOWN
+    + " Each question must be ACCA exam-style: single best answer, exactly 4 options (A–D), exam-style question stem, plausible distractors as in real ACCA papers. Syllabus-aligned only. All 4 options must be structurally identical in length and complexity (exam-standard gap generation)."
+)
+GAP_GENERATION_RULES = [
+    "Output: one JSON object with \"chapter\" (string) and \"questions\" (array of question objects), or a bare JSON array of question objects. No markdown code block, no text before or after the JSON.",
+    "Question stems: use command verbs (Calculate, Evaluate, Recommend, Explain, Discuss, Compare). Clear, professional level, one correct answer. No trick questions or placeholders.",
+    "Exactly 4 options per question (A, B, C, D): one correct (syllabus outcome–based), three plausible distractors from common misconceptions. Never output 3 options; always 4.",
+    "Structural parity: all 4 options must have the same length and complexity; no option may be the obvious 'longest and most detailed' correct answer. Prevents guessing by structure; tests understanding.",
+    "correct must match one option exactly (A, B, C, or D).",
+    "Keep explanations concise, syllabus-based, and unambiguous. Include explicit mark allocation in the stem when appropriate (e.g. 2 marks).",
+    "Distractors must be based on real common misconceptions within the syllabus scope; avoid arbitrary wrong answers.",
+    "Quality: prefer fewer high-quality questions (4 options each, structural parity) over more uneven ones. Avoid duplicate questions.",
+    "Grammar: all question stems, options, and explanations must be in correct English with no grammatical or spelling errors.",
+]
+
+# Section C generation: role + rules; app may add extra_rules (syllabus_scope).
+SECTION_C_ROLE_BASE = (
+    "Generate one ACCA exam-type Section C constructed-response case as "
+    + JSON_ONLY_NO_PROSE
+    + " Question must be ACCA exam-style: syllabus-aligned, professional level, realistic scenario and requirements as in real ACCA Section C papers. Output must match live exam format: one scenario narrative and requirements (a), (b), (c) with mark allocation. Do not use empty exhibits."
+)
+SECTION_C_RULES = [
+    "scenario: Single narrative with case facts, figures, and context. No empty exhibits or [Exhibit 1] placeholders.",
+    "requirements: Exactly 3 parts (a), (b), (c). Each has part (a/b/c), requirement_text (one clear task with command verb), and marks. Total marks must equal 20.",
+    "Command verbs: Calculate, Evaluate, Recommend, Discuss, Explain, Assess, Compare, Advise.",
+    "Part (a) often 8 marks (calculation/application), (b) 8 marks (discussion), (c) 4 marks (recommendation). Adjust so total = 20.",
+    "model_answer_outline: 3 short bullets matching (a)(b)(c).",
+    "time_budget_minutes: 20-90 (typically 45).",
+    "Intelligence level (use payload.section_c_intelligence.target_difficulty): supportive = clearer scenario, more guided requirements; standard = typical ACCA exam difficulty; stretch = more complex scenario or integrated requirements.",
+    "Use payload.section_c_intelligence.target_difficulty to tune scenario complexity.",
+    "If payload.section_c_intelligence.rubric_emphasis is set, emphasise that skill in one requirement.",
+    "Grammar: scenario, requirements, and model_answer_outline must be in correct English with no grammatical or spelling errors.",
+]
+
+# Syllabus extraction: default role for build_syllabus_extraction_prompt and reconfig.
+SYLLABUS_EXTRACTION_ROLE_DEFAULT = (
+    "You are parsing a syllabus document. Extract every learning outcome (bullet or numbered item that describes what the candidate must be able to do or know). "
+    "For each outcome provide: id (short identifier e.g. A1a, B2c), text (outcome statement in correct English, no grammatical errors), level (1=knowledge, 2=application, 3=analysis/synthesis; use 2 if unclear), chapter (exactly one of the chapter titles below; copy verbatim)."
+)
+
+# Assessment judge: role + rules; services builds prompt with module, topic, question, answer.
+ASSESSMENT_JUDGE_ROLE_BASE = (
+    "You are an ACCA examiner. Judge the learner's answer for correctness and quality. Use syllabus expertise only; do not match keywords."
+)
+ASSESSMENT_JUDGE_RULES = [
+    "Use examiner-style wording: brief, constructive, and focused on what to improve (no praise without substance).",
+    "Return JSON only (no prose). Schema:",
+    "Rules: outcome correct = full marks for accurate, complete answer; partial = some right ideas; incorrect = wrong or irrelevant. feedback must be brief, constructive, and plain human-readable text (no LaTeX, no code blocks; write formulas as humans do, e.g. a/b, x²).",
+    "Grammar: feedback and suggested_next_step must be in correct English with no grammatical or spelling errors.",
+]
+
+# Reconfig: static prompt prefixes (reconfig appends context + chapters and JSON_ONLY_NO_MARKDOWN).
+RECONFIG_CAPABILITIES_PROMPT_PREFIX = (
+    "You are parsing a syllabus document. From the excerpt below extract three things.\n"
+    "1. capabilities: the COMPLETE list of section letters (A, B, C, D, ...) to their full title as in the syllabus. Include every capability that appears.\n"
+    "2. aliases: for each chapter in the list, alternative names or abbreviations used in the document (e.g. 'FM' for 'Financial Management'). Use exact chapter strings as keys.\n"
+    "3. chapter_to_capability: map each chapter (exact string from the list) to the single capability letter it belongs to (A, B, C, ...). Every chapter must be mapped.\n"
+    "Schema (JSON only, no markdown):\n"
+    '{"capabilities":{"A":"Full title for A","B":"Full title for B"},'
+    '"aliases":{"Exact Chapter Title":["alias1"]},'
+    '"chapter_to_capability":{"Exact Chapter Title":"A"}}\n'
+    "Rules: Use only the excerpt as evidence. Use exact chapter strings from the list. Return valid JSON only.\n"
+    "Excerpt:\n---\n"
+)
+RECONFIG_SYLLABUS_META_PROMPT_PREFIX = (
+    "You are parsing syllabus metadata from a syllabus or study guide. Extract:\n"
+    "1. exam_code: the ACCA exam code (e.g. FM, FR, AA) if present.\n"
+    "2. effective_window: the exam session or date window (e.g. September 2024, 2024-2025) if present.\n"
+    'Return JSON only, no markdown: {"exam_code": "...", "effective_window": "..."}\n'
+    "Use null for missing values. Use only the excerpt as evidence.\n"
+    "Excerpt:\n---\n"
+)
+RECONFIG_SUBTOPICS_PROMPT_PREFIX = (
+    "You are parsing a syllabus or study guide. For each chapter in the list, extract the main "
+    "section or subtopic titles (short phrases, e.g. 'Conceptual framework', 'Revenue recognition'). "
+    "Use ONLY the excerpt as evidence. Use exact chapter strings as keys.\n"
+    'Return JSON only, no markdown: {"Exact Chapter Title": ["subtopic1", "subtopic2"], ...}\n'
+    "Excerpt:\n---\n"
+)
+
+# Known task IDs for get_task_prompt_spec (app and benchmark use these).
+TASK_ID_AUTOPILOT = "autopilot"
+TASK_ID_COACH = "coach"
+TASK_ID_GAP_GENERATION = "gap_generation"
+TASK_ID_SECTION_C = "section_c"
+
+_TASK_SPECS: dict[str, dict[str, object]] = {
+    TASK_ID_AUTOPILOT: {
+        "role_base": AUTOPILOT_ROLE_BASE,
+        "role_suffix": AUTOPILOT_ROLE_SUFFIX,
+        "rules": AUTOPILOT_RULES,
+        "schema_one_line": AUTOPILOT_ACTION_SCHEMA_ONE_LINE,
+    },
+    TASK_ID_COACH: {
+        "role_base": COACH_ROLE_BASE,
+        "role_suffix": COACH_ROLE_SUFFIX,
+        "rules": COACH_RULES,
+        "schema_one_line": COACH_SCHEMA_ONE_LINE,
+    },
+    TASK_ID_GAP_GENERATION: {
+        "role_base": GAP_GENERATION_ROLE_BASE,
+        "rules": GAP_GENERATION_RULES,
+        "schema_one_line": GAP_SCHEMA_ONE_LINE,
+    },
+    TASK_ID_SECTION_C: {
+        "role_base": SECTION_C_ROLE_BASE,
+        "rules": SECTION_C_RULES,
+        "schema_one_line": SECTION_C_SCHEMA_ONE_LINE,
+    },
+}
+
+# Optional versioned overrides for A/B or rollout. Key: task_id -> version -> spec (same shape as _TASK_SPECS).
+# Env STUDYPLAN_PROMPT_VERSION_<TASK_ID> (e.g. STUDYPLAN_PROMPT_VERSION_autopilot=v2) selects version.
+_TASK_SPEC_VERSIONS: dict[str, dict[str, dict[str, object]]] = {}
+
+
+def get_prompt_version(task_id: str) -> str:
+    """
+    Return the prompt version to use for this task (for A/B or rollout).
+
+    Reads STUDYPLAN_PROMPT_VERSION_<TASK_ID> (task_id uppercased). Returns "default" if unset or empty.
+    """
+    key = "STUDYPLAN_PROMPT_VERSION_" + (task_id or "").strip().upper()
+    raw = (os.environ.get(key) or "").strip().lower()
+    return raw if raw else "default"
+
+
+def get_task_prompt_spec(task_id: str, version: str | None = None) -> dict[str, object]:
+    """
+    Return the canonical prompt spec for an in-app AI task.
+
+    Spec may include: role_base, role_suffix (app injects runtime_contract between them),
+    rules (list[str]), schema_one_line. Used so app and benchmark share one source of truth.
+
+    If version is None, uses get_prompt_version(task_id) (env STUDYPLAN_PROMPT_VERSION_<task_id>).
+    When version is not "default" and _TASK_SPEC_VERSIONS has that version for task_id, returns it;
+    otherwise returns the default spec. Schema contract is unchanged; only role/rules text may differ by version.
+    """
+    resolved = (version or get_prompt_version(task_id)).strip().lower() or "default"
+    if resolved != "default":
+        versions = _TASK_SPEC_VERSIONS.get(task_id, {})
+        if resolved in versions:
+            return dict(versions[resolved])
+    spec = _TASK_SPECS.get(task_id)
+    if spec is None:
+        raise KeyError(f"Unknown task_id: {task_id!r}. Known: {list(_TASK_SPECS.keys())}")
+    return dict(spec)
+
+# --- 3Es contract: Role → Schema → Rules → Payload (one builder per prompt type; no duplication) ---
+# See docs/THREE_ES_PROMPT_IMPLEMENTATION.md. Generation tasks use build_generation_prompt;
+# syllabus extraction uses build_syllabus_extraction_prompt; assessment judge uses build_judge_prompt_3es.
 
 
 def build_generation_prompt(
@@ -85,19 +280,52 @@ def append_retry_suffix(prompt: str, suffix: str) -> str:
     return base + "\n\n" + add
 
 
+def build_judge_prompt_3es(
+    *,
+    role_base: str,
+    schema_one_line: str,
+    rules: list[str],
+    payload_blocks: list[tuple[str, str]],
+) -> str:
+    """
+    Build assessment-judge prompt in 3Es order: Role → Schema → Rules → Payload.
+
+    payload_blocks: list of (label, value) e.g. [("Module", "FR"), ("Question", "…"), ("Learner answer", "…")].
+    Caller truncates question/answer lengths; this function does not truncate.
+    """
+    parts = [
+        (role_base or "").strip(),
+        "Schema:",
+        (schema_one_line or "").strip(),
+        "Rules:",
+    ]
+    for r in list(rules or []):
+        r = str(r or "").strip()
+        if r:
+            parts.append("- " + r)
+    parts.append("Payload:")
+    for label, value in list(payload_blocks or []):
+        if (label or "").strip():
+            parts.append(f"{label.strip()}: {str(value or '').strip()}")
+    parts.append("")
+    parts.append("JSON:")
+    return "\n".join(parts)
+
+
 def build_syllabus_extraction_prompt(
     *,
     syllabus_text: str,
     chapters_blob: str,
-    role_and_style: str = "You are parsing a syllabus document. Extract every learning outcome (bullet or numbered item that describes what the candidate must be able to do or know). For each outcome provide: id (short identifier e.g. A1a, B2c), text (outcome statement), level (1=knowledge, 2=application, 3=analysis/synthesis; use 2 if unclear), chapter (exactly one of the chapter titles below; copy verbatim).",
+    role_and_style: str | None = None,
     schema_one_line: str | None = None,
     rules: list[str] | None = None,
 ) -> str:
     """Schema-first prompt for syllabus outcome extraction. Order: role → Schema → Rules → Syllabus text → Chapters."""
+    role = (role_and_style or SYLLABUS_EXTRACTION_ROLE_DEFAULT).strip()
     schema = (schema_one_line or SYLLABUS_OUTCOMES_SCHEMA_ONE_LINE).strip()
     rule_list = list(rules or [])
     rule_list.append(SYLLABUS_JSON_ONLY)
-    parts = [role_and_style.strip(), "Schema:", schema, "Rules:"]
+    parts = [role, "Schema:", schema, "Rules:"]
     for r in rule_list:
         r = str(r or "").strip()
         if r:

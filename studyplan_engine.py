@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Study plan engine: data model, SRS, scheduling, syllabus parsing, outcome resolution, and persistence."""
 import atexit
 import concurrent.futures
 import contextlib
@@ -23,6 +24,15 @@ from studyplan.cognitive_state import CognitiveState
 from studyplan.mastery_kernel import MasteryKernel
 from studyplan.question_quality import get_poor_quality_indices, option_looks_like_see_explanation
 from studyplan.working_memory_service import WorkingMemoryService
+from studyplan.syllabus_fr import (
+    is_fr_syllabus_text,
+    parse_syllabus_text as fr_parse_syllabus_text,
+    build_syllabus_structure as fr_build_syllabus_structure,
+    extract_capabilities_from_text as fr_extract_capabilities,
+    extract_subtopics_from_section_4 as fr_extract_subtopics_from_section_4,
+    F7_CHAPTERS as FR_F7_CHAPTERS,
+)
+from studyplan.syllabus_f7 import get_f7_syllabus_structure
 from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
 
 class StudyPlanEngine:
@@ -168,955 +178,8 @@ class StudyPlanEngine:
         "relevant cash flows.": "Relevant Cash Flows",
     }
     LOW_CONFIDENCE_MATCH_LOG_MAX_UNIQUE = 12
-    # Expanded with more questions from available sources, including explanations
-    QUESTIONS = {
-        "FM Function": [
-            {
-                "question": "Which of the following is not one of the three key financial management decisions?",
-                "options": ["Investment", "Marketing", "Financing", "Dividend"],
-                "correct": "Marketing",
-                "explanation": "The three key decisions are investment, financing, and dividend. Marketing is not a financial management decision."
-            },
-            {
-                "question": "Which function is primarily concerned with long-term raising and allocation of funds?",
-                "options": ["Financial Accounting", "Management Accounting", "Financial Management", "Auditing"],
-                "correct": "Financial Management",
-                "explanation": "Financial Management deals with long-term funding and allocation."
-            },
-            {
-                "question": "Which of the following best represents the primary objective of a financial manager?",
-                "options": ["Maximizing market share", "Maximizing shareholder wealth", "Minimizing costs", "Maximizing profit"],
-                "correct": "Maximizing shareholder wealth",
-                "explanation": "The primary goal is to maximize shareholder wealth through decisions that increase share value."
-            },
-            {
-                "question": "Agency theory explains the relationship between:",
-                "options": ["Auditors and management", "Shareholders and auditors", "Shareholders and management", "Employees and suppliers"],
-                "correct": "Shareholders and management",
-                "explanation": "Agency theory addresses the conflict between principals (shareholders) and agents (management)."
-            },
-            {
-                "question": "Which objective is most relevant in not-for-profit organizations?",
-                "options": ["Profit maximization", "Value for Money", "Wealth maximization"],
-                "correct": "Value for Money",
-                "explanation": "Not-for-profit organizations focus on value for money, i.e., economy, efficiency, and effectiveness."
-            },
-            {
-                "question": "Which of the following actions is LEAST likely to increase shareholder wealth?",
-                "options": ["The weighted average cost of capital is decreased by a recent financing decision", "The financial rewards of directors are linked to increasing earnings per share", "The board of directors decides to invest in a project with a positive NPV", "The annual report declares full compliance with the corporate governance code"],
-                "correct": "The financial rewards of directors are linked to increasing earnings per share",
-                "explanation": "Linking rewards to EPS may encourage short-termism, which could harm long-term shareholder wealth."
-            },
-            {
-                "question": "Which of the following statements concerning financial management are correct? (1) It is concerned with investment decisions, financing decisions and dividend decisions (2) It is concerned with financial planning and financial control (3) It considers the management of risk",
-                "options": ["1 and 2 only", "1 and 3 only", "2 and 3 only", "1, 2 and 3"],
-                "correct": "1, 2 and 3",
-                "explanation": "Financial management encompasses all three aspects."
-            },
-            {
-                "question": "What is the role of financial management?",
-                "options": ["To prepare financial statements for internal use by management", "To prepare financial statements for external use by shareholders", "To manage the link between the company and the external environment to do with financial decisions", "To manage the internal operations of the business"],
-                "correct": "To manage the link between the company and the external environment to do with financial decisions",
-                "explanation": "Financial management links the company with financial markets and stakeholders."
-            },
-            {
-                "question": "When considering financial management would it normally be considered as which of the following categories?",
-                "options": ["An operational function", "A tactical function", "A strategic function", "An institutional function"],
-                "correct": "A strategic function",
-                "explanation": "Financial management is strategic, involving long-term decisions."
-            },
-            {
-                "question": "When considering a financial investment over the short-term which order would best describe the priorities of the investor highest first?",
-                "options": ["Return, Risk, Liquidity", "Return, Liquidity, Risk", "Liquidity, Return, Risk", "Risk, Liquidity, Return"],
-                "correct": "Liquidity, Return, Risk",
-                "explanation": "For short-term investments, liquidity is priority."
-            },
-            {
-                "question": "When considering the dividend to pay out which of the following should be considered? 1. Shareholder expectations 2. Investment opportunities 3. Current profitability 4. Past dividends paid",
-                "options": ["1, 2 and 3", "1, 3 and 4", "2, 3 and 4", "All of the above"],
-                "correct": "All of the above",
-                "explanation": "All factors influence dividend policy."
-            },
-            {
-                "question": "When considering the permanent financing of the business, what should debt and equity cover in balance sheet terms?",
-                "options": ["Current assets", "Total assets", "Total assets less current liabilities", "Net current assets"],
-                "correct": "Total assets less current liabilities",
-                "explanation": "Permanent financing covers non-current assets and permanent current assets."
-            },
-            {
-                "question": "What is considered the primary aim in financial management?",
-                "options": ["Maximising profit", "Maximising shareholders’ wealth", "Satisficing", "Corporate social responsibility"],
-                "correct": "Maximising shareholders’ wealth",
-                "explanation": "Shareholder wealth maximization is the primary aim."
-            },
-            {
-                "question": "As an employee how would you best assess your return from the organisation?",
-                "options": ["Return on capital employed", "Salary", "Payment terms", "Service"],
-                "correct": "Salary",
-                "explanation": "Employees assess return via salary and benefits."
-            },
-            {
-                "question": "What theory best describes the relationship between senior management and shareholders?",
-                "options": ["Tenancy theory", "Expectancy theory", "Portfolio theory", "Agency theory"],
-                "correct": "Agency theory",
-                "explanation": "Agency theory describes principal-agent relationship."
-            },
-            {
-                "question": "Which of the following may be considered areas of conflict between shareholders and directors? 1. Executive pay 2. Takeover strategy 3. Prestige projects 4. Risk assessment",
-                "options": ["1, 2 and 3", "2, 3 and 4", "1, 2 and 4", "All of the above"],
-                "correct": "All of the above",
-                "explanation": "All are potential agency conflicts."
-            },
-            {
-                "question": "What are the three fundamental decisions in financial management?",
-                "options": ["Investment, Financing and Dividend", "Management, Investment and Financing", "Management, Investment and Dividend", "Management, Financing and Dividend"],
-                "correct": "Investment, Financing and Dividend",
-                "explanation": "These are the core decisions."
-            },
-            # Added from tools (OpenTuition chapter 1 comments, but actual questions from page are not extracted well; using generated instead for now)
-            # Generated additional questions (10 more)
-            {
-                "question": "What is the main goal of financial management in a profit-oriented organization?",
-                "options": ["Maximize profits", "Maximize shareholder wealth", "Minimize risk", "Increase market share"],
-                "correct": "Maximize shareholder wealth",
-                "explanation": "Financial management aims to maximize the value of the firm for its owners."
-            },
-            {
-                "question": "Which of the following is an example of an agency cost?",
-                "options": ["Executive perks", "Employee salaries", "Dividend payments", "Interest expenses"],
-                "correct": "Executive perks",
-                "explanation": "Agency costs arise from conflicts between managers and shareholders."
-            },
-            {
-                "question": "In not-for-profit organizations, 'value for money' is assessed by which three criteria?",
-                "options": ["Economy, efficiency, effectiveness", "Profit, revenue, cost", "Assets, liabilities, equity", "Investment, financing, dividend"],
-                "correct": "Economy, efficiency, effectiveness",
-                "explanation": "Value for money focuses on optimal use of resources."
-            },
-            {
-                "question": "Which stakeholder group's interest is primarily in the financial stability of the company?",
-                "options": ["Employees", "Suppliers", "Lenders", "Customers"],
-                "correct": "Lenders",
-                "explanation": "Lenders focus on the company's ability to repay debts."
-            },
-            {
-                "question": "What does 'corporate governance' refer to?",
-                "options": ["Day-to-day operations", "System by which companies are directed and controlled", "Financial reporting", "Marketing strategy"],
-                "correct": "System by which companies are directed and controlled",
-                "explanation": "Corporate governance ensures accountability and transparency."
-            },
-            {
-                "question": "Which of the following is a non-financial objective?",
-                "options": ["Profit maximization", "Customer satisfaction", "Return on investment", "Cost reduction"],
-                "correct": "Customer satisfaction",
-                "explanation": "Non-financial objectives include quality and service aspects."
-            },
-            {
-                "question": "What is the 'dividend decision' in financial management?",
-                "options": ["How much profit to distribute to shareholders", "How to invest funds", "How to raise capital", "How to manage risk"],
-                "correct": "How much profit to distribute to shareholders",
-                "explanation": "Dividend policy balances payout and retention."
-            },
-            {
-                "question": "Which theory suggests that managers may pursue their own interests at the expense of shareholders?",
-                "options": ["Stakeholder theory", "Agency theory", "Portfolio theory", "Efficient market hypothesis"],
-                "correct": "Agency theory",
-                "explanation": "Agency theory highlights principal-agent conflicts."
-            },
-            {
-                "question": "What is 'satisficing' in the context of financial objectives?",
-                "options": ["Achieving maximum possible", "Accepting satisfactory level", "Ignoring objectives", "Focusing on one goal"],
-                "correct": "Accepting satisfactory level",
-                "explanation": "Satisficing balances multiple stakeholder needs."
-            },
-            {
-                "question": "Which of the following is a measure of shareholder wealth?",
-                "options": ["Earnings per share", "Share price appreciation + dividends", "Return on assets", "Gross profit margin"],
-                "correct": "Share price appreciation + dividends",
-                "explanation": "Total shareholder return measures wealth increase."
-            },
-        ],
-        "FM Environment": [
-            {
-                "question": "Gurdip plots the historic movements of share prices and uses this analysis to make her investment decisions. Oliver believes that share prices reflect all relevant information at all times. To what extent do Gurdip and Oliver believe capital markets to be efficient?",
-                "options": ["Gurdip: Not efficient at all Oliver: Strong form efficient", "Gurdip: Weak form efficient Oliver: Strong form efficient", "Gurdip: Not efficient at all Oliver: Semi-strong form efficient", "Gurdip: Strong form efficient Oliver: Not efficient at all"],
-                "correct": "Gurdip: Not efficient at all Oliver: Strong form efficient",
-                "explanation": "Technical analysis assumes inefficiency, while strong form assumes all info reflected."
-            },
-            {
-                "question": "Which of the following statements are features of money market instruments? (1) A negotiable security can be sold before maturity (2) The yield on commercial paper is usually lower than that on treasury bills (3) Discount instruments trade at less than face value",
-                "options": ["2 only", "1 and 3 only", "2 and 3 only", "1, 2 and 3"],
-                "correct": "1 and 3 only",
-                "explanation": "Negotiable, discount at face, commercial paper yield higher than treasury."
-            },
-            {
-                "question": "Which of the following is/are usually seen as benefits of financial intermediation? (1) Interest rate fixing (2) Risk pooling (3) Maturity transformation",
-                "options": ["1 only", "1 and 3 only", "2 and 3 only", "1, 2 and 3"],
-                "correct": "2 and 3 only",
-                "explanation": "Intermediaries pool risk and transform maturities."
-            },
-            {
-                "question": "Governments have a number of economic targets as part of their monetary policy. Which of the following targets relate predominantly to monetary policy? (1) Increasing tax revenue (2) Controlling the growth in the size of the money supply (3) Reducing public expenditure (4) Keeping interest rates low",
-                "options": ["1 only", "1 and 3", "2 and 4 only", "2, 3 and 4"],
-                "correct": "2 and 4 only",
-                "explanation": "Monetary policy involves money supply and interest rates."
-            },
-            {
-                "question": "What is the weak form of efficient market hypothesis?",
-                "options": ["Prices reflect all public info", "Prices reflect all info including insider", "Prices reflect past price info", "Prices are random"],
-                "correct": "Prices reflect past price info",
-                "explanation": "Weak form says past prices can't predict future."
-            },
-            {
-                "question": "Which is a role of financial intermediaries?",
-                "options": ["Provide liquidity", "Risk transformation", "Maturity transformation", "All of the above"],
-                "correct": "All of the above",
-                "explanation": "Intermediaries bridge borrowers and lenders."
-            },
-            {
-                "question": "What is a money market?",
-                "options": ["Market for long-term funds", "Market for short-term funds", "Stock market", "Commodity market"],
-                "correct": "Market for short-term funds",
-                "explanation": "Money markets deal in short-term debt instruments."
-            },
-            {
-                "question": "Which is an example of fiscal policy?",
-                "options": ["Changing interest rates", "Changing tax rates", "Printing money", "Regulating banks"],
-                "correct": "Changing tax rates",
-                "explanation": "Fiscal policy involves government spending and taxation."
-            },
-            {
-                "question": "What is semi-strong form efficiency?",
-                "options": ["Prices reflect past prices", "Prices reflect public info", "Prices reflect all info", "Prices are inefficient"],
-                "correct": "Prices reflect public info",
-                "explanation": "Semi-strong includes all publicly available information."
-            },
-            {
-                "question": "Which is a benefit of financial regulation?",
-                "options": ["Protect investors", "Increase competition", "Reduce innovation", "Increase costs"],
-                "correct": "Protect investors",
-                "explanation": "Regulation ensures fair markets."
-            },
-            {
-                "question": "What is the role of central banks in the financial environment?",
-                "options": ["Lend to businesses", "Set monetary policy", "Issue stocks", "Audit companies"],
-                "correct": "Set monetary policy",
-                "explanation": "Central banks control money supply and interest rates."
-            },
-            {
-                "question": "Which market is for long-term capital?",
-                "options": ["Money market", "Capital market", "Forex market", "Commodity market"],
-                "correct": "Capital market",
-                "explanation": "Capital markets deal in equities and long-term debt."
-            },
-            {
-                "question": "What is strong form efficiency?",
-                "options": ["Prices reflect past info", "Prices reflect public info", "Prices reflect all info including insider", "Prices are random"],
-                "correct": "Prices reflect all info including insider",
-                "explanation": "Strong form assumes even insider info is priced in."
-            },
-            {
-                "question": "Which is an example of a money market instrument?",
-                "options": ["Treasury bill", "Corporate bond", "Common stock", "Real estate"],
-                "correct": "Treasury bill",
-                "explanation": "T-bills are short-term government securities."
-            },
-            {
-                "question": "The existence of projects with positive expected net present values supports the idea that the stock market is strong-form efficient.",
-                "options": ["TRUE", "FALSE"],
-                "correct": "FALSE",
-                "explanation": "Positive NPV projects suggest inefficiency if not immediately reflected."
-            },
-            {
-                "question": "The existence of information content in dividend announcements supports the idea that the stock market is strong-form efficient.",
-                "options": ["TRUE", "FALSE"],
-                "correct": "FALSE",
-                "explanation": "Information content suggests semi-strong or weaker."
-            }
-        ],
-        "Investment Decisions": [
-            {
-                "question": "Which investment appraisal method ignores the time value of money?",
-                "options": ["NPV", "IRR", "Payback Period", "Discounted Payback"],
-                "correct": "Payback Period",
-                "explanation": "Payback ignores timing of cash flows beyond payback period."
-            },
-            {
-                "question": "A company whose home currency is the dollar ($) expects to pay 500,000 pesos in six months’ time to a supplier in a foreign country. The following interest rates and exchange rates are available to the company: Spot rate 15.00 pesos per $ Six-month forward rate 15.30 pesos per $ Dollar ($) Peso Borrowing interest rate 4% per year 8% per year Deposit interest rate 3% per year 6% per year What is the cost, in six months’ time, of the expected payment using a money- market hedge (to the nearest $100)?",
-                "options": ["$31,800", "$32,500", "$33,000", "$33,700"],
-                "correct": "$33,000",  # Inferred from typical calculations, but in real, look up answers
-                "explanation": "Money market hedge calculation for currency."
-            },
-            {
-                "question": "Which of the following is a disadvantage of using Accounting Rate of Return (ARR)?",
-                "options": ["It considers all cash flows", "It ignores time value of money", "It is based on cash flows", "It is easy to calculate"],
-                "correct": "It ignores time value of money",
-                "explanation": "ARR uses accounting profit, ignores TVM."
-            },
-            {
-                "question": "Which of the following investment appraisal methods is most affected by cost of capital changes?",
-                "options": ["ARR", "IRR", "Payback", "Return on Sales"],
-                "correct": "IRR",
-                "explanation": "IRR is the rate where NPV=0, sensitive to cost changes."
-            },
-            {
-                "question": "Why is investment appraisal considered such a critical decision for the organisation? 1. Long-term implications to the business 2. The uncertainty associated with the inflows generated from the investment 3. The size of the potential investment relative to the size of the business",
-                "options": ["1 and 2", "1 and 3", "2 and 3", "All of the above"],
-                "correct": "All of the above",
-                "explanation": "All factors make investment appraisal critical."
-            },
-            {
-                "question": "Which investment appraisal methods primarily assesses the risk of the project?",
-                "options": ["Payback", "ROCE", "NPV", "IRR"],
-                "correct": "Payback",
-                "explanation": "Payback assesses recovery time, a measure of risk."
-            },
-            {
-                "question": "Which investment appraisal method considers the impact of the investment on accounting profit?",
-                "options": ["Payback", "ROCE", "NPV", "IRR"],
-                "correct": "ROCE",
-                "explanation": "ROCE uses accounting profit."
-            },
-            {
-                "question": "Which are the fundamental reason(s) for time value of money? 1. Inflation 2. Opportunity cost of capital 3. Risk",
-                "options": ["1 and 2", "2 only", "2 and 3", "All of the above"],
-                "correct": "All of the above",
-                "explanation": "All contribute to TVM."
-            }
-        ],
-        "DCF Methods": [
-            {
-                "question": "The Net Present Value of a project is the:",
-                "options": ["Sum of future cash flows", "Sum of discounted future cash flows less initial investment", "Sum of profits", "Sum of costs"],
-                "correct": "Sum of discounted future cash flows less initial investment",
-                "explanation": "NPV is PV of inflows minus outflows."
-            },
-            {
-                "question": "A project with a positive NPV at a 10% discount rate implies:",
-                "options": ["Project destroys value", "IRR < 10%", "IRR > 10%"],
-                "correct": "IRR > 10%",
-                "explanation": "Positive NPV means IRR > cost of capital."
-            },
-            {
-                "question": "Calculate the IRR from the following information Discount Rate NPV 5% +400 12% -200",
-                "options": ["9.66%", "8%", "10.66%", "7.33%"],
-                "correct": "9.66%",
-                "explanation": "IRR = 5 + (400/(400+200)) * (12-5) = 9.67% approx."
-            },
-            {
-                "question": "What is the present value of an annuity of $500 payable over 4 years at 10% commencing in year 2?",
-                "options": ["$1,309", "$1,441", "$1,585", "$1,703"],
-                "correct": "$1,441",
-                "explanation": "Annuity factor years 2-5 at 10% = 3.1699 - 0.9091 = 2.2608; 500*2.2608 = $1,130.4 wait, perhaps calculation error, but as per source."
-            },
-            {
-                "question": "Calculate the present value of a perpetuity of $750 at a cost of capital of 8%",
-                "options": ["$6,000", "$7,434", "$9,375", "$10,500"],
-                "correct": "$9,375",
-                "explanation": "PV = 750 / 0.08 = $9,375."
-            },
-            {
-                "question": "Calculate the value of $1,250 today in 4 years time at a cost of capital of 9%",
-                "options": ["$1,460", "$1,700", "$1,764", "$1,840"],
-                "correct": "$1,764",
-                "explanation": "FV = 1250 * (1.09)^4 ≈ $1,764."
-            },
-            {
-                "question": "If the cash inflow per annum are $40,000 and the investment is $110,000 what will the payback period be?",
-                "options": ["2.0 years", "2.5 years", "2.7 years", "3.0 years"],
-                "correct": "2.7 years",
-                "explanation": "110,000 / 40,000 = 2.75 years."
-            },
-            {
-                "question": "What is the assumed relationship between net cash inflow per annum and profit?",
-                "options": ["Net cash flow minus depreciation equals profit", "Net cash flow plus depreciation equals profit", "There is no relationship between the two"],
-                "correct": "Net cash flow plus depreciation equals profit",
-                "explanation": "Profit = cash flow + depreciation (non-cash)."
-            },
-            {
-                "question": "SKV Co has paid the following dividends per share in recent years: Year 20X4 20X3 20X2 20X1 Dividend ($ per share) 0·360 0·338 0·328 0·311 The dividend for 20X4 has just been paid and SKV Co has a cost of equity of 12%. Using the geometric average historical dividend growth rate and the dividend growth model, what is the market price of SKV Co shares on an ex dividend basis?",
-                "options": ["$4·67", "$5·14", "$5·40", "$6·97"],
-                "correct": "$5·40",
-                "explanation": "Growth = (0.36/0.311)^ (1/3) -1 ≈ 5%; P0 = 0.36*(1.05)/ (0.12-0.05) = $5.4."
-            }
-        ],
-        "Relevant Cash Flows": [
-            {
-                "question": "Which of the following is a relevant cash flow in project appraisal?",
-                "options": ["Sunk cost", "Opportunity cost", "Committed cost", "Allocated overhead"],
-                "correct": "Opportunity cost",
-                "explanation": "Opportunity cost is relevant as it's forgone benefit."
-            },
-            {
-                "question": "Tax allowable depreciation is a relevant cash flow when evaluating borrowing to buy compared to leasing?",
-                "options": ["True", "False"],
-                "correct": "True",
-                "explanation": "Tax allowable depreciation provides tax relief, which is a relevant cash flow."
-            },
-            {
-                "question": "Which of the following statements is correct?",
-                "options": ["Tax allowable depreciation is a relevant cash flow when evaluating borrowing to buy compared to leasing", "Interest payments should be ignored when evaluating borrowing to buy compared to leasing", "Discounting at a pre-tax rate is valid when evaluating leasing compared to borrowing to buy", "Lease payments are usually made at the end of each lease payment period"],
-                "correct": "Tax allowable depreciation is a relevant cash flow when evaluating borrowing to buy compared to leasing",
-                "explanation": "TAD provides tax savings in borrowing but not in leasing."
-            },
-            {
-                "question": "In project appraisal, which of the following is a relevant cash flow?",
-                "options": ["Allocated overheads", "Sunk costs", "Opportunity costs", "Depreciation expense"],
-                "correct": "Opportunity costs",
-                "explanation": "Opportunity costs represent forgone benefits and are incremental."
-            },
-            {
-                "question": "A company is evaluating a project with an initial investment of $100,000. The project will generate cash inflows of $30,000 per year for 5 years. What is the relevant cash flow for year 0?",
-                "options": ["$30,000", "$100,000", "($100,000)", "$0"],
-                "correct": "($100,000)",
-                "explanation": "Initial investment is an outflow at t=0."
-            }
-        ],
-        "DCF Applications": [
-            {
-                "question": "If the question has more than one inflation rate illustrated in the question which combination of cash flows and rate must be used in the analysis?",
-                "options": ["Real cash flows and real rate", "Real cash flows and money rate", "Money cash flow and real rate", "Money cash flows and money rate"],
-                "correct": "Money cash flows and money rate",
-                "explanation": "Use nominal (money) for different inflation rates."
-            },
-            {
-                "question": "Which eminent economist provided the formula to convert real to money rate and vice versa?",
-                "options": ["Keynes", "Smith", "Fisher", "Friedman"],
-                "correct": "Fisher",
-                "explanation": "Fisher effect: (1+m) = (1+r)(1+i)."
-            },
-            {
-                "question": "Which specific investment appraisal technique may be only concerned with the present value of the costs?",
-                "options": ["Capital rationing decision", "Asset replacement decision", "Sensitivity analysis", "Lease or buy decision"],
-                "correct": "Lease or buy decision",
-                "explanation": "Lease vs buy compares PV of costs."
-            },
-            {
-                "question": "If a project has a revenue per annum of $100,000 and a contribution per annum of $25,000 for 4 years and a NPV of $10,000 and the cost of capital is 8%, what is the amount by which the sales volume may change before the NPV drops to zero?",
-                "options": ["3%", "6%", "9%", "12%"],
-                "correct": "12%",
-                "explanation": "Sensitivity = NPV / PV of sales volume related flows."
-            },
-            {
-                "question": "If a project has a revenue per annum of $100,000 and a contribution per annum of $25,000 for 4 years and a NPV of $10,000 and the cost of capital is 8%, what is the amount by which the sales price may change before the NPV drops to zero?",
-                "options": ["3%", "6%", "9%", "12%"],
-                "correct": "12%",
-                "explanation": "Similar to volume, since price affects contribution proportionally."
-            },
-            {
-                "question": "Using asset replacement theory which replacement strategy would be selected from the following at a discount rate of 10% Project PV of cost Asset life (yrs) 1 $8,000 1 year 2 $13,000 2 years 3 $18,000 3 years",
-                "options": ["Project 1", "Project 2", "Project 3", "Cannot be calculated from the above information"],
-                "correct": "Project 3",
-                "explanation": "Lowest equivalent annual cost."
-            },
-            {
-                "question": "The following financial information relates to an investment project: $’000 Present value of sales revenue 50,025 Present value of variable costs 25,475 Present value of contribution 24,550 Present value of fixed costs 18,250 Present value of operating income 6,300 Initial investment 5,000 Net present value 1,300 What is the sensitivity of the net present value of the investment project to a change in sales volume?",
-                "options": ["7·1%", "2·6%", "5·1%", "5·3%"],
-                "correct": "5·3%",
-                "explanation": "Sensitivity = NPV / PV contribution = 1300 / 24550 ≈ 5.3%."
-            }
-        ],
-        "Project Appraisal Under Risk": [
-            {
-                "question": "In capital rationing if the project can be taken in part and the return is proportionate to the part undertaken which of the following describes that situation?",
-                "options": ["Non divisible projects", "Divisible projects", "Mutually exclusive projects", "None of the above"],
-                "correct": "Divisible projects",
-                "explanation": "Divisible projects can be fractionally undertaken."
-            },
-            {
-                "question": "In capital rationing which reasons are there for hard capital rationing? 1. Economy wide factors 2. Company specific factors 3. Internal decisions",
-                "options": ["1 only", "1 and 2", "2 and 3", "All of the above"],
-                "correct": "1 and 2",
-                "explanation": "Hard rationing is external."
-            },
-            {
-                "question": "If inflation is evident in the question, what is the inflated value of labour in year 4 if we know that inflation is at 3.5% and the cash flow in real terms is $30,500?",
-                "options": ["$35,000", "$34,770", "$33,816", "$33,703"],
-                "correct": "$35,000",
-                "explanation": "30,500 * (1.035)^4 ≈ $35,000."
-            },
-            {
-                "question": "The following financial information relates to an investment project: $’000 Present value of sales revenue 50,025 Present value of variable costs 25,475 Present value of contribution 24,550 Present value of fixed costs 18,250 Present value of operating income 6,300 Initial investment 5,000 Net present value 1,300 What is the sensitivity of the net present value of the investment project to a change in sales volume?",
-                "options": ["7·1%", "2·6%", "5·1%", "5·3%"],
-                "correct": "5·3%",
-                "explanation": "As above."
-            },
-            {
-                "question": "The following information has been calculated for A Co: Trade receivables collection period: 52 days Raw material inventory turnover period: 42 days Work in progress inventory turnover period: 30 days Trade payables payment period: 66 days Finished goods inventory turnover period: 45 days What is the length of the working capital cycle?",
-                "options": ["103 days", "131 days", "235 days", "31 days"],
-                "correct": "103 days",
-                "explanation": "52 +42 +30 +45 -66 = 103 days."
-            },
-            {
-                "question": "During a simulation exercise:",
-                "options": ["Considers the probability of the outcome of a project", "Considers only the riskiest variables", "Considers only one variable at a time", "Considers many variables simultaneously"],
-                "correct": "Considers many variables simultaneously",
-                "explanation": "Simulation models multiple variables and their probabilities."
-            },
-            {
-                "question": "Using asset replacement theory which replacement strategy would be selected from the following at a discount rate of 10% Project PV of cost Asset life (yrs) 1 $8,000 1 year 2 $13,000 2 years 3 $18,000 3 years",
-                "options": ["Project 1", "Project 2", "Project 3", "Cannot be calculated from the above information"],
-                "correct": "Project 3",
-                "explanation": "Lowest equivalent annual cost."
-            },
-            {
-                "question": "In situations involving multiple reversals in project cash flows, it is possible that the IRR method may produce multiple IRRs.",
-                "options": ["True", "False"],
-                "correct": "True",
-                "explanation": "Non-conventional cash flows can lead to multiple IRRs."
-            },
-            {
-                "question": "Which of the following is a disadvantage of sensitivity analysis?",
-                "options": ["It considers all variables", "It ignores probability", "It provides a range of outcomes", "It is easy to understand"],
-                "correct": "It ignores probability",
-                "explanation": "Sensitivity doesn't assign probabilities to changes."
-            }
-        ],
-        "Equity Finance": [
-            {
-                "question": "How many new shares will be issued? A company is investing $70m in a new project and will be funding part of the investment by debt and the remainder by equity through a rights issue. The current share price is $4 and the market capitalisation is $200m. The rights issue price will be at a discount of 20% to the current share price. The rights issue will be on a 1 for 5 basis. Issue costs are expected to be $2m. Current equity gearing (debt/equity) is 40%.",
-                "options": ["5 million", "10 million", "50 million", "60 million"],
-                "correct": "10 million",
-                "explanation": "Calculation based on rights issue terms."
-            },
-            {
-                "question": "How much gross funding is raised by the rights issue? (Using data from previous question)",
-                "options": ["$16m", "$20m", "$32m", "$40m"],
-                "correct": "$32m",
-                "explanation": "10m shares * $3.2 = $32m."
-            },
-            {
-                "question": "What is the theoretical ex rights price? (Using data from previous question)",
-                "options": ["$3.87", "$4.00", "$4.64", "$5.00"],
-                "correct": "$3.87",
-                "explanation": "TERP = (5*4 +1*3.2)/6 = $3.87."
-            },
-            {
-                "question": "SKV Co has paid the following dividends per share in recent years: Year 20X4 20X3 20X2 20X1 Dividend ($ per share) 0·360 0·338 0·328 0·311 The dividend for 20X4 has just been paid and SKV Co has a cost of equity of 12%. Using the geometric average historical dividend growth rate and the dividend growth model, what is the market price of SKV Co shares on an ex dividend basis?",
-                "options": ["$4·67", "$5·14", "$5·40", "$6·97"],
-                "correct": "$5·40",
-                "explanation": "As above."
-            }
-        ],
-        "Debt Finance": [
-            {
-                "question": "What is a characteristic of debt finance?",
-                "options": ["Ownership dilution", "Tax deductible interest", "Variable returns", "No repayment required"],
-                "correct": "Tax deductible interest",
-                "explanation": "Interest on debt is tax deductible."
-            },
-            {
-                "question": "If a loan note (par value = $100) is irredeemable what would be the cost of debt given that the current market value is $105 and the coupon rate is 8%. The debt is tax deductible and the current corporation tax rate is 25%. (Calculations to 2 decimal places)",
-                "options": ["5.00%", "5.71%", "8.00%", "8.71%"],
-                "correct": "5.71%",
-                "explanation": "Kd = (8*0.75)/105 = 5.71%."
-            },
-            {
-                "question": "If we have a redeemable loan note repayable at par ($100) in one year with a coupon rate of 6% which is currently trading at $95. What is the cost of debt if the tax rate is 30% (to 2 decimal places).",
-                "options": ["9.68%", "4.20%", "5.00%", "10.00%"],
-                "correct": "9.68%",
-                "explanation": "After tax interest 6*0.7=4.2, redemption 100-95=5, Kd = (4.2 +5)/95 ≈ 9.68%."
-            },
-            {
-                "question": "The loan notes are secured on non-current assets of Par Co and the bank loan is secured by a floating charge on the current assets of the company. Which of the following shows the sources of finance of Par Co in order of the risk to the investor with the riskiest first?",
-                "options": ["Redeemable preference shares, ordinary shares, loan notes, bank loan", "Ordinary shares, loan notes, redeemable preference shares, bank loan", "Bank loan, ordinary shares, redeemable preference shares, loan notes", "Ordinary shares, redeemable preference shares, bank loan, loan notes"],
-                "correct": "Ordinary shares, redeemable preference shares, bank loan, loan notes",
-                "explanation": "Equity highest risk, then pref, then unsecured, secured lowest."
-            },
-            {
-                "question": "What is the conversion value of the 8% loan notes of Par Co after seven years?",
-                "options": ["$16·39", "$111·98", "$131·12", "$71·72"],
-                "correct": "$131·12",
-                "explanation": "Calculation based on growth."
-            },
-            {
-                "question": "Assuming the conversion value after seven years is $126·15, what is the current market value of the 8% loan notes of Par Co?",
-                "options": ["$115·20", "$109·26", "$94·93", "$69·00"],
-                "correct": "$109·26",
-                "explanation": "PV of interest and conversion."
-            }
-        ],
-        "Cost of Capital": [
-            {
-                "question": "When calculating the cost of equity using the dividend valuation model which time value of money concept is most likely to be used?",
-                "options": ["Annuity", "Compounding", "Present values", "Perpetuities"],
-                "correct": "Perpetuities",
-                "explanation": "DVM = D0(1+g)/(ke-g), perpetuity."
-            },
-            {
-                "question": "Given a share price of $10 and a dividend per annum of $0.5 what would be the cost of equity if there is no expected growth in the dividend?",
-                "options": ["4%", "5%", "6%", "10%"],
-                "correct": "5%",
-                "explanation": "ke = 0.5/10 = 5%."
-            },
-            {
-                "question": "If we are calculating the growth rate for dividends using the average method what would the growth rate be using the following information to 2 decimal places? Current dividend: 5c Dividend 3 years ago: 4c",
-                "options": ["7.72%", "25%", "7.49%", "8.33%"],
-                "correct": "7.72%",
-                "explanation": "(5/4)^(1/3) -1 = 7.72%."
-            },
-            {
-                "question": "Using Gordon’s Growth Model what would be the estimated growth rate of the dividends given the following information? Profit after tax: 20% Dividend payout ratio: 60%",
-                "options": ["8%", "10%", "12%", "14%"],
-                "correct": "8%",
-                "explanation": "g = r * (1 - payout) = 0.2 * 0.4 = 8%."
-            },
-            {
-                "question": "Given that we expect the growth rate of dividends to be 5% and the current market value of the share is $4.5 ex div. What is the cost of equity if the dividend paid this year is 55c?",
-                "options": ["5.00%", "10.83%", "12.83%", "17.83%"],
-                "correct": "17.83%",
-                "explanation": "ke = (0.55*1.05)/4.5 + 0.05 = 12.83% +5% = 17.83%."
-            },
-            {
-                "question": "What is the cost of capital of a bank loan with an interest charge of 10% per annum. Tax is payable at 35%",
-                "options": ["5.0%", "6.5%", "10.0%", "Unable to be calculated"],
-                "correct": "6.5%",
-                "explanation": "kd = 10*(1-0.35) = 6.5%."
-            },
-            {
-                "question": "Given the following information relating to a convertible debt would the debtholder elect to convert or redeem the debt in year 4? The current market value of a share is $4 and the share is expected to rise by 6% per annum. The debt is convertible into 20 shares in three years or alternatively redeemable at par ($100).",
-                "options": ["Convert", "Redeem", "Either", "Unable to make a decision"],
-                "correct": "Redeem",
-                "explanation": "Conversion value = 20*4*(1.06)^3 ≈ $95.3 < 100, so redeem."
-            },
-            {
-                "question": "Which of the following statements relating to the capital asset pricing model is correct?",
-                "options": ["The equity beta of Par Co considers only business risk", "The capital asset pricing model considers systematic risk and unsystematic risk", "The equity beta of Par Co indicates that the company is more risky than the market as a whole", "The debt beta of Par Co is zero"],
-                "correct": "The equity beta of Par Co indicates that the company is more risky than the market as a whole",
-                "explanation": "Beta >1 means higher risk."
-            }
-        ],
-        "WACC": [
-            {
-                "question": "Given the following information what is the WACC to 2 decimal places? Market Value Return Debt $4m 6% Equity $40m 12%",
-                "options": ["9%", "10.5%", "11.0%", "11.45%"],
-                "correct": "11.45%",
-                "explanation": "WACC = (4/44)*6 + (40/44)*12 = 11.45%."
-            },
-            {
-                "question": "Which of the following statements concerning capital structure theory is correct?",
-                "options": ["In the traditional view, there is a linear relationship between the cost of equity and financial risk", "Modigliani and Miller said that, in the absence of tax, the cost of equity would remain constant", "Pecking order theory indicates that preference shares are preferred to convertible debt as a source of finance", "Business risk is assumed to be constant as the capital structure changes"],
-                "correct": "Business risk is assumed to be constant as the capital structure changes",
-                "explanation": "Assumption in capital structure theories."
-            }
-        ],
-        "CAPM": [
-            {
-                "question": "What does the beta factor measure in CAPM?",
-                "options": ["Systematic risk", "Unsystematic risk", "Total risk", "Market return"],
-                "correct": "Systematic risk",
-                "explanation": "Beta measures systematic risk relative to market."
-            },
-            {
-                "question": "Which of the following statements relating to the capital asset pricing model is correct?",
-                "options": ["The equity beta of Par Co considers only business risk", "The capital asset pricing model considers systematic risk and unsystematic risk", "The equity beta of Par Co indicates that the company is more risky than the market as a whole", "The debt beta of Par Co is zero"],
-                "correct": "The equity beta of Par Co indicates that the company is more risky than the market as a whole",
-                "explanation": "Beta >1 means higher risk."
-            },
-            {
-                "question": "In the context of the Capital Asset Pricing Model (CAPM) the relevant measure of risk is",
-                "options": ["unique risk", "beta", "standard deviation of returns", "variance of returns"],
-                "correct": "beta",
-                "explanation": "Beta measures systematic risk."
-            },
-            {
-                "question": "The CAPM assumes that investors hold",
-                "options": ["efficient portfolios", "diversified portfolios", "undiversified portfolios", "risk-free assets only"],
-                "correct": "diversified portfolios",
-                "explanation": "CAPM assumes investors eliminate unsystematic risk through diversification."
-            },
-            {
-                "question": "The CAPM can be used to calculate the cost of equity for a company.",
-                "options": ["True", "False"],
-                "correct": "True",
-                "explanation": "Ke = Rf + Beta*(Rm - Rf)."
-            },
-            {
-                "question": "Which of the following is an assumption of the CAPM?",
-                "options": ["No taxes", "No transaction costs", "Perfect information", "All of the above"],
-                "correct": "All of the above",
-                "explanation": "CAPM assumes no taxes, no transaction costs, perfect information."
-            },
-            {
-                "question": "A beta of 1.2 indicates the asset is",
-                "options": ["Less risky than market", "As risky as market", "More risky than market", "Risk-free"],
-                "correct": "More risky than market",
-                "explanation": "Beta >1 means higher systematic risk."
-            }
-        ],
-        "Working Capital Management": [
-            {
-                "question": "What is the primary goal of working capital management?",
-                "options": ["Maximize liquidity", "Minimize costs", "Balance liquidity and profitability", "Maximize inventory"],
-                "correct": "Balance liquidity and profitability",
-                "explanation": "Balance to avoid excess or shortage."
-            },
-            {
-                "question": "Which of the following statements concerning working capital management are correct? (1) The twin objectives of working capital management are profitability and liquidity (2) A conservative approach to working capital investment will increase profitability (3) Working capital management is a key factor in a company’s long-term success",
-                "options": ["1 and 2 only", "1 and 3 only", "2 and 3 only", "1, 2 and 3"],
-                "correct": "1 and 3 only",
-                "explanation": "Conservative approach decreases profitability."
-            },
-            {
-                "question": "The management of XYZ Co has annual credit sales of $20 million and accounts receivable of $4 million. Working capital is financed by an overdraft at 12% interest per year. Assume 365 days in a year. What is the annual finance cost saving if the management reduces the collection period to 60 days?",
-                "options": ["$85,479", "$394,521", "$78,904", "$68,384"],
-                "correct": "$85,479",
-                "explanation": "Reduction in AR = 4m - (20m*60/365) ≈ 0.712m; saving = 0.712m *12% ≈ $85,479."
-            },
-            {
-                "question": "The following information has been calculated for A Co: Trade receivables collection period: 52 days Raw material inventory turnover period: 42 days Work in progress inventory turnover period: 30 days Trade payables payment period: 66 days Finished goods inventory turnover period: 45 days What is the length of the working capital cycle?",
-                "options": ["103 days", "131 days", "235 days", "31 days"],
-                "correct": "103 days",
-                "explanation": "As above."
-            },
-            {
-                "question": "The following are extracts from the statement of profit or loss of CQB Co: $’000 Sales income 60,000 Cost of sales 50,000 Profit before interest and tax 10,000 Interest 4,000 Profit before tax 6,000 Tax 4,500 Profit after tax 1,500 60% of the cost of sales is variables costs. What is the operational gearing of CQB Co?",
-                "options": ["5·0 times", "2·0 times", "0·5 times", "3·0 times"],
-                "correct": "3·0 times",
-                "explanation": "Contribution = 60,000 - 30,000 = 30,000; Op gearing = contribution / PBIT = 30k/10k = 3."
-            }
-        ],
-        "Inventory Management": [
-            {
-                "question": "What does EOQ stand for?",
-                "options": ["Economic Order Quantity", "Efficient Order Quality", "Estimated Order Quantity", "Effective Order Quotient"],
-                "correct": "Economic Order Quantity",
-                "explanation": "EOQ minimizes holding and ordering costs."
-            },
-            {
-                "question": "The economic order quantity (EOQ) is the order size that minimises the sum of holding costs and ordering costs. True or false?",
-                "options": ["True", "False"],
-                "correct": "True",
-                "explanation": "EOQ balances holding and ordering costs."
-            },
-            {
-                "question": "Which of the following is NOT an assumption of the EOQ model?",
-                "options": ["Constant demand", "No lead time", "Constant holding cost", "Variable ordering cost"],
-                "correct": "Variable ordering cost",
-                "explanation": "EOQ assumes constant ordering cost per order."
-            },
-            {
-                "question": "A company has annual demand for a product of 10,000 units. Ordering cost is $50 per order, holding cost is $2 per unit per year. What is the EOQ?",
-                "options": ["500", "707", "1000", "1414"],
-                "correct": "707",
-                "explanation": "EOQ = sqrt(2*10000*50 / 2) ≈ 707."
-            },
-            {
-                "question": "Just-in-time (JIT) inventory management aims to:",
-                "options": ["Maximize inventory levels", "Minimize holding costs by reducing inventory", "Increase ordering costs", "Ignore supplier relationships"],
-                "correct": "Minimize holding costs by reducing inventory",
-                "explanation": "JIT reduces inventory to near zero."
-            }
-        ],
-        "Cash Management": [
-            {
-                "question": "Which model is used for cash management?",
-                "options": ["Miller-Orr", "EOQ", "CAPM", "NPV"],
-                "correct": "Miller-Orr",
-                "explanation": "Miller-Orr model for cash balances with uncertainty."
-            },
-            {
-                "question": "The Miller-Orr model is used to manage cash balances. What does the 'spread' represent?",
-                "options": ["Difference between upper and lower limits", "Transaction cost", "Variance of cash flows", "Interest rate"],
-                "correct": "Difference between upper and lower limits",
-                "explanation": "Spread = upper limit - lower limit."
-            },
-            {
-                "question": "Baumol's model for cash management is similar to:",
-                "options": ["EOQ for inventory", "CAPM", "NPV", "IRR"],
-                "correct": "EOQ for inventory",
-                "explanation": "Baumol treats cash like inventory."
-            },
-            {
-                "question": "A company has a lower cash limit of $5,000 and transaction cost of $20. Variance of cash flows is 1,000, interest rate 0.01% per day. What is the spread using Miller-Orr?",
-                "options": ["$1,587", "$2,000", "$3,000", "$4,000"],
-                "correct": "$1,587",
-                "explanation": "Spread = 3 * [(3/4 * transaction cost * variance) / interest rate]^(1/3)."
-            }
-        ],
-        "AR/AP Management": [
-            {
-                "question": "What is factoring in receivables management?",
-                "options": ["Selling receivables to a third party", "Increasing credit terms", "Reducing inventory", "Hedging currency"],
-                "correct": "Selling receivables to a third party",
-                "explanation": "Factoring improves cash flow by selling AR."
-            },
-            {
-                "question": "The management of XYZ Co has annual credit sales of $20 million and accounts receivable of $4 million. Working capital is financed by an overdraft at 12% interest per year. Assume 365 days in a year. What is the annual finance cost saving if the management reduces the collection period to 60 days?",
-                "options": ["$85,479", "$394,521", "$78,904", "$68,384"],
-                "correct": "$85,479",
-                "explanation": "As above."
-            },
-            {
-                "question": "Which of the following would increase the net working capital of a firm? 1. Cash collection of accounts receivable. 2. Payment of accounts payable. 3. Sale of marketable securities. 4. Refinancing of short-term debt with long-term debt.",
-                "options": ["1 and 2 only", "3 and 4 only", "1, 3 and 4 only", "2, 3 and 4 only"],
-                "correct": "3 and 4 only",
-                "explanation": "1 decreases AR (current asset), 2 decreases AP (current liability) but also cash, net zero; 3 increases cash, 4 decreases current liability."
-            },
-            {
-                "question": "A company offers a cash discount of 2% for payment within 10 days. What is the annualized cost of not taking the discount if the credit terms are 2/10 net 30?",
-                "options": ["36.7%", "24.5%", "18.2%", "12.4%"],
-                "correct": "36.7%",
-                "explanation": "Cost = (2/98) * (365/20) ≈ 37.2% (approx)."
-            },
-            {
-                "question": "Invoice discounting is:",
-                "options": ["Selling selected invoices to a finance company", "Offering discounts for early payment", "Factoring all receivables", "Increasing credit terms"],
-                "correct": "Selling selected invoices to a finance company",
-                "explanation": "Confidential way to raise cash from specific invoices."
-            }
-        ],
-        "Risk Management": [
-            {
-                "question": "How is tax relief calculated on a finance lease?",
-                "options": ["25% WDA on the underlying asset", "Full relief on the lease payments", "100% first year allowance", "There is no tax relief on an operating lease"],
-                "correct": "Full relief on the lease payments",
-                "explanation": "Finance lease payments are deductible."
-            },
-            {
-                "question": "The home currency of ACB Co is the dollar ($) and it trades with a company in a foreign country whose home currency is the Dinar. The following information is available: Home country Foreign country Spot rate 20·00 Dinar per $ Interest rate 3% per year 7% per year Inflation rate 2% per year 5% per year What is the six-month forward exchange rate?",
-                "options": ["20·39 Dinar per $", "20·30 Dinar per $", "20·59 Dinar per $", "20·78 Dinar per $"],
-                "correct": "20·39 Dinar per $",
-                "explanation": "Forward = spot * (1 + ih/2) / (1 + if/2) ≈ 20 * (1.015)/ (1.035) ≈ 20.39."
-            },
-            {
-                "question": "‘There is a risk that the value of our foreign currency-denominated assets and liabilities will change when we prepare our accounts’ To which risk does the above statement refer?",
-                "options": ["Translation risk", "Economic risk", "Transaction risk", "Interest rate risk"],
-                "correct": "Translation risk",
-                "explanation": "Translation risk affects consolidated statements."
-            },
-            {
-                "question": "What is the dollar cost of a forward market hedge?",
-                "options": ["$390,472", "$387,928", "$400,000", "$397,393"],
-                "correct": "$390,472",
-                "explanation": "Calculation based on forward rate."
-            },
-            {
-                "question": "Which of the following are the appropriate six-month interest rates for ZPS Co to use if the company hedges the peso payment using a money market hedge?",
-                "options": ["Deposit rate: 7·5% Borrowing rate: 4·5%", "Deposit rate: 1·75% Borrowing rate: 5·0%", "Deposit rate: 3·75% Borrowing rate: 2·25%", "Deposit rate: 3·5% Borrowing rate: 10·0%"],
-                "correct": "Deposit rate: 3·75% Borrowing rate: 2·25%",
-                "explanation": "Half year rates."
-            },
-            {
-                "question": "Which of the following methods are possible ways for ZPS Co to hedge its existing foreign currency risk? (1) Matching receipts and payments (2) Currency swaps (3) Leading or lagging (4) Currency futures",
-                "options": ["1, 2, 3 and 4", "1 and 3 only", "2 and 4 only", "2, 3 and 4 only"],
-                "correct": "1, 2, 3 and 4",
-                "explanation": "All are hedging methods."
-            },
-            {
-                "question": "Which of the following are correct for both purchasing power parity theory and interest rate parity theory? (1) The theory holds in the long term rather than the short term (2) The exchange rate reflects the different cost of living in two countries (3) The currency of the country with the higher inflation rate will weaken against the other currency",
-                "options": ["2 and 3", "1 and 2", "1 and 3", "1 only"],
-                "correct": "1 and 3",
-                "explanation": "Both hold long term, higher inflation weakens currency."
-            }
-        ],
-        "Business Valuation": [
-            {
-                "question": "Which of the following statements are problems in using the price/earnings ratio method to value a company? (1) It is the reciprocal of the earnings yield (2) It combines stock market information and corporate information (3) It is difficult to select a suitable price/earnings ratio (4) The ratio is more suited to valuing the shares of listed companies",
-                "options": ["1 and 2 only", "3 and 4 only", "1, 3 and 4 only", "1, 2, 3 and 4"],
-                "correct": "3 and 4 only",
-                "explanation": "Problems are selecting P/E and suitability for listed."
-            },
-            {
-                "question": "Which method uses discounted cash flows for valuation?",
-                "options": ["Asset-based", "Dividend yield", "DCF", "P/E ratio"],
-                "correct": "DCF",
-                "explanation": "DCF discounts future cash flows."
-            },
-            {
-                "question": "The net asset value (NAV) of a company is the:",
-                "options": ["Market value of assets minus liabilities", "Book value of assets minus liabilities", "Replacement cost of assets", "Liquidation value"],
-                "correct": "Book value of assets minus liabilities",
-                "explanation": "NAV is typically book value, but can be adjusted."
-            },
-            {
-                "question": "In the P/E ratio method, the value of the company is:",
-                "options": ["Earnings * P/E ratio", "Assets / Liabilities", "Dividends / Growth rate", "Cash flows * Discount rate"],
-                "correct": "Earnings * P/E ratio",
-                "explanation": "Value = EPS * P/E."
-            },
-            {
-                "question": "Which valuation method is most suitable for a startup with no earnings?",
-                "options": ["P/E ratio", "DCF", "Asset-based", "Dividend discount"],
-                "correct": "Asset-based",
-                "explanation": "For no earnings, asset-based is useful."
-            },
-            {
-                "question": "The dividend valuation model assumes constant growth in dividends. True or false?",
-                "options": ["True", "False"],
-                "correct": "True",
-                "explanation": "Gordon model assumes perpetual growth."
-            },
-            {
-                "question": "A company has earnings of $5m and a P/E of 15. What is the value?",
-                "options": ["$75m", "$33m", "$20m", "$15m"],
-                "correct": "$75m",
-                "explanation": "5m * 15 = $75m."
-            }
-        ],
-        "Ratio Analysis": [
-            {
-                "question": "What does the current ratio measure?",
-                "options": ["Long-term solvency", "Short-term liquidity", "Profitability", "Efficiency"],
-                "correct": "Short-term liquidity",
-                "explanation": "Current assets / current liabilities."
-            },
-            {
-                "question": "The following are extracts from the statement of profit or loss of CQB Co: $’000 Sales income 60,000 Cost of sales 50,000 Profit before interest and tax 10,000 Interest 4,000 Profit before tax 6,000 Tax 4,500 Profit after tax 1,500 60% of the cost of sales is variables costs. What is the operational gearing of CQB Co?",
-                "options": ["5·0 times", "2·0 times", "0·5 times", "3·0 times"],
-                "correct": "3·0 times",
-                "explanation": "As above."
-            },
-            {
-                "question": "Which ratio measures efficiency in using assets to generate sales?",
-                "options": ["Asset turnover", "Current ratio", "ROE", "Debt ratio"],
-                "correct": "Asset turnover",
-                "explanation": "Sales / Assets."
-            },
-            {
-                "question": "ROCE is:",
-                "options": ["Profit / Capital employed", "Sales / Assets", "Debt / Equity", "Current assets / Current liabilities"],
-                "correct": "Profit / Capital employed",
-                "explanation": "Return on capital employed."
-            },
-            {
-                "question": "A high debt to equity ratio indicates:",
-                "options": ["Low financial risk", "High financial leverage", "High liquidity", "Low profitability"],
-                "correct": "High financial leverage",
-                "explanation": "More debt relative to equity."
-            },
-            {
-                "question": "Interest cover ratio is:",
-                "options": ["EBIT / Interest", "Net profit / Sales", "Assets / Equity", "Inventory / Cost of sales"],
-                "correct": "EBIT / Interest",
-                "explanation": "Ability to pay interest from profits."
-            },
-            {
-                "question": "A company has sales $100m, cost of sales $60m, assets $50m. What is asset turnover?",
-                "options": ["2 times", "1.67 times", "0.4 times", "0.6 times"],
-                "correct": "2 times",
-                "explanation": "100 / 50 = 2."
-            },
-            {
-                "question": "Quick ratio excludes inventory from current assets. True or false?",
-                "options": ["True", "False"],
-                "correct": "True",
-                "explanation": "Measures liquidity without inventory."
-            },
-            {
-                "question": "ROE = Net profit / Equity. What does it measure?",
-                "options": ["Return to shareholders", "Liquidity", "Gearing", "Efficiency"],
-                "correct": "Return to shareholders",
-                "explanation": "Profit generated for equity holders."
-            },
-            {
-                "question": "A decreasing inventory turnover ratio may indicate:",
-                "options": ["Efficient inventory management", "Obsolete inventory", "High sales", "Low costs"],
-                "correct": "Obsolete inventory",
-                "explanation": "Slower turnover suggests buildup."
-            }
-        ]
-    }
+    # No built-in questions; load from module questions.json or Import AI questions (JSON).
+    QUESTIONS = {ch: [] for ch in CHAPTERS}
     QUESTIONS_DEFAULT: Dict[str, Any] = copy.deepcopy(QUESTIONS)
 
     def _sanitize_module_id(self, module_id: str | None) -> str:
@@ -1130,6 +193,7 @@ class StudyPlanEngine:
         self.CHAPTER_NUMBER_MAP = dict(self.__class__.CHAPTER_NUMBER_MAP)
         self.CHAPTER_ALIASES = dict(self.__class__.CHAPTER_ALIASES)
         self.QUESTIONS_DEFAULT = copy.deepcopy(self.__class__.QUESTIONS_DEFAULT)
+        self._chapters_from_module_config = False
         self.capabilities: Dict[str, str] = {}
         self.syllabus_meta: Dict[str, Any] = {}
         self.syllabus_structure: Dict[str, Dict[str, Any]] = {}
@@ -1143,56 +207,142 @@ class StudyPlanEngine:
         self.outcome_cluster_edges: List[Dict[str, Any]] = []
 
     def _load_module_config(self, module_id: str) -> dict | None:
+        """Load module config from first available valid source (repo modules, then MODULES_DIR).
+        Tries each candidate path; continues on missing file, JSON error, or non-dict result.
+        """
         safe_id = self._sanitize_module_id(module_id)
         repo_modules = os.path.join(os.path.dirname(__file__), "modules")
         candidates = []
         if os.path.isdir(repo_modules):
             candidates.append(os.path.join(repo_modules, f"{safe_id}.json"))
         candidates.append(os.path.join(self.MODULES_DIR, f"{safe_id}.json"))
+        last_error = None
         for path in candidates:
             if not os.path.exists(path):
                 continue
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    return data if isinstance(data, dict) else None
-            except Exception:
-                return None
+                if isinstance(data, dict):
+                    setattr(self, "_last_loaded_module_config_path", path)
+                    return data
+                last_error = ValueError(f"Config is not a dict: {type(data).__name__}")
+            except json.JSONDecodeError as e:
+                last_error = e
+                continue
+            except OSError as e:
+                last_error = e
+                continue
+            except Exception as e:
+                last_error = e
+                continue
+        setattr(self, "_last_loaded_module_config_path", None)
         return None
+
+    def get_module_config_path_candidates(self, module_id: str | None) -> List[tuple[str, str]]:
+        """Return (label, path) candidates in the same order used by _load_module_config.
+        Used by the app's View Module Metadata so displayed paths match engine load order.
+        """
+        safe_id = self._sanitize_module_id(module_id)
+        repo_modules = os.path.join(os.path.dirname(__file__), "modules")
+        candidates: List[tuple[str, str]] = []
+        if os.path.isdir(repo_modules):
+            candidates.append(("built-in", os.path.join(repo_modules, f"{safe_id}.json")))
+        candidates.append(("modules_dir", os.path.join(self.MODULES_DIR, f"{safe_id}.json")))
+        return candidates
+
+    def validate_module_config(self, config: dict | None) -> List[str]:
+        """Return a list of warning strings for the given module config. Empty list means no issues."""
+        warnings: List[str] = []
+        if not isinstance(config, dict):
+            warnings.append("Module config is missing or not a dict.")
+            return warnings
+        chapters = config.get("chapters")
+        if not isinstance(chapters, list) or not chapters:
+            warnings.append("chapters must be a non-empty list.")
+        else:
+            invalid = [ch for ch in chapters if not isinstance(ch, str) or not str(ch).strip()]
+            if invalid:
+                warnings.append(f"{len(invalid)} chapter entry/entries are empty or non-string.")
+        weights = config.get("importance_weights")
+        if isinstance(weights, dict) and isinstance(chapters, list) and chapters:
+            for k, v in weights.items():
+                if k not in chapters:
+                    continue
+                try:
+                    val = int(float(v)) if v is not None else 0
+                    if val < 0:
+                        warnings.append(f"importance_weights['{k}'] should be non-negative.")
+                except (TypeError, ValueError):
+                    warnings.append(f"importance_weights['{k}'] is not a valid number.")
+        target_hours = config.get("target_total_hours")
+        if target_hours is not None:
+            try:
+                val = float(target_hours)
+                if val <= 0:
+                    warnings.append("target_total_hours must be greater than zero.")
+            except (TypeError, ValueError):
+                warnings.append("target_total_hours must be numeric.")
+        structure = config.get("syllabus_structure")
+        if isinstance(structure, dict) and structure:
+            for ch, info in structure.items():
+                if not isinstance(info, dict):
+                    continue
+                outcomes = info.get("learning_outcomes")
+                if not isinstance(outcomes, list) or not outcomes:
+                    warnings.append(f"syllabus_structure['{ch}'] has no learning_outcomes.")
+        return warnings
 
     def _apply_module_config(self, config: dict | None) -> None:
         if not isinstance(config, dict):
             return
+        syllabus_structure_updated = False
         chapters = config.get("chapters")
         if isinstance(chapters, list) and chapters:
-            self.CHAPTERS = [str(ch) for ch in chapters if str(ch).strip()]
-            self.CHAPTER_NUMBER_MAP = {i + 1: ch for i, ch in enumerate(self.CHAPTERS)}
-        # Auto-inject FR (F7) syllabus_structure when missing so no script or manual merge is needed
-        if self._sanitize_module_id(self.module_id) == "acca_f7" and not config.get("syllabus_structure"):
-            try:
-                from studyplan.syllabus_f7 import get_f7_syllabus_structure
-                config = dict(config)
-                config["syllabus_structure"] = get_f7_syllabus_structure(self.CHAPTERS)
-            except Exception:
-                pass
+            cleaned = [
+                s for ch in chapters
+                for s in [str(ch).strip()]
+                if s and s.lower() != "none"
+            ]
+            if cleaned:
+                self.CHAPTERS = cleaned
+                self.CHAPTER_NUMBER_MAP = {i + 1: ch for i, ch in enumerate(self.CHAPTERS)}
+                self._chapters_from_module_config = True
+        # No built-in syllabus: use Import Syllabus PDF or Reconfigure from RAG for all modules (including F7).
         flow = config.get("chapter_flow")
-        if isinstance(flow, dict):
-            self.CHAPTER_FLOW = {str(k): list(v) for k, v in flow.items() if isinstance(v, list)}
+        if isinstance(flow, dict) and flow:
+            self.CHAPTER_FLOW = {}
+            for k, v in flow.items():
+                if isinstance(v, list):
+                    self.CHAPTER_FLOW[str(k)] = [str(x) for x in v if str(x).strip()]
         aliases = config.get("aliases")
         if isinstance(aliases, dict):
             for k, v in aliases.items():
                 key = str(k).strip().lower()
-                if key and v:
+                if key and v is not None:
                     self.CHAPTER_ALIASES[key] = str(v)
         questions = config.get("questions")
-        if isinstance(questions, dict):
+        if isinstance(questions, dict) and questions:
             self.QUESTIONS_DEFAULT = copy.deepcopy(questions)
         weights = config.get("importance_weights")
         if isinstance(weights, dict) and weights:
-            self.importance_weights = {str(k): int(v) for k, v in weights.items() if k in self.CHAPTERS}
+            coerced = {}
+            for k in self.CHAPTERS:
+                v = weights.get(k)
+                try:
+                    coerced[str(k)] = int(float(v)) if v is not None else 10
+                except (TypeError, ValueError):
+                    coerced[str(k)] = 10
+            if coerced:
+                self.importance_weights = coerced
         target_hours = config.get("target_total_hours")
-        if isinstance(target_hours, (int, float)) and target_hours > 0:
-            self.target_total_hours = int(target_hours)
+        if target_hours is not None:
+            try:
+                val = int(float(target_hours))
+                if val > 0:
+                    self.target_total_hours = min(10000, max(1, val))
+            except (TypeError, ValueError):
+                pass
         capabilities = config.get("capabilities")
         if isinstance(capabilities, dict):
             self.capabilities = {
@@ -1244,38 +394,72 @@ class StudyPlanEngine:
                 mix = info.get("intellectual_level_mix")
                 if not isinstance(mix, dict):
                     mix = {}
-                info["intellectual_level_mix"] = {
-                    "level_1": int(mix.get("level_1", 0) or 0),
-                    "level_2": int(mix.get("level_2", 0) or 0),
-                    "level_3": int(mix.get("level_3", 0) or 0),
-                }
-                info["outcome_count"] = int(info.get("outcome_count", len(cleaned_outcomes)) or 0)
+                try:
+                    info["intellectual_level_mix"] = {
+                        "level_1": int(float(mix.get("level_1", 0) or 0)),
+                        "level_2": int(float(mix.get("level_2", 0) or 0)),
+                        "level_3": int(float(mix.get("level_3", 0) or 0)),
+                    }
+                except (TypeError, ValueError):
+                    info["intellectual_level_mix"] = {"level_1": 0, "level_2": 0, "level_3": 0}
+                try:
+                    info["outcome_count"] = int(info.get("outcome_count", len(cleaned_outcomes)) or 0)
+                except (TypeError, ValueError):
+                    info["outcome_count"] = len(cleaned_outcomes)
                 normalized[key] = info
             self.syllabus_structure = normalized
+            syllabus_structure_updated = True
+            # Reconcile outcome_stats to current outcome ids (syllabus ingest Phase 3).
+            self.outcome_stats = self._reconcile_outcome_stats_to_syllabus(
+                getattr(self, "outcome_stats", {}) or {}
+            )
+            # Invalidate concept graph so next use rebuilds from new syllabus_structure (syllabus ingest plan Phase 2).
+            if isinstance(getattr(self, "concept_graph_meta", None), dict):
+                self.concept_graph_meta = dict(self.concept_graph_meta)
+                self.concept_graph_meta["signature"] = None
+                self.concept_graph_meta.pop("build_error", None)
+            self.concept_nodes = []
+            self.concept_edges = []
+            self.outcome_concept_links = []
+            # Invalidate outcome cluster graph (semantic/lexical) so next use rebuilds from new outcomes.
+            if isinstance(getattr(self, "outcome_cluster_meta", None), dict):
+                self.outcome_cluster_meta = dict(self.outcome_cluster_meta)
+                self.outcome_cluster_meta["signature"] = None
+            self.outcome_clusters = []
+            self.outcome_cluster_edges = []
         semantic_aliases = config.get("semantic_aliases")
         if isinstance(semantic_aliases, dict):
             self.semantic_aliases = copy.deepcopy(semantic_aliases)
         concept_graph_meta = config.get("concept_graph_meta")
-        if isinstance(concept_graph_meta, dict):
-            self.concept_graph_meta = copy.deepcopy(concept_graph_meta)
         concept_nodes = config.get("concept_nodes")
-        if isinstance(concept_nodes, list):
-            self.concept_nodes = [dict(x) for x in concept_nodes if isinstance(x, dict)]
         concept_edges = config.get("concept_edges")
-        if isinstance(concept_edges, list):
-            self.concept_edges = [dict(x) for x in concept_edges if isinstance(x, dict)]
         outcome_concept_links = config.get("outcome_concept_links")
-        if isinstance(outcome_concept_links, list):
-            self.outcome_concept_links = [dict(x) for x in outcome_concept_links if isinstance(x, dict)]
+        if not syllabus_structure_updated and any(
+            x is not None
+            for x in (concept_graph_meta, concept_nodes, concept_edges, outcome_concept_links)
+        ):
+            cg_meta, cg_nodes, cg_edges, cg_links = self._coerce_concept_graph(
+                concept_graph_meta if isinstance(concept_graph_meta, dict) else getattr(self, "concept_graph_meta", {}),
+                concept_nodes if isinstance(concept_nodes, list) else getattr(self, "concept_nodes", []),
+                concept_edges if isinstance(concept_edges, list) else getattr(self, "concept_edges", []),
+                outcome_concept_links if isinstance(outcome_concept_links, list) else getattr(self, "outcome_concept_links", []),
+            )
+            self.concept_graph_meta = cg_meta
+            self.concept_nodes = cg_nodes
+            self.concept_edges = cg_edges
+            self.outcome_concept_links = cg_links
         outcome_cluster_meta = config.get("outcome_cluster_meta")
-        if isinstance(outcome_cluster_meta, dict):
-            self.outcome_cluster_meta = copy.deepcopy(outcome_cluster_meta)
         outcome_clusters = config.get("outcome_clusters")
-        if isinstance(outcome_clusters, list):
-            self.outcome_clusters = [dict(x) for x in outcome_clusters if isinstance(x, dict)]
         outcome_cluster_edges = config.get("outcome_cluster_edges")
-        if isinstance(outcome_cluster_edges, list):
-            self.outcome_cluster_edges = [dict(x) for x in outcome_cluster_edges if isinstance(x, dict)]
+        if not syllabus_structure_updated and any(x is not None for x in (outcome_cluster_meta, outcome_clusters, outcome_cluster_edges)):
+            oc_meta, oc_clusters, oc_edges = self._coerce_outcome_cluster_graph(
+                outcome_cluster_meta if isinstance(outcome_cluster_meta, dict) else getattr(self, "outcome_cluster_meta", {}),
+                outcome_clusters if isinstance(outcome_clusters, list) else getattr(self, "outcome_clusters", []),
+                outcome_cluster_edges if isinstance(outcome_cluster_edges, list) else getattr(self, "outcome_cluster_edges", []),
+            )
+            self.outcome_cluster_meta = oc_meta
+            self.outcome_clusters = oc_clusters
+            self.outcome_cluster_edges = oc_edges
 
     def _chapter_semantic_alias_map(self, chapter: str) -> dict[str, str]:
         """Return merged semantic alias map. When the module defines semantic_aliases (e.g. F7), use only
@@ -1548,6 +732,12 @@ class StudyPlanEngine:
             end_patterns=[r"^\s*6\.\s*summary\s+of\s+changes\b", r"^\s*7\.\s*approach\s+to\s+examining\b"],
             use_last_start=True,
         )
+        # Surface empty section 4/5 for diagnostics (syllabus ingest Phase 4).
+        empty_sections: List[str] = []
+        if not syllabus_section:
+            empty_sections.append("4")
+        if not detailed_section:
+            empty_sections.append("5")
         outcomes_by_letter: Dict[str, List[Dict[str, Any]]] = {}
         current_letter = None
         current_outcome_text: str | None = None
@@ -1775,6 +965,7 @@ class StudyPlanEngine:
             "syllabus_structure": syllabus_structure,
             "warnings": warnings,
             "confidence": confidence,
+            "empty_sections": empty_sections,
             "stats": {
                 "capabilities_found": len(capabilities),
                 "chapters_found": len(chapters),
@@ -1800,21 +991,246 @@ class StudyPlanEngine:
         max_input_chars: int = 14000,
         max_tokens: int = 4096,
     ) -> Dict[str, Any]:
-        """Use an LLM to extract learning outcomes from syllabus text and map each to a chapter.
-        Works with any syllabus structure; chapters list is the only required structure.
-        llm_generate(prompt, max_tokens) should return the model output string (or raise/return empty on error).
+        """Use retrieval-assisted LLM extraction for syllabus outcomes.
+
+        The deterministic parser remains the primary import path. This method is the
+        fallback/improvement path for noisy PDFs and generic syllabus layouts.
+        It chunks the PDF text, retrieves chapter-relevant excerpts, then asks the
+        model to extract outcomes only from those excerpts to avoid first-N-char
+        truncation problems on long PDFs.
         """
         if not isinstance(pdf_text, str) or not pdf_text.strip():
             return {"syllabus_structure": {}, "warnings": ["Empty syllabus text"], "confidence": 0.0, "stats": {}}
         if not isinstance(chapters, list) or not chapters:
             return {"syllabus_structure": {}, "warnings": ["No chapters provided"], "confidence": 0.0, "stats": {}}
-        chapter_set = {str(ch).strip() for ch in chapters if str(ch).strip()}
-        if not chapter_set:
+        chapters_clean = []
+        seen_chapters: Set[str] = set()
+        for chapter in chapters:
+            name = str(chapter).strip()
+            if not name or name in seen_chapters:
+                continue
+            seen_chapters.add(name)
+            chapters_clean.append(name)
+        chapter_set = set(chapters_clean)
+        if not chapter_set or not chapters_clean:
             return {"syllabus_structure": {}, "warnings": ["No valid chapter titles"], "confidence": 0.0, "stats": {}}
-        text = pdf_text.strip()
-        if len(text) > max_input_chars:
-            text = text[:max_input_chars] + "\n\n[... text truncated for context ...]"
-        chapters_blob = "\n".join(f"- {ch}" for ch in chapters if str(ch).strip())
+
+        def _strip_heading_prefix(title: str) -> str:
+            return re.sub(
+                r"^(?:[A-Z]\.\s*|\d+\.\s*|(?:Chapter|Part)\s+\d+\s*[\:\-]?\s*)",
+                "",
+                str(title or "").strip(),
+                flags=re.IGNORECASE,
+            ).strip()
+
+        def _extract_terms(text: str) -> List[str]:
+            stopwords = {
+                "the", "and", "for", "with", "from", "that", "this", "into", "using", "use", "used",
+                "study", "guide", "detailed", "section", "chapter", "part", "topic", "module",
+                "outcome", "learning", "skill", "skills", "ability", "abilities", "candidate",
+                "financial", "statement",
+            }
+            terms: List[str] = []
+            seen: Set[str] = set()
+            for token in re.findall(r"[a-z0-9]{2,}", str(text or "").lower()):
+                if token.isdigit() or token in stopwords:
+                    continue
+                if len(token) <= 2 and token not in {"fm", "tx", "aa", "fr", "ifrs"}:
+                    continue
+                if token in seen:
+                    continue
+                seen.add(token)
+                terms.append(token)
+            return terms
+
+        def _chapter_queries(chapter: str) -> List[str]:
+            queries: List[str] = []
+            seen: Set[str] = set()
+
+            def _add(value: str) -> None:
+                item = str(value or "").strip()
+                if not item:
+                    return
+                lowered = item.lower()
+                if lowered in seen:
+                    return
+                seen.add(lowered)
+                queries.append(item)
+
+            stripped = _strip_heading_prefix(chapter)
+            _add(chapter)
+            _add(stripped)
+            if stripped.lower().startswith("fm "):
+                _add("financial management " + stripped[3:].strip())
+            if stripped.lower() == "fm function":
+                _add("financial management function")
+            if stripped.lower() == "fm environment":
+                _add("financial management environment")
+
+            alias_map = getattr(self, "CHAPTER_ALIASES", {}) or {}
+            if isinstance(alias_map, dict):
+                for key, value in alias_map.items():
+                    if str(value or "").strip() == chapter:
+                        _add(str(key or ""))
+
+            semantic_aliases = getattr(self, "semantic_aliases", {}) or {}
+            if isinstance(semantic_aliases, dict):
+                for key, value in semantic_aliases.items():
+                    if isinstance(value, str) and value.strip().lower() == stripped.lower():
+                        _add(str(key or ""))
+            return queries
+
+        def _chunk_pdf_text(text: str, *, chunk_chars: int = 850, overlap_lines: int = 2) -> List[Dict[str, Any]]:
+            raw_lines = [re.sub(r"\s+", " ", ln.replace("\u00a0", " ")).strip() for ln in str(text or "").splitlines()]
+            lines = [ln for ln in raw_lines if ln]
+            if not lines:
+                return []
+            chunks: List[Dict[str, Any]] = []
+            current: List[str] = []
+            current_len = 0
+
+            def _flush() -> None:
+                nonlocal current, current_len
+                chunk_text = "\n".join(current).strip()
+                if chunk_text:
+                    chunks.append(
+                        {
+                            "id": len(chunks) + 1,
+                            "text": chunk_text,
+                            "normalized": re.sub(r"[^a-z0-9\s]+", " ", chunk_text.lower()),
+                        }
+                    )
+                current = []
+                current_len = 0
+
+            for line in lines:
+                is_heading = bool(
+                    re.match(r"^(?:[A-Z](?:\d+)?[\)\.\s-]+.+|\d+\.\s+.+|(?:Chapter|Part)\s+\d+.*)$", line, re.IGNORECASE)
+                )
+                line_len = len(line) + 1
+                should_split = False
+                if current and current_len + line_len > chunk_chars:
+                    should_split = True
+                elif current and is_heading and current_len >= int(chunk_chars * 0.55):
+                    should_split = True
+                if should_split:
+                    carry = [] if is_heading else current[-overlap_lines:] if overlap_lines > 0 else []
+                    _flush()
+                    if carry:
+                        current = list(carry)
+                        current_len = sum(len(item) + 1 for item in current)
+                current.append(line)
+                current_len += line_len
+            _flush()
+
+            deduped: List[Dict[str, Any]] = []
+            seen_norm: Set[str] = set()
+            for chunk in chunks:
+                norm = str(chunk.get("normalized", "") or "").strip()
+                if not norm or norm in seen_norm:
+                    continue
+                seen_norm.add(norm)
+                deduped.append(chunk)
+            return deduped
+
+        def _retrieve_context(all_chunks: List[Dict[str, Any]], batch_chapters: List[str]) -> Dict[str, Any]:
+            selected_scores: Dict[int, float] = {}
+            per_chapter_hits: Dict[str, int] = {}
+            total_candidates = 0
+            for chapter in batch_chapters:
+                queries = _chapter_queries(chapter)
+                exact_phrases = [
+                    re.sub(r"[^a-z0-9\s]+", " ", item.lower()).strip()
+                    for item in queries
+                    if str(item or "").strip()
+                ]
+                terms: List[str] = []
+                for query in queries:
+                    terms.extend(_extract_terms(query))
+                scored: List[Tuple[float, int]] = []
+                for idx, chunk in enumerate(all_chunks):
+                    norm = str(chunk.get("normalized", "") or "")
+                    score = 0.0
+                    for phrase_idx, phrase in enumerate(exact_phrases):
+                        if phrase and phrase in norm:
+                            score += 8.0 if phrase_idx == 0 else 5.0
+                    for term in terms:
+                        if term and term in norm:
+                            score += 1.2 if len(term) >= 5 else 0.7
+                    if score <= 0.0:
+                        continue
+                    if re.search(r"^[a-z][\)\.]\s+", str(chunk.get("text", "")), re.MULTILINE):
+                        score += 0.35
+                    scored.append((score, idx))
+                scored.sort(key=lambda item: (-item[0], item[1]))
+                top_hits = scored[:2]
+                per_chapter_hits[chapter] = len(top_hits)
+                total_candidates += len(scored)
+                for score, idx in top_hits:
+                    selected_scores[idx] = max(score, selected_scores.get(idx, 0.0))
+            ordered = sorted(selected_scores.items(), key=lambda item: (-item[1], item[0]))[:8]
+            context_parts: List[str] = []
+            for pos, (chunk_idx, _score) in enumerate(ordered, start=1):
+                chunk_text = str(all_chunks[chunk_idx].get("text", "") or "").strip()
+                if chunk_text:
+                    context_parts.append(f"[Excerpt {pos}]\n{chunk_text}")
+            return {
+                "context": "\n\n".join(context_parts),
+                "selected_chunks": len(ordered),
+                "source_chunks": len(all_chunks),
+                "matched_chapters": sum(1 for count in per_chapter_hits.values() if count > 0),
+                "candidate_hits": total_candidates,
+            }
+
+        def _decode_llm_json(prompt: str) -> Tuple[Dict[str, Any], str, List[str]]:
+            batch_warnings: List[str] = []
+            raw = ""
+            current_prompt = prompt
+            for attempt in range(2):
+                try:
+                    raw = llm_generate(current_prompt, max_tokens)
+                except Exception as exc:
+                    batch_warnings.append(f"LLM call failed: {exc}")
+                    return {}, raw, batch_warnings
+                if isinstance(raw, str) and raw.strip():
+                    break
+                if attempt == 0 and build_syllabus_extraction_prompt is not None:
+                    current_prompt = append_retry_suffix(current_prompt, JSON_ONLY_NO_MARKDOWN)
+                    continue
+                batch_warnings.append("LLM returned empty response")
+                return {}, raw, batch_warnings
+            raw = str(raw or "").strip()
+            if raw.startswith("```"):
+                raw = re.sub(r"^```\w*\n?", "", raw)
+                raw = re.sub(r"\n?```\s*$", "", raw)
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                data = {}
+                if build_syllabus_extraction_prompt is not None:
+                    retry_prompt = append_retry_suffix(current_prompt, JSON_ONLY_NO_MARKDOWN)
+                    try:
+                        raw_retry = llm_generate(retry_prompt, max_tokens)
+                    except Exception:
+                        raw_retry = ""
+                    raw_retry = str(raw_retry or "").strip()
+                    if raw_retry.startswith("```"):
+                        raw_retry = re.sub(r"^```\w*\n?", "", raw_retry)
+                        raw_retry = re.sub(r"\n?```\s*$", "", raw_retry)
+                    if raw_retry:
+                        try:
+                            data = json.loads(raw_retry)
+                            raw = raw_retry
+                        except json.JSONDecodeError:
+                            data = {}
+                if not isinstance(data, dict) or not data:
+                    batch_warnings.append(f"Invalid JSON from LLM: {exc}")
+                    return {}, raw, batch_warnings
+            if not isinstance(data, dict):
+                batch_warnings.append("LLM response was not a JSON object")
+                return {}, raw, batch_warnings
+            return data, raw, batch_warnings
+
         try:
             from studyplan.ai.prompt_design import (
                 JSON_ONLY_NO_MARKDOWN,
@@ -1823,78 +1239,86 @@ class StudyPlanEngine:
             )
         except ImportError:
             build_syllabus_extraction_prompt = None
-        if build_syllabus_extraction_prompt is not None:
-            prompt = build_syllabus_extraction_prompt(
-                syllabus_text=text,
-                chapters_blob=chapters_blob,
-            )
-        else:
-            prompt = (
-                "You are parsing a syllabus document. Extract every learning outcome. For each: id, text, level (1/2/3), chapter (exact title from list).\n"
-                "Schema:\n{\"outcomes\":[{\"id\":\"...\",\"text\":\"...\",\"level\":1 or 2 or 3,\"chapter\":\"<exact chapter title>\"}],\"warnings\":[]}\n"
-                "Rules:\n- " + "Return valid JSON only, no markdown.\n"
-                "Syllabus text:\n---\n" + text + "\n---\nChapters (use exact strings):\n" + chapters_blob
-            )
         warnings: List[str] = []
-        raw = ""
-        for attempt in range(2):
-            try:
-                raw = llm_generate(prompt, max_tokens)
-            except Exception as exc:
-                warnings.append(f"LLM call failed: {exc}")
-                return {"syllabus_structure": {}, "warnings": warnings, "confidence": 0.0, "stats": {}}
-            if not isinstance(raw, str) or not raw.strip():
-                if attempt == 0 and build_syllabus_extraction_prompt is not None:
-                    prompt = append_retry_suffix(prompt, JSON_ONLY_NO_MARKDOWN)
-                    continue
-                warnings.append("LLM returned empty response")
-                return {"syllabus_structure": {}, "warnings": warnings, "confidence": 0.0, "stats": {}}
-            break
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```\w*\n?", "", raw)
-            raw = re.sub(r"\n?```\s*$", "", raw)
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as e:
-            data = {}
+        all_chunks = _chunk_pdf_text(pdf_text)
+        if not all_chunks:
+            text = pdf_text.strip()
+            if len(text) > max_input_chars:
+                text = text[:max_input_chars] + "\n\n[... text truncated for context ...]"
+            all_chunks = [{"id": 1, "text": text, "normalized": re.sub(r"[^a-z0-9\s]+", " ", text.lower())}]
+        batch_size = 6 if len(chapters_clean) > 6 else max(1, len(chapters_clean))
+        by_chapter: Dict[str, List[Dict[str, Any]]] = {ch: [] for ch in chapters_clean}
+        seen_outcomes: Dict[str, Set[str]] = {ch: set() for ch in chapters_clean}
+        retrieval_batches = 0
+        retrieval_chunks = 0
+        matched_chapters = 0
+
+        for start in range(0, len(chapters_clean), batch_size):
+            batch = chapters_clean[start:start + batch_size]
+            retrieval = _retrieve_context(all_chunks, batch)
+            retrieval_batches += 1
+            retrieval_chunks += int(retrieval.get("selected_chunks", 0) or 0)
+            matched_chapters += int(retrieval.get("matched_chapters", 0) or 0)
+            context_text = str(retrieval.get("context", "") or "").strip()
+            if not context_text:
+                context_text = pdf_text.strip()
+                if len(context_text) > max_input_chars:
+                    context_text = context_text[:max_input_chars] + "\n\n[... text truncated for context ...]"
+                warnings.append(
+                    f"AI retrieval found no focused excerpts for chapters {start + 1}-{start + len(batch)}; used broad context."
+                )
+            chapters_blob = "\n".join(f"- {ch}" for ch in batch)
             if build_syllabus_extraction_prompt is not None:
-                prompt = append_retry_suffix(prompt, JSON_ONLY_NO_MARKDOWN)
+                prompt = build_syllabus_extraction_prompt(
+                    syllabus_text=context_text,
+                    chapters_blob=chapters_blob,
+                    rules=[
+                        "Use only the retrieved excerpts as evidence.",
+                        "Map every outcome to exactly one chapter from the provided batch.",
+                        "If evidence is too weak for a chapter, omit unsupported outcomes and add a warning.",
+                    ],
+                )
+            else:
+                prompt = (
+                    "You are parsing retrieved syllabus excerpts. Extract every supported learning outcome. "
+                    "For each: id, text, level (1/2/3), chapter (exact title from list).\n"
+                    "Schema:\n{\"outcomes\":[{\"id\":\"...\",\"text\":\"...\",\"level\":1 or 2 or 3,"
+                    "\"chapter\":\"<exact chapter title>\"}],\"warnings\":[]}\n"
+                    "Rules:\n- Return valid JSON only, no markdown.\n"
+                    "- Use only the retrieved excerpts as evidence.\n"
+                    "- Map outcomes only to one of the exact chapter strings provided.\n"
+                    "Retrieved excerpts:\n---\n" + context_text + "\n---\nChapters:\n" + chapters_blob
+                )
+            data, _raw, batch_warnings = _decode_llm_json(prompt)
+            warnings.extend(batch_warnings)
+            if not data:
+                continue
+            outcomes_list = data.get("outcomes")
+            if not isinstance(outcomes_list, list):
+                outcomes_list = []
+            if isinstance(data.get("warnings"), list):
+                warnings.extend(str(w) for w in data["warnings"] if w)
+            for item in outcomes_list:
+                if not isinstance(item, dict):
+                    continue
+                ch = str(item.get("chapter", "") or "").strip()
+                if ch not in chapter_set:
+                    continue
                 try:
-                    raw2 = llm_generate(prompt, max_tokens)
-                    if isinstance(raw2, str) and raw2.strip():
-                        raw2 = raw2.strip()
-                        if raw2.startswith("```"):
-                            raw2 = re.sub(r"^```\w*\n?", "", raw2)
-                            raw2 = re.sub(r"\n?```\s*$", "", raw2)
-                        data = json.loads(raw2)
-                except Exception:
-                    pass
-            if not isinstance(data, dict) or not data:
-                warnings.append(f"Invalid JSON from LLM: {e}")
-                return {"syllabus_structure": {}, "warnings": warnings, "confidence": 0.0, "stats": {}}
-        outcomes_list = data.get("outcomes")
-        if not isinstance(outcomes_list, list):
-            outcomes_list = []
-        if isinstance(data.get("warnings"), list):
-            warnings.extend(str(w) for w in data["warnings"] if w)
-        by_chapter: Dict[str, List[Dict[str, Any]]] = {ch: [] for ch in chapters if str(ch).strip()}
-        for item in outcomes_list:
-            if not isinstance(item, dict):
-                continue
-            ch = str(item.get("chapter", "") or "").strip()
-            if ch not in chapter_set:
-                continue
-            try:
-                level = int(item.get("level", 2) or 2)
-            except (TypeError, ValueError):
-                level = 2
-            level = max(1, min(3, level))
-            oid = str(item.get("id", "") or "").strip() or f"outcome_{len(by_chapter[ch]) + 1}"
-            txt = str(item.get("text", "") or "").strip()
-            if not txt:
-                continue
-            by_chapter[ch].append({"id": oid, "text": txt, "level": level})
+                    level = int(item.get("level", 2) or 2)
+                except (TypeError, ValueError):
+                    level = 2
+                level = max(1, min(3, level))
+                oid = str(item.get("id", "") or "").strip() or f"outcome_{len(by_chapter[ch]) + 1}"
+                txt = str(item.get("text", "") or "").strip()
+                if not txt:
+                    continue
+                dedupe_key = re.sub(r"\s+", " ", txt.lower()).strip()
+                if dedupe_key in seen_outcomes[ch]:
+                    continue
+                seen_outcomes[ch].add(dedupe_key)
+                by_chapter[ch].append({"id": oid, "text": txt, "level": level})
+
         def _cap(ch_title: str) -> str:
             t = (ch_title or "").lower()
             if "framework" in t or "concept" in t or "international" in t:
@@ -1907,7 +1331,7 @@ class StudyPlanEngine:
                 return "D"
             return "A"
         syllabus_structure: Dict[str, Dict[str, Any]] = {}
-        for ch in chapters:
+        for ch in chapters_clean:
             if not ch or ch not in by_chapter:
                 syllabus_structure[ch] = {"capability": _cap(ch), "learning_outcomes": [], "outcome_count": 0}
                 continue
@@ -1918,15 +1342,29 @@ class StudyPlanEngine:
                 "outcome_count": len(los),
             }
         total_outcomes = sum(len(los) for los in by_chapter.values())
-        outcome_ratio = min(1.0, total_outcomes / max(1, len(chapters)))
-        confidence = 0.5 + 0.4 * outcome_ratio if total_outcomes > 0 else 0.5
+        covered_chapters = sum(1 for los in by_chapter.values() if los)
+        outcome_ratio = min(1.0, total_outcomes / max(1, len(chapters_clean)))
+        chapter_ratio = min(1.0, covered_chapters / max(1, len(chapters_clean)))
+        retrieval_ratio = min(1.0, matched_chapters / max(1, len(chapters_clean)))
+        confidence = 0.20 + (0.35 * chapter_ratio) + (0.30 * outcome_ratio) + (0.15 * retrieval_ratio)
         if total_outcomes == 0:
             warnings.append("No outcomes could be mapped to the given chapters.")
+        elif covered_chapters < max(1, len(chapters_clean) // 2):
+            warnings.append("AI extraction covered only a minority of chapters; review missing mappings.")
         return {
             "syllabus_structure": syllabus_structure,
             "warnings": warnings,
-            "confidence": min(1.0, confidence),
-            "stats": {"outcomes_found": total_outcomes, "chapters_found": len(chapters), "capabilities_found": len(set(s.get("capability", "A") for s in syllabus_structure.values()))},
+            "confidence": max(0.0, min(1.0, confidence)),
+            "stats": {
+                "outcomes_found": total_outcomes,
+                "chapters_found": len(chapters_clean),
+                "capabilities_found": len(set(s.get("capability", "A") for s in syllabus_structure.values())),
+                "retrieval_batches": retrieval_batches,
+                "retrieval_chunks": retrieval_chunks,
+                "retrieval_source_chunks": len(all_chunks),
+                "retrieval_matched_chapters": matched_chapters,
+                "strategy": "retrieval_ai",
+            },
         }
 
     def _load_syllabus_import_cache_disk(self) -> None:
@@ -2123,6 +1561,71 @@ class StudyPlanEngine:
             "disk_error": disk_error,
         }
 
+    def _normalize_outcome_text(self, text: str) -> str:
+        """Normalize outcome text for merge matching (strip, lower, collapse whitespace)."""
+        if not isinstance(text, str):
+            return ""
+        return re.sub(r"\s+", " ", text.strip().lower())
+
+    def _merge_learning_outcomes(
+        self,
+        existing_outcomes: List[Dict[str, Any]],
+        new_outcomes: List[Dict[str, Any]],
+        chapter_label: str,
+    ) -> List[Dict[str, Any]]:
+        """Merge new outcomes into existing by id then by normalized text; no drop (syllabus ingest stability)."""
+        merged: List[Dict[str, Any]] = []
+        existing_ids: set = set()
+        existing_text_to_idx: Dict[str, int] = {}
+        for o in existing_outcomes:
+            if not isinstance(o, dict):
+                continue
+            oid = str(o.get("id", "") or "").strip()
+            text = str(o.get("text", "") or "").strip()
+            if not text:
+                continue
+            try:
+                level = int(o.get("level", 2) or 2)
+            except (TypeError, ValueError):
+                level = 2
+            level = max(1, min(3, level))
+            merged.append({"id": oid or f"_gen_{len(merged)}", "text": text, "level": level})
+            if oid:
+                existing_ids.add(oid)
+            tnorm = self._normalize_outcome_text(text)
+            if tnorm:
+                existing_text_to_idx[tnorm] = len(merged) - 1
+        for new_o in new_outcomes:
+            if not isinstance(new_o, dict):
+                continue
+            oid = str(new_o.get("id", "") or "").strip()
+            text = str(new_o.get("text", "") or "").strip()
+            if not text:
+                continue
+            try:
+                level = int(new_o.get("level", 2) or 2)
+            except (TypeError, ValueError):
+                level = 2
+            level = max(1, min(3, level))
+            tnorm = self._normalize_outcome_text(text)
+            if not tnorm:
+                continue
+            if oid and oid in existing_ids:
+                for i, o in enumerate(merged):
+                    if str(o.get("id", "") or "").strip() == oid:
+                        merged[i] = {"id": oid, "text": text, "level": level}
+                        if tnorm:
+                            existing_text_to_idx[tnorm] = i
+                        break
+                continue
+            if tnorm in existing_text_to_idx:
+                continue
+            new_id = oid if oid and oid not in existing_ids else f"_gen_{len(merged)}"
+            existing_ids.add(new_id)
+            existing_text_to_idx[tnorm] = len(merged)
+            merged.append({"id": new_id, "text": text, "level": level})
+        return merged
+
     def _build_importance_weights_from_syllabus(self, syllabus_structure: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
         raw_weights: Dict[str, float] = {}
         for chapter, info in syllabus_structure.items():
@@ -2194,6 +1697,68 @@ class StudyPlanEngine:
                 if len(text) <= 80 and len(text.split()) >= 2:
                     aliases.setdefault(text, chapter)
         return aliases
+
+    def _is_f7_base_chapters(self, chapters: List[str]) -> bool:
+        """True if chapters look like F7 (FR) 27-chapter list (Chapter 1: ... through Chapter 27: ...)."""
+        if not chapters or len(chapters) != 27:
+            return False
+        chapter_set = set(c.strip().lower() for c in chapters if str(c).strip())
+        ref_set = set(c.strip().lower() for c in FR_F7_CHAPTERS)
+        return ref_set == chapter_set or all(
+            re.match(r"^chapter\s+\d+\s*[\:\-]", str(c).strip(), re.IGNORECASE) for c in chapters
+        )
+
+    def _parse_fr_syllabus_for_import(
+        self, pdf_text: str, base_chapters: List[str]
+    ) -> Dict[str, Any] | None:
+        """
+        Parse FR syllabus text into syllabus_structure keyed by base_chapters (F7 chapter titles).
+        Returns a parsed dict in the same shape as parse_syllabus_pdf_text for build_module_config_from_syllabus.
+        """
+        if not pdf_text or not base_chapters:
+            return None
+        try:
+            outcomes = fr_parse_syllabus_text(pdf_text)
+        except Exception:
+            return None
+        if not outcomes or len(outcomes) < 5:
+            return None
+        chapter_set = set(c.strip() for c in base_chapters)
+        section4_titles = fr_extract_subtopics_from_section_4(pdf_text)
+        structure = fr_build_syllabus_structure(
+            outcomes, chapter_list=base_chapters, section4_titles=section4_titles
+        )
+        for ch in list(structure.keys()):
+            if ch not in chapter_set:
+                structure.pop(ch, None)
+        capabilities = fr_extract_capabilities(pdf_text)
+        if not capabilities:
+            capabilities = {"A": "Conceptual and regulatory framework", "B": "Accounting for transactions", "C": "Analysis and interpretation", "D": "Preparation of financial statements", "E": "Employability and technology skills"}
+        total_outcomes = sum(len(info.get("learning_outcomes", [])) for info in structure.values())
+        exam_code = "FR"
+        m_window = re.search(r"([A-Za-z]+\s+20\d{2}\s+TO\s+[A-Za-z]+\s+20\d{2})", pdf_text, re.IGNORECASE)
+        effective_window = m_window.group(1).strip().title().replace(" To ", " - ") if m_window else None
+        empty_sections_fr: List[str] = []
+        if not section4_titles:
+            empty_sections_fr.append("4")
+        if total_outcomes == 0:
+            empty_sections_fr.append("5")
+        return {
+            "exam_code": exam_code,
+            "effective_window": effective_window,
+            "capabilities": capabilities,
+            "chapter_map": {letter: base_chapters[0] for letter in "ABCDE"},
+            "chapters": list(base_chapters),
+            "syllabus_structure": structure,
+            "warnings": ["FR syllabus parsed with section-to-chapter mapping (A1–E4 to F7 chapters)."],
+            "confidence": min(1.0, 0.5 + 0.015 * total_outcomes),
+            "empty_sections": empty_sections_fr,
+            "stats": {
+                "capabilities_found": len(capabilities),
+                "chapters_found": len(base_chapters),
+                "outcomes_found": total_outcomes,
+            },
+        }
 
     def build_module_config_from_syllabus(
         self,
@@ -2381,8 +1946,18 @@ class StudyPlanEngine:
                 else:
                     mapping_warnings.append(f"Could not map capability {cap_letter} to existing chapter.")
 
+            existing_set = {str(ch).strip() for ch in existing_chapters}
             for cap_ch, info in syllabus_structure.items():
-                target, score = _best_match_to_existing(str(cap_ch))
+                cap_str = str(cap_ch).strip()
+                # Exact match first (e.g. FR parser returns structure keyed by same chapter list)
+                target, score = None, 0.0
+                if cap_str in existing_set:
+                    for ch in existing_chapters:
+                        if str(ch).strip() == cap_str:
+                            target, score = ch, 1.0
+                            break
+                if not target or score < 0.35:
+                    target, score = _best_match_to_existing(cap_str)
                 if not target or score < 0.35:
                     mapping_warnings.append(f"Unmapped syllabus chapter: {cap_ch}")
                     continue
@@ -2428,6 +2003,42 @@ class StudyPlanEngine:
         if "target_total_hours" not in config:
             config["target_total_hours"] = 180
         config["capabilities"] = capabilities
+        # Merge subtopics and learning_outcomes from existing config (syllabus ingest stability: no drop)
+        existing_structure = (base_config or {}).get("syllabus_structure") or {}
+        if isinstance(existing_structure, dict):
+            for ch, info in syllabus_structure.items():
+                if not isinstance(info, dict):
+                    continue
+                existing_info = existing_structure.get(ch)
+                merged_info = dict(info)
+                if isinstance(existing_info, dict):
+                    existing_sub = list(existing_info.get("subtopics") or [])
+                    if isinstance(existing_sub, list):
+                        new_sub = info.get("subtopics") or []
+                        seen = {str(s).strip().lower() for s in existing_sub if str(s).strip()}
+                        for s in new_sub:
+                            ss = str(s).strip()
+                            if ss and ss.lower() not in seen:
+                                existing_sub.append(ss)
+                                seen.add(ss.lower())
+                        merged_info["subtopics"] = existing_sub
+                    existing_outcomes = existing_info.get("learning_outcomes") or []
+                    new_outcomes = info.get("learning_outcomes") or []
+                    if isinstance(existing_outcomes, list) and isinstance(new_outcomes, list):
+                        merged_outcomes = self._merge_learning_outcomes(
+                            existing_outcomes, new_outcomes, ch
+                        )
+                        merged_info["learning_outcomes"] = merged_outcomes
+                        merged_info["outcome_count"] = len(merged_outcomes)
+                        level_1 = sum(1 for o in merged_outcomes if int((o.get("level") or 2)) == 1)
+                        level_2 = sum(1 for o in merged_outcomes if int((o.get("level") or 2)) == 2)
+                        level_3 = sum(1 for o in merged_outcomes if int((o.get("level") or 2)) == 3)
+                        merged_info["intellectual_level_mix"] = {
+                            "level_1": level_1,
+                            "level_2": level_2,
+                            "level_3": level_3,
+                        }
+                syllabus_structure[ch] = merged_info
         config["syllabus_structure"] = syllabus_structure
         config["syllabus_meta"] = {
             "source_pdf": source_pdf,
@@ -2435,6 +2046,7 @@ class StudyPlanEngine:
             "effective_window": str(effective_window or "").strip() or None,
             "parsed_at": datetime.datetime.now().isoformat(timespec="seconds"),
             "parse_confidence": round(confidence, 4),
+            "last_parse_empty_sections": list(parsed.get("empty_sections") or []) if isinstance(parsed.get("empty_sections"), list) else [],
         }
         if mapping_warnings:
             config["syllabus_meta"]["mapping_warnings"] = mapping_warnings
@@ -2663,6 +2275,11 @@ class StudyPlanEngine:
                     base_config = copy.deepcopy(base_config)
                     base_config["chapters"] = q_chapters
                     base_chapters = list(q_chapters)
+            # FR syllabus + F7 module: use FR-specific parser for accurate outcome->chapter mapping (A1–E4 to 27 chapters).
+            if base_chapters and is_fr_syllabus_text(pdf_text) and self._is_f7_base_chapters(base_chapters):
+                fr_parsed = self._parse_fr_syllabus_for_import(pdf_text, base_chapters)
+                if fr_parsed and fr_parsed.get("syllabus_structure"):
+                    parsed = fr_parsed
         t_build_start = time.perf_counter()
         try:
             draft = self.build_module_config_from_syllabus(parsed, base_config=base_config)
@@ -2736,6 +2353,65 @@ class StudyPlanEngine:
             self._syllabus_import_cache.pop(stale, None)
         self._save_syllabus_import_cache_disk()
         return result
+
+    def import_syllabus_meta_from_json(
+        self, payload: Dict[str, Any], module_id: str | None = None
+    ) -> Dict[str, Any]:
+        """Merge syllabus_meta (and optionally syllabus_structure, chapters, etc.) from a JSON payload
+        into the current module config and apply to the engine. No AI or PDF parsing.
+        Use this to seed initial syllabus_meta so Reconfigure from RAG does less work.
+
+        :param payload: Dict with any of: syllabus_meta, syllabus_structure, chapters,
+            chapter_flow, importance_weights, capabilities, aliases, title.
+        :param module_id: Target module (default: current self.module_id).
+        :return: Summary dict with keys: applied, warnings, config (validated merged config).
+        """
+        target_id = self._sanitize_module_id(module_id or self.module_id)
+        base = self._load_module_config(target_id)
+        if not isinstance(base, dict):
+            base = {}
+        merged = copy.deepcopy(base)
+        warnings: List[str] = []
+        if isinstance(payload.get("syllabus_meta"), dict):
+            merged["syllabus_meta"] = {**merged.get("syllabus_meta", {}), **payload["syllabus_meta"]}
+        if isinstance(payload.get("syllabus_structure"), dict):
+            merged["syllabus_structure"] = dict(payload["syllabus_structure"])
+        if isinstance(payload.get("chapters"), list) and payload["chapters"]:
+            merged["chapters"] = [str(ch).strip() for ch in payload["chapters"] if str(ch).strip()]
+        if isinstance(payload.get("chapter_flow"), dict):
+            merged["chapter_flow"] = dict(payload["chapter_flow"])
+        if isinstance(payload.get("importance_weights"), dict):
+            merged["importance_weights"] = {str(k): int(v) for k, v in payload["importance_weights"].items() if str(k).strip()}
+        if isinstance(payload.get("capabilities"), dict):
+            merged["capabilities"] = {str(k).strip().upper(): str(v).strip() for k, v in payload["capabilities"].items() if str(k).strip() and str(v).strip()}
+        if isinstance(payload.get("aliases"), dict):
+            merged.setdefault("aliases", {})
+            if isinstance(merged["aliases"], dict):
+                for k, v in payload["aliases"].items():
+                    if str(k).strip() and v is not None:
+                        merged["aliases"][str(k).strip().lower()] = str(v).strip()
+        if isinstance(payload.get("title"), str) and payload["title"].strip():
+            merged["title"] = payload["title"].strip()
+        if isinstance(payload.get("reference_pdfs"), list):
+            merged.setdefault("syllabus_meta", {})
+            if isinstance(merged["syllabus_meta"], dict):
+                merged["syllabus_meta"]["reference_pdfs"] = [str(p).strip() for p in payload["reference_pdfs"] if str(p).strip()]
+        if isinstance(merged.get("chapters"), list) and merged["chapters"]:
+            try:
+                validated = self.validate_syllabus_config(merged)
+                merged = validated.get("config", merged)
+                warnings.extend(validated.get("notes", []))
+            except Exception as e:
+                warnings.append(str(e))
+        self._apply_module_config(merged)
+        if isinstance(merged.get("title"), str) and merged["title"].strip():
+            self.module_title = merged["title"].strip()
+        return {
+            "applied": True,
+            "module_id": target_id,
+            "warnings": warnings,
+            "config": merged,
+        }
 
     def _get_syllabus_signals(self, chapter: str) -> Dict[str, float]:
         """Return syllabus-driven weighting signals for planning/recommendations."""
@@ -2858,6 +2534,10 @@ class StudyPlanEngine:
         module_dir = os.path.join(self.DEFAULT_DATA_DIR, safe_id)
         module_data = os.path.join(module_dir, "data.json")
         module_questions = os.path.join(module_dir, "questions.json")
+        # Keep legacy root-path fallback only for the FM default module.
+        # Other modules must stay isolated by module_id to avoid cross-module state bleed.
+        if safe_id != "acca_f9":
+            return module_data, module_questions
         legacy_data = self.DEFAULT_DATA_FILE
         legacy_questions = self.DEFAULT_QUESTIONS_FILE
         data_path = legacy_data if os.path.exists(legacy_data) and not os.path.exists(module_data) else module_data
@@ -3029,6 +2709,22 @@ class StudyPlanEngine:
             title = config.get("title")
             if isinstance(title, str) and title.strip():
                 self.module_title = title.strip()
+            # F7 known by heart: when loading acca_f7, ensure full syllabus_structure from built-in
+            # so the app has complete outcome IDs and chapter mapping without requiring a PDF.
+            if (self.module_id or "").strip().lower() == "acca_f7":
+                chapters = config.get("chapters")
+                if isinstance(chapters, list) and chapters:
+                    existing = config.get("syllabus_structure") or {}
+                    total_outcomes = sum(
+                        len((info or {}).get("learning_outcomes") or [])
+                        for info in (existing.values() if isinstance(existing, dict) else [])
+                    )
+                    if total_outcomes == 0:
+                        config = dict(config)
+                        config["syllabus_structure"] = get_f7_syllabus_structure(chapters)
+                        if isinstance(config.get("syllabus_meta"), dict):
+                            config["syllabus_meta"] = dict(config["syllabus_meta"])
+                            config["syllabus_meta"]["built_in_f7"] = True
             self._apply_module_config(config)
         if isinstance(self.importance_weights, dict):
             for ch in self.CHAPTERS:
@@ -3073,6 +2769,8 @@ class StudyPlanEngine:
 
         # Initialise questions dictionary (use QUESTIONS as default)
         self.QUESTIONS = self.QUESTIONS_DEFAULT.copy()
+        self._cached_total_question_count: int | None = None
+        self._cached_total_question_count_valid = False
 
         # Initialise SRS data dictionary
         self.srs_data: Dict[str, List[Dict[str, Union[str, int, float, None]]]] = {
@@ -3093,6 +2791,7 @@ class StudyPlanEngine:
         self.quiz_recent: Dict[str, List[int]] = {}
         self.error_notebook: Dict[str, List[Dict[str, Any]]] = {}
         self.gap_routing_log: List[Dict[str, Any]] = []
+        self.tutor_activity_log: List[Dict[str, Any]] = []  # 14-day rolling tutor interactions
         self.question_stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.outcome_stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.adaptive_quiz_prioritization: bool = True
@@ -3199,9 +2898,13 @@ class StudyPlanEngine:
 
         # Load data from JSON file
         self._initial_load_in_progress = True
+        self._load_failed = False
+        self._load_error: str | None = None
         try:
             self.load_data()
         except Exception as e:
+            self._load_failed = True
+            self._load_error = str(e) or type(e).__name__
             print(f"Unexpected error loading data: {e}")
         self.cognitive_state = self._load_or_build_cognitive_state()
         self.working_memory_service = WorkingMemoryService(self.cognitive_state)
@@ -3238,6 +2941,9 @@ class StudyPlanEngine:
             "recall_model_sklearn_block_reason",
             "difficulty_model",
             "interval_model",
+            "_last_loaded_module_config_path",  # None when no module config file found (e.g. installed app, new module)
+            "_cached_total_question_count",  # None until get_total_question_count() is called
+            "_load_error",  # Set when load_data() fails; None when load succeeded
         }  # Add any vars that can be None
         for key, value in self.__dict__.items():
             if value is None and key not in none_allowed:
@@ -3911,6 +3617,136 @@ class StudyPlanEngine:
         cleaned.sort(key=lambda row: str(row.get("ts", "")))
         return cleaned[-max_keep:]
 
+    def _coerce_tutor_activity_log(
+        self, raw: Any, max_days: int = 14, max_entries: int = 500
+    ) -> List[Dict[str, Any]]:
+        """Normalize tutor activity log: keep entries within max_days, cap at max_entries."""
+        cleaned: List[Dict[str, Any]] = []
+        if not isinstance(raw, list):
+            return cleaned
+        today = datetime.date.today()
+        cutoff = today - datetime.timedelta(days=max(1, max_days))
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                ts = item.get("at") or item.get("timestamp") or item.get("date") or item.get("ts")
+                if ts is None:
+                    continue
+                if isinstance(ts, (int, float)):
+                    dt = datetime.datetime.fromtimestamp(float(ts)).date()
+                else:
+                    dt = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).date()
+            except Exception:
+                continue
+            if dt < cutoff:
+                continue
+            cleaned.append({
+                "at": dt.isoformat(),
+                "chapter": str(item.get("chapter") or "").strip(),
+                "topic": str(item.get("topic") or item.get("chapter") or "").strip(),
+                "actions": str(item.get("actions") or item.get("action") or "explain").strip(),
+                "confidence_feedback": str(item.get("confidence_feedback") or item.get("confidence") or "").strip(),
+                "summary": str(item.get("summary") or "")[:200].strip(),
+            })
+        cleaned.sort(key=lambda row: str(row.get("at", "")))
+        return cleaned[-max_entries:]
+
+    def append_tutor_activity(
+        self,
+        chapter: str,
+        topic: str | None = None,
+        actions: str = "explain",
+        confidence_feedback: str = "",
+        summary: str = "",
+        max_days: int = 14,
+        max_entries: int = 500,
+    ) -> None:
+        """Append one tutor interaction to the rolling activity log (max 14 days)."""
+        now = datetime.datetime.now()
+        entry: Dict[str, Any] = {
+            "at": now.date().isoformat(),
+            "timestamp": now.isoformat(timespec="seconds"),
+            "chapter": str(chapter or "").strip(),
+            "topic": str(topic or chapter or "").strip(),
+            "actions": str(actions or "explain").strip(),
+            "confidence_feedback": str(confidence_feedback or "").strip(),
+            "summary": str(summary or "")[:200].strip(),
+        }
+        log = getattr(self, "tutor_activity_log", None)
+        if not isinstance(log, list):
+            log = []
+        log.append(entry)
+        self.tutor_activity_log = self._coerce_tutor_activity_log(log, max_days=max_days, max_entries=max_entries)
+
+    def _coerce_concept_graph(
+        self,
+        meta: Any,
+        nodes: Any,
+        edges: Any,
+        links: Any,
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Normalize concept graph meta, nodes, edges, and outcome_links from loaded/config data."""
+        out_meta: Dict[str, Any] = {}
+        if isinstance(meta, dict):
+            out_meta = dict(meta)
+        out_nodes: List[Dict[str, Any]] = []
+        if isinstance(nodes, list):
+            for item in nodes:
+                if not isinstance(item, dict):
+                    continue
+                node_id = str(item.get("id", "") or "").strip()
+                if not node_id:
+                    continue
+                out_nodes.append(dict(item))
+        out_edges: List[Dict[str, Any]] = []
+        if isinstance(edges, list):
+            for item in edges:
+                if not isinstance(item, dict):
+                    continue
+                parent = str(item.get("parent_id", "") or "").strip()
+                child = str(item.get("child_id", "") or "").strip()
+                if not parent or not child:
+                    continue
+                out_edges.append({"parent_id": parent, "child_id": child, "relation": str(item.get("relation", "contains") or "contains")})
+        out_links: List[Dict[str, Any]] = []
+        if isinstance(links, list):
+            for item in links:
+                if not isinstance(item, dict):
+                    continue
+                oid = str(item.get("outcome_id", "") or "").strip()
+                cid = str(item.get("concept_id", "") or "").strip()
+                if not oid or not cid:
+                    continue
+                try:
+                    weight = float(item.get("weight", 1.0) or 1.0)
+                except (TypeError, ValueError):
+                    weight = 1.0
+                out_links.append({"outcome_id": oid, "concept_id": cid, "weight": max(0.0, min(1.0, weight))})
+        return out_meta, out_nodes, out_edges, out_links
+
+    def _coerce_outcome_cluster_graph(
+        self,
+        meta: Any,
+        clusters: Any,
+        edges: Any,
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Normalize outcome cluster meta, clusters, and edges from loaded/config data."""
+        out_meta: Dict[str, Any] = {}
+        if isinstance(meta, dict):
+            out_meta = dict(meta)
+        out_clusters: List[Dict[str, Any]] = []
+        if isinstance(clusters, list):
+            for item in clusters:
+                if isinstance(item, dict):
+                    out_clusters.append(dict(item))
+        out_edges: List[Dict[str, Any]] = []
+        if isinstance(edges, list):
+            for item in edges:
+                if isinstance(item, dict):
+                    out_edges.append(dict(item))
+        return out_meta, out_clusters, out_edges
+
     def _coerce_question_stats(self, raw):
         """Normalize per-question stats to {chapter: {key: stats}}."""
         if not isinstance(raw, dict):
@@ -4016,6 +3852,45 @@ class StudyPlanEngine:
             if inner:
                 cleaned[ch] = inner
         return cleaned
+
+    def _reconcile_outcome_stats_to_syllabus(
+        self, outcome_stats_raw: Dict[str, Dict[str, Dict[str, Any]]]
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """Keep only outcome_ids that exist in current syllabus_structure; drop stale ids (syllabus ingest Phase 3)."""
+        if not isinstance(outcome_stats_raw, dict):
+            return {}
+        structure = getattr(self, "syllabus_structure", {}) or {}
+        if not isinstance(structure, dict):
+            return outcome_stats_raw
+        valid_ids_by_ch: Dict[str, Set[str]] = {}
+        for ch, info in structure.items():
+            if not isinstance(info, dict):
+                continue
+            los = info.get("learning_outcomes") or []
+            if not isinstance(los, list):
+                continue
+            valid_ids_by_ch[str(ch).strip()] = {
+                str(o.get("id", "") or "").strip()
+                for o in los
+                if isinstance(o, dict) and str(o.get("id", "") or "").strip()
+            }
+        reconciled: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for ch, items in outcome_stats_raw.items():
+            if not isinstance(ch, str) or not isinstance(items, dict):
+                continue
+            valid = valid_ids_by_ch.get(ch)
+            if valid is None:
+                valid = valid_ids_by_ch.get(self._try_match_chapter(ch) or ch, set())
+            if not valid:
+                continue
+            inner = {
+                oid: stats
+                for oid, stats in items.items()
+                if str(oid).strip() in valid and isinstance(stats, dict)
+            }
+            if inner:
+                reconciled[ch] = inner
+        return reconciled
 
     def _question_id(self, question: Dict[str, Any]) -> str | None:
         """Return a stable ID for a question based on its content."""
@@ -4226,185 +4101,214 @@ class StudyPlanEngine:
             outcomes = info.get("learning_outcomes", [])
             if not isinstance(outcomes, list):
                 outcomes = []
+            outcome_list = []
+            for item in outcomes:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    level = int(item.get("level", 2) or 2)
+                except (TypeError, ValueError):
+                    level = 2
+                level = max(1, min(3, level))
+                outcome_list.append({
+                    "id": str(item.get("id", "")).strip(),
+                    "text": str(item.get("text", "")).strip(),
+                    "level": level,
+                })
             payload[chapter] = {
                 "capability": str(info.get("capability", "") or "").strip().upper(),
                 "subtopics": [str(x).strip() for x in (info.get("subtopics", []) or []) if str(x).strip()],
-                "outcomes": [
-                    {
-                        "id": str(item.get("id", "")).strip(),
-                        "text": str(item.get("text", "")).strip(),
-                        "level": int(item.get("level", 2) or 2),
-                    }
-                    for item in outcomes
-                    if isinstance(item, dict)
-                ],
+                "outcomes": outcome_list,
             }
         return payload
 
     def build_canonical_concept_graph(self, force: bool = False) -> Dict[str, Any]:
         """Build deterministic capability->concept->subconcept graph linked to outcomes."""
-        signature_payload = self._concept_signature_payload()
-        signature = hashlib.sha1(
-            json.dumps(signature_payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
-        ).hexdigest()
-        existing_meta = self.concept_graph_meta if isinstance(self.concept_graph_meta, dict) else {}
-        if (
-            not force
-            and isinstance(self.concept_nodes, list)
-            and isinstance(self.outcome_concept_links, list)
-            and existing_meta.get("signature") == signature
-            and int(existing_meta.get("version", 0) or 0) == int(self.CONCEPT_GRAPH_SCHEMA_VERSION)
-        ):
-            return self.get_canonical_concept_graph()
-
-        nodes_by_id: Dict[str, Dict[str, Any]] = {}
-        edges: List[Dict[str, Any]] = []
-        links: List[Dict[str, Any]] = []
-
-        def _add_node(node: Dict[str, Any]) -> None:
-            node_id = str(node.get("id", "") or "").strip()
-            if not node_id:
+        def _do_build() -> None:
+            signature_payload = self._concept_signature_payload()
+            try:
+                signature = hashlib.sha1(
+                    json.dumps(signature_payload, sort_keys=True, ensure_ascii=True, default=str).encode("utf-8")
+                ).hexdigest()
+            except (TypeError, ValueError):
+                signature = ""
+            existing_meta = self.concept_graph_meta if isinstance(self.concept_graph_meta, dict) else {}
+            if (
+                not force
+                and isinstance(self.concept_nodes, list)
+                and isinstance(self.outcome_concept_links, list)
+                and existing_meta.get("signature") == signature
+                and int(existing_meta.get("version", 0) or 0) == int(self.CONCEPT_GRAPH_SCHEMA_VERSION)
+                and not existing_meta.get("build_error")
+            ):
                 return
-            if node_id in nodes_by_id:
-                # Merge aliases/chapter refs deterministically.
-                current = nodes_by_id[node_id]
-                aliases = list(current.get("aliases", []) or [])
-                for alias in node.get("aliases", []) or []:
-                    s = str(alias).strip()
-                    if s and s not in aliases:
-                        aliases.append(s)
-                refs = list(current.get("chapter_refs", []) or [])
-                for ref in node.get("chapter_refs", []) or []:
-                    r = str(ref).strip()
-                    if r and r not in refs:
-                        refs.append(r)
-                current["aliases"] = aliases
-                current["chapter_refs"] = refs
-                nodes_by_id[node_id] = current
-                return
-            nodes_by_id[node_id] = node
 
-        for chapter in self.CHAPTERS:
-            info = self.get_syllabus_chapter_intelligence(chapter)
-            if not isinstance(info, dict):
-                continue
-            capability = str(info.get("capability", "") or "").strip().upper() or self._chapter_capability(chapter) or "X"
-            outcomes = info.get("learning_outcomes", [])
-            if not isinstance(outcomes, list):
-                outcomes = []
-            subtopics = [str(x).strip() for x in (info.get("subtopics", []) or []) if str(x).strip()]
+            nodes_by_id: Dict[str, Dict[str, Any]] = {}
+            edges: List[Dict[str, Any]] = []
+            links: List[Dict[str, Any]] = []
 
-            cap_name = str(self.capabilities.get(capability, "") or "").strip() if isinstance(self.capabilities, dict) else ""
-            cap_label = cap_name or f"Capability {capability}"
-            cap_node_id = f"cap:{capability}"
-            _add_node(
-                {
-                    "id": cap_node_id,
-                    "name": cap_label,
-                    "kind": "capability",
-                    "capability": capability,
-                    "aliases": [capability],
-                    "chapter_refs": [chapter],
-                }
-            )
+            def _add_node(node: Dict[str, Any]) -> None:
+                node_id = str(node.get("id", "") or "").strip()
+                if not node_id:
+                    return
+                if node_id in nodes_by_id:
+                    current = nodes_by_id[node_id]
+                    aliases = list(current.get("aliases", []) or [])
+                    for alias in node.get("aliases", []) or []:
+                        s = str(alias).strip()
+                        if s and s not in aliases:
+                            aliases.append(s)
+                    refs = list(current.get("chapter_refs", []) or [])
+                    for ref in node.get("chapter_refs", []) or []:
+                        r = str(ref).strip()
+                        if r and r not in refs:
+                            refs.append(r)
+                    current["aliases"] = aliases
+                    current["chapter_refs"] = refs
+                    nodes_by_id[node_id] = current
+                    return
+                nodes_by_id[node_id] = node
 
-            chapter_name = re.sub(r"^\s*[A-H]\.\s*", "", str(chapter)).strip() or str(chapter)
-            chapter_concept_id = self._stable_hash_id(
-                "concept",
-                f"{capability}|chapter|{self.normalize_concept_text(chapter, chapter_name)}",
-            )
-            _add_node(
-                {
-                    "id": chapter_concept_id,
-                    "name": chapter_name,
-                    "kind": "concept",
-                    "capability": capability,
-                    "aliases": [self.normalize_concept_text(chapter, chapter_name)],
-                    "chapter_refs": [chapter],
-                }
-            )
-            edges.append(
-                {
-                    "parent_id": cap_node_id,
-                    "child_id": chapter_concept_id,
-                    "relation": "contains",
-                }
-            )
-
-            subtopic_nodes: List[Tuple[str, str]] = []
-            for subtopic in subtopics:
-                normalized = self.normalize_concept_text(chapter, subtopic)
-                if not normalized:
-                    continue
-                sub_id = self._stable_hash_id("sub", f"{capability}|{chapter}|{normalized}")
-                _add_node(
-                    {
-                        "id": sub_id,
-                        "name": subtopic,
-                        "kind": "subconcept",
-                        "capability": capability,
-                        "aliases": [normalized],
-                        "chapter_refs": [chapter],
-                    }
-                )
-                edges.append(
-                    {
-                        "parent_id": chapter_concept_id,
-                        "child_id": sub_id,
-                        "relation": "contains",
-                    }
-                )
-                subtopic_nodes.append((sub_id, normalized))
-
-            for outcome in outcomes:
-                if not isinstance(outcome, dict):
-                    continue
-                outcome_id = str(outcome.get("id", "") or "").strip()
-                outcome_text = str(outcome.get("text", "") or "").strip()
-                if not outcome_id or not outcome_text:
-                    continue
-                outcome_norm = self.normalize_concept_text(chapter, outcome_text)
-                target_concept_id = chapter_concept_id
-                best_score = -1.0
-                for sub_id, sub_norm in subtopic_nodes:
-                    if not sub_norm:
+            for chapter in self.CHAPTERS:
+                try:
+                    info = self.get_syllabus_chapter_intelligence(chapter)
+                    if not isinstance(info, dict):
                         continue
-                    ratio = difflib.SequenceMatcher(None, outcome_norm, sub_norm).ratio()
-                    if ratio > best_score:
-                        best_score = ratio
-                        target_concept_id = sub_id
-                links.append(
-                    {
-                        "outcome_id": outcome_id,
-                        "concept_id": target_concept_id,
-                        "weight": 1.0,
-                    }
-                )
+                    capability = str(info.get("capability", "") or "").strip().upper() or self._chapter_capability(chapter) or "X"
+                    outcomes = info.get("learning_outcomes", [])
+                    if not isinstance(outcomes, list):
+                        outcomes = []
+                    subtopics = [str(x).strip() for x in (info.get("subtopics", []) or []) if str(x).strip()]
 
-        self.concept_nodes = sorted(nodes_by_id.values(), key=lambda x: str(x.get("id", "")))
-        self.concept_edges = sorted(
-            edges,
-            key=lambda x: (str(x.get("parent_id", "")), str(x.get("child_id", "")), str(x.get("relation", ""))),
-        )
-        self.outcome_concept_links = sorted(
-            links,
-            key=lambda x: (str(x.get("outcome_id", "")), str(x.get("concept_id", ""))),
-        )
-        semantic_status = self.get_semantic_status()
-        self.concept_graph_meta = {
-            "version": int(self.CONCEPT_GRAPH_SCHEMA_VERSION),
-            "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
-            "source": "syllabus_structure",
-            "semantic_model": str(semantic_status.get("model_name", "") or ""),
-            "signature": signature,
-        }
+                    cap_name = str(self.capabilities.get(capability, "") or "").strip() if isinstance(self.capabilities, dict) else ""
+                    cap_label = cap_name or f"Capability {capability}"
+                    cap_node_id = f"cap:{capability}"
+                    _add_node(
+                        {
+                            "id": cap_node_id,
+                            "name": cap_label,
+                            "kind": "capability",
+                            "capability": capability,
+                            "aliases": [capability],
+                            "chapter_refs": [chapter],
+                        }
+                    )
+
+                    chapter_name = re.sub(r"^\s*[A-H]\.\s*", "", str(chapter)).strip() or str(chapter)
+                    chapter_concept_id = self._stable_hash_id(
+                        "concept",
+                        f"{capability}|chapter|{self.normalize_concept_text(chapter, chapter_name)}",
+                    )
+                    _add_node(
+                        {
+                            "id": chapter_concept_id,
+                            "name": chapter_name,
+                            "kind": "concept",
+                            "capability": capability,
+                            "aliases": [self.normalize_concept_text(chapter, chapter_name)],
+                            "chapter_refs": [chapter],
+                        }
+                    )
+                    edges.append(
+                        {
+                            "parent_id": cap_node_id,
+                            "child_id": chapter_concept_id,
+                            "relation": "contains",
+                        }
+                    )
+
+                    subtopic_nodes: List[Tuple[str, str]] = []
+                    for subtopic in subtopics:
+                        normalized = self.normalize_concept_text(chapter, subtopic)
+                        if not normalized:
+                            continue
+                        sub_id = self._stable_hash_id("sub", f"{capability}|{chapter}|{normalized}")
+                        _add_node(
+                            {
+                                "id": sub_id,
+                                "name": subtopic,
+                                "kind": "subconcept",
+                                "capability": capability,
+                                "aliases": [normalized],
+                                "chapter_refs": [chapter],
+                            }
+                        )
+                        edges.append(
+                            {
+                                "parent_id": chapter_concept_id,
+                                "child_id": sub_id,
+                                "relation": "contains",
+                            }
+                        )
+                        subtopic_nodes.append((sub_id, normalized))
+
+                    for outcome in outcomes:
+                        if not isinstance(outcome, dict):
+                            continue
+                        outcome_id = str(outcome.get("id", "") or "").strip()
+                        outcome_text = str(outcome.get("text", "") or "").strip()
+                        if not outcome_id or not outcome_text:
+                            continue
+                        outcome_norm = self.normalize_concept_text(chapter, outcome_text)
+                        target_concept_id = chapter_concept_id
+                        best_score = -1.0
+                        for sub_id, sub_norm in subtopic_nodes:
+                            if not sub_norm:
+                                continue
+                            ratio = difflib.SequenceMatcher(None, outcome_norm, sub_norm).ratio()
+                            if ratio > best_score:
+                                best_score = ratio
+                                target_concept_id = sub_id
+                        links.append(
+                            {
+                                "outcome_id": outcome_id,
+                                "concept_id": target_concept_id,
+                                "weight": 1.0,
+                            }
+                        )
+                except Exception:
+                    continue
+
+            self.concept_nodes = sorted(nodes_by_id.values(), key=lambda x: str(x.get("id", "")))
+            self.concept_edges = sorted(
+                edges,
+                key=lambda x: (str(x.get("parent_id", "")), str(x.get("child_id", "")), str(x.get("relation", ""))),
+            )
+            self.outcome_concept_links = sorted(
+                links,
+                key=lambda x: (str(x.get("outcome_id", "")), str(x.get("concept_id", ""))),
+            )
+            semantic_status = self.get_semantic_status()
+            self.concept_graph_meta = {
+                "version": int(self.CONCEPT_GRAPH_SCHEMA_VERSION),
+                "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "source": "syllabus_structure",
+                "semantic_model": str(semantic_status.get("model_name", "") or ""),
+                "signature": signature,
+            }
+
+        try:
+            _do_build()
+        except Exception as e:
+            self.concept_nodes = []
+            self.concept_edges = []
+            self.outcome_concept_links = []
+            self.concept_graph_meta = {
+                "version": int(self.CONCEPT_GRAPH_SCHEMA_VERSION),
+                "build_error": str(e),
+                "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            }
         return self.get_canonical_concept_graph()
 
     def get_canonical_concept_graph(self) -> Dict[str, Any]:
-        if not isinstance(self.concept_nodes, list) or not self.concept_nodes:
+        meta = self.concept_graph_meta if isinstance(self.concept_graph_meta, dict) else {}
+        nodes = self.concept_nodes if isinstance(self.concept_nodes, list) else []
+        if not nodes and not meta.get("build_error"):
             self.build_canonical_concept_graph(force=False)
+            meta = self.concept_graph_meta if isinstance(self.concept_graph_meta, dict) else {}
+            nodes = self.concept_nodes if isinstance(self.concept_nodes, list) else []
         return {
-            "meta": dict(self.concept_graph_meta) if isinstance(self.concept_graph_meta, dict) else {},
+            "meta": dict(meta),
             "nodes": list(self.concept_nodes) if isinstance(self.concept_nodes, list) else [],
             "edges": list(self.concept_edges) if isinstance(self.concept_edges, list) else [],
             "outcome_links": list(self.outcome_concept_links) if isinstance(self.outcome_concept_links, list) else [],
@@ -4464,6 +4368,13 @@ class StudyPlanEngine:
             return "misc"
         return "|".join(tokens[:3])
 
+    def _snapshot_outcome_cluster_graph(self) -> Dict[str, Any]:
+        return {
+            "meta": dict(self.outcome_cluster_meta) if isinstance(self.outcome_cluster_meta, dict) else {},
+            "clusters": list(self.outcome_clusters) if isinstance(self.outcome_clusters, list) else [],
+            "edges": list(self.outcome_cluster_edges) if isinstance(self.outcome_cluster_edges, list) else [],
+        }
+
     def build_outcome_cluster_graph(self, force: bool = False) -> Dict[str, Any]:
         signature_payload = self._cluster_signature_payload()
         semantic_status = self.get_semantic_status()
@@ -4487,7 +4398,7 @@ class StudyPlanEngine:
             and existing_meta.get("signature") == signature
             and int(existing_meta.get("version", 0) or 0) == int(self.OUTCOME_CLUSTER_SCHEMA_VERSION)
         ):
-            return self.get_outcome_cluster_graph()
+            return self._snapshot_outcome_cluster_graph()
 
         clusters: List[Dict[str, Any]] = []
         edges: List[Dict[str, Any]] = []
@@ -4649,16 +4560,12 @@ class StudyPlanEngine:
             "signature": signature,
             "threshold": threshold,
         }
-        return self.get_outcome_cluster_graph()
+        return self._snapshot_outcome_cluster_graph()
 
     def get_outcome_cluster_graph(self) -> Dict[str, Any]:
         if not isinstance(self.outcome_clusters, list) or not self.outcome_clusters:
             self.build_outcome_cluster_graph(force=False)
-        return {
-            "meta": dict(self.outcome_cluster_meta) if isinstance(self.outcome_cluster_meta, dict) else {},
-            "clusters": list(self.outcome_clusters) if isinstance(self.outcome_clusters, list) else [],
-            "edges": list(self.outcome_cluster_edges) if isinstance(self.outcome_cluster_edges, list) else [],
-        }
+        return self._snapshot_outcome_cluster_graph()
 
     def get_outcome_cluster_id(self, outcome_id: str) -> str | None:
         target = str(outcome_id or "").strip()
@@ -5727,7 +5634,7 @@ class StudyPlanEngine:
         return candidate if candidate in outcome_lookup else None
 
     def resolve_question_outcomes(self, chapter: str, idx: int) -> Dict[str, Any]:
-        """Resolve question outcome routing with semantic metadata."""
+        """Resolve question outcome routing. Order: (1) question.outcome_ids, (2) question.outcomes (id/text), (3) capability+semantic, (4) deterministic bucket."""
         result: Dict[str, Any] = {
             "outcome_ids": [],
             "semantic_match_confidence": 0.0,
@@ -5767,7 +5674,10 @@ class StudyPlanEngine:
                     resolved.append(candidate)
         if resolved:
             result["outcome_ids"] = resolved
-            result["semantic_match_confidence"] = 1.0
+            # Use stored link confidence when present (e.g. from heuristic linking), else 1.0 for explicit tag
+            result["semantic_match_confidence"] = max(
+                0.0, min(1.0, float(question.get("outcome_link_confidence", 1.0) or 1.0))
+            )
             result["semantic_match_method"] = "fallback"
             result["reason"] = "explicit outcome_ids tag"
             return result
@@ -5873,6 +5783,58 @@ class StudyPlanEngine:
                 "reason": "deterministic fallback",
             }
         return route
+
+    def get_outcome_coverage_counts(self) -> Dict[str, Any]:
+        """
+        Return counts for outcome–question linking diagnostics: how many questions
+        have at least one resolved outcome, how many have explicit outcome_ids,
+        syllabus outcome count, and how many syllabus outcomes have ≥1 linked question (syllabus ingest Phase 3).
+        Used by Module → View Module Metadata and outcome-linking improvement.
+        """
+        total = 0
+        with_resolved = 0
+        with_explicit = 0
+        by_chapter: Dict[str, Dict[str, int]] = {}
+        outcome_ids_with_linked_question: Set[str] = set()
+        chapters = getattr(self, "CHAPTERS", []) or []
+        structure = getattr(self, "syllabus_structure", {}) or {}
+        syllabus_outcome_count = 0
+        if isinstance(structure, dict):
+            for info in structure.values():
+                if isinstance(info, dict):
+                    los = info.get("learning_outcomes") or []
+                    syllabus_outcome_count += len(los) if isinstance(los, list) else 0
+        for ch in chapters:
+            questions = (getattr(self, "QUESTIONS", {}) or {}).get(ch, [])
+            if not isinstance(questions, list):
+                continue
+            ch_total = len(questions)
+            ch_resolved = 0
+            ch_explicit = 0
+            for idx in range(ch_total):
+                route = self.resolve_question_outcomes(ch, idx)
+                oids = route.get("outcome_ids", []) if isinstance(route, dict) else []
+                if isinstance(oids, list):
+                    for oid in oids:
+                        if str(oid).strip():
+                            outcome_ids_with_linked_question.add(str(oid).strip())
+                    if len(oids) > 0:
+                        ch_resolved += 1
+                q = questions[idx] if isinstance(questions[idx], dict) else {}
+                if q.get("outcome_ids") or (isinstance(q.get("outcomes"), list) and q.get("outcomes")):
+                    ch_explicit += 1
+            total += ch_total
+            with_resolved += ch_resolved
+            with_explicit += ch_explicit
+            by_chapter[ch] = {"total": ch_total, "with_resolved": ch_resolved, "with_explicit": ch_explicit}
+        return {
+            "total_questions": total,
+            "questions_with_resolved_outcome": with_resolved,
+            "questions_with_explicit_outcome_ids": with_explicit,
+            "syllabus_outcome_count": syllabus_outcome_count,
+            "outcomes_with_linked_question": len(outcome_ids_with_linked_question),
+            "by_chapter": by_chapter,
+        }
 
     def _is_outcome_covered(self, stats: Dict[str, Any] | None) -> bool:
         """Return whether an outcome is considered covered."""
@@ -6763,7 +6725,7 @@ class StudyPlanEngine:
         target_quota = int(round(count * target_ratio))
         adjacent_quota = int(round(count * adjacent_ratio))
         far_quota = int(round(count * far_ratio))
-        if rows_by_bucket[0]:
+        if rows_by_bucket.get(0):
             target_quota = max(target_quota, min_target)
         target_quota = min(count, target_quota)
         adjacent_quota = min(max(0, count - target_quota), adjacent_quota)
@@ -6957,8 +6919,29 @@ class StudyPlanEngine:
         self.quiz_recent = self._coerce_quiz_recent(getattr(self, "quiz_recent", {}))
         self.error_notebook = self._coerce_error_notebook(getattr(self, "error_notebook", {}))
         self.gap_routing_log = self._coerce_gap_routing_log(getattr(self, "gap_routing_log", []))
+        self.tutor_activity_log = self._coerce_tutor_activity_log(getattr(self, "tutor_activity_log", []))
         self.question_stats = self._coerce_question_stats(getattr(self, "question_stats", {}))
         self.outcome_stats = self._coerce_outcome_stats(getattr(self, "outcome_stats", {}))
+        (
+            self.concept_graph_meta,
+            self.concept_nodes,
+            self.concept_edges,
+            self.outcome_concept_links,
+        ) = self._coerce_concept_graph(
+            getattr(self, "concept_graph_meta", {}),
+            getattr(self, "concept_nodes", []),
+            getattr(self, "concept_edges", []),
+            getattr(self, "outcome_concept_links", []),
+        )
+        (
+            self.outcome_cluster_meta,
+            self.outcome_clusters,
+            self.outcome_cluster_edges,
+        ) = self._coerce_outcome_cluster_graph(
+            getattr(self, "outcome_cluster_meta", {}),
+            getattr(self, "outcome_clusters", []),
+            getattr(self, "outcome_cluster_edges", []),
+        )
         self._normalize_chapter_keys()
 
     def _migrate_question_stats_to_qid(self) -> None:
@@ -7318,13 +7301,25 @@ class StudyPlanEngine:
                 print(f"Error loading questions from JSON: {e}")
             except OSError as e:
                 print(f"Error loading questions from JSON: {e}")
-        _qkeys = list(self.QUESTIONS_DEFAULT.keys()) if self.QUESTIONS_DEFAULT else list(self.CHAPTERS)
+        # Use current module chapters so QUESTIONS has an entry for every chapter (e.g. F7's 27),
+        # not just QUESTIONS_DEFAULT keys (e.g. F9's 19 when config has no "questions").
+        _qkeys = list(self.CHAPTERS) if self.CHAPTERS else (list(self.QUESTIONS_DEFAULT.keys()) if self.QUESTIONS_DEFAULT else [])
         self.QUESTIONS = {k: self.QUESTIONS_DEFAULT.get(k, []) + questions_from_json.get(k, []) for k in _qkeys}
+        self._cached_total_question_count_valid = False
         self._semantic_invalidate_chapter_assets(None)
 
-        # If syllabus-only chapters are active but the question bank has legacy chapters, restore them.
+        # Legacy fallback: only infer chapters from question keys when not locked by module config.
         try:
-            if raw_question_keys and len(raw_question_keys) > len(self.CHAPTERS):
+            current_keys = {str(ch).strip() for ch in self.CHAPTERS if str(ch).strip()}
+            raw_keys_set = {str(ch).strip() for ch in raw_question_keys if str(ch).strip()}
+            chapters_locked = bool(getattr(self, "_chapters_from_module_config", False))
+            if (
+                raw_question_keys
+                and not chapters_locked
+                and current_keys
+                and current_keys.issubset(raw_keys_set)
+                and len(raw_question_keys) > len(self.CHAPTERS)
+            ):
                 self.CHAPTERS = raw_question_keys
         except Exception:
             pass
@@ -7447,6 +7442,7 @@ class StudyPlanEngine:
                     print(f"ℹ No added questions. Removed {self.QUESTIONS_FILE}")
                 except OSError as e:
                     print(f"✗ Error removing file: {e}")
+        self._cached_total_question_count_valid = False
 
     def add_question(self, chapter, question_dict):
         """Add a single question to a chapter and save to JSON."""
@@ -7466,7 +7462,8 @@ class StudyPlanEngine:
         # Load existing questions
         try:
             with open(self.QUESTIONS_FILE, 'r', encoding='utf-8') as f:
-                questions = json.load(f)
+                loaded = json.load(f)
+            questions = loaded if isinstance(loaded, dict) else {}
         except (OSError, json.JSONDecodeError):
             questions = {}
 
@@ -7483,12 +7480,32 @@ class StudyPlanEngine:
             'efactor': 2.5
         })
         self.QUESTIONS.setdefault(chapter, []).append(dict(question_dict))
+        self._cached_total_question_count_valid = False
         self._semantic_invalidate_chapter_assets(chapter)
 
         # Save SRS data
         self.save_data()
 
         print(f" Added question to {chapter}")
+
+    def update_question_outcome_ids(
+        self, chapter: str, question_index: int, outcome_ids: List[str]
+    ) -> None:
+        """
+        Set outcome_ids for the question at the given index and save.
+        Used by the outcome-tagging UI (Phase 3 outcome linking).
+        """
+        if chapter not in self.CHAPTERS or chapter not in self.QUESTIONS:
+            return
+        qs = self.QUESTIONS.get(chapter, [])
+        if not isinstance(qs, list) or question_index < 0 or question_index >= len(qs):
+            return
+        q = qs[question_index]
+        if not isinstance(q, dict):
+            return
+        q["outcome_ids"] = [str(x).strip() for x in outcome_ids if str(x).strip()]
+        self.save_questions()
+        self._semantic_invalidate_chapter_assets(chapter)
 
 
 
@@ -7808,10 +7825,25 @@ class StudyPlanEngine:
             "correct": str(correct),
             "explanation": str(explanation),
         }
-        # Preserve a small set of optional metadata fields if present
-        for extra_key in ("outcome_ids", "semantic_match_confidence", "semantic_match_method"):
-            if extra_key in row:
-                cleaned[extra_key] = row.get(extra_key)
+        # Preserve optional metadata: outcome linking and semantic match (for coverage and diagnostics)
+        for extra_key in (
+            "outcome_ids",
+            "outcomes",
+            "outcome_link_confidence",
+            "semantic_match_confidence",
+            "semantic_match_method",
+        ):
+            if extra_key not in row:
+                continue
+            val = row.get(extra_key)
+            if extra_key == "outcome_ids" and isinstance(val, list):
+                cleaned[extra_key] = [str(x).strip() for x in val if str(x).strip()]
+            elif extra_key == "outcomes" and isinstance(val, list):
+                cleaned[extra_key] = list(val)  # keep as list of objects for backward compatibility
+            elif extra_key == "outcome_link_confidence" and isinstance(val, (int, float)):
+                cleaned[extra_key] = max(0.0, min(1.0, float(val)))
+            else:
+                cleaned[extra_key] = val
         return cleaned, [], meta
 
     def _question_dedupe_key(self, q: Dict[str, Any]) -> Tuple[str, Tuple[str, ...], str]:
@@ -8145,6 +8177,7 @@ class StudyPlanEngine:
             return 0, semantic_dedup
 
         self.QUESTIONS.setdefault(chapter, []).extend(valid)
+        self._cached_total_question_count_valid = False
         self.srs_data.setdefault(chapter, [])
         self.srs_data[chapter].extend(
             [{"last_review": None, "interval": 1, "efactor": 2.5} for _ in valid]
@@ -9262,12 +9295,17 @@ class StudyPlanEngine:
 
     def get_total_question_count(self) -> int:
         """Return total number of questions (cards) across all chapters for the current module."""
+        if getattr(self, "_cached_total_question_count_valid", False) and self._cached_total_question_count is not None:
+            return int(self._cached_total_question_count)
         total = 0
         for ch in getattr(self, "CHAPTERS", []) or []:
             qs = self.QUESTIONS.get(ch, [])
             if isinstance(qs, list):
                 total += len(qs)
-        return max(0, total)
+        total = max(0, total)
+        self._cached_total_question_count = total
+        self._cached_total_question_count_valid = True
+        return total
 
     def get_question_breakdown(self):
         """
@@ -11798,7 +11836,12 @@ class StudyPlanEngine:
 
         if remaining > 0:
             overdue = self._get_overdue_chapters(day)
-            review_topic = overdue[0][0] if overdue else topics[0]
+            if overdue:
+                review_topic = overdue[0][0]
+            elif topics:
+                review_topic = topics[0]
+            else:
+                review_topic = ""
             blocks.append({"kind": "Review", "topic": review_topic, "minutes": remaining})
 
         return blocks
@@ -11828,6 +11871,7 @@ class StudyPlanEngine:
         self.quiz_recent = data.get('quiz_recent', self.quiz_recent)
         self.error_notebook = data.get('error_notebook', self.error_notebook)
         self.gap_routing_log = data.get('gap_routing_log', self.gap_routing_log)
+        self.tutor_activity_log = data.get('tutor_activity_log', self.tutor_activity_log)
         self.question_stats = data.get('question_stats', self.question_stats)
         self.outcome_stats = data.get('outcome_stats', self.outcome_stats)
         self.progress_log = data.get('progress_log', self.progress_log)
@@ -11849,6 +11893,10 @@ class StudyPlanEngine:
         self.outcome_clusters = data.get("outcome_clusters", self.outcome_clusters) or []
         self.outcome_cluster_edges = data.get("outcome_cluster_edges", self.outcome_cluster_edges) or []
         self._normalize_loaded_data(include_question_file_hints=True)
+        # Reconcile outcome_stats to current syllabus outcome ids (syllabus ingest Phase 3).
+        self.outcome_stats = self._reconcile_outcome_stats_to_syllabus(
+            getattr(self, "outcome_stats", {}) or {}
+        )
         # Final cardinality guard after coercion.
         if not bool(getattr(self, "_initial_load_in_progress", False)):
             self.sync_srs_with_questions()
@@ -12116,6 +12164,8 @@ class StudyPlanEngine:
         - SRS data
         - Study days
         - Exam date (optional)
+        - quiz_results, must_review (so exam readiness goes to 0%)
+        - study_hub_stats
 
         Saves the reset state to the JSON file.
         """
@@ -12131,6 +12181,9 @@ class StudyPlanEngine:
         self.daily_plan_cache = []
         self.daily_plan_cache_date = None
         self.quiz_recent = {}
+        self.quiz_results = {}
+        self.must_review = {}
+        self.study_hub_stats = {}
         self.error_notebook = {}
         self.gap_routing_log = []
         self.question_stats = {}
@@ -12169,6 +12222,7 @@ class StudyPlanEngine:
             "quiz_recent": {k: list(v) for k, v in self.quiz_recent.items()},
             "error_notebook": {k: list(v) for k, v in self.error_notebook.items()},
             "gap_routing_log": list(self.gap_routing_log) if isinstance(self.gap_routing_log, list) else [],
+            "tutor_activity_log": list(self.tutor_activity_log) if isinstance(self.tutor_activity_log, list) else [],
             "question_stats": {k: dict(v) for k, v in self.question_stats.items()},
             "outcome_stats": {k: dict(v) for k, v in self.outcome_stats.items()},
             "progress_log": list(self.progress_log),
@@ -12200,8 +12254,10 @@ class StudyPlanEngine:
             except Exception:
                 pass
 
-        # Backup before overwriting
+        # Backup before overwriting (data and questions so recovery has both)
         self._backup_file(self.DATA_FILE)
+        if getattr(self, "QUESTIONS_FILE", ""):
+            self._backup_file(self.QUESTIONS_FILE)
         self._atomic_write_json(self.DATA_FILE, data, indent=4)
         self.last_saved_at = datetime.datetime.now().isoformat(timespec="seconds")
 
@@ -12351,9 +12407,44 @@ class StudyPlanEngine:
             self._migrate_question_stats_to_qid()
         except Exception as exc:
             self.data_health["notes"].append(f"migrate_question_stats: {exc}")
+        try:
+            invalid = self._count_questions_with_invalid_outcome_ids()
+            if invalid > 0:
+                self.data_health["notes"].append(
+                    f"Questions with outcome_ids not in syllabus: {invalid} (review in Module → View Module Metadata)"
+                )
+        except Exception as exc:
+            self.data_health["notes"].append(f"outcome_ids check: {exc}")
         self.save_data()
         self._append_health_log()
         return dict(self.data_health)
+
+    def _count_questions_with_invalid_outcome_ids(self) -> int:
+        """Count questions that have outcome_ids not present in syllabus_structure (warn-only for health check)."""
+        valid_ids: Set[str] = set()
+        for ch, info in (getattr(self, "syllabus_structure", {}) or {}).items():
+            if not isinstance(info, dict):
+                continue
+            for o in (info.get("learning_outcomes") or []):
+                if isinstance(o, dict):
+                    oid = str((o.get("id") or "")).strip()
+                    if oid:
+                        valid_ids.add(oid)
+        invalid_count = 0
+        for ch, qlist in (getattr(self, "QUESTIONS", {}) or {}).items():
+            if not isinstance(qlist, list):
+                continue
+            for q in qlist:
+                if not isinstance(q, dict):
+                    continue
+                oids = q.get("outcome_ids")
+                if not isinstance(oids, list):
+                    continue
+                for oid in oids:
+                    if str(oid).strip() and str(oid).strip() not in valid_ids:
+                        invalid_count += 1
+                        break
+        return invalid_count
 
     def _atomic_write_json(self, path: str, payload: dict, indent: int = 2) -> None:
         """Write JSON atomically to avoid partial/corrupt files."""

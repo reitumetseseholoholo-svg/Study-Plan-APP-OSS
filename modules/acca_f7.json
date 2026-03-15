@@ -107,39 +107,37 @@
     ],
     "Chapter 26: Analysis and Interpretation": [
       "Chapter 27: IAS 7 Statement of Cash Flows"
-    ],
-    "Chapter 27: IAS 7 Statement of Cash Flows": []
+    ]
   },
   "importance_weights": {
-    "Chapter 1: International Financial Reporting Standards": 10,
-    "Chapter 2: Conceptual Framework": 15,
-    "Chapter 3: IFRS 18 Presentation and Disclosure in Financial Statements": 15,
-    "Chapter 4: IAS 8 Basis of Preparation of Financial Statements": 10,
-    "Chapter 5: IFRS 15 Revenue from Contracts with Customers": 15,
-    "Chapter 6: Inventories and Agriculture": 10,
-    "Chapter 7: IAS 16 Property, Plant and Equipment": 15,
-    "Chapter 8: IAS 23 Borrowing Costs": 10,
-    "Chapter 9: Government Grants": 8,
-    "Chapter 10: IAS 40 Investment Property": 10,
-    "Chapter 11: IAS 38 Intangible Assets": 12,
-    "Chapter 12: IFRS 5 Non-current Assets Held for Sale and Discontinued Operations": 10,
-    "Chapter 13: IAS 36 Impairment of Assets": 15,
-    "Chapter 14: IFRS 16 Leases": 18,
-    "Chapter 15: IAS 37 Provisions, Contingent Liabilities and Contingent Assets": 15,
-    "Chapter 16: IAS 10 Events after the Reporting Period": 10,
-    "Chapter 17: IAS 12 Income Taxes": 15,
-    "Chapter 18: Financial Instruments": 15,
-    "Chapter 19: Foreign Currency Transactions": 12,
-    "Chapter 20: IAS 33 Earnings per Share": 12,
-    "Chapter 21: Conceptual Principles of Groups": 15,
-    "Chapter 22: Consolidated Statement of Financial Position": 20,
-    "Chapter 23: Consolidation Adjustments": 18,
-    "Chapter 24: Consolidated Statement of Profit or Loss": 18,
-    "Chapter 25: Investments in Associates": 15,
-    "Chapter 26: Analysis and Interpretation": 15,
-    "Chapter 27: IAS 7 Statement of Cash Flows": 15
+    "Chapter 1: International Financial Reporting Standards": 40,
+    "Chapter 12: IFRS 5 Non-current Assets Held for Sale and Discontinued Operations": 15,
+    "Chapter 22: Consolidated Statement of Financial Position": 32,
+    "Chapter 24: Consolidated Statement of Profit or Loss": 6,
+    "Chapter 26: Analysis and Interpretation": 14,
+    "Chapter 2: Conceptual Framework": 6,
+    "Chapter 3: IFRS 18 Presentation and Disclosure in Financial Statements": 6,
+    "Chapter 4: IAS 8 Basis of Preparation of Financial Statements": 6,
+    "Chapter 5: IFRS 15 Revenue from Contracts with Customers": 6,
+    "Chapter 6: Inventories and Agriculture": 6,
+    "Chapter 7: IAS 16 Property, Plant and Equipment": 5,
+    "Chapter 8: IAS 23 Borrowing Costs": 5,
+    "Chapter 9: Government Grants": 5,
+    "Chapter 10: IAS 40 Investment Property": 5,
+    "Chapter 11: IAS 38 Intangible Assets": 5,
+    "Chapter 13: IAS 36 Impairment of Assets": 5,
+    "Chapter 14: IFRS 16 Leases": 5,
+    "Chapter 15: IAS 37 Provisions, Contingent Liabilities and Contingent Assets": 5,
+    "Chapter 16: IAS 10 Events after the Reporting Period": 5,
+    "Chapter 17: IAS 12 Income Taxes": 5,
+    "Chapter 18: Financial Instruments": 5,
+    "Chapter 19: Foreign Currency Transactions": 5,
+    "Chapter 20: IAS 33 Earnings per Share": 5,
+    "Chapter 21: Conceptual Principles of Groups": 5,
+    "Chapter 23: Consolidation Adjustments": 5,
+    "Chapter 25: Investments in Associates": 5,
+    "Chapter 27: IAS 7 Statement of Cash Flows": 5
   },
-  "questions": {},
   "semantic_aliases": {
     "cf": "conceptual framework",
     "ifrs 15": "revenue from contracts with customers",
@@ -170,5 +168,768 @@
     "financial instruments": "financial instruments",
     "ifrs 18": "presentation and disclosure",
     "presentation": "presentation and disclosure"
-  }
+  },
+  "syllabus_structure": {
+    "Chapter 1: International Financial Reporting Standards": {
+      "capability": "B",
+      "subtopics": [
+        "Use computer technology to efficiently",
+        "Tangible non-current assets access and manipulate relevant",
+        "Intangible assets",
+        "Work on relevant response options, using",
+        "Impairment of assets available functions and technology as",
+        "Inventories and agriculture",
+        "Navigate windows and computer screens",
+        "Financial instruments to create and amend responses to exam",
+        "Leasing",
+        "Present data and information effectively,",
+        "Provisions and events after the reporting using the appropriate tools",
+        "Taxation",
+        "Reporting financial performance",
+        "Revenue",
+        "Government grants",
+        "Foreign currency transactions"
+      ],
+      "learning_outcomes": [
+        {
+          "id": "B.1",
+          "text": "Define, calculate and account for an impairment loss, including the principle of impairment tests in relation to goodwill.",
+          "level": 2
+        },
+        {
+          "id": "B.2",
+          "text": "Define and compute the initial measurement of a non-current asset,",
+          "level": 2
+        },
+        {
+          "id": "B.3",
+          "text": "Account for the reversal of an impairment including borrowing costs and an asset loss on an individual asset.",
+          "level": 2
+        },
+        {
+          "id": "B.4",
+          "text": "Identify the circumstances that may",
+          "level": 2
+        },
+        {
+          "id": "B.5",
+          "text": "Identify subsequent expenditure that may indicate impairments to assets.",
+          "level": 2
+        },
+        {
+          "id": "B.6",
+          "text": "Describe what is meant by a cash- 6. Leasing generating unit.",
+          "level": 2
+        },
+        {
+          "id": "B.7",
+          "text": "Account for right-of-use assets and lease",
+          "level": 2
+        },
+        {
+          "id": "B.8",
+          "text": "State the basis on which impairment liabilities in the records of the lessee.",
+          "level": 2
+        },
+        {
+          "id": "B.9",
+          "text": "Account for sale and leaseback",
+          "level": 2
+        },
+        {
+          "id": "B.10",
+          "text": "Describe and apply the principles of transactions where sales proceeds are inventories valuation.[2] equal to fair value.",
+          "level": 2
+        },
+        {
+          "id": "B.11",
+          "text": "Apply the requirements of relevant IFRS 7. Provisions and events after the Accounting Standards for biological reporting period assets and agricultural produce.",
+          "level": 2
+        },
+        {
+          "id": "B.12",
+          "text": "Explain why an accounting standard on",
+          "level": 2
+        },
+        {
+          "id": "B.13",
+          "text": "Explain the need for an accounting b) Distinguish between legal and standard on financial instruments.[1] constructive obligations.",
+          "level": 2
+        },
+        {
+          "id": "B.14",
+          "text": "Define financial instruments in terms of c) State when provisions may and may not financial assets and financial liabilities.[1] be made and demonstrate how they should be accounted for.",
+          "level": 2
+        },
+        {
+          "id": "B.15",
+          "text": "Explain and account for the factoring of receivables.[2] d) Explain how provisions should be measured.",
+          "level": 1
+        },
+        {
+          "id": "B.16",
+          "text": "Indicate for the following categories of financial instruments how they should be e) Define contingent assets and liabilities measured and how any gains and losses and describe their accounting treatment from subsequent measurement should be and required disclosures.",
+          "level": 2
+        },
+        {
+          "id": "B.17",
+          "text": "amortised cost f) Identify and account for:",
+          "level": 2
+        },
+        {
+          "id": "B.18",
+          "text": "Events after the reporting period:",
+          "level": 2
+        },
+        {
+          "id": "B.19",
+          "text": "Distinguish between debt and equity.[2] i) distinguish between and account for adjusting and non-adjusting events",
+          "level": 2
+        },
+        {
+          "id": "B.20",
+          "text": "Apply the requirements of relevant IFRS after the reporting period Accounting Standards to the issue and ii) identify items requiring separate interest expenses of: [2] disclosure, including their",
+          "level": 2
+        },
+        {
+          "id": "B.21",
+          "text": "equity accounting treatment and required ii) redeemable preference shares and disclosures debt instruments with no conversion rights (principle of amortised cost) iii) convertible debt 9 \u00a9 ACCA 2025-2026 All rights reserved. Financial Reporting (FR)",
+          "level": 2
+        },
+        {
+          "id": "B.22",
+          "text": "Account for current taxation in a) Explain and apply the principles of accordance with relevant IFRS Accounting recognition of revenue:",
+          "level": 2
+        },
+        {
+          "id": "B.23",
+          "text": "Explain the effect of taxable and obligations deductible temporary differences on iii) Determination of transaction price accounting and taxable profits.[2] iv) Allocation of the price to performance obligations",
+          "level": 2
+        },
+        {
+          "id": "B.24",
+          "text": "Compute and record deferred tax v) Recognition of revenue when/as amounts in the financial statements.[2] performance obligations are satisfied. performance b) Explain and apply the criteria for recognising revenue generated from",
+          "level": 2
+        },
+        {
+          "id": "B.25",
+          "text": "Discuss the importance of identifying and contracts where performance obligations reporting the results of discontinued are satisfied over time or at a point in operations.[2] time.",
+          "level": 2
+        },
+        {
+          "id": "B.26",
+          "text": "Define and account for non-current c) Describe the acceptable methods for assets held for sale and discontinued measuring progress towards complete operations.[2] satisfaction of a performance obligation.",
+          "level": 2
+        },
+        {
+          "id": "B.27",
+          "text": "Indicate the circumstances where d) Explain and apply the criteria for the separate disclosure of material items of recognition of contract costs.",
+          "level": 2
+        },
+        {
+          "id": "B.28",
+          "text": "Apply the principles of recognition of",
+          "level": 2
+        },
+        {
+          "id": "B.29",
+          "text": "Account for changes in accounting revenue and, specifically, account for the estimates, changes in accounting policy following types of transaction:",
+          "level": 2
+        },
+        {
+          "id": "B.30",
+          "text": "Earnings per share (EPS):[2] iii) bill-and-hold arrangements",
+          "level": 2
+        },
+        {
+          "id": "B.31",
+          "text": "calculate the EPS in accordance with iv) consignment arrangements relevant IFRS Accounting Standards (dealing with issues of bonus shares, f) Prepare financial statement extracts for full market value issues and rights contracts where performance obligations issues) are satisfied over time or at a point in ii) explain the relevance of the diluted time.",
+          "level": 2
+        },
+        {
+          "id": "B.32",
+          "text": "Apply relevant IFRS Accounting Standards",
+          "level": 2
+        },
+        {
+          "id": "B.33",
+          "text": "Describe the objective, scope and core in relation to accounting for government content of IFRS S1 General Requirements grants.",
+          "level": 2
+        },
+        {
+          "id": "B.34",
+          "text": "Explain the difference between functional and presentation currency and explain 10 \u00a9 ACCA 2025-2026 All rights reserved. Financial Reporting (FR) why adjustments for foreign currency iii) industry average ratios. transactions are necessary.",
+          "level": 2
+        },
+        {
+          "id": "B.35",
+          "text": "Interpret financial statements (including",
+          "level": 2
+        },
+        {
+          "id": "B.36",
+          "text": "Account for the translation of foreign the statements of cash flows) together currency transactions and monetary/ non- with other financial and non-financial monetary foreign currency items at the information to assess the performance reporting date.[2] and financial position of an entity and to give advice from the perspectives of",
+          "level": 2
+        }
+      ],
+      "intellectual_level_mix": {
+        "level_1": 1,
+        "level_2": 35,
+        "level_3": 0
+      },
+      "outcome_count": 36
+    },
+    "Chapter 12: IFRS 5 Non-current Assets Held for Sale and Discontinued Operations": {
+      "capability": "D",
+      "subtopics": [
+        "Recognition and measurement",
+        "Preparation of single entity financial",
+        "Regulatory framework statements",
+        "The concepts and principles of groups 2. Preparation of consolidated financial"
+      ],
+      "learning_outcomes": [
+        {
+          "id": "D.1",
+          "text": "Account for the effects of fair value statements adjustments, including their effect on goodwill, to:",
+          "level": 2
+        },
+        {
+          "id": "D.2",
+          "text": "Prepare an entity\u2019s statement of financial",
+          "level": 2
+        },
+        {
+          "id": "D.3",
+          "text": "depreciating and non-depreciating position and statement of profit or loss non-current assets and other comprehensive income in ii) inventories accordance with the structure and iii) monetary liabilities content prescribed within IFRS iv) assets and liabilities not included in Accounting Standards and with the subsidiary\u2019s own statement of accounting treatments as identified within financial position, including syllabus areas A, B and C.",
+          "level": 2
+        },
+        {
+          "id": "D.4",
+          "text": "Prepare and explain the contents and",
+          "level": 2
+        },
+        {
+          "id": "D.5",
+          "text": "Account for the impairment of goodwill.",
+          "level": 2
+        },
+        {
+          "id": "D.6",
+          "text": "Describe and apply the required accounting treatment for goodwill.",
+          "level": 2
+        },
+        {
+          "id": "D.7",
+          "text": "Prepare extracts from the statement of cash flows for a single entity in",
+          "level": 2
+        },
+        {
+          "id": "D.8",
+          "text": "Indicate why the fair value of a accordance with relevant IFRS Accounting consideration for an investment may be Standards, using the indirect less than the fair value of the acquired method only.",
+          "level": 2
+        },
+        {
+          "id": "D.9",
+          "text": "Explain and illustrate the effect of the",
+          "level": 2
+        },
+        {
+          "id": "D.10",
+          "text": "Prepare a consolidated statement of disposal of a parent\u2019s investment in a financial position for a simple group subsidiary in the parent\u2019s individual (parent and up to two subsidiaries financial statements and/ or those of the controlled by the parent and one group, including as a discontinued associate of the parent) dealing with pre- operation (restricted to disposals of the and post-acquisition profits, non- parent\u2019s entire investment in the controlling interests (at fair value or as a subsidiary).",
+          "level": 2
+        }
+      ],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 10,
+        "level_3": 0
+      },
+      "outcome_count": 10
+    },
+    "Chapter 22: Consolidated Statement of Financial Position": {
+      "capability": "A",
+      "subtopics": [
+        "The need for a conceptual framework and 4. Not-for-profit and public sector entities"
+      ],
+      "learning_outcomes": [
+        {
+          "id": "A.1",
+          "text": "Discuss the advantages and disadvantages of historical cost and the characteristics of useful accounting.",
+          "level": 2
+        },
+        {
+          "id": "A.2",
+          "text": "Discuss whether the use of current value",
+          "level": 2
+        },
+        {
+          "id": "A.3",
+          "text": "Describe what is meant by a conceptual accounting fully addresses the issues framework for financial reporting.",
+          "level": 2
+        },
+        {
+          "id": "A.4",
+          "text": "Discuss whether a conceptual framework is necessary and what an alternative system might be.",
+          "level": 2
+        },
+        {
+          "id": "A.5",
+          "text": "Explain why a regulatory framework is needed, including the advantages and",
+          "level": 2
+        },
+        {
+          "id": "A.6",
+          "text": "Discuss what is meant by relevance and disadvantages of IFRS Accounting faithful representation and describe the Standards over a national regulatory qualities that enhance these framework.",
+          "level": 2
+        },
+        {
+          "id": "A.7",
+          "text": "Explain why IFRS Accounting Standards,",
+          "level": 2
+        },
+        {
+          "id": "A.8",
+          "text": "Discuss whether faithful representation on their own, are not a complete constitutes more than compliance with regulatory framework.",
+          "level": 2
+        },
+        {
+          "id": "A.9",
+          "text": "Distinguish between a principles-based",
+          "level": 2
+        },
+        {
+          "id": "A.10",
+          "text": "Discuss what is meant by and a rules-based framework and discuss understandability and verifiability in whether they can be complementary.",
+          "level": 1
+        },
+        {
+          "id": "A.11",
+          "text": "Describe the standard-setting process of the International Accounting Standards",
+          "level": 2
+        },
+        {
+          "id": "A.12",
+          "text": "Discuss the importance of comparability Board (IASB\u00ae), including revisions to and and timeliness to users of financial interpretations of IFRS Accounting statements.",
+          "level": 2
+        },
+        {
+          "id": "A.13",
+          "text": "Discuss the principle of comparability in",
+          "level": 2
+        },
+        {
+          "id": "A.14",
+          "text": "Explain the relationship of national accounting for changes in accounting standard setters to the IASB in respect of policies.",
+          "level": 2
+        },
+        {
+          "id": "A.15",
+          "text": "Explain the purpose and role of the International Sustainability Standards",
+          "level": 2
+        },
+        {
+          "id": "A.16",
+          "text": "Define what is meant by \u2018recognition\u2019 in Board (ISSB\u2122).",
+          "level": 2
+        },
+        {
+          "id": "A.17",
+          "text": "Apply the recognition criteria to:",
+          "level": 2
+        },
+        {
+          "id": "A.18",
+          "text": "assets and liabilities.",
+          "level": 2
+        },
+        {
+          "id": "A.19",
+          "text": "Describe the concept of a group as a ii) income and expenses. single economic unit.",
+          "level": 2
+        },
+        {
+          "id": "A.20",
+          "text": "Explain and apply the definition of a c) Discuss the requirements of relevant IFRS subsidiary within relevant IFRS Accounting Standards in relation to the Accounting Standards.[2] revaluation of non-current assets.",
+          "level": 2
+        },
+        {
+          "id": "A.21",
+          "text": "Using IFRS Accounting Standards and d) Account for revaluation and disposal other regulation, identify and outline the gains and losses for non-current assets.",
+          "level": 2
+        },
+        {
+          "id": "A.22",
+          "text": "Describe the circumstances when a group may claim exemption from the f) Discuss why the treatment of investment preparation of consolidated financial properties should differ from other statements.[1] properties.",
+          "level": 2
+        },
+        {
+          "id": "A.23",
+          "text": "Explain the need for using coterminous g) Apply the requirements of relevant IFRS year ends and uniform accounting polices Accounting Standards to an investment when preparing consolidated financial property.",
+          "level": 2
+        },
+        {
+          "id": "A.24",
+          "text": "Explain why it is necessary to eliminate intra group transactions.[2] a) Discuss the nature and accounting treatment of internally generated and",
+          "level": 2
+        },
+        {
+          "id": "A.25",
+          "text": "Explain the objective of consolidated purchased intangible assets.",
+          "level": 2
+        },
+        {
+          "id": "A.26",
+          "text": "Distinguish between goodwill and other",
+          "level": 2
+        },
+        {
+          "id": "A.27",
+          "text": "Explain why it is necessary to use fair intangible assets.",
+          "level": 2
+        },
+        {
+          "id": "A.28",
+          "text": "Define an associate and explain the principles and reasoning for the use of the e) Describe and apply the requirements of equity method of accounting.[2] relevant IFRS Accounting Standards to research and development.",
+          "level": 2
+        }
+      ],
+      "intellectual_level_mix": {
+        "level_1": 1,
+        "level_2": 27,
+        "level_3": 0
+      },
+      "outcome_count": 28
+    },
+    "Chapter 24: Consolidated Statement of Profit or Loss": {
+      "capability": "E",
+      "subtopics": [],
+      "learning_outcomes": [
+        {
+          "id": "E.1",
+          "text": "Prepare a consolidated statement of skills profit or loss and consolidated statement of profit or loss and other comprehensive 1. Use computer technology to efficiently income for a simple group with an access and manipulate relevant acquisition or disposal in the period and information. non-controlling interests.",
+          "level": 2
+        }
+      ],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 1,
+        "level_3": 0
+      },
+      "outcome_count": 1
+    },
+    "Chapter 26: Analysis and Interpretation": {
+      "capability": "C",
+      "subtopics": [
+        "Limitations of financial statements"
+      ],
+      "learning_outcomes": [
+        {
+          "id": "C.1",
+          "text": "Indicate the problems of using historical f) Indicate other information, including non- information to predict future performance financial information, which may be of and trends.[2] relevance to the assessment of an entity\u2019s performance and financial position.",
+          "level": 1
+        },
+        {
+          "id": "C.2",
+          "text": "Discuss how financial statements may be manipulated to produce a desired effect.[2] 3. Limitations of interpretation techniques",
+          "level": 2
+        },
+        {
+          "id": "C.3",
+          "text": "Explain why figures in a statement of a) Discuss the limitations in the use of ratio financial position may not be analysis for assessing performance and representative of average values financial position.",
+          "level": 2
+        },
+        {
+          "id": "C.4",
+          "text": "seasonal trading accounting policies or the use of different ii) major asset acquisitions near the accounting polices between entities can end of the accounting period. have on the ability to interpret performance and financial position.",
+          "level": 2
+        },
+        {
+          "id": "C.5",
+          "text": "Explain how the use of consolidated financial statements might limit c) Compare the usefulness of information interpretation techniques.[2] presented in the statement of cash flows to the information presented in the accounting ratios and trends to address users\u2019 and stakeholders\u2019 needs d)",
+          "level": 2
+        },
+        {
+          "id": "C.6",
+          "text": "explain why the trend of EPS may be",
+          "level": 2
+        },
+        {
+          "id": "C.7",
+          "text": "Define and compute relevant financial a more accurate indicator of ratios.[2] performance than a company\u2019s profit trend and the importance of",
+          "level": 2
+        },
+        {
+          "id": "C.8",
+          "text": "Explain the aspects of performance that EPS as a stock market indicator",
+          "level": 2
+        },
+        {
+          "id": "C.9",
+          "text": "Analyse and interpret ratios to give an assessment of an entity\u2019s/ a group\u2019s 4. Not-for-profit and public sector entities performance and financial position in comparison with:[2] a) Explain how the interpretation of the",
+          "level": 2
+        },
+        {
+          "id": "C.10",
+          "text": "prior period\u2019s financial statements financial statements of a not-for-profit or ii) another similar entity/ group for the public sector organisation might differ same reporting period 11 \u00a9 ACCA 2025-2026 All rights reserved. Financial Reporting (FR) from that of a profit-oriented entity with c) Explain and account for other reference to the different aims, objectives components of equity; for example, share and reporting requirements.[1] premium and a revaluation surplus.",
+          "level": 2
+        }
+      ],
+      "intellectual_level_mix": {
+        "level_1": 1,
+        "level_2": 9,
+        "level_3": 0
+      },
+      "outcome_count": 10
+    },
+    "Chapter 2: Conceptual Framework": {
+      "capability": "A",
+      "learning_outcomes": [
+        {
+          "id": "chapter_2_conceptual_framework_1",
+          "text": "Discuss and apply conceptual and regulatory frameworks for financial reporting.",
+          "level": 3
+        }
+      ],
+      "outcome_count": 1,
+      "subtopics": []
+    },
+    "Chapter 3: IFRS 18 Presentation and Disclosure in Financial Statements": {
+      "capability": "B",
+      "learning_outcomes": [
+        {
+          "id": "chapter_3_ifrs_18_presentation_and_disclosure_in_financial_statements_1",
+          "text": "Account for transactions in accordance with IFRS Accounting Standards.",
+          "level": 3
+        }
+      ],
+      "outcome_count": 1,
+      "subtopics": []
+    },
+    "Chapter 4: IAS 8 Basis of Preparation of Financial Statements": {
+      "capability": "B",
+      "learning_outcomes": [
+        {
+          "id": "chapter_4_ias_8_basis_of_preparation_of_financial_statements_1",
+          "text": "Analyze and interpret financial statements.",
+          "level": 3
+        }
+      ],
+      "outcome_count": 1,
+      "subtopics": []
+    },
+    "Chapter 5: IFRS 15 Revenue from Contracts with Customers": {
+      "capability": "B",
+      "learning_outcomes": [
+        {
+          "id": "chapter_5_ifrs_15_revenue_from_contracts_with_customers_1",
+          "text": "Prepare and present financial statements for single entities and business combinations in accordance with IFRS Accounting Standards.",
+          "level": 3
+        }
+      ],
+      "outcome_count": 1,
+      "subtopics": []
+    },
+    "Chapter 6: Inventories and Agriculture": {
+      "capability": "B",
+      "learning_outcomes": [
+        {
+          "id": "chapter_6_inventories_and_agriculture_1",
+          "text": "Demonstrate employability and technology skills.",
+          "level": 3
+        }
+      ],
+      "outcome_count": 1,
+      "subtopics": []
+    },
+    "Chapter 7: IAS 16 Property, Plant and Equipment": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 8: IAS 23 Borrowing Costs": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 9: Government Grants": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 10: IAS 40 Investment Property": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 11: IAS 38 Intangible Assets": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 13: IAS 36 Impairment of Assets": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 14: IFRS 16 Leases": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 15: IAS 37 Provisions, Contingent Liabilities and Contingent Assets": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 16: IAS 10 Events after the Reporting Period": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 17: IAS 12 Income Taxes": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 18: Financial Instruments": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 19: Foreign Currency Transactions": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 20: IAS 33 Earnings per Share": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 21: Conceptual Principles of Groups": {
+      "capability": "A",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 23: Consolidation Adjustments": {
+      "capability": "D",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 25: Investments in Associates": {
+      "capability": "A",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    },
+    "Chapter 27: IAS 7 Statement of Cash Flows": {
+      "capability": "B",
+      "learning_outcomes": [],
+      "outcome_count": 0,
+      "subtopics": []
+    }
+  },
+  "syllabus_meta": {
+    "source_pdf": "",
+    "exam_code": null,
+    "effective_window": null,
+    "parsed_at": "2026-03-12T11:37:35",
+    "parse_confidence": 0.0,
+    "last_parse_empty_sections": []
+  },
+  "capabilities": {
+    "A": "Discuss and apply conceptual and regulatory frameworks for financial reporting",
+    "B": "Account for transactions in accordance with IFRS Accounting Standards",
+    "C": "Analyze and interpret financial statements",
+    "D": "Prepare and present financial statements for single entities and business combinations in accordance with IFRS Accounting Standards",
+    "E": "Demonstrate employability and technology skills"
+  },
+  "aliases": {
+    "chapter 1: international financial reporting standards": "Chapter 1: International Financial Reporting Standards",
+    "international financial reporting standards": "Chapter 1: International Financial Reporting Standards",
+    "c": "Chapter 1: International Financial Reporting Standards",
+    "chapter 2: conceptual framework": "Chapter 2: Conceptual Framework",
+    "chapter 3: ifrs 18 presentation and disclosure in financial statements": "Chapter 3: IFRS 18 Presentation and Disclosure in Financial Statements",
+    "chapter 4: ias 8 basis of preparation of financial statements": "Chapter 4: IAS 8 Basis of Preparation of Financial Statements",
+    "chapter 5: ifrs 15 revenue from contracts with customers": "Chapter 5: IFRS 15 Revenue from Contracts with Customers",
+    "chapter 6: inventories and agriculture": "Chapter 6: Inventories and Agriculture",
+    "chapter 7: ias 16 property, plant and equipment": "Chapter 7: IAS 16 Property, Plant and Equipment",
+    "chapter 8: ias 23 borrowing costs": "Chapter 8: IAS 23 Borrowing Costs",
+    "chapter 9: government grants": "Chapter 9: Government Grants",
+    "chapter 10: ias 40 investment property": "Chapter 10: IAS 40 Investment Property",
+    "chapter 11: ias 38 intangible assets": "Chapter 11: IAS 38 Intangible Assets",
+    "chapter 12: ifrs 5 non-current assets held for sale and discontinued operations": "Chapter 12: IFRS 5 Non-current Assets Held for Sale and Discontinued Operations",
+    "chapter 13: ias 36 impairment of assets": "Chapter 13: IAS 36 Impairment of Assets",
+    "ias 36 impairment of assets": "Chapter 13: IAS 36 Impairment of Assets",
+    "chapter 14: ifrs 16 leases": "Chapter 14: IFRS 16 Leases",
+    "chapter 15: ias 37 provisions, contingent liabilities and contingent assets": "Chapter 15: IAS 37 Provisions, Contingent Liabilities and Contingent Assets",
+    "ias 37 provisions, contingent liabilities and contingent assets": "Chapter 15: IAS 37 Provisions, Contingent Liabilities and Contingent Assets",
+    "chapter 16: ias 10 events after the reporting period": "Chapter 16: IAS 10 Events after the Reporting Period",
+    "chapter 17: ias 12 income taxes": "Chapter 17: IAS 12 Income Taxes",
+    "chapter 18: financial instruments": "Chapter 18: Financial Instruments",
+    "chapter 19: foreign currency transactions": "Chapter 19: Foreign Currency Transactions",
+    "chapter 20: ias 33 earnings per share": "Chapter 20: IAS 33 Earnings per Share",
+    "chapter 21: conceptual principles of groups": "Chapter 21: Conceptual Principles of Groups",
+    "chapter 22: consolidated statement of financial position": "Chapter 22: Consolidated Statement of Financial Position",
+    "chapter 23: consolidation adjustments": "Chapter 23: Consolidation Adjustments",
+    "chapter 24: consolidated statement of profit or loss": "Chapter 24: Consolidated Statement of Profit or Loss",
+    "chapter 25: investments in associates": "Chapter 25: Investments in Associates",
+    "chapter 26: analysis and interpretation": "Chapter 26: Analysis and Interpretation",
+    "chapter 27: ias 7 statement of cash flows": "Chapter 27: IAS 7 Statement of Cash Flows",
+    "use computer technology to efficiently": "Chapter 1: International Financial Reporting Standards",
+    "tangible non-current assets access and manipulate relevant": "Chapter 1: International Financial Reporting Standards",
+    "intangible assets": "Chapter 1: International Financial Reporting Standards",
+    "work on relevant response options, using": "Chapter 1: International Financial Reporting Standards",
+    "impairment of assets available functions and technology as": "Chapter 1: International Financial Reporting Standards",
+    "navigate windows and computer screens": "Chapter 1: International Financial Reporting Standards",
+    "financial instruments to create and amend responses to exam": "Chapter 1: International Financial Reporting Standards",
+    "present data and information effectively,": "Chapter 1: International Financial Reporting Standards",
+    "provisions and events after the reporting using the appropriate tools": "Chapter 1: International Financial Reporting Standards",
+    "reporting financial performance": "Chapter 1: International Financial Reporting Standards",
+    "limitations of financial statements": "Chapter 26: Analysis and Interpretation",
+    "recognition and measurement": "Chapter 12: IFRS 5 Non-current Assets Held for Sale and Discontinued Operations",
+    "preparation of single entity financial": "Chapter 12: IFRS 5 Non-current Assets Held for Sale and Discontinued Operations",
+    "regulatory framework statements": "Chapter 12: IFRS 5 Non-current Assets Held for Sale and Discontinued Operations",
+    "the concepts and principles of groups 2. preparation of consolidated financial": "Chapter 12: IFRS 5 Non-current Assets Held for Sale and Discontinued Operations",
+    "conceptual framework": "Chapter 2: Conceptual Framework",
+    "ifrs 18 presentation and disclosure in financial statements": "Chapter 3: IFRS 18 Presentation and Disclosure in Financial Statements",
+    "ias 8 basis of preparation of financial statements": "Chapter 4: IAS 8 Basis of Preparation of Financial Statements",
+    "ifrs 15 revenue from contracts with customers": "Chapter 5: IFRS 15 Revenue from Contracts with Customers",
+    "inventories and agriculture": "Chapter 6: Inventories and Agriculture",
+    "ias 16 property, plant and equipment": "Chapter 7: IAS 16 Property, Plant and Equipment",
+    "ias 23 borrowing costs": "Chapter 8: IAS 23 Borrowing Costs",
+    "government grants": "Chapter 9: Government Grants",
+    "ias 40 investment property": "Chapter 10: IAS 40 Investment Property",
+    "ias 38 intangible assets": "Chapter 11: IAS 38 Intangible Assets",
+    "ifrs 5 non-current assets held for sale and discontinued operations": "Chapter 12: IFRS 5 Non-current Assets Held for Sale and Discontinued Operations",
+    "ifrs 16 leases": "Chapter 14: IFRS 16 Leases",
+    "ias 10 events after the reporting period": "Chapter 16: IAS 10 Events after the Reporting Period",
+    "ias 12 income taxes": "Chapter 17: IAS 12 Income Taxes",
+    "financial instruments": "Chapter 18: Financial Instruments",
+    "foreign currency transactions": "Chapter 19: Foreign Currency Transactions",
+    "ias 33 earnings per share": "Chapter 20: IAS 33 Earnings per Share",
+    "conceptual principles of groups": "Chapter 21: Conceptual Principles of Groups",
+    "consolidated statement of financial position": "Chapter 22: Consolidated Statement of Financial Position",
+    "consolidation adjustments": "Chapter 23: Consolidation Adjustments",
+    "consolidated statement of profit or loss": "Chapter 24: Consolidated Statement of Profit or Loss",
+    "investments in associates": "Chapter 25: Investments in Associates",
+    "analysis and interpretation": "Chapter 26: Analysis and Interpretation",
+    "ias 7 statement of cash flows": "Chapter 27: IAS 7 Statement of Cash Flows"
+  },
+  "target_total_hours": 180
 }

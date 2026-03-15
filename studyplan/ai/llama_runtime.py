@@ -351,26 +351,65 @@ def _estimate_ollama_model_ram_bytes(model_name: str) -> int:
 
 
 def _pick_ollama_model_safe_for_ram(models: list[str], purpose: str) -> str:
-    """Pick an Ollama model that fits in RAM, preferring higher quality (larger) when safe."""
+    """Pick an Ollama model that fits in RAM and aligns with purpose when possible."""
     if not models:
         return ""
+    purpose_tier = _purpose_tier_from_name(purpose)
     budget = _get_ollama_ram_budget_bytes()
     if budget <= 0:
-        return models[0]
+        return _pick_ollama_model_by_purpose(models, purpose_tier)
     fitting = []
     for name in models:
         need = _estimate_ollama_model_ram_bytes(name)
         if need <= 0 or need <= budget:
             fitting.append(name)
     if fitting:
-        fitting.sort(key=lambda n: -_estimate_ollama_model_ram_bytes(n))
-        return fitting[0]
+        return _pick_ollama_model_by_purpose(fitting, purpose_tier)
     # None fit: pick smallest estimated to reduce OOM risk (treat unknown as large)
     def _ram_key(name: str) -> tuple[int, int]:
         est = _estimate_ollama_model_ram_bytes(name)
         return (1 if est == 0 else 0, est or 0)
     all_sorted = sorted(models, key=_ram_key)
     return all_sorted[0]
+
+
+def _purpose_tier_from_name(purpose: str) -> str:
+    normalized = str(purpose or "").strip().lower()
+    if normalized in {str(Purpose.HINT), "fast"}:
+        return "fast"
+    if normalized in {str(Purpose.DEEP_REASON), "quality"}:
+        return "quality"
+    return "balanced"
+
+
+def _pick_ollama_model_by_purpose(models: list[str], purpose_tier: str) -> str:
+    if not models:
+        return ""
+    rows: list[tuple[str, int]] = []
+    for name in models:
+        rows.append((name, _estimate_ollama_model_ram_bytes(name)))
+    known = [(name, est) for name, est in rows if est > 0]
+    if purpose_tier == "fast":
+        if known:
+            known.sort(key=lambda row: row[1])
+            return known[0][0]
+        return models[0]
+    if purpose_tier == "quality":
+        if known:
+            known.sort(key=lambda row: row[1], reverse=True)
+            return known[0][0]
+        return models[0]
+
+    # balanced: aim near median known size to avoid extremes (too tiny/too heavy)
+    if known:
+        sizes = sorted(est for _, est in known)
+        median = sizes[len(sizes) // 2]
+        best_name = min(
+            known,
+            key=lambda row: (abs(row[1] - median), row[0]),
+        )[0]
+        return best_name
+    return models[0]
 
 
 def _detect_available_ram() -> int:

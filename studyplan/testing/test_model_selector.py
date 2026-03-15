@@ -109,3 +109,19 @@ class TestCustomTierOverrides:
         ranked = sel.rank(ALL_MODELS, Purpose.HINT)
         top = ranked[0].model
         assert top.param_billions >= 3.0
+
+
+class TestRationale:
+    def test_rationale_contains_component_breakdown(self):
+        sel = ModelSelector()
+        ranked = sel.rank(ALL_MODELS, Purpose.TUTOR)
+        assert ranked
+        rationale = ranked[0].rationale
+        assert "tier=" in rationale
+        assert "purpose=" in rationale
+        assert "size(" in rationale
+        assert "quant(" in rationale
+        assert "instruct(" in rationale
+        assert "arch(" in rationale
+        assert "ram_fit(" in rationale
+        assert "history(" in rationale

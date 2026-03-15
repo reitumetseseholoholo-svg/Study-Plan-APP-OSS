@@ -28,30 +28,78 @@
     "Chapter 25: Going Concern"
   ],
   "chapter_flow": {
-    "Chapter 1: Audit and Other Assurance Engagements": ["Chapter 2: External Audit"],
-    "Chapter 2: External Audit": ["Chapter 3: Corporate Governance"],
-    "Chapter 3: Corporate Governance": ["Chapter 4: Professional Codes of Ethics and Conduct"],
-    "Chapter 4: Professional Codes of Ethics and Conduct": ["Chapter 5: Auditor Appointment"],
-    "Chapter 5: Auditor Appointment": ["Chapter 6: Audit Documentation"],
-    "Chapter 6: Audit Documentation": ["Chapter 7: Audit Planning"],
-    "Chapter 7: Audit Planning": ["Chapter 8: Identifying and Assessing Risk"],
-    "Chapter 8: Identifying and Assessing Risk": ["Chapter 9: System of Internal Control"],
-    "Chapter 9: System of Internal Control": ["Chapter 10: Audit Materiality"],
-    "Chapter 10: Audit Materiality": ["Chapter 11: Fraud, Law and Regulations"],
-    "Chapter 11: Fraud, Law and Regulations": ["Chapter 12: Tests of Control"],
-    "Chapter 12: Tests of Control": ["Chapter 13: Communication on Internal Control"],
-    "Chapter 13: Communication on Internal Control": ["Chapter 14: Internal Audit"],
-    "Chapter 14: Internal Audit": ["Chapter 15: Audit Evidence"],
-    "Chapter 15: Audit Evidence": ["Chapter 16: Analytical Procedures"],
-    "Chapter 16: Analytical Procedures": ["Chapter 17: Accounting Estimates"],
-    "Chapter 17: Accounting Estimates": ["Chapter 18: The Work of Others"],
-    "Chapter 18: The Work of Others": ["Chapter 19: Audit Sampling"],
-    "Chapter 19: Audit Sampling": ["Chapter 20: Written Representations"],
-    "Chapter 20: Written Representations": ["Chapter 21: Automated Tools and Techniques"],
-    "Chapter 21: Automated Tools and Techniques": ["Chapter 22: Non-current Assets"],
-    "Chapter 22: Non-current Assets": ["Chapter 23: Completion and Review"],
-    "Chapter 23: Completion and Review": ["Chapter 24: The Audit Report"],
-    "Chapter 24: The Audit Report": ["Chapter 25: Going Concern"],
+    "Chapter 1: Audit and Other Assurance Engagements": [
+      "Chapter 2: External Audit"
+    ],
+    "Chapter 2: External Audit": [
+      "Chapter 3: Corporate Governance"
+    ],
+    "Chapter 3: Corporate Governance": [
+      "Chapter 4: Professional Codes of Ethics and Conduct"
+    ],
+    "Chapter 4: Professional Codes of Ethics and Conduct": [
+      "Chapter 5: Auditor Appointment"
+    ],
+    "Chapter 5: Auditor Appointment": [
+      "Chapter 6: Audit Documentation"
+    ],
+    "Chapter 6: Audit Documentation": [
+      "Chapter 7: Audit Planning"
+    ],
+    "Chapter 7: Audit Planning": [
+      "Chapter 8: Identifying and Assessing Risk"
+    ],
+    "Chapter 8: Identifying and Assessing Risk": [
+      "Chapter 9: System of Internal Control"
+    ],
+    "Chapter 9: System of Internal Control": [
+      "Chapter 10: Audit Materiality"
+    ],
+    "Chapter 10: Audit Materiality": [
+      "Chapter 11: Fraud, Law and Regulations"
+    ],
+    "Chapter 11: Fraud, Law and Regulations": [
+      "Chapter 12: Tests of Control"
+    ],
+    "Chapter 12: Tests of Control": [
+      "Chapter 13: Communication on Internal Control"
+    ],
+    "Chapter 13: Communication on Internal Control": [
+      "Chapter 14: Internal Audit"
+    ],
+    "Chapter 14: Internal Audit": [
+      "Chapter 15: Audit Evidence"
+    ],
+    "Chapter 15: Audit Evidence": [
+      "Chapter 16: Analytical Procedures"
+    ],
+    "Chapter 16: Analytical Procedures": [
+      "Chapter 17: Accounting Estimates"
+    ],
+    "Chapter 17: Accounting Estimates": [
+      "Chapter 18: The Work of Others"
+    ],
+    "Chapter 18: The Work of Others": [
+      "Chapter 19: Audit Sampling"
+    ],
+    "Chapter 19: Audit Sampling": [
+      "Chapter 20: Written Representations"
+    ],
+    "Chapter 20: Written Representations": [
+      "Chapter 21: Automated Tools and Techniques"
+    ],
+    "Chapter 21: Automated Tools and Techniques": [
+      "Chapter 22: Non-current Assets"
+    ],
+    "Chapter 22: Non-current Assets": [
+      "Chapter 23: Completion and Review"
+    ],
+    "Chapter 23: Completion and Review": [
+      "Chapter 24: The Audit Report"
+    ],
+    "Chapter 24: The Audit Report": [
+      "Chapter 25: Going Concern"
+    ],
     "Chapter 25: Going Concern": []
   },
   "importance_weights": {
@@ -81,7 +129,6 @@
     "Chapter 24: The Audit Report": 18,
     "Chapter 25: Going Concern": 14
   },
-  "questions": {},
   "semantic_aliases": {
     "audit": "audit and assurance",
     "assurance": "assurance engagement",
@@ -89,7 +136,7 @@
     "risk assessment": "identifying and assessing risk",
     "internal control": "system of internal control",
     "audit evidence": "audit evidence",
-    "audit report": "review and reporting",
+    "audit report": "the audit report",
     "going concern": "going concern",
     "fraud": "fraud law and regulations",
     "ethics": "professional ethics",
@@ -99,8 +146,6 @@
     "sampling": "audit sampling",
     "completion": "completion and review",
     "review": "completion and review",
-    "audit report": "the audit report",
-    "report": "the audit report",
-    "going concern": "going concern"
+    "report": "the audit report"
   }
 }

@@ -153,17 +153,26 @@ def load_chapter_spec_from_path(path: str) -> list[dict[str, Any]] | list[str]:
 
     Returns the raw list for use with normalize_chapter_spec / apply_chapters_to_config.
     """
-    with open(path, "r", encoding="utf-8") as f:
-        raw = f.read()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except OSError as e:
+        raise ValueError(f"Cannot read chapter spec file {path!r}: {e}") from e
     ext = os.path.splitext(path)[1].lower()
     if ext in (".yaml", ".yml"):
         try:
-            import yaml
+            import yaml  # type: ignore[reportMissingModuleSource]
         except ImportError:
             raise RuntimeError("YAML support requires PyYAML; install with: pip install pyyaml")
-        data = yaml.safe_load(raw)
+        try:
+            data = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            raise ValueError(f"Invalid YAML in chapter spec {path!r}: {e}") from e
     else:
-        data = json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in chapter spec {path!r}: {e}") from e
     if not isinstance(data, list):
         raise ValueError(f"Chapter spec file must contain a list; got {type(data).__name__}")
     return data

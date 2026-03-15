@@ -1,16 +1,22 @@
 from __future__ import annotations
 
-import re
+import datetime
 import math
+import re
 import threading
 import time
-from typing import Any, TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from studyplan.services import get_module_display_code, get_syllabus_scope_instruction
 
 if TYPE_CHECKING:  # pragma: no cover - reserved for future editor hints
     pass
 
+
+# RAG chunking defaults (named constants for tuning and reuse)
+RAG_CHUNK_CHARS_DEFAULT = 900
+RAG_OVERLAP_CHARS_DEFAULT = 120
+RAG_MAX_CHUNKS_DEFAULT = 1200
 
 AI_TUTOR_MAX_RESPONSE_CHARS = 12000
 AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS = 90
@@ -33,10 +39,10 @@ AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE = (
     "Never suggest a specific study-guide question or textbook page number."
 )
 # When conversation length exceeds this, use adaptive recent_limit and a richer older summary.
-AI_TUTOR_LONG_HISTORY_THRESHOLD = 16
-AI_TUTOR_LONG_HISTORY_RECENT_LIMIT = 6
-AI_TUTOR_LONG_HISTORY_SUMMARY_MAX_CHARS = 900
-AI_TUTOR_LONG_HISTORY_SUMMARY_MAX_ITEMS = 10
+AI_TUTOR_LONG_HISTORY_THRESHOLD = 24
+AI_TUTOR_LONG_HISTORY_RECENT_LIMIT = 10
+AI_TUTOR_LONG_HISTORY_SUMMARY_MAX_CHARS = 1100
+AI_TUTOR_LONG_HISTORY_SUMMARY_MAX_ITEMS = 12
 
 
 def infer_tutor_prompt_mode_hint(user_prompt: str) -> str:
@@ -351,9 +357,9 @@ def classify_ollama_error(err: str, host: str = "") -> tuple[str, str]:
 
 def chunk_text_for_rag(
     text: str,
-    chunk_chars: int = 900,
-    overlap_chars: int = 120,
-    max_chunks: int = 1200,
+    chunk_chars: int = RAG_CHUNK_CHARS_DEFAULT,
+    overlap_chars: int = RAG_OVERLAP_CHARS_DEFAULT,
+    max_chunks: int = RAG_MAX_CHUNKS_DEFAULT,
 ) -> list[str]:
     raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     paragraphs = [p.strip() for p in re.split(r"\n{2,}", raw) if p and p.strip()]
@@ -365,15 +371,15 @@ def chunk_text_for_rag(
     try:
         chunk_cap = max(240, min(2400, int(chunk_chars)))
     except Exception:
-        chunk_cap = 900
+        chunk_cap = RAG_CHUNK_CHARS_DEFAULT
     try:
         overlap_cap = max(0, min(chunk_cap // 2, int(overlap_chars)))
     except Exception:
-        overlap_cap = 120
+        overlap_cap = RAG_OVERLAP_CHARS_DEFAULT
     try:
         max_chunk_count = max(1, min(5000, int(max_chunks)))
     except Exception:
-        max_chunk_count = 1200
+        max_chunk_count = RAG_MAX_CHUNKS_DEFAULT
 
     chunks: list[str] = []
     current = ""
@@ -491,6 +497,138 @@ def build_rag_context_block(snippets: list[dict[str, Any]]) -> str:
             *rows,
         ]
     ).strip()
+
+
+def build_rag_concept_graph(
+    snippets: list[dict[str, Any]],
+    *,
+    max_terms: int = 256,
+    min_term_freq: int = 2,
+) -> dict[str, Any]:
+    """Build a lightweight lexical concept graph directly from RAG snippets.
+
+    This is an additive, RAG-derived structure that complements (but does not
+    modify) the canonical concept graph built from syllabus_structure.
+
+    Nodes:
+      - term nodes: id="term:<token>"
+      - snippet nodes: id="snip:<snippet_id>"
+
+    Edges:
+      - term -> snippet with "weight" = term frequency within that snippet.
+    """
+    # Defensive defaults
+    try:
+        max_terms = max(1, min(2048, int(max_terms)))
+    except Exception:
+        max_terms = 256
+    try:
+        min_term_freq = max(1, min(50, int(min_term_freq)))
+    except Exception:
+        min_term_freq = 2
+
+    # Tokenize all snippets and collect global frequencies.
+    term_global_freq: dict[str, int] = {}
+    snippet_terms: list[tuple[str, dict[str, int]]] = []
+
+    for raw in list(snippets or []):
+        if not isinstance(raw, dict):
+            continue
+        sid = str(raw.get("id", "") or "").strip()
+        text = str(raw.get("text", "") or "").strip()
+        if not sid or not text:
+            continue
+        tokens = _rag_tokens(text)
+        if not tokens:
+            continue
+        local_counts: dict[str, int] = {}
+        for tok in tokens:
+            if len(tok) <= 2:
+                continue
+            local_counts[tok] = local_counts.get(tok, 0) + 1
+        if not local_counts:
+            continue
+        snippet_terms.append((sid, local_counts))
+        for tok, cnt in local_counts.items():
+            term_global_freq[tok] = term_global_freq.get(tok, 0) + cnt
+
+    if not term_global_freq or not snippet_terms:
+        return {
+            "meta": {
+                "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "term_count": 0,
+                "snippet_count": 0,
+                "edge_count": 0,
+                "method": "lexical",
+            },
+            "terms": [],
+            "snippets": [],
+            "edges": [],
+        }
+
+    # Select top terms by global frequency.
+    sorted_terms = sorted(
+        term_global_freq.items(),
+        key=lambda item: (-int(item[1]), str(item[0])),
+    )
+    filtered_terms: list[str] = []
+    for tok, freq in sorted_terms:
+        if freq < min_term_freq:
+            break
+        filtered_terms.append(tok)
+        if len(filtered_terms) >= max_terms:
+            break
+
+    if not filtered_terms:
+        filtered_terms = [sorted_terms[0][0]]
+
+    term_index = {tok: idx for idx, tok in enumerate(filtered_terms)}
+
+    term_nodes: list[dict[str, Any]] = []
+    snippet_nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+
+    for tok in filtered_terms:
+        term_nodes.append(
+            {
+                "id": f"term:{tok}",
+                "token": tok,
+                "frequency": int(term_global_freq.get(tok, 0)),
+                "kind": "term",
+            }
+        )
+
+    for sid, local_counts in snippet_terms:
+        snippet_nodes.append(
+            {
+                "id": f"snip:{sid}",
+                "snippet_id": sid,
+                "kind": "snippet",
+            }
+        )
+        for tok, cnt in local_counts.items():
+            if tok not in term_index:
+                continue
+            edges.append(
+                {
+                    "term_id": f"term:{tok}",
+                    "snippet_id": f"snip:{sid}",
+                    "weight": float(cnt),
+                }
+            )
+
+    return {
+        "meta": {
+            "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "term_count": len(term_nodes),
+            "snippet_count": len(snippet_nodes),
+            "edge_count": len(edges),
+            "method": "lexical",
+        },
+        "terms": term_nodes,
+        "snippets": snippet_nodes,
+        "edges": edges,
+    }
 
 
 def assemble_ai_tutor_turn_prompt(
@@ -655,6 +793,8 @@ def build_ai_tutor_context_prompt_details(
     module_id: str | None = None,
     concise_mode: bool = False,
     exam_technique_only: bool = False,
+    student_context_line: str | None = None,
+    confidence_guidance_line: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     cleaned_history: list[dict[str, str]] = []
     for msg in list(history or []):
@@ -691,18 +831,27 @@ def build_ai_tutor_context_prompt_details(
         f"Module: {module_label}",
         f"Current chapter: {chapter or 'not selected'}",
         "",
+    ]
+    if student_context_line and student_context_line.strip():
+        lines.append(student_context_line.strip())
+        lines.append("")
+    if confidence_guidance_line and confidence_guidance_line.strip():
+        lines.append(confidence_guidance_line.strip())
+        lines.append("")
+    lines.extend([
         "Coach identity:",
         "- maximize exam readiness per minute using learner state and syllabus context.",
         "- Priority: must-review pressure → weak-topic repair → retrieval practice → formula accuracy → exam-style clarity.",
         "- Act as session pilot: diagnose gaps, prescribe actions, drill, then give one concrete next move.",
         "- Use short sections, bullets, and formulas when relevant; be concise but include brief reasoning.",
         "- Write formulas and math as humans do: use a/b for fractions, x² for squared, plain words for Greek (e.g. alpha, beta). Do not use LaTeX (e.g. \\frac, $$) or code blocks for equations.",
+        "- Write in correct, professional English: no grammatical or spelling errors; use clear sentence structure and proofread before responding.",
         "- Avoid generic motivation; be operational and exam-focused.",
         "- Do not introduce non-examinable methods, metrics, or content; stay strictly within syllabus.",
         f"- {AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE} Suggest topic-based practice or in-app drills instead.",
         f"- When useful, {AI_TUTOR_NEXT_STEP_RULE} If assumptions are needed, state them explicitly.",
         "",
-    ]
+    ])
     if concise_mode:
         lines.append("Concise mode: keep responses short (under 6–8 sentences) unless the user explicitly asks for more depth.")
         lines.append("")
@@ -1062,6 +1211,22 @@ class AITutorDialogController:
         host_label.add_css_class("muted")
         content.append(host_label)
 
+        topic = str(getattr(app, "current_topic", "") or "").strip()
+        coach_pick = ""
+        try:
+            if hasattr(app, "_get_coach_pick_snapshot"):
+                coach_pick, _ = app._get_coach_pick_snapshot(force=True)
+                coach_pick = str(coach_pick or "").strip()
+        except Exception:
+            pass
+        topic_line = f"Topic: {topic or '—'}"
+        if topic and coach_pick and coach_pick == topic:
+            topic_line += " (from Coach)"
+        topic_label = Gtk.Label(label=topic_line)
+        topic_label.set_halign(Gtk.Align.START)
+        topic_label.add_css_class("muted")
+        content.append(topic_label)
+
         model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         model_label = Gtk.Label(label="Model")
         model_label.set_halign(Gtk.Align.START)
@@ -1230,7 +1395,7 @@ class AITutorDialogController:
         content.append(response_scroller)
 
         history: list[dict[str, str]] = []
-        for item in list(getattr(app, "_ai_tutor_history", []) or [])[-20:]:
+        for item in list(getattr(app, "_ai_tutor_history", []) or [])[-32:]:
             if not isinstance(item, dict):
                 continue
             role = str(item.get("role", "") or "").strip().lower()

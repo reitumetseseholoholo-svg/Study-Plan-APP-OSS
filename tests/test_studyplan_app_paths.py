@@ -38,6 +38,19 @@ def test_validate_import_source_path_rejects_directory(tmp_path):
         validate_import_source_path(str(tmp_path), "Import", (".json",))
 
 
+def test_validate_import_source_path_rejects_path_outside_permitted_roots(tmp_path):
+    """Path traversal: reject paths outside home, /tmp, or /media."""
+    allowed = tmp_path / "ok.json"
+    allowed.write_text("{}", encoding="utf-8")
+    validate_import_source_path(str(allowed), "Import", (".json",))
+    if os.name != "posix":
+        return
+    etc_hosts = "/etc/hosts"
+    if os.path.exists(etc_hosts) and os.path.isfile(etc_hosts):
+        with pytest.raises(ValueError, match="not allowed|path must be"):
+            validate_import_source_path(etc_hosts, "Import", (".json", ".txt"))
+
+
 def test_prepare_export_target_path_appends_default_extension(tmp_path):
     target = tmp_path / "report"
     got = prepare_export_target_path(
