@@ -22,7 +22,11 @@ from typing import Callable, Dict, Any, List, Union, Set, Tuple, cast
 from studyplan.config import Config as StudyPlanConfig
 from studyplan.cognitive_state import CognitiveState
 from studyplan.mastery_kernel import MasteryKernel
-from studyplan.question_quality import get_poor_quality_indices, option_looks_like_see_explanation
+from studyplan.question_quality import (
+    assess_question_quality_extended,
+    get_poor_quality_indices,
+    option_looks_like_see_explanation,
+)
 from studyplan.working_memory_service import WorkingMemoryService
 from studyplan.syllabus_fr import (
     is_fr_syllabus_text,
@@ -8237,6 +8241,48 @@ class StudyPlanEngine:
             "quality_score": (float(clean_rows) / float(total_rows)) if total_rows > 0 else 1.0,
         }
 
+    def scan_question_quality_calibration(self) -> dict[str, Any]:
+        """Extended question quality scan with distractor and difficulty heuristics."""
+        total = 0
+        low_quality = 0
+        issue_counts: dict[str, int] = {}
+        difficulty_counts: dict[str, int] = {"easy": 0, "medium": 0, "hard": 0}
+        max_sim = 0.0
+        score_total = 0.0
+        for chapter in list(getattr(self, "CHAPTERS", []) or []):
+            rows = getattr(self, "QUESTIONS", {}).get(chapter, [])
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                total += 1
+                report = assess_question_quality_extended(row)
+                score_total += float(report.get("score", 0.0) or 0.0)
+                score = float(report.get("score", 0.0) or 0.0)
+                if score < 0.6:
+                    low_quality += 1
+                for issue in report.get("issues", []) or []:
+                    key = str(issue or "").strip()
+                    if not key:
+                        continue
+                    issue_counts[key] = int(issue_counts.get(key, 0) or 0) + 1
+                diff = str(report.get("difficulty_guess", "") or "").strip().lower()
+                if diff in difficulty_counts:
+                    difficulty_counts[diff] += 1
+                sim = float(report.get("max_distractor_similarity", 0.0) or 0.0)
+                if sim > max_sim:
+                    max_sim = sim
+        avg_score = (score_total / total) if total > 0 else 1.0
+        return {
+            "total": int(total),
+            "low_quality_count": int(low_quality),
+            "average_score": round(float(avg_score), 2),
+            "issue_counts": issue_counts,
+            "difficulty_counts": difficulty_counts,
+            "max_distractor_similarity": round(float(max_sim), 2),
+        }
+
     def _build_semantic_import_stats(self) -> dict[str, Any]:
         return {
             "total_new": 0,
@@ -12415,6 +12461,17 @@ class StudyPlanEngine:
                 )
         except Exception as exc:
             self.data_health["notes"].append(f"outcome_ids check: {exc}")
+        try:
+            quality = self.scan_question_quality_calibration()
+            total = int(quality.get("total", 0) or 0)
+            low = int(quality.get("low_quality_count", 0) or 0)
+            avg = float(quality.get("average_score", 0.0) or 0.0)
+            if total > 0 and (low > 0 or avg < 0.75):
+                self.data_health["notes"].append(
+                    f"Question quality: {low}/{total} low-quality, avg {avg * 100:.0f}% (export stats for details)"
+                )
+        except Exception as exc:
+            self.data_health["notes"].append(f"question quality scan: {exc}")
         self.save_data()
         self._append_health_log()
         return dict(self.data_health)

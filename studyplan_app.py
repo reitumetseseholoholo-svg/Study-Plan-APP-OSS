@@ -164,6 +164,7 @@ from studyplan.lifecycle import ShutdownBarrier
 from studyplan.ui import UIBuilder
 from studyplan.dialog_ux import DisclosureLevel, TutorDialogRenderer
 from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopState
+from studyplan.question_quality import assess_question_quality_extended
 
 
 import datetime
@@ -11535,7 +11536,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             cache_key = ""
             if callable(cache_key_builder):
                 try:
-                    cache_key = str(cache_key_builder(path) or "")
+                    boundary = "sentence" if tier == "syllabus" else "paragraph"
+                    cache_key = str(cache_key_builder(path, boundary=boundary) or "")
                 except Exception:
                     cache_key = ""
             _pc = getattr(self, "_perf_cache", None)
@@ -16650,10 +16652,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 pass
         return base
 
-    def _ai_tutor_rag_doc_cache_key(self, file_path: str) -> str:
+    def _ai_tutor_rag_doc_cache_key(self, file_path: str, *, boundary: str = "paragraph") -> str:
         abs_path = os.path.abspath(os.path.expanduser(str(file_path or "")))
-        parser_version = "rag_chunker_v1"
-        chunk_params = "900:120:1200"
+        parser_version = "rag_chunker_v2"
+        boundary_key = str(boundary or "paragraph").strip().lower()
+        chunk_params = f"900:120:1200:{boundary_key}"
         try:
             stat = os.stat(abs_path)
             return f"{abs_path}|{int(stat.st_size)}|{int(stat.st_mtime_ns)}|{parser_version}|{chunk_params}"
@@ -16678,7 +16681,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return None, "path not allowed or missing"
         if not path or not os.path.isfile(path):
             return None, "missing file"
-        cache_key = self._ai_tutor_rag_doc_cache_key(path)
+        tier = self._classify_ai_tutor_rag_source_tier(path, os.path.basename(path))
+        chunk_boundary = "sentence" if tier == "syllabus" else "paragraph"
+        cache_key = self._ai_tutor_rag_doc_cache_key(path, boundary=chunk_boundary)
         _pc = getattr(self, "_perf_cache", None)
         cached = _pc.get(f"rag_doc:{cache_key}") if _pc is not None else None
         if isinstance(cached, dict):
@@ -16715,7 +16720,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             raw_text = str(text or "").strip()
         if not raw_text:
             return None, "empty text"
-        chunks_raw = chunk_text_for_rag(raw_text, chunk_chars=900, overlap_chars=120, max_chunks=1200)
+        chunks_raw = chunk_text_for_rag(
+            raw_text,
+            chunk_chars=900,
+            overlap_chars=120,
+            max_chunks=1200,
+            boundary=chunk_boundary,
+        )
         chunk_rows: list[dict[str, Any]] = []
         for idx, chunk in enumerate(chunks_raw):
             snippet = clean_ai_tutor_text(chunk)
@@ -16738,6 +16749,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "chunks": chunk_rows,
             "meta": dict(meta) if isinstance(meta, dict) else {},
         }
+        try:
+            payload["meta"]["rag_boundary"] = str(chunk_boundary)
+        except Exception:
+            pass
         if _pc is not None:
             _pc.set(f"rag_doc:{cache_key}", dict(payload))
         if callable(cache_put_doc):
@@ -36128,6 +36143,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "Last Time (sec)",
                 "Last Seen",
                 "Outcome IDs",
+                "Quality Score",
+                "Quality Issues",
+                "Difficulty Guess",
+                "Max Distractor Similarity",
             ]]
             for chapter, chapter_stats in stats.items():
                 if not isinstance(chapter_stats, dict):
@@ -36149,8 +36168,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             oids = q_obj.get("outcome_ids")
                             if isinstance(oids, list) and oids:
                                 outcome_ids_str = "|".join(str(x) for x in oids)
+                            quality = assess_question_quality_extended(q_obj)
                         except Exception:
                             q_text = ""
+                            quality = {}
+                    else:
+                        quality = {}
                     try:
                         attempts = int(entry.get("attempts", 0) or 0)
                     except Exception:
@@ -36186,6 +36209,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             f"{last_time:.1f}",
                             last_seen,
                             outcome_ids_str,
+                            f"{float(quality.get('score', 0.0) or 0.0):.2f}",
+                            "|".join(str(x) for x in (quality.get("issues") or [])),
+                            str(quality.get("difficulty_guess", "") or ""),
+                            f"{float(quality.get('max_distractor_similarity', 0.0) or 0.0):.2f}",
                         ]
                     )
             self._atomic_write_csv_rows(file_path, rows)

@@ -360,6 +360,7 @@ def chunk_text_for_rag(
     chunk_chars: int = RAG_CHUNK_CHARS_DEFAULT,
     overlap_chars: int = RAG_OVERLAP_CHARS_DEFAULT,
     max_chunks: int = RAG_MAX_CHUNKS_DEFAULT,
+    boundary: str = "paragraph",
 ) -> list[str]:
     raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     paragraphs = [p.strip() for p in re.split(r"\n{2,}", raw) if p and p.strip()]
@@ -368,6 +369,16 @@ def chunk_text_for_rag(
         if not flat:
             return []
         paragraphs = [flat]
+    boundary_mode = str(boundary or "paragraph").strip().lower()
+    if boundary_mode == "sentence":
+        sentences: list[str] = []
+        for para in paragraphs:
+            for sent in re.split(r"(?<=[.!?])\s+", str(para or "").strip()):
+                sent_clean = sent.strip()
+                if sent_clean:
+                    sentences.append(sent_clean)
+        if sentences:
+            paragraphs = sentences
     try:
         chunk_cap = max(240, min(2400, int(chunk_chars)))
     except Exception:

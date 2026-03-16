@@ -27,6 +27,14 @@ SEE_EXPLANATION_LOOSE = re.compile(
     r"\b(explanation|solution|rationale|answer)\s*(below|above|in\s+text|attached)?\b|\bsee\s+below\b",
     re.IGNORECASE,
 )
+META_OPTION_PATTERN = re.compile(
+    r"\b(all of the above|none of the above|all of these|both a and b|both b and c|both a and c)\b",
+    re.IGNORECASE,
+)
+CALC_KEYWORDS_PATTERN = re.compile(
+    r"\b(calculate|compute|derive|estimate|evaluate|discount|npv|irr|wacc|capm|variance|sensitivity)\b",
+    re.IGNORECASE,
+)
 
 
 def option_looks_like_see_explanation(option_text: str) -> bool:
@@ -42,6 +50,108 @@ def option_looks_like_see_explanation(option_text: str) -> bool:
     if len(text) < 35 and SEE_EXPLANATION_LOOSE.search(text):
         return True
     return False
+
+
+def _tokenize_for_similarity(text: str) -> list[str]:
+    if not text or not isinstance(text, str):
+        return []
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+    tokens = [t for t in cleaned.split() if len(t) >= 2]
+    return tokens
+
+
+def _jaccard_similarity(tokens_a: list[str], tokens_b: list[str]) -> float:
+    if not tokens_a or not tokens_b:
+        return 0.0
+    set_a = set(tokens_a)
+    set_b = set(tokens_b)
+    union = set_a | set_b
+    if not union:
+        return 0.0
+    return len(set_a & set_b) / len(union)
+
+
+def _is_numeric_option(text: str) -> bool:
+    if not text or not isinstance(text, str):
+        return False
+    compact = text.strip()
+    return bool(re.match(r"^\(?-?\$?\d", compact))
+
+
+def _estimate_difficulty(question_text: str, options: list[str]) -> str:
+    score = 0
+    q_text = str(question_text or "").strip()
+    words = q_text.split()
+    if len(words) >= 28:
+        score += 2
+    elif len(words) >= 18:
+        score += 1
+    if CALC_KEYWORDS_PATTERN.search(q_text):
+        score += 2
+    if options and all(_is_numeric_option(opt) for opt in options):
+        score += 1
+    if re.search(r"\b(explain|define|state)\b", q_text, re.IGNORECASE):
+        score = max(0, score - 1)
+    if score <= 1:
+        return "easy"
+    if score <= 3:
+        return "medium"
+    return "hard"
+
+
+def assess_question_quality_extended(item: Any) -> dict[str, Any]:
+    """Extended quality assessment including distractor similarity and difficulty guess."""
+    base = QuestionQuality(item)
+    base.assess()
+    report = base.report()
+    issues: list[str] = list(report.get("errors", [])) + list(report.get("warnings", []))
+    penalty = 0.0
+
+    question_text = ""
+    options: list[str] = []
+    correct = ""
+    if isinstance(item, dict):
+        question_text = str(item.get("question", "") or "")
+        raw_options = item.get("options", [])
+        if isinstance(raw_options, list):
+            options = [str(x or "").strip() for x in raw_options]
+        correct = str(item.get("correct", "") or "").strip()
+
+    max_similarity = 0.0
+    if options and correct:
+        correct_tokens = _tokenize_for_similarity(correct)
+        for opt in options:
+            if str(opt or "").strip() == correct:
+                continue
+            sim = _jaccard_similarity(correct_tokens, _tokenize_for_similarity(opt))
+            max_similarity = max(max_similarity, sim)
+        if max_similarity >= 0.85:
+            issues.append("distractor_too_similar")
+            penalty += 0.15
+
+    if options and correct:
+        lengths = [len(opt) for opt in options if isinstance(opt, str)]
+        if lengths:
+            avg_len = sum(lengths) / max(1, len(lengths))
+            corr_len = len(correct)
+            if avg_len > 0 and (corr_len >= avg_len * 2.0 or corr_len <= avg_len * 0.55):
+                issues.append("correct_length_outlier")
+                penalty += 0.10
+
+    if any(META_OPTION_PATTERN.search(str(opt or "")) for opt in options):
+        issues.append("meta_option_present")
+        penalty += 0.10
+
+    difficulty_guess = _estimate_difficulty(question_text, options)
+    base_score = float(report.get("score", 0.0) or 0.0)
+    score = max(0.0, min(1.0, base_score - penalty))
+    return {
+        "score": round(score, 2),
+        "base_score": round(base_score, 2),
+        "issues": issues,
+        "difficulty_guess": difficulty_guess,
+        "max_distractor_similarity": round(max_similarity, 2),
+    }
 
 
 class QuestionQuality:
