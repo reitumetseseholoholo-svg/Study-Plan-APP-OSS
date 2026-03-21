@@ -7,7 +7,7 @@ from studyplan.contracts import (
     TutorPracticeItem,
     TutorSessionState,
 )
-from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopState
+from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopSessionState
 
 
 def test_dialog_prompt_construction():
@@ -41,7 +41,7 @@ def test_learner_flow_feedback_tap_adapts_next_action():
         must_review_due=0,
         overdue_srs_count=0,
     )
-    loop_state = PracticeLoopState(
+    loop_state = PracticeLoopSessionState(
         cognitive_state=CognitiveState(),
         session_state=session,
         learner_profile=learner,

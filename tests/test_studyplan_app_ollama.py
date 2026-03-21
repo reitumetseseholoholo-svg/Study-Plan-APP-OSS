@@ -146,6 +146,9 @@ def _make_local_context_dummy():
     dummy._context_budget_limits = types.MethodType(StudyPlanGUI._context_budget_limits, dummy)
     dummy._build_local_ai_context_packet = types.MethodType(StudyPlanGUI._build_local_ai_context_packet, dummy)
     dummy._format_local_ai_context_block = types.MethodType(StudyPlanGUI._format_local_ai_context_block, dummy)
+    dummy._effective_tutor_topic = types.MethodType(StudyPlanGUI._effective_tutor_topic, dummy)
+    dummy._tutor_topic_for_context = types.MethodType(StudyPlanGUI._tutor_topic_for_context, dummy)
+    dummy._is_cognitive_runtime_enabled = lambda: False
     return dummy
 
 
@@ -804,6 +807,9 @@ def test_build_ai_tutor_rag_prompt_context_returns_snippets_for_relevant_query()
         semantic_enabled=False,
         engine=types.SimpleNamespace(),
     )
+    dummy._effective_tutor_topic = types.MethodType(StudyPlanGUI._effective_tutor_topic, dummy)
+    dummy._tutor_topic_for_context = types.MethodType(StudyPlanGUI._tutor_topic_for_context, dummy)
+    dummy._is_cognitive_runtime_enabled = lambda: False
     dummy._get_ai_tutor_rag_source_pdfs = lambda: ["/tmp/fm_source.pdf"]
     dummy._load_ai_tutor_rag_doc = lambda _path: (
         {
@@ -836,6 +842,9 @@ def _make_rag_dummy(docs_by_path: dict[str, dict[str, object]]) -> types.SimpleN
         semantic_enabled=False,
         engine=types.SimpleNamespace(),
     )
+    dummy._effective_tutor_topic = types.MethodType(StudyPlanGUI._effective_tutor_topic, dummy)
+    dummy._tutor_topic_for_context = types.MethodType(StudyPlanGUI._tutor_topic_for_context, dummy)
+    dummy._is_cognitive_runtime_enabled = lambda: False
     dummy._get_ai_tutor_rag_source_pdfs = lambda: list(docs_by_path.keys())
     dummy._load_ai_tutor_rag_doc = lambda path: (docs_by_path.get(path), None)
     return dummy
@@ -910,8 +919,9 @@ def test_load_ai_tutor_rag_doc_handles_bytes_from_extraction(tmp_path, monkeypat
         _perf_cache=None,
         _ai_cache_get_rag_doc=lambda k: None,
         _ai_cache_put_rag_doc=None,
-        _ai_tutor_rag_doc_cache_key=lambda p: f"key_{os.path.basename(p)}",
+        _ai_tutor_rag_doc_cache_key=lambda p, **_kwargs: f"key_{os.path.basename(p)}",
     )
+    dummy._classify_ai_tutor_rag_source_tier = lambda _path, _name: "syllabus"
     dummy._extract_pdf_text_for_syllabus = lambda p: (
         b"Chapter 1: Introduction. Learning outcome 1.1 explain the framework. Some content.",
         {},
@@ -1011,6 +1021,56 @@ def test_rag_prompt_context_source_diversification_prefers_cross_source(monkeypa
     sources = list(meta.get("sources", []) or [])
     assert "src_a.pdf" in sources
     assert "src_b.pdf" in sources
+
+
+def test_rag_query_cache_key_includes_preset(monkeypatch, tmp_path):
+    ref = tmp_path / "only.pdf"
+    ref.write_bytes(b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n")
+    docs = {
+        str(ref): {
+            "path": str(ref),
+            "source": "only.pdf",
+            "chunks": [{"chunk_index": 0, "text": "WACC discount rate and NPV relationship."}],
+        }
+    }
+    dummy = _make_rag_dummy(docs)
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_PRESET", "tutor_drill")
+    _a, meta_a = StudyPlanGUI._build_ai_tutor_rag_prompt_context(
+        dummy,
+        user_prompt="WACC and NPV",
+        history=[],
+        top_k=4,
+    )
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_PRESET", "tutor_explain")
+    _b, meta_b = StudyPlanGUI._build_ai_tutor_rag_prompt_context(
+        dummy,
+        user_prompt="WACC and NPV",
+        history=[],
+        top_k=4,
+    )
+    assert str(meta_a.get("query_cache_key", "")) != str(meta_b.get("query_cache_key", ""))
+    assert str(meta_a.get("rag_preset", "")) == "tutor_drill"
+    assert str(meta_b.get("rag_preset", "")) == "tutor_explain"
+
+
+def test_rag_strict_module_pdfs_drop_paths_not_in_reference_pdfs(tmp_path, monkeypatch):
+    ref = tmp_path / "syllabus_ref.pdf"
+    extra = tmp_path / "not_on_syllabus.pdf"
+    ref.write_bytes(b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n")
+    extra.write_bytes(b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n")
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_STRICT_MODULE_PDFS", "1")
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_PDFS", f"{ref},{extra}")
+    dummy = types.SimpleNamespace(
+        module_title="FM",
+        ai_tutor_rag_pdfs="",
+        ai_tutor_rag_max_sources=24,
+        engine=types.SimpleNamespace(syllabus_meta={"reference_pdfs": [str(ref)]}),
+    )
+    dummy._get_ai_tutor_rag_max_pdf_bytes = lambda: 10_000_000
+    out = StudyPlanGUI._get_ai_tutor_rag_source_pdfs(dummy)
+    real_out = {os.path.realpath(p) for p in out}
+    assert os.path.realpath(str(ref)) in real_out
+    assert os.path.realpath(str(extra)) not in real_out
 
 
 def test_rag_prompt_context_dedup_suppresses_duplicate_chunks(monkeypatch):
@@ -1129,6 +1189,155 @@ def test_build_local_ai_context_packet_returns_required_fields():
     assert packet["module"] == "FM"
     assert packet["current_topic"] == "Topic B"
     assert packet["coach_pick"] == "Topic A"
+
+
+def test_effective_tutor_topic_prefers_action_timer_over_ui_topic():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B", "Topic C"])
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        current_topic="Topic B",
+        _action_timer_kind="pomodoro_focus",
+        _action_timer_topic="Topic A",
+        quiz_session=None,
+    )
+    dummy._is_cognitive_runtime_enabled = lambda: False
+    assert StudyPlanGUI._effective_tutor_topic(dummy) == "Topic A"
+
+
+def test_on_topic_changed_invalidates_coach_pick_snapshot():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B", "Topic C"])
+    invalidated = {"called": False}
+    updated = {"called": False}
+
+    def _invalidate():
+        invalidated["called"] = True
+
+    def _update():
+        updated["called"] = True
+
+    class DummyItem:
+        def __init__(self, text: str):
+            self._text = text
+
+        def get_string(self):
+            return self._text
+
+    class DummyCombo:
+        def __init__(self, idx: int, item):
+            self._idx = idx
+            self._item = item
+
+        def get_selected(self):
+            return self._idx
+
+        def get_selected_item(self):
+            return self._item
+
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        current_topic="Topic A",
+        _invalidate_coach_pick_snapshot=_invalidate,
+        update_study_room_card=_update,
+    )
+    combo = DummyCombo(2, DummyItem("Topic C"))
+    StudyPlanGUI.on_topic_changed(dummy, combo)
+    assert dummy.current_topic == "Topic C"
+    assert invalidated["called"] is True
+    assert updated["called"] is True
+
+
+def test_effective_tutor_topic_falls_back_to_coach_pick_when_current_invalid():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B", "Topic C"])
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        current_topic="Unknown Topic",
+        _action_timer_kind="",
+        _action_timer_topic="",
+        quiz_session=None,
+        _get_coach_pick_snapshot=lambda force=True: ("Topic B", "plan"),
+    )
+    dummy._is_cognitive_runtime_enabled = lambda: False
+    assert StudyPlanGUI._effective_tutor_topic(dummy) == "Topic B"
+
+
+def test_build_tutor_loop_cognitive_runtime_meta_ignores_active_chapter_when_quiz_inactive():
+    state = CognitiveState()
+    state.working_memory.active_chapter = "Topic A"
+    state.quiz_active = False
+    dummy = types.SimpleNamespace(current_topic="")
+    dummy._is_cognitive_runtime_enabled = lambda: True
+    dummy._cognitive_state = lambda: state
+    dummy._build_tutor_loop_cognitive_runtime_meta = types.MethodType(
+        StudyPlanGUI._build_tutor_loop_cognitive_runtime_meta, dummy
+    )
+    meta = dummy._build_tutor_loop_cognitive_runtime_meta(chapter="")
+    assert meta["topic"] == ""
+
+
+def test_build_tutor_loop_cognitive_runtime_meta_uses_active_chapter_when_quiz_active():
+    state = CognitiveState()
+    state.working_memory.active_chapter = "Topic A"
+    state.quiz_active = True
+    dummy = types.SimpleNamespace(current_topic="")
+    dummy._is_cognitive_runtime_enabled = lambda: True
+    dummy._cognitive_state = lambda: state
+    dummy._build_tutor_loop_cognitive_runtime_meta = types.MethodType(
+        StudyPlanGUI._build_tutor_loop_cognitive_runtime_meta, dummy
+    )
+    meta = dummy._build_tutor_loop_cognitive_runtime_meta(chapter="")
+    assert meta["topic"] == "Topic A"
+
+
+def test_apply_coach_pick_to_tutor_topic_updates_coach_pick_without_forcing_current():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"], CHAPTER_ALIASES={})
+    tracker = {"set_called": None}
+
+    def _set_current(topic: str, invalidate_snapshot: bool = True):
+        tracker["set_called"] = (topic, invalidate_snapshot)
+
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        current_topic="Topic B",
+        coach_only_view=False,
+        _get_coach_pick_snapshot=lambda force=True: ("Topic A", "plan"),
+        _set_current_topic=_set_current,
+    )
+    StudyPlanGUI._apply_coach_pick_to_tutor_topic(dummy)
+    assert getattr(dummy, "_coach_pick_topic", "") == "Topic A"
+    assert dummy.current_topic == "Topic B"
+    assert tracker["set_called"] is None
+
+
+def test_apply_coach_pick_to_tutor_topic_sets_current_when_empty():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"], CHAPTER_ALIASES={})
+    tracker = {"set_called": None}
+
+    def _set_current(topic: str, invalidate_snapshot: bool = True):
+        tracker["set_called"] = (topic, invalidate_snapshot)
+        dummy.current_topic = topic
+
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        current_topic="",
+        coach_only_view=False,
+        _get_coach_pick_snapshot=lambda force=True: ("Topic A", "plan"),
+        _set_current_topic=_set_current,
+    )
+    StudyPlanGUI._apply_coach_pick_to_tutor_topic(dummy)
+    assert getattr(dummy, "_coach_pick_topic", "") == "Topic A"
+    assert dummy.current_topic == "Topic A"
+    assert tracker["set_called"] == ("Topic A", False)
+
+
+def test_build_local_ai_context_packet_uses_effective_tutor_topic():
+    dummy = _make_local_context_dummy()
+    dummy._action_timer_kind = "pomodoro_focus"
+    dummy._action_timer_topic = "Topic A"
+    dummy.quiz_session = None
+    dummy._is_cognitive_runtime_enabled = lambda: False
+    dummy._effective_tutor_topic = types.MethodType(StudyPlanGUI._effective_tutor_topic, dummy)
+    packet = StudyPlanGUI._build_local_ai_context_packet(dummy, kind="tutor", horizon_days=14)
+    assert packet["current_topic"] == "Topic A"
     assert "weak_topics_top3" in packet
     assert "quiz_trend_14d" in packet
     assert "focus_trend_14d" in packet
@@ -1165,8 +1374,9 @@ def test_context_budget_limits_and_horizon_env_fallback(monkeypatch):
 
 def test_ai_tutor_rag_usage_hint_is_non_rigid():
     hint = str(AI_TUTOR_RAG_USAGE_HINT or "").strip().lower()
-    assert "use snippets when relevant" in hint
-    assert "model knowledge" in hint
+    assert "rag snippets" in hint
+    assert "[s" in hint  # [S1] style citation guidance
+    assert "insufficient" in hint or "unsupported" in hint
 
 
 def test_assemble_ai_tutor_turn_prompt_includes_learning_context_and_rag():
@@ -1177,7 +1387,7 @@ def test_assemble_ai_tutor_turn_prompt_includes_learning_context_and_rag():
     )
     assert "Learning context (aggregated app state):" in prompt
     assert "Reference snippets" in prompt
-    assert "Use snippets when relevant" in prompt
+    assert "rag snippets" in prompt.lower()
 
 
 def test_assemble_ai_tutor_turn_prompt_includes_planner_brief():
@@ -1198,6 +1408,8 @@ def test_build_ai_tutor_context_prompt_details_includes_practice_first_contract(
         module_title="FM",
         chapter="Working Capital Management",
     )
+    assert "Pedagogical mode: explain" in prompt
+    assert str(meta.get("pedagogical_mode", "")) == "explain"
     assert "Default learning-loop response contract" in prompt
     assert "Micro-check (1-3 practical checks or prompts)" in prompt
     assert bool(meta.get("practice_first_contract", False)) is True
@@ -1210,6 +1422,8 @@ def test_build_ai_tutor_context_prompt_details_adds_retrieval_mode_hint():
         module_title="FM",
         chapter="Cost of Capital",
     )
+    assert "Pedagogical mode: practice" in prompt
+    assert str(meta.get("pedagogical_mode", "")) == "practice"
     assert "Mode hint (adapt response style): retrieval_drill" in prompt
     assert "Use retrieval mode" in prompt
     assert str(meta.get("mode_hint", "")) == "retrieval_drill"
@@ -1232,6 +1446,7 @@ def test_build_ai_tutor_context_prompt_details_concise_and_exam_technique_only()
     assert bool(meta.get("exam_technique_only", False)) is True
     assert bool(meta.get("concise_mode", False)) is True
     assert bool(meta.get("practice_first_contract", True)) is False
+    assert str(meta.get("pedagogical_mode", "")) == "exam_technique"
 
 
 def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
@@ -1250,6 +1465,12 @@ def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
         dummy,
         {
             "outcome": "BAD-VALUE",
+            "purpose": "tutor_embedded",
+            "effective_topic": "Topic X",
+            "module_id": "m1",
+            "prompt_contract_version": 5,
+            "learning_context_fp": "ab" * 40,
+            "learning_context_omitted": 2,
             "error_class": "Busy",
             "latency_ms": -5,
             "prompt_chars": "120",
@@ -1285,6 +1506,17 @@ def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
     assert cleaned["rag_source_mix"].startswith("syllabus:1|notes:2|supplemental:1")
     assert len(cleaned["rag_source_mix"]) <= 120
     assert cleaned["ts_utc"]
+    assert cleaned["purpose"] == "tutor_embedded"
+    assert cleaned["effective_topic"] == "Topic X"
+    assert cleaned["module_id"] == "m1"
+    assert cleaned["prompt_contract_version"] == 5
+    assert len(cleaned["learning_context_fp"]) == 64
+    assert cleaned["learning_context_omitted"] == 1
+
+    pr = StudyPlanGUI._sanitize_ai_tutor_telemetry_event(dummy, {"outcome": "parse_retry", "purpose": "tutor_popup"})
+    assert isinstance(pr, dict)
+    assert pr["outcome"] == "parse_retry"
+    assert pr["purpose"] == "tutor_popup"
 
     for idx in range(4):
         StudyPlanGUI._record_ai_tutor_telemetry(
@@ -2077,19 +2309,23 @@ def test_can_auto_execute_ai_tutor_action_respects_mode_and_confirmation():
     assert StudyPlanGUI._can_auto_execute_ai_tutor_action(dummy, "focus_start", "suggest", False) is False
     assert StudyPlanGUI._can_auto_execute_ai_tutor_action(dummy, "focus_start", "assist", False) is True
     assert StudyPlanGUI._can_auto_execute_ai_tutor_action(dummy, "review_start", "assist", True) is False
+    assert StudyPlanGUI._can_auto_execute_ai_tutor_action(dummy, "review_start", "assist", False) is True
+    assert StudyPlanGUI._can_auto_execute_ai_tutor_action(dummy, "drill_start", "assist", False) is True
     assert StudyPlanGUI._can_auto_execute_ai_tutor_action(dummy, "review_start", "cockpit", True) is True
 
 
-def test_effective_ai_tutor_autonomy_mode_forces_cockpit_when_enabled():
+def test_effective_ai_tutor_autonomy_mode_follows_preference():
+    """Autopilot on/off does not override autonomy mode; mode controls how boldly actions run."""
     dummy = types.SimpleNamespace(
         ai_tutor_autopilot_enabled=True,
         ai_tutor_autonomy_mode="suggest",
     )
     dummy._coerce_ai_tutor_autonomy_mode = types.MethodType(StudyPlanGUI._coerce_ai_tutor_autonomy_mode, dummy)
-    dummy._effective_ai_tutor_autonomy_mode = types.MethodType(StudyPlanGUI._effective_ai_tutor_autonomy_mode, dummy)
+    assert StudyPlanGUI._effective_ai_tutor_autonomy_mode(dummy) == "suggest"
+    dummy.ai_tutor_autonomy_mode = "cockpit"
     assert StudyPlanGUI._effective_ai_tutor_autonomy_mode(dummy) == "cockpit"
     dummy.ai_tutor_autopilot_enabled = False
-    assert StudyPlanGUI._effective_ai_tutor_autonomy_mode(dummy) == "suggest"
+    assert StudyPlanGUI._effective_ai_tutor_autonomy_mode(dummy) == "cockpit"
 
 
 def test_should_request_global_ai_tutor_decision_only_on_change_or_refresh():

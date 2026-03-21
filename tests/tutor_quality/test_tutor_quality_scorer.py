@@ -68,6 +68,23 @@ def test_matrix_summary_matches_expected_fixture() -> None:
     assert int(result["disallow_violations"]) == int(summary_expected["disallow_violations"])
 
 
+def test_rag_citation_quality_check_requires_brackets() -> None:
+    case = {
+        "id": "qc_rag",
+        "module_id": "acca_f9",
+        "action_type": "explain",
+        "expected": {
+            "must_include": ["npv", "discount"],
+            "disallow": [],
+            "quality_checks": {"require_rag_style_citation": True},
+        },
+    }
+    bad = "npv uses discount rate but no citation tag here."
+    good = "npv uses discount rate; see [S1] for the formula."
+    assert score_tutor_response(case, bad, threshold=0.75)["passed"] is False
+    assert score_tutor_response(case, good, threshold=0.75)["passed"] is True
+
+
 def test_disallow_phrase_forces_failure() -> None:
     matrix = _load_json(MATRIX_PATH)
     cases = matrix.get("cases", [])

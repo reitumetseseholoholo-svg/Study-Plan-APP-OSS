@@ -287,6 +287,26 @@
           "warning omitted"
         ]
       }
+    },
+    {
+      "id": "f9_quality_rag_citation",
+      "module_id": "acca_f9",
+      "chapter": "Investment appraisal",
+      "action_type": "explain",
+      "prompt": "Explain briefly how NPV supports project acceptance.",
+      "expected": {
+        "must_include": [
+          "discount",
+          "npv",
+          "accept"
+        ],
+        "disallow": [
+          "guaranteed pass"
+        ],
+        "quality_checks": {
+          "require_rag_style_citation": true
+        }
+      }
     }
   ]
 }

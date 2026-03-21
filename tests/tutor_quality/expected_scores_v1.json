@@ -67,11 +67,15 @@
     "f6_drill_corporation_tax": {
       "score": 1.0,
       "passed": true
+    },
+    "f9_quality_rag_citation": {
+      "score": 1.0,
+      "passed": true
     }
   },
   "summary": {
-    "total": 16,
-    "pass_count": 16,
+    "total": 17,
+    "pass_count": 17,
     "pass_rate": 1.0,
     "avg_score": 1.0,
     "disallow_violations": 0

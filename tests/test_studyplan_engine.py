@@ -2731,6 +2731,8 @@ def test_import_syllabus_meta_from_json_only_syllabus_meta(engine_no_io):
 def test_select_outcome_gap_questions_returns_uncovered_only(engine_no_io, monkeypatch):
     eng = engine_no_io
     chapter = "FM Function"
+    eng.QUESTIONS[chapter] = _make_fm_questions(4)
+    eng.sync_srs_with_questions()
     eng.syllabus_structure = {
         chapter: {
             "capability": "A",
@@ -2786,6 +2788,8 @@ def test_select_outcome_gap_questions_empty_when_fully_covered(engine_no_io, mon
 def test_select_outcome_gap_questions_prioritizes_due_then_low_recall(engine_no_io, monkeypatch):
     eng = engine_no_io
     chapter = "FM Function"
+    eng.QUESTIONS[chapter] = _make_fm_questions(2)
+    eng.sync_srs_with_questions()
     eng.syllabus_structure = {
         chapter: {
             "capability": "A",

@@ -57,7 +57,7 @@ Findings from tracing module load, data paths, syllabus, RAG, and outcome flow. 
 ## 7. Recommendations
 
 1. **Done**: Allow `_last_loaded_module_config_path` to be `None` so startup never crashes when no config file exists.
-2. **User guidance**: For F7 (and any module without syllabus), show a short note in the UI when `syllabus_structure` is empty: e.g. “Import Syllabus PDF or Reconfigure from RAG to enable outcome coverage and readiness.”
-3. **Optional**: After “Import Syllabus PDF” or “Reconfigure from RAG”, if the applied config has `syllabus_meta.source_pdf` or `reference_pdfs`, consider prompting to add those paths to Tutor RAG PDFs if not already present, so reconfig and tutor both use the same sources.
+2. **Done (dashboard)**: When the module has chapters but no learning outcomes in `syllabus_structure`, the dashboard shows a card pointing users to **Module → Import Syllabus PDF** / **Reconfigure from RAG**, and mentions **Tools → Add Tutor RAG PDF** for tutor alignment.
+3. **Done**: After **Module Editor** save, **Refresh syllabus intelligence** apply, or **Reconfigure from RAG** apply, the app may prompt (Yes/No) to add `syllabus_meta.source_pdf` / `reference_pdfs` to Tutor RAG when those files exist and are not already listed.
 
-No further code defects were found in the F7 or general-module workflow; the only change applied was the `none_allowed` fix above.
+No further code defects were found in the F7 or general-module workflow beyond the historical `none_allowed` fix above.

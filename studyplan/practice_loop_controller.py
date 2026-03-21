@@ -44,8 +44,8 @@ RECOVERABLE_LOOP_ERRORS = (AttributeError, RuntimeError, TypeError, ValueError, 
 
 
 @dataclass
-class PracticeLoopState:
-    """Represents state during an active practice session."""
+class PracticeLoopSessionState:
+    """In-memory bag for an active practice session (distinct from `PracticeLoopFsmState` in `practice_loop_fsm`)."""
 
     cognitive_state: CognitiveState
     session_state: TutorSessionState
@@ -298,7 +298,7 @@ class PracticeLoopController:
             "telemetry": dict(turn.telemetry or {}),
         }
 
-    def build_practice_items(self, loop_state: PracticeLoopState, max_items: int = 3) -> tuple[TutorPracticeItem, ...]:
+    def build_practice_items(self, loop_state: PracticeLoopSessionState, max_items: int = 3) -> tuple[TutorPracticeItem, ...]:
         """Generate practice items for the session."""
         safe_max_items = self._coerce_int(max_items, 3, min_value=1, max_value=20)
         with self.perf_monitor.context("practice_item_build"):
@@ -383,7 +383,7 @@ class PracticeLoopController:
 
     def submit_attempt(
         self,
-        loop_state: PracticeLoopState,
+        loop_state: PracticeLoopSessionState,
         item: TutorPracticeItem,
         submission: TutorAssessmentSubmission,
     ) -> TutorAssessmentResult:
@@ -424,8 +424,8 @@ class PracticeLoopController:
             loop_state.current_result = result
             return result
 
-    def advance_state(self, loop_state: PracticeLoopState, event: str, metadata: dict[str, Any] | None = None) -> str:
-        """Trigger FSM transition and return next Socratic state."""
+    def advance_state(self, loop_state: PracticeLoopSessionState, event: str, metadata: dict[str, Any] | None = None) -> str:
+        """Advance `SocraticFSM` (coach working-memory state); not `PracticeLoopFSM` table transitions."""
         fsm = SocraticFSM(loop_state.cognitive_state)
         try:
             decision = fsm.transition(event, metadata)
@@ -436,7 +436,7 @@ class PracticeLoopController:
         logger.info(f"fsm transition", extra={"event": event, "next_state": next_state})
         return next_state
 
-    def validate_loop_invariants(self, loop_state: PracticeLoopState) -> tuple[bool, list[str]]:
+    def validate_loop_invariants(self, loop_state: PracticeLoopSessionState) -> tuple[bool, list[str]]:
         """Check that practice loop is in a consistent state."""
         with self.perf_monitor.context("state_validation"):
             try:
@@ -448,7 +448,7 @@ class PracticeLoopController:
                 logger.error("invariant violation in practice loop", extra={"errors": normalized_errors})
             return (self._coerce_bool(valid), normalized_errors)
 
-    def calibrate_difficulty(self, loop_state: PracticeLoopState, latency_ms: float, confidence: int) -> str:
+    def calibrate_difficulty(self, loop_state: PracticeLoopSessionState, latency_ms: float, confidence: int) -> str:
         """Use learning science to recommend difficulty (desirable difficulty principle)."""
         topic = loop_state.session_state.topic
         posterior = loop_state.cognitive_state.posteriors.get(topic)
@@ -510,7 +510,7 @@ class PracticeLoopController:
         logger.info("transfer task generated", extra={"topic": item.topic, "domain": domain})
         return task
 
-    def schedule_next_retest(self, loop_state: PracticeLoopState, item: TutorPracticeItem, result: TutorAssessmentResult) -> dict[str, Any]:
+    def schedule_next_retest(self, loop_state: PracticeLoopSessionState, item: TutorPracticeItem, result: TutorAssessmentResult) -> dict[str, Any]:
         """Schedule optimal retest using spaced retrieval (Ebbinghaus spacing)."""
         from datetime import datetime, timezone
         posterior = loop_state.cognitive_state.posteriors.get(item.topic)
@@ -542,7 +542,7 @@ class PracticeLoopController:
 
     def generate_session_reflection(
         self,
-        loop_state: PracticeLoopState,
+        loop_state: PracticeLoopSessionState,
         session_duration_minutes: int,
         attempts_history: list[tuple[str, bool]],  # (topic, correct)
         latencies_ms: list[float] | None = None,
@@ -616,7 +616,7 @@ class PracticeLoopController:
 
     def build_session_quality_summary(
         self,
-        loop_state: PracticeLoopState,
+        loop_state: PracticeLoopSessionState,
         *,
         result: TutorAssessmentResult | None = None,
         guidance: dict[str, Any] | None = None,
@@ -690,7 +690,7 @@ class PracticeLoopController:
 
     def generate_progressive_hints(
         self,
-        loop_state: PracticeLoopState,
+        loop_state: PracticeLoopSessionState,
         item: TutorPracticeItem,
         error_tags: tuple[str, ...] = (),
     ) -> list[HintLevel]:
@@ -725,7 +725,7 @@ class PracticeLoopController:
 
     def get_next_hint(
         self,
-        loop_state: PracticeLoopState,
+        loop_state: PracticeLoopSessionState,
         item: TutorPracticeItem,
         has_attempted: bool = False,
         error_tags: tuple[str, ...] = (),
@@ -776,7 +776,7 @@ class PracticeLoopController:
 
     def analyze_error_and_diagnose(
         self,
-        loop_state: PracticeLoopState,
+        loop_state: PracticeLoopSessionState,
         result: TutorAssessmentResult,
         item: TutorPracticeItem,
     ) -> dict[str, Any]:
@@ -832,7 +832,7 @@ class PracticeLoopController:
 
     def track_confidence_and_calibrate(
         self,
-        loop_state: PracticeLoopState,
+        loop_state: PracticeLoopSessionState,
         predicted_confidence: int,  # 1-5
         was_correct: bool,
         topic: str = "",
@@ -899,7 +899,7 @@ class PracticeLoopController:
 
     def recommend_next_action(
         self,
-        loop_state: PracticeLoopState,
+        loop_state: PracticeLoopSessionState,
         item: TutorPracticeItem,
         result: TutorAssessmentResult,
         *,

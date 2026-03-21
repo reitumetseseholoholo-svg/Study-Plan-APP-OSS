@@ -43,6 +43,10 @@
     "aliases": {
       "type": "object",
       "description": "Map from alias or abbreviation to canonical chapter title (alias -> canonical). Engine normalizes keys to lowercase for lookup.",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
       "additionalProperties": {
         "type": "string",
         "minLength": 1
@@ -51,6 +55,10 @@
     "capabilities": {
       "type": "object",
       "description": "Capability letter (A, B, C, ...) to full title. Keys are single uppercase letters; values non-empty strings.",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Z]$"
+      },
       "additionalProperties": {
         "type": "string",
         "minLength": 1
@@ -142,7 +150,15 @@
           "format": "date-time"
         },
         "parse_confidence": {
-          "type": "number"
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "outcome_id_stability_ratio": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Share of outcomes whose ids remained stable after reconfigure."
         },
         "reconfigured_at": {
           "type": "string",

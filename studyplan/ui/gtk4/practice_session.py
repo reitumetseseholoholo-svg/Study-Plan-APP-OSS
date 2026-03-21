@@ -74,7 +74,7 @@ class PracticeSessionWindow(Gtk.Box):
             
     def _create_loop_state(self):
         """Create practice loop state for item generation."""
-        from ..practice_loop_controller import PracticeLoopState
+        from ..practice_loop_controller import PracticeLoopSessionState
         from ..contracts import TutorSessionState, TutorLearnerProfileSnapshot, AppStateSnapshot
         
         session_state = TutorSessionState(
@@ -99,7 +99,7 @@ class PracticeSessionWindow(Gtk.Box):
             overdue_srs_count=0
         )
         
-        return PracticeLoopState(
+        return PracticeLoopSessionState(
             cognitive_state=self.cognitive_state,
             session_state=session_state,
             learner_profile=learner_profile,

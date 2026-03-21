@@ -15,7 +15,7 @@ from studyplan.confidence_tracking import (
     ConfidenceCalibrator,
     ConfidenceCalibration,
 )
-from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopState
+from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopSessionState
 from studyplan.cognitive_state import CognitiveState
 from studyplan.contracts import (
     TutorPracticeItem,
@@ -272,7 +272,7 @@ def test_hint_integration_with_errors():
 
 def _build_controller_loop_item(topic: str = "npv"):
     controller = PracticeLoopController()
-    loop = PracticeLoopState(
+    loop = PracticeLoopSessionState(
         cognitive_state=CognitiveState(),
         session_state=TutorSessionState(session_id="reg1", module="m", topic=topic),
         learner_profile=TutorLearnerProfileSnapshot(learner_id="u-reg", module="m"),
@@ -628,7 +628,7 @@ class TestGenerateSessionReflection:
     def test_calibration_used_when_enough_samples_overconfident(self):
         """When confidence_tracker has >= 3 samples and is overconfident, reflection mentions it."""
         controller = PracticeLoopController()
-        loop = PracticeLoopState(
+        loop = PracticeLoopSessionState(
             cognitive_state=CognitiveState(),
             session_state=TutorSessionState(session_id="ref1", module="m", topic="T1"),
             learner_profile=TutorLearnerProfileSnapshot(learner_id="u1", module="m"),
@@ -655,7 +655,7 @@ class TestGenerateSessionReflection:
     def test_calibration_zero_when_few_samples(self):
         """When confidence_tracker has < 3 samples, reflection still runs and uses neutral/fallback calibration."""
         controller = PracticeLoopController()
-        loop = PracticeLoopState(
+        loop = PracticeLoopSessionState(
             cognitive_state=CognitiveState(),
             session_state=TutorSessionState(session_id="ref2", module="m", topic="T1"),
             learner_profile=TutorLearnerProfileSnapshot(learner_id="u2", module="m"),
@@ -682,7 +682,7 @@ class TestGenerateSessionReflection:
     def test_avg_latency_from_history(self):
         """When latencies_ms is provided, reflection uses mean latency (no crash)."""
         controller = PracticeLoopController()
-        loop = PracticeLoopState(
+        loop = PracticeLoopSessionState(
             cognitive_state=CognitiveState(),
             session_state=TutorSessionState(session_id="ref3", module="m", topic="T1"),
             learner_profile=TutorLearnerProfileSnapshot(learner_id="u3", module="m"),

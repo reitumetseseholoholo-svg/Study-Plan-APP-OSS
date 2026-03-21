@@ -8,7 +8,7 @@ from studyplan.contracts import (
     TutorAssessmentSubmission,
     TutorAssessmentResult,
 )
-from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopState
+from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopSessionState
 from studyplan.cognitive_state import CognitiveState
 from studyplan.performance_monitor import PerformanceMonitor
 
@@ -80,7 +80,7 @@ def test_practice_loop_lifecycle():
     learner = TutorLearnerProfileSnapshot(learner_id="u2", module="m")
     app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
 
-    loop = PracticeLoopState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
 
     # Step 1: Build items
     items = controller.build_practice_items(loop, max_items=2)
@@ -116,7 +116,7 @@ def test_practice_loop_error_recovery():
     learner = TutorLearnerProfileSnapshot(learner_id="u3", module="m")
     app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
 
-    loop = PracticeLoopState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
 
     items = controller.build_practice_items(loop, max_items=2)
     item = items[0]
@@ -144,7 +144,7 @@ def test_practice_loop_tutor_gating():
     cog_state = CognitiveState()
     # Quiz NOT active
     cog_state.quiz_active = False
-    loop = PracticeLoopState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
 
     controller = PracticeLoopController()
 
@@ -168,7 +168,7 @@ def test_practice_loop_recommends_transfer_after_strong_correct():
     session = TutorSessionState(session_id="s5", module="m", topic="T1")
     learner = TutorLearnerProfileSnapshot(learner_id="u5", module="m")
     app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
-    loop = PracticeLoopState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
 
     item = controller.build_practice_items(loop, max_items=1)[0]
     post = loop.cognitive_state.get_structure_posterior(item.topic)
@@ -204,7 +204,7 @@ def test_practice_loop_recommends_light_intervention_after_partial():
     session = TutorSessionState(session_id="s6p", module="m", topic="T1")
     learner = TutorLearnerProfileSnapshot(learner_id="u6p", module="m")
     app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
-    loop = PracticeLoopState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
 
     item = controller.build_practice_items(loop, max_items=1)[0]
     result = TutorAssessmentResult(
@@ -230,7 +230,7 @@ def test_practice_loop_recommends_remediation_after_incorrect():
     session = TutorSessionState(session_id="s6", module="m", topic="T1")
     learner = TutorLearnerProfileSnapshot(learner_id="u6", module="m")
     app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
-    loop = PracticeLoopState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
 
     item = controller.build_practice_items(loop, max_items=1)[0]
     result = controller.submit_attempt(loop, item, TutorAssessmentSubmission(item_id=item.item_id, answer_text="wrong"))

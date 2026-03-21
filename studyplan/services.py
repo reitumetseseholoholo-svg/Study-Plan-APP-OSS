@@ -2470,6 +2470,19 @@ class InMemoryTutorSessionController:
             key = "default"
         existing = self._sessions.get(key)
         if isinstance(existing, TutorSessionState):
+            new_topic = str(topic or "").strip()
+            new_module = str(module or "").strip()
+            updated = existing
+            changed = False
+            if new_topic and new_topic != str(existing.topic or "").strip():
+                updated = replace(updated, topic=new_topic, updated_at_ts=self._now_ts())
+                changed = True
+            if new_module and new_module != str(existing.module or "").strip():
+                updated = replace(updated, module=new_module, updated_at_ts=self._now_ts())
+                changed = True
+            if changed:
+                self._sessions[key] = updated
+                return updated
             return existing
         state = TutorSessionState(
             session_id=key,

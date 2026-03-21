@@ -135,8 +135,8 @@
     "Chapter 20: IAS 33 Earnings per Share": 5,
     "Chapter 21: Conceptual Principles of Groups": 5,
     "Chapter 23: Consolidation Adjustments": 5,
-    "Chapter 25: Investments in Associates": 5,
-    "Chapter 27: IAS 7 Statement of Cash Flows": 5
+    "Chapter 25: Investments in Associates": 6,
+    "Chapter 27: IAS 7 Statement of Cash Flows": 6
   },
   "semantic_aliases": {
     "cf": "conceptual framework",
@@ -223,7 +223,7 @@
         },
         {
           "id": "B.7",
-          "text": "Account for right-of-use assets and lease",
+          "text": "Account for right-of-use assets and lease liabilities in accordance with International Financial Reporting Standards (IFRS).",
           "level": 2
         },
         {
@@ -273,7 +273,7 @@
         },
         {
           "id": "B.17",
-          "text": "amortised cost f) Identify and account for:",
+          "text": "Identify and account for amortised cost in accordance with International Financial Reporting Standards.",
           "level": 2
         },
         {
@@ -288,7 +288,7 @@
         },
         {
           "id": "B.20",
-          "text": "Apply the requirements of relevant IFRS after the reporting period Accounting Standards to the issue and ii) identify items requiring separate interest expenses of: [2] disclosure, including their",
+          "text": "Apply the requirements of relevant International Financial Reporting Standards (IFRS) after the reporting period, including the identification of items requiring separate interest expenses for disclosure, such as amortization of debt issuance costs.",
           "level": 2
         },
         {
@@ -298,12 +298,12 @@
         },
         {
           "id": "B.22",
-          "text": "Account for current taxation in a) Explain and apply the principles of accordance with relevant IFRS Accounting recognition of revenue:",
+          "text": "Account for current taxation by explaining and applying the principles of accordance with relevant IFRS Accounting recognition of revenue.",
           "level": 2
         },
         {
           "id": "B.23",
-          "text": "Explain the effect of taxable and obligations deductible temporary differences on iii) Determination of transaction price accounting and taxable profits.[2] iv) Allocation of the price to performance obligations",
+          "text": "Explain the effect of taxable and obligations deductible temporary differences on the determination of transaction price accounting and taxable profits, as well as the allocation of the price to performance obligations.",
           "level": 2
         },
         {
@@ -333,12 +333,12 @@
         },
         {
           "id": "B.29",
-          "text": "Account for changes in accounting revenue and, specifically, account for the estimates, changes in accounting policy following types of transaction:",
+          "text": "Account for changes in accounting revenue, including the estimation of revenue and changes in accounting policy following various transactions, in accordance with International Financial Reporting Standards.",
           "level": 2
         },
         {
           "id": "B.30",
-          "text": "Earnings per share (EPS):[2] iii) bill-and-hold arrangements",
+          "text": "Earnings per share (EPS): [2] iii) bill-and-hold arrangements.",
           "level": 2
         },
         {
@@ -348,7 +348,7 @@
         },
         {
           "id": "B.32",
-          "text": "Apply relevant IFRS Accounting Standards",
+          "text": "Apply relevant International Financial Reporting Standards (IFRS) Accounting Standards.",
           "level": 2
         },
         {
@@ -363,12 +363,12 @@
         },
         {
           "id": "B.35",
-          "text": "Interpret financial statements (including",
+          "text": "Interpret financial statements, including the understanding and analysis of International Financial Reporting Standards (IFRS), to make informed business decisions.",
           "level": 2
         },
         {
           "id": "B.36",
-          "text": "Account for the translation of foreign the statements of cash flows) together currency transactions and monetary/ non- with other financial and non-financial monetary foreign currency items at the information to assess the performance reporting date.[2] and financial position of an entity and to give advice from the perspectives of",
+          "text": "Account for the translation of foreign currency statements of cash flows together with currency transactions and monetary/non-monetary financial and non-financial monetary foreign currency items at the reporting date to assess the performance and financial position of an entity and to give advice from the perspectives of international financial reporting standards.",
           "level": 2
         }
       ],
@@ -390,12 +390,12 @@
       "learning_outcomes": [
         {
           "id": "D.1",
-          "text": "Account for the effects of fair value statements adjustments, including their effect on goodwill, to:",
+          "text": "Account for the effects of fair value measurements adjustments, including their impact on goodwill, in accordance with IFRS 5 Non-current Assets Held for Sale and Discontinued Operations.",
           "level": 2
         },
         {
           "id": "D.2",
-          "text": "Prepare an entity\u2019s statement of financial",
+          "text": "Prepare an entity's statement of financial position for the period under IFRS 5 Non-current Assets Held for Sale and Discontinued Operations.",
           "level": 2
         },
         {
@@ -405,7 +405,7 @@
         },
         {
           "id": "D.4",
-          "text": "Prepare and explain the contents and",
+          "text": "Prepare and explain the contents and disclosures required under IFRS 5 Non-current Assets Held for Sale and Discontinued Operations.",
           "level": 2
         },
         {
@@ -420,7 +420,7 @@
         },
         {
           "id": "D.7",
-          "text": "Prepare extracts from the statement of cash flows for a single entity in",
+          "text": "Prepare extracts from the statement of cash flows for a single entity in accordance with IFRS 5 Non-current Assets Held for Sale and Discontinued Operations.",
           "level": 2
         },
         {
@@ -430,7 +430,7 @@
         },
         {
           "id": "D.9",
-          "text": "Explain and illustrate the effect of the",
+          "text": "Explain and illustrate the effect of the impairment of non-current assets held for sale and discontinued operations under IFRS.",
           "level": 2
         },
         {
@@ -459,7 +459,7 @@
         },
         {
           "id": "A.2",
-          "text": "Discuss whether the use of current value",
+          "text": "Discuss whether the use of current value is appropriate when preparing the consolidated statement of financial position.",
           "level": 2
         },
         {
@@ -474,7 +474,7 @@
         },
         {
           "id": "A.5",
-          "text": "Explain why a regulatory framework is needed, including the advantages and",
+          "text": "Explain why a regulatory framework is needed, including the advantages and disadvantages, to ensure financial reporting is accurate and consistent across different entities.",
           "level": 2
         },
         {
@@ -484,7 +484,7 @@
         },
         {
           "id": "A.7",
-          "text": "Explain why IFRS Accounting Standards,",
+          "text": "Explain why IFRS Accounting Standards require the use of the consolidated statement of financial position.",
           "level": 2
         },
         {
@@ -504,7 +504,7 @@
         },
         {
           "id": "A.11",
-          "text": "Describe the standard-setting process of the International Accounting Standards",
+          "text": "Describe the standard-setting process of the International Accounting Standards.",
           "level": 2
         },
         {
@@ -514,7 +514,7 @@
         },
         {
           "id": "A.13",
-          "text": "Discuss the principle of comparability in",
+          "text": "Discuss the principle of comparability in the context of the consolidated statement of financial position.",
           "level": 2
         },
         {
@@ -524,7 +524,7 @@
         },
         {
           "id": "A.15",
-          "text": "Explain the purpose and role of the International Sustainability Standards",
+          "text": "Explain the purpose and role of the International Sustainability Standards in the context of the consolidated statement of financial position.",
           "level": 2
         },
         {
@@ -569,7 +569,7 @@
         },
         {
           "id": "A.24",
-          "text": "Explain why it is necessary to eliminate intra group transactions.[2] a) Discuss the nature and accounting treatment of internally generated and",
+          "text": "Explain why it is necessary to eliminate intra-group transactions, discussing the nature and accounting treatment of internally generated and inter-group transactions.",
           "level": 2
         },
         {
@@ -630,7 +630,7 @@
         },
         {
           "id": "C.2",
-          "text": "Discuss how financial statements may be manipulated to produce a desired effect.[2] 3. Limitations of interpretation techniques",
+          "text": "Discuss how financial statements may be manipulated to produce a desired effect, while acknowledging the limitations of interpretation techniques.",
           "level": 2
         },
         {
@@ -655,12 +655,12 @@
         },
         {
           "id": "C.7",
-          "text": "Define and compute relevant financial a more accurate indicator of ratios.[2] performance than a company\u2019s profit trend and the importance of",
+          "text": "Define and compute relevant financial ratios more accurately than a company\u2019s profit trend, emphasizing the importance of these metrics in analyzing and interpreting financial performance.",
           "level": 2
         },
         {
           "id": "C.8",
-          "text": "Explain the aspects of performance that EPS as a stock market indicator",
+          "text": "Explain the aspects of performance that EPS (earnings per share) as a stock market indicator measures.",
           "level": 2
         },
         {
@@ -691,7 +691,12 @@
         }
       ],
       "outcome_count": 1,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 1
+      }
     },
     "Chapter 3: IFRS 18 Presentation and Disclosure in Financial Statements": {
       "capability": "B",
@@ -703,7 +708,12 @@
         }
       ],
       "outcome_count": 1,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 1
+      }
     },
     "Chapter 4: IAS 8 Basis of Preparation of Financial Statements": {
       "capability": "B",
@@ -715,7 +725,12 @@
         }
       ],
       "outcome_count": 1,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 1
+      }
     },
     "Chapter 5: IFRS 15 Revenue from Contracts with Customers": {
       "capability": "B",
@@ -727,7 +742,12 @@
         }
       ],
       "outcome_count": 1,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 1
+      }
     },
     "Chapter 6: Inventories and Agriculture": {
       "capability": "B",
@@ -739,116 +759,218 @@
         }
       ],
       "outcome_count": 1,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 1
+      }
     },
     "Chapter 7: IAS 16 Property, Plant and Equipment": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 8: IAS 23 Borrowing Costs": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 9: Government Grants": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 10: IAS 40 Investment Property": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 11: IAS 38 Intangible Assets": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 13: IAS 36 Impairment of Assets": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 14: IFRS 16 Leases": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 15: IAS 37 Provisions, Contingent Liabilities and Contingent Assets": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 16: IAS 10 Events after the Reporting Period": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 17: IAS 12 Income Taxes": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 18: Financial Instruments": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 19: Foreign Currency Transactions": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 20: IAS 33 Earnings per Share": {
       "capability": "B",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 21: Conceptual Principles of Groups": {
       "capability": "A",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 23: Consolidation Adjustments": {
       "capability": "D",
       "learning_outcomes": [],
       "outcome_count": 0,
-      "subtopics": []
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 0,
+        "level_3": 0
+      }
     },
     "Chapter 25: Investments in Associates": {
       "capability": "A",
-      "learning_outcomes": [],
-      "outcome_count": 0,
-      "subtopics": []
+      "learning_outcomes": [
+        {
+          "id": "chapter_25_investments_in_associates_1",
+          "text": "Discuss the advantages and disadvantages of historical cost accounting.",
+          "level": 2
+        }
+      ],
+      "outcome_count": 1,
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 1,
+        "level_3": 0
+      }
     },
     "Chapter 27: IAS 7 Statement of Cash Flows": {
       "capability": "B",
-      "learning_outcomes": [],
-      "outcome_count": 0,
-      "subtopics": []
+      "learning_outcomes": [
+        {
+          "id": "chapter_27_ias_7_statement_of_cash_flows_1",
+          "text": "Discuss the limitations in the use of ratio analysis for assessing performance and financial position.",
+          "level": 2
+        }
+      ],
+      "outcome_count": 1,
+      "subtopics": [],
+      "intellectual_level_mix": {
+        "level_1": 0,
+        "level_2": 1,
+        "level_3": 0
+      }
     }
   },
   "syllabus_meta": {
     "source_pdf": "",
     "exam_code": null,
     "effective_window": null,
-    "parsed_at": "2026-03-12T11:37:35",
+    "parsed_at": "2026-03-20T22:06:10",
     "parse_confidence": 0.0,
     "last_parse_empty_sections": []
   },

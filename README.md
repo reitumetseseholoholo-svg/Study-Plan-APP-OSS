@@ -9,6 +9,8 @@ A focused module-aware study coach built around Pomodoro discipline, SRS‑based
 - Day-to-day usage: `USER_GUIDE.md`
 - Fast onboarding: `QUICK_START.md`
 - Developer details and architecture notes: `DEVELOPER_DOC.md`
+- LLM roadmap (performance, quality, versatility, economy): `docs/LLM_IMPLEMENTATION_ROADMAP.md`
+- LLM telemetry fields + golden prompts: `docs/LLM_TELEMETRY_SCHEMA.md`
 
 ## Quick start
 

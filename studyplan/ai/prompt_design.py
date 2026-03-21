@@ -3,6 +3,7 @@ Prompt engineering for major AI actions: 3Es (Economy, Efficiency, Effectiveness
 
 Use this module for:
 - Shared snippets so prompts stay consistent and one-place editable.
+- In-app **tutor** base/variable layering: see `tutor_prompt_layers.py` (coach identity lines, `pedagogical_mode`).
 - Schema-first, rules-then-payload structure for generation (Section C, MCQ/gap, syllabus, etc.).
 - Retry suffixes for relaxed second attempts when parse fails.
 

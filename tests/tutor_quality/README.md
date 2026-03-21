@@ -79,6 +79,10 @@ Run the full pipeline in one command:
 python tools/run_tutor_quality_pipeline.py --mode reference --baseline-report tests/tutor_quality/reference_report_v1.json --policy-file tests/tutor_quality/policy_profiles_v1.json --policy balanced_main --output-dir .
 ```
 
+## Case IDs and module prefixes
+
+Matrix `id` values look like `f9_explain_wacc` or `f9_quality_rag_citation`. The **`f9_` / `f7_` / `f8_` / `f6_` prefix matches the module** in `module_id` (`acca_f9`, `acca_f7`, …): **F9 = Financial Management**, **F7 = Financial Reporting**, **F8 = Audit**, **F6 = Tax**. The rest of the slug is a short scenario name. New quality dimensions (e.g. RAG citation style) can add cases under the same module prefix so coverage rules stay satisfied.
+
 ## Extension rules
 
 - Keep `id` stable once published.

@@ -82,6 +82,18 @@ Shared snippets (e.g. `JSON_ONLY_NO_MARKDOWN`, `RETRY_SUFFIX_ONE_ITEM`) live in 
 
 The UI stays responsive and defers planning/scoring logic to the engine.
 
+### LLM evolution roadmap
+
+For a **phased implementation plan** covering LLM **performance**, **quality**, **versatility**, and **economy** (instrumentation, context policy and caching, RAG presets and citations, modular prompts, purpose-based model routing, continuous QA), see **[docs/LLM_IMPLEMENTATION_ROADMAP.md](docs/LLM_IMPLEMENTATION_ROADMAP.md)**.
+
+Per-turn telemetry fields and the golden prompt fixture are documented in **[docs/LLM_TELEMETRY_SCHEMA.md](docs/LLM_TELEMETRY_SCHEMA.md)**; aggregate saved events with `scripts/llm_telemetry_aggregate.py`.
+
+### Practice loop: two complementary models
+
+- **`PracticeLoopSessionState`** (`studyplan/practice_loop_controller.py`) — dataclass holding cognitive state, session, learner profile, and current item/result for the live tutor/practice path.
+- **`PracticeLoopFsmState` + `PracticeLoopFSM`** (`studyplan/practice_loop_fsm.py`) — explicit quiz lifecycle states (`idle`, `presenting`, `assessing`, …) and a transition table. Covered by `studyplan/testing/test_practice_loop_fsm.py`; **not** wired into the GTK app today. Runtime step transitions in the app go through **`SocraticFSM`** via `PracticeLoopController.advance_state`.
+- **`recommend_action_policy`** in the same FSM module *is* used by the controller for next-step hints.
+
 ## Data and paths (one-page reference)
 
 - **Config home**: All app and user data live under one directory. Default: `~/.config/studyplan`. Override with `STUDYPLAN_CONFIG_HOME`.
@@ -119,8 +131,8 @@ The UI stays responsive and defers planning/scoring logic to the engine.
 - **Clean caches:** From repo root, `bash scripts/clean.sh` removes `__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`, `build`, `dist` (keeps `.venv` intact). Use `bash scripts/clean.sh --dest` to also clean the install path (default `/opt/studyplan-app`; override with `STUDYPLAN_DEST` or `--dest /path`). Cleaning `/opt` may require `sudo`.
 - **Action wiring is declarative**: GTK window actions are registered via `studyplan/app/action_registry.py`.
 - Add new menu/window actions by editing the registry first, then adding handlers on `StudyPlanGUI`.
-- Startup should not crash on missing handlers during refactors; missing bindings are tracked in
-  `StudyPlanGUI._missing_ui_action_bindings`.
+- Startup should not crash on missing handlers during refactors; missing bindings are stored in
+  `StudyPlanGUI._missing_ui_action_bindings` and logged at **WARNING** on startup (check the log if a menu action does nothing).
 - **Migration rule**: new feature logic should land in `studyplan/` modules first, then be called
   from `studyplan_app.py` adapters.
 
