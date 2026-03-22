@@ -2598,7 +2598,8 @@ class StudyPlanEngine:
     def apply_question_quality_quarantine(self) -> None:
         """
         Scan the question bank and quarantine poor-quality questions in meta.
-        Targets: options containing 'see explanation' (any wording), and similar/duplicate questions.
+        Targets: options containing 'see explanation' (any wording), similar/duplicate questions,
+        and MCQs where the correct option is far longer or shorter than distractors (length guessing).
         Quarantined indices are excluded from quizzes via get_quarantined_question_indices.
         """
         meta = self._load_question_quality_meta()

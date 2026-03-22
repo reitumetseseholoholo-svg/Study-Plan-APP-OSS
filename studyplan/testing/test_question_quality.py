@@ -10,6 +10,7 @@ import pytest
 from studyplan.question_quality import (
     QuestionQuality,
     QuestionBankEvaluator,
+    correct_option_length_guessable_reason,
     option_looks_like_see_explanation,
     get_poor_quality_indices,
 )
@@ -126,6 +127,59 @@ def test_get_poor_quality_indices_similar():
     poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, similar_min_words=5)
     assert len(poor) == 1
     assert poor[0][0] == 1 and poor[0][1] == "similar_question"
+
+
+def test_correct_option_length_guessable_long():
+    d1 = "Distractor one text here"
+    d2 = "Distractor two text here"
+    d3 = "Distractor three text here"
+    long_correct = "X" * 90
+    item = {
+        "question": "Which statement best describes the treatment of deferred tax?",
+        "options": [d1, d2, d3, long_correct],
+        "correct": long_correct,
+        "explanation": "Because standards say so.",
+    }
+    assert correct_option_length_guessable_reason(item) == "correct_option_much_longer_than_distractors"
+
+
+def test_correct_option_length_guessable_short():
+    long_d = "A detailed narrative option that runs to many characters for plausibility."
+    item = {
+        "question": "Which is the right classification?",
+        "options": [long_d, long_d.replace("A ", "B "), long_d.replace("A ", "C "), "Yes"],
+        "correct": "Yes",
+        "explanation": "Yes is correct.",
+    }
+    assert correct_option_length_guessable_reason(item) == "correct_option_much_shorter_than_distractors"
+
+
+def test_get_poor_quality_indices_length_guessable():
+    d1 = "Distractor one text here"
+    d2 = "Distractor two text here"
+    d3 = "Distractor three text here"
+    long_correct = "X" * 90
+    items = [
+        {"question": "Q1?", "options": ["a", "b", "c", "d"], "correct": "a", "explanation": "ok"},
+        {
+            "question": "Q2?",
+            "options": [d1, d2, d3, long_correct],
+            "correct": "D",
+            "explanation": "ok",
+        },
+    ]
+    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False)
+    assert poor == [(1, "correct_option_much_longer_than_distractors")]
+
+
+def test_length_guessable_not_flagged_when_balanced():
+    item = {
+        "question": "What is 2+2?",
+        "options": ["Three or so", "About four", "Roughly five", "Near six"],
+        "correct": "About four",
+        "explanation": "Arithmetic.",
+    }
+    assert correct_option_length_guessable_reason(item) is None
 
 
 if __name__ == "__main__":

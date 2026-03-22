@@ -13,6 +13,13 @@ from __future__ import annotations
 
 import os
 
+from studyplan.question_quality import (
+    MCQ_GAP_LONG_OUTLIER_VS_DISTRACTOR_MEAN,
+    MCQ_GAP_MIN_AVG_DISTRACTOR_CHARS_LONG_RULE,
+    MCQ_GAP_MIN_AVG_DISTRACTOR_CHARS_SHORT_RULE,
+    MCQ_GAP_SHORT_OUTLIER_VS_DISTRACTOR_MEAN,
+)
+
 # --- Economy: single source for common phrases (no duplication across actions) ---
 
 # Grammar and style: require correct English in all user-facing text (tutor, generated questions, feedback).
@@ -34,7 +41,13 @@ SYLLABUS_JSON_ONLY = "Return valid JSON only, no markdown or explanation."
 
 # --- Schema one-liners (economy: single source for generation prompts) ---
 
-GAP_SCHEMA_ONE_LINE = '{"chapter":"chapter","questions":[{"question":"stem with command verb","options":["A","B","C","D"],"correct":"A","explanation":"short why"}]}'
+GAP_SCHEMA_ONE_LINE = (
+    '{"chapter":"<exact chapter title from payload>","questions":['
+    '{"question":"exam-style stem with command verb (Calculate/Evaluate/…)",'
+    '"options":["Full text option A","Full text B","Full text C","Full text D"],'
+    '"correct":"Full text B" or "B",'
+    '"explanation":"brief syllabus-grounded rationale"}]}'
+)
 SECTION_C_SCHEMA_ONE_LINE = (
     '{"chapter":"...","scenario":"Full case narrative (company, situation, numbers). 150-400 words. No placeholders.",'
     '"requirements":[{"part":"a","requirement_text":"Requirement with command verb (e.g. Calculate, Evaluate, Recommend).","marks":8},'
@@ -90,24 +103,31 @@ COACH_RULES = [
 ]
 
 # Gap generation: role + rules; app may add extra_rules (syllabus_scope).
-# Exam-standard: exactly 4 options (one correct + three plausible distractors), structural parity, command verbs.
+# JSON shape and length-balance contract match strict gap validation + bank quarantine (question_quality).
 GAP_GENERATION_ROLE_BASE = (
-    "Generate ACCA exam-type multiple choice questions (MCQs) as "
+    "You are an ACCA examiner–style MCQ author. "
     + JSON_ONLY_NO_PROSE
     + " "
     + JSON_ONLY_NO_MARKDOWN
-    + " Each question must be ACCA exam-style: single best answer, exactly 4 options (A–D), exam-style question stem, plausible distractors as in real ACCA papers. Syllabus-aligned only. All 4 options must be structurally identical in length and complexity (exam-standard gap generation)."
+    + " Single best answer, four substantive options, professional English, strictly syllabus-aligned."
 )
 GAP_GENERATION_RULES = [
-    "Output: one JSON object with \"chapter\" (string) and \"questions\" (array of question objects), or a bare JSON array of question objects. No markdown code block, no text before or after the JSON.",
-    "Question stems: use command verbs (Calculate, Evaluate, Recommend, Explain, Discuss, Compare). Clear, professional level, one correct answer. No trick questions or placeholders.",
-    "Exactly 4 options per question (A, B, C, D): one correct (syllabus outcome–based), three plausible distractors from common misconceptions. Never output 3 options; always 4.",
-    "Structural parity: all 4 options must have the same length and complexity; no option may be the obvious 'longest and most detailed' correct answer. Prevents guessing by structure; tests understanding.",
-    "correct must match one option exactly (A, B, C, or D).",
-    "Keep explanations concise, syllabus-based, and unambiguous. Include explicit mark allocation in the stem when appropriate (e.g. 2 marks).",
-    "Distractors must be based on real common misconceptions within the syllabus scope; avoid arbitrary wrong answers.",
-    "Quality: prefer fewer high-quality questions (4 options each, structural parity) over more uneven ones. Avoid duplicate questions.",
-    "Grammar: all question stems, options, and explanations must be in correct English with no grammatical or spelling errors.",
+    "Output: one JSON object with \"chapter\" (string) and \"questions\" (array), or a bare JSON array of question objects. No markdown fence, no commentary outside JSON.",
+    "Schema: each question object has \"question\" (string), \"options\" (array of exactly four strings — full option text, not placeholders), \"correct\" (exact copy of the winning option string, or the letter \"A\"|\"B\"|\"C\"|\"D\"), and \"explanation\" (string).",
+    "Stems: ACCA-style command verbs (Calculate, Evaluate, Recommend, Explain, Discuss, Compare, Assess, Advise). One unambiguous best answer; no trick wording; include marks in the stem when appropriate (e.g. (2 marks)).",
+    "Options: four parallel, plausible distractors rooted in typical syllabus misconceptions — not nonsense or filler. Do not use \"See explanation\", \"All of the above\", or placeholder labels as option bodies.",
+    (
+        "Length-balance contract (same checks as the app’s strict auto-save gate and bank quarantine): "
+        f"once the three incorrect options average ≥{MCQ_GAP_MIN_AVG_DISTRACTOR_CHARS_LONG_RULE} characters, "
+        f"the correct option must not be ≥{MCQ_GAP_LONG_OUTLIER_VS_DISTRACTOR_MEAN}× that average length "
+        "(avoid the obvious “longest answer is correct” leak). "
+        f"When those three average ≥{MCQ_GAP_MIN_AVG_DISTRACTOR_CHARS_SHORT_RULE} characters, "
+        f"the correct option must not be ≤{MCQ_GAP_SHORT_OUTLIER_VS_DISTRACTOR_MEAN}× that average "
+        "(avoid the extreme short outlier). Aim for similar word counts and grammatical shape across A–D."
+    ),
+    "Structural parity: similar sentence length, clause count, and technical depth across all four options so candidates must use knowledge, not layout heuristics.",
+    "Quality over quantity: fewer flawless items beat many uneven ones. Avoid duplicating stems the model already emitted in this response.",
+    GRAMMAR_QUALITY_RULE,
 ]
 
 # Section C generation: role + rules; app may add extra_rules (syllabus_scope).

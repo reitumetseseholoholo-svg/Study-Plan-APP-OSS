@@ -168,7 +168,7 @@ from studyplan.lifecycle import ShutdownBarrier
 from studyplan.ui import UIBuilder
 from studyplan.dialog_ux import DisclosureLevel, TutorDialogRenderer
 from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopSessionState
-from studyplan.question_quality import assess_question_quality_extended
+from studyplan.question_quality import assess_question_quality_extended, correct_option_length_guessable_reason
 
 
 import datetime
@@ -21890,6 +21890,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 question = str(clean_row.get("question", "") or "").strip()
                 norm_options = [str(opt or "").strip() for opt in list(clean_row.get("options", []) or [])]
                 correct = str(clean_row.get("correct", "") or "").strip()
+            if strict_enabled:
+                length_row = {
+                    "question": question,
+                    "options": norm_options,
+                    "correct": correct,
+                    "explanation": str(clean_row.get("explanation", "") or "").strip(),
+                }
+                length_reason = correct_option_length_guessable_reason(length_row)
+                if length_reason:
+                    reasons.append(str(length_reason))
+                    continue
             fingerprint = _cache_sha1(
                 json.dumps(
                     {
