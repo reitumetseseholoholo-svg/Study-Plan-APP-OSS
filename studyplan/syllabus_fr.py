@@ -99,6 +99,29 @@ def _clean(line: str) -> str:
     return re.sub(r"\s+", " ", line).strip()
 
 
+def fr_outcome_optional_metadata(text: str) -> dict[str, str]:
+    """Infer optional type and standard from FR outcome wording (for syllabus_structure tagging)."""
+    meta: dict[str, str] = {}
+    low = (text or "").lower()
+    if re.search(r"\b(prepare|draft)\b", low):
+        meta["type"] = "preparation"
+    elif re.search(r"\b(present)\b", low) and (
+        "financial statement" in low or "in accordance" in low or "ias 1" in low or "ifrs" in low
+    ):
+        meta["type"] = "preparation"
+    elif re.search(r"\b(calculate|compute|derive|measure)\b", low):
+        meta["type"] = "calculate"
+    elif re.search(
+        r"\b(explain|describe|discuss|outline|identify|define|compare|evaluate|assess)\b", low
+    ):
+        meta["type"] = "explain"
+    m = re.search(r"\b(IAS\s+\d+[A-Za-z]?|IFRS\s+\d+[A-Za-z]?)\b", text or "", re.IGNORECASE)
+    if m:
+        std = re.sub(r"\s+", " ", m.group(1).strip())
+        meta["standard"] = std.upper()
+    return meta
+
+
 def _map_outcome_to_chapter(section_id: str, letter: str, section: str) -> str | None:
     letter_low = letter.lower()
     if section == "B" and section_id == "B7" and letter_low in B7_EVENTS_AFTER_LETTERS:
@@ -112,7 +135,7 @@ def _map_outcome_to_chapter(section_id: str, letter: str, section: str) -> str |
 
 def parse_syllabus_text(text: str) -> list[dict[str, Any]]:
     """
-    Parse FR syllabus text and return list of {id, text, level, chapter}.
+    Parse FR syllabus text and return list of {id, text, level, chapter} plus optional {type, standard}.
 
     Tracks section (A–E), subsection number (1–12), and lettered outcomes a), b) ...
     with .[1] or .[2] or .[3] intellectual level. Works for both S25–J26 and S26–J27
@@ -138,7 +161,14 @@ def parse_syllabus_text(text: str) -> list[dict[str, Any]]:
         level = outcome_level if outcome_level in (1, 2, 3) else 2
         chapter = _map_outcome_to_chapter(section_id, outcome_letter, current_section)
         if chapter:
-            outcomes.append({"id": outcome_id, "text": text_str[:500], "level": level, "chapter": chapter})
+            row: dict[str, Any] = {
+                "id": outcome_id,
+                "text": text_str[:500],
+                "level": level,
+                "chapter": chapter,
+            }
+            row.update(fr_outcome_optional_metadata(text_str))
+            outcomes.append(row)
         outcome_text_parts = []
         outcome_level = None
         outcome_letter = ""

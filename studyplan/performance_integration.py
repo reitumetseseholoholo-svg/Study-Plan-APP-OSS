@@ -9,6 +9,7 @@ studyplan application.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Callable, Dict, Optional, TypeVar, cast
 
@@ -40,10 +41,16 @@ class PerformanceIntegration:
         try:
             # Initialize cache service
             if Config.PERFORMANCE_CACHE_ENABLED:
+                try:
+                    rag_cap = int(str(os.environ.get("STUDYPLAN_RAG_MEMORY_DOC_CAP", "") or "32").strip() or "32")
+                except ValueError:
+                    rag_cap = 32
+                rag_cap = max(0, min(512, rag_cap))
                 cache_config = {
                     'cache_max_size': Config.PERFORMANCE_CACHE_MAX_SIZE,
                     'default_ttl_seconds': Config.PERFORMANCE_CACHE_DEFAULT_TTL_SECONDS,
-                    'cache_ttl': Config.PERFORMANCE_CACHE_TTL_CONFIG
+                    'cache_ttl': Config.PERFORMANCE_CACHE_TTL_CONFIG,
+                    'rag_doc_memory_max': rag_cap,
                 }
                 self._cache_service = create_performance_cache_service(cache_config)
                 logger.info("Performance cache service initialized")

@@ -10,7 +10,11 @@ from studyplan.module_reconfig.reconfig import (
     _derive_chapters_from_rag_text,
     _extract_syllabus_meta,
     _stable_outcome_id,
+    analyze_outcome_count_regressions,
     compute_reconfig_confidence,
+    load_reconfig_checkpoint,
+    reconfig_outcome_totals_and_changed_chapters,
+    reconfig_run_fingerprint,
     reconfigure_from_rag,
     retrieve_from_chunks_by_path,
     validate_syllabus_structure,
@@ -66,6 +70,63 @@ def test_retrieve_from_chunks_by_path_syllabus_boost() -> None:
         syllabus_paths=[syllabus_path],
     )
     assert "syllabus" in out
+
+
+def test_analyze_outcome_count_regressions_severe() -> None:
+    orig = {
+        "syllabus_structure": {
+            "A": {"learning_outcomes": [{"id": str(i), "text": f"outcome {i}"} for i in range(10)]},
+        },
+    }
+    prop = {
+        "syllabus_structure": {
+            "A": {"learning_outcomes": [{"id": str(i), "text": f"outcome {i}"} for i in range(4)]},
+        },
+    }
+    severe, warns = analyze_outcome_count_regressions(orig, prop, severe_ratio=0.3, warn_ratio=0.2)
+    assert severe
+    assert severe[0]["chapter"] == "A"
+    assert not warns or all(x["chapter"] != "A" for x in warns)
+
+
+def test_analyze_outcome_count_regressions_warn_only() -> None:
+    orig = {
+        "syllabus_structure": {
+            "B": {"learning_outcomes": [{"id": str(i), "text": f"o{i}"} for i in range(10)]},
+        },
+    }
+    prop = {
+        "syllabus_structure": {
+            "B": {"learning_outcomes": [{"id": str(i), "text": f"o{i}"} for i in range(8)]},
+        },
+    }
+    severe, warns = analyze_outcome_count_regressions(orig, prop, severe_ratio=0.3, warn_ratio=0.2)
+    assert not severe
+    assert warns
+
+
+def test_reconfig_outcome_totals_and_changed_chapters() -> None:
+    o = {"syllabus_structure": {"A": {"learning_outcomes": [{"id": "1", "text": "a"}]}, "B": {"learning_outcomes": []}}}
+    p = {"syllabus_structure": {"A": {"learning_outcomes": [{"id": "1", "text": "a"}, {"id": "2", "text": "b"}]}, "B": {"learning_outcomes": []}}}
+    old_t, new_t, chg = reconfig_outcome_totals_and_changed_chapters(o, p)
+    assert old_t == 1 and new_t == 2 and chg == 1
+
+
+def test_reconfig_run_fingerprint_stable() -> None:
+    cfg = {"chapters": ["X", "Y"]}
+    fp1 = reconfig_run_fingerprint(cfg, ["/a.pdf", "/b.pdf"], fast_mode=True, target_chapters_only=True)
+    fp2 = reconfig_run_fingerprint(cfg, ["/b.pdf", "/a.pdf"], fast_mode=True, target_chapters_only=True)
+    assert fp1 == fp2
+
+
+def test_load_reconfig_checkpoint_roundtrip(tmp_path) -> None:
+    from studyplan.module_reconfig.reconfig import _write_reconfig_checkpoint_file
+
+    p = tmp_path / "ck.json"
+    payload = {"version": 1, "next_batch_start": 5, "by_chapter": {"C": [{"id": "c1", "text": "t", "level": 2}]}}
+    _write_reconfig_checkpoint_file(str(p), payload)
+    loaded = load_reconfig_checkpoint(str(p))
+    assert loaded and loaded.get("next_batch_start") == 5
 
 
 def test_compute_reconfig_confidence_alignment() -> None:

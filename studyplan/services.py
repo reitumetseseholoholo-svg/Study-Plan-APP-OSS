@@ -678,7 +678,18 @@ class LlamaCppTutorService:
         rt = self.managed_runtime
         if rt is None:
             return
-        if self._runtime_init_done and self._coerce_text(self.endpoint):
+        endpoint_ok = self._coerce_text(self.endpoint)
+        if self._runtime_init_done and endpoint_ok:
+            server = getattr(rt, "server", None)
+            managed_ep = ""
+            if server is not None:
+                managed_ep = self._coerce_text(getattr(server, "endpoint", ""))
+            if managed_ep and endpoint_ok.rstrip("/") == managed_ep.rstrip("/"):
+                if not bool(getattr(server, "is_running", False)):
+                    self._runtime_init_done = False
+            else:
+                return
+        if self._runtime_init_done and endpoint_ok:
             return
         try:
             status = rt.ensure_ready(purpose)
@@ -800,6 +811,11 @@ class LlamaCppTutorService:
             telemetry["model_source"] = self._coerce_text(candidate_sources.get(candidate), "unknown")
             for attempt_idx in range(attempts):
                 ok, text, error_code, meta = self._invoke_once(normalized)
+                if self.managed_runtime is not None:
+                    try:
+                        self.managed_runtime.mark_server_used()
+                    except Exception:
+                        pass
                 telemetry["retry_count"] = int(retries_used)
                 if isinstance(meta, dict):
                     telemetry.update(meta)

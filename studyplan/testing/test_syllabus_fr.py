@@ -9,6 +9,7 @@ from studyplan.syllabus_fr import (
     build_syllabus_structure,
     extract_capabilities_from_text,
     extract_subtopics_from_section_4,
+    fr_outcome_optional_metadata,
     is_fr_syllabus_text,
     parse_syllabus_text,
 )
@@ -69,6 +70,21 @@ c) Account for the effects of acquisition and disposal of subsidiaries.[2]
 
 6. Summary of changes to Financial Reporting (FR)
 """
+
+
+def test_fr_outcome_optional_metadata_type_and_standard() -> None:
+    prep = fr_outcome_optional_metadata("Prepare a consolidated statement of financial position.[2]")
+    assert prep.get("type") == "preparation"
+    explain = fr_outcome_optional_metadata("Explain and apply IAS 16 depreciation.[2]")
+    assert explain.get("type") == "explain"
+    assert explain.get("standard") == "IAS 16"
+
+
+def test_parse_syllabus_text_tags_prepare_outcomes() -> None:
+    rows = parse_syllabus_text(SAMPLE_FR_DETAILED_GUIDE)
+    prep_rows = [r for r in rows if r.get("type") == "preparation"]
+    assert prep_rows, "expected at least one preparation-tagged outcome from sample guide"
+    assert any("Prepare" in str(r.get("text", "")) for r in prep_rows)
 
 
 def test_is_fr_syllabus_text_accepts_fr_syllabus() -> None:

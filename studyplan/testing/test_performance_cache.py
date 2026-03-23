@@ -74,6 +74,7 @@ class TestPerformanceCacheService:
         assert cache_service.ttl_config['cognitive_state'] == 300
         assert cache_service.ttl_config['hint_strategy'] == 600
         assert cache_service.ttl_config['ui_render'] == 30
+        assert getattr(cache_service, "rag_doc_memory_max", 0) == 32
         assert len(cache_service._cache) == 0
         assert len(cache_service._access_order) == 0
     
@@ -438,3 +439,16 @@ class TestPerformanceCacheServiceEdgeCases:
         stats = cache_service.get_stats()
         assert stats['size'] <= 10
         assert cache_service.get("large_14") == large_value
+
+    def test_rag_doc_memory_max_evicts_oldest_rag_entries(self):
+        """rag_doc:* keys are capped separately so huge PDF chunk lists cannot fill the whole cache."""
+        config = {"cache_max_size": 200, "default_ttl_seconds": 300, "rag_doc_memory_max": 2}
+        svc = PerformanceCacheService(config)
+        svc.set("rag_doc:1", {"k": 1})
+        svc.set("rag_doc:2", {"k": 2})
+        svc.set("rag_doc:3", {"k": 3})
+        rag_keys = [k for k in svc._cache if k.startswith("rag_doc:")]
+        assert len(rag_keys) == 2
+        assert svc.get("rag_doc:1") is None
+        assert svc.get("rag_doc:2") is not None
+        assert svc.get("rag_doc:3") is not None

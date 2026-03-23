@@ -34,6 +34,7 @@ from studyplan.syllabus_fr import (
     build_syllabus_structure as fr_build_syllabus_structure,
     extract_capabilities_from_text as fr_extract_capabilities,
     extract_subtopics_from_section_4 as fr_extract_subtopics_from_section_4,
+    fr_outcome_optional_metadata,
     F7_CHAPTERS as FR_F7_CHAPTERS,
 )
 from studyplan.syllabus_f7 import get_f7_syllabus_structure
@@ -393,7 +394,9 @@ class StudyPlanEngine:
                         if not outcome_id:
                             capability = str(info.get("capability", "") or "").strip().upper() or "X"
                             outcome_id = f"{capability}.{idx + 1}"
-                        cleaned_outcomes.append({"id": outcome_id, "text": text, "level": level_int})
+                        row = {"id": outcome_id, "text": text, "level": level_int}
+                        row.update(self._coerce_learning_outcome_optional_fields(item))
+                        cleaned_outcomes.append(row)
                 info["learning_outcomes"] = cleaned_outcomes
                 mix = info.get("intellectual_level_mix")
                 if not isinstance(mix, dict):
@@ -413,6 +416,8 @@ class StudyPlanEngine:
                 normalized[key] = info
             self.syllabus_structure = normalized
             syllabus_structure_updated = True
+            if (self.module_id or "").strip().lower() == "acca_f7":
+                self._enrich_fr_outcome_optional_metadata_in_place()
             # Reconcile outcome_stats to current outcome ids (syllabus ingest Phase 3).
             self.outcome_stats = self._reconcile_outcome_stats_to_syllabus(
                 getattr(self, "outcome_stats", {}) or {}
@@ -464,6 +469,61 @@ class StudyPlanEngine:
             self.outcome_cluster_meta = oc_meta
             self.outcome_clusters = oc_clusters
             self.outcome_cluster_edges = oc_edges
+        self._invalidate_outcome_coverage_counts_cache()
+
+    def _invalidate_outcome_coverage_counts_cache(self) -> None:
+        """Drop session cache for get_outcome_coverage_counts (questions or syllabus changed)."""
+        self._outcome_coverage_counts_cache = None
+        self._outcome_coverage_counts_sig = None
+
+    def _outcome_coverage_counts_fingerprint(self) -> str:
+        """Cheap structural fingerprint: if unchanged, cached coverage counts stay valid."""
+        h = hashlib.sha256()
+        h.update(str(getattr(self, "module_id", "") or "").encode("utf-8", errors="replace"))
+        h.update(b"\0")
+        h.update(b"1" if bool(getattr(self, "semantic_enabled", True)) else b"0")
+        chs = tuple(getattr(self, "CHAPTERS", []) or [])
+        h.update(repr(chs).encode("utf-8", errors="replace"))
+        qd = getattr(self, "QUESTIONS", {}) or {}
+        for ch in chs:
+            rows = qd.get(ch)
+            h.update(str(ch).encode("utf-8", errors="replace"))
+            h.update(b"\0")
+            if not isinstance(rows, list):
+                h.update(b"0\0")
+                continue
+            h.update(str(len(rows)).encode())
+            h.update(b"\0")
+            for row in rows:
+                if isinstance(row, dict):
+                    snippet = json.dumps(
+                        {
+                            "q": row.get("question"),
+                            "oid": row.get("outcome_ids"),
+                            "ot": row.get("outcomes"),
+                            "cap": row.get("capability"),
+                            "olc": row.get("outcome_link_confidence"),
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    h.update(snippet.encode("utf-8", errors="replace"))
+                h.update(b"|")
+        struct = getattr(self, "syllabus_structure", {}) or {}
+        if isinstance(struct, dict):
+            syn: List[Any] = []
+            for ck in sorted(struct.keys()):
+                info = struct.get(ck)
+                los = (info or {}).get("learning_outcomes") if isinstance(info, dict) else []
+                ids: List[str] = []
+                if isinstance(los, list):
+                    for o in los:
+                        if isinstance(o, dict) and o.get("id"):
+                            ids.append(str(o.get("id")))
+                syn.append([ck, ids])
+            h.update(json.dumps(syn, separators=(",", ":")).encode("utf-8", errors="replace"))
+        return h.hexdigest()
 
     def _chapter_semantic_alias_map(self, chapter: str) -> dict[str, str]:
         """Return merged semantic alias map. When the module defines semantic_aliases (e.g. F7), use only
@@ -1571,6 +1631,44 @@ class StudyPlanEngine:
             return ""
         return re.sub(r"\s+", " ", text.strip().lower())
 
+    @staticmethod
+    def _coerce_learning_outcome_optional_fields(item: Dict[str, Any]) -> Dict[str, str]:
+        """Validate optional syllabus outcome metadata (type, standard) from module JSON."""
+        out: Dict[str, str] = {}
+        if not isinstance(item, dict):
+            return out
+        ot = str(item.get("type", "") or "").strip().lower()
+        if ot in ("preparation", "explain", "calculate"):
+            out["type"] = ot
+        std = str(item.get("standard", "") or "").strip()
+        if std:
+            std_clean = std[:64]
+            if std_clean:
+                out["standard"] = std_clean
+        return out
+
+    def _enrich_fr_outcome_optional_metadata_in_place(self) -> None:
+        """Infer missing type/standard from outcome text for FR (F7); preserves explicit JSON values."""
+        structure = getattr(self, "syllabus_structure", None)
+        if not isinstance(structure, dict):
+            return
+        for info in structure.values():
+            if not isinstance(info, dict):
+                continue
+            los = info.get("learning_outcomes")
+            if not isinstance(los, list):
+                continue
+            for o in los:
+                if not isinstance(o, dict):
+                    continue
+                text = str(o.get("text", "") or "")
+                inferred = fr_outcome_optional_metadata(text)
+                if not inferred:
+                    continue
+                for k, v in inferred.items():
+                    if not str(o.get(k, "") or "").strip():
+                        o[k] = v
+
     def _merge_learning_outcomes(
         self,
         existing_outcomes: List[Dict[str, Any]],
@@ -1593,7 +1691,8 @@ class StudyPlanEngine:
             except (TypeError, ValueError):
                 level = 2
             level = max(1, min(3, level))
-            merged.append({"id": oid or f"_gen_{len(merged)}", "text": text, "level": level})
+            extras = self._coerce_learning_outcome_optional_fields(o)
+            merged.append({"id": oid or f"_gen_{len(merged)}", "text": text, "level": level, **extras})
             if oid:
                 existing_ids.add(oid)
             tnorm = self._normalize_outcome_text(text)
@@ -1617,7 +1716,9 @@ class StudyPlanEngine:
             if oid and oid in existing_ids:
                 for i, o in enumerate(merged):
                     if str(o.get("id", "") or "").strip() == oid:
-                        merged[i] = {"id": oid, "text": text, "level": level}
+                        old_ex = self._coerce_learning_outcome_optional_fields(o)
+                        new_ex = self._coerce_learning_outcome_optional_fields(new_o)
+                        merged[i] = {"id": oid, "text": text, "level": level, **{**old_ex, **new_ex}}
                         if tnorm:
                             existing_text_to_idx[tnorm] = i
                         break
@@ -1627,7 +1728,9 @@ class StudyPlanEngine:
             new_id = oid if oid and oid not in existing_ids else f"_gen_{len(merged)}"
             existing_ids.add(new_id)
             existing_text_to_idx[tnorm] = len(merged)
-            merged.append({"id": new_id, "text": text, "level": level})
+            merged.append(
+                {"id": new_id, "text": text, "level": level, **self._coerce_learning_outcome_optional_fields(new_o)}
+            )
         return merged
 
     def _build_importance_weights_from_syllabus(self, syllabus_structure: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
@@ -2556,14 +2659,30 @@ class StudyPlanEngine:
     def _load_question_quality_meta(self) -> Dict[str, Dict[str, Any]]:
         """Lazy-load quality meta; keys are chapter, then question_index str -> {quarantine, error_streak, last_used_iso}."""
         path = self._question_quality_meta_path()
+        try:
+            mtime = os.path.getmtime(path) if os.path.isfile(path) else None
+        except OSError:
+            mtime = None
+        snap = getattr(self, "_question_quality_meta_cache", None)
+        snap_mtime = getattr(self, "_question_quality_meta_mtime", None)
+        if isinstance(snap, dict) and mtime is not None and snap_mtime is not None and mtime == snap_mtime:
+            return copy.deepcopy(snap)
         if not os.path.isfile(path):
+            self._question_quality_meta_cache = {}
+            self._question_quality_meta_mtime = None
             return {}
         try:
             with open(path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
-            return dict(raw) if isinstance(raw, dict) else {}
+            data = dict(raw) if isinstance(raw, dict) else {}
         except Exception:
-            return {}
+            data = {}
+        try:
+            self._question_quality_meta_mtime = os.path.getmtime(path) if os.path.isfile(path) else None
+        except OSError:
+            self._question_quality_meta_mtime = None
+        self._question_quality_meta_cache = copy.deepcopy(data)
+        return copy.deepcopy(data)
 
     def _save_question_quality_meta(self, meta: Dict[str, Dict[str, Any]]) -> None:
         path = self._question_quality_meta_path()
@@ -2577,6 +2696,11 @@ class StudyPlanEngine:
                 json.dump(meta, f, indent=0, ensure_ascii=True, sort_keys=True)
         except Exception:
             pass
+        try:
+            self._question_quality_meta_mtime = os.path.getmtime(path) if os.path.isfile(path) else None
+        except OSError:
+            self._question_quality_meta_mtime = None
+        self._question_quality_meta_cache = copy.deepcopy(meta)
 
     def get_quarantined_question_indices(self, chapter: str) -> Set[int]:
         """Return set of question indices for this chapter that are quarantined (poor quality / repeated errors)."""
@@ -2948,6 +3072,9 @@ class StudyPlanEngine:
             "interval_model",
             "_last_loaded_module_config_path",  # None when no module config file found (e.g. installed app, new module)
             "_cached_total_question_count",  # None until get_total_question_count() is called
+            # Cache fields intentionally start as None until first calculation.
+            "_outcome_coverage_counts_cache",
+            "_outcome_coverage_counts_sig",
             "_load_error",  # Set when load_data() fails; None when load succeeded
         }  # Add any vars that can be None
         for key, value in self.__dict__.items():
@@ -4072,19 +4199,21 @@ class StudyPlanEngine:
             if not text:
                 continue
             short_text = text[:80] + "…" if len(text) > 80 else text
+            prep = self._outcome_is_preparation_focus(chapter, outcome_id)
+            pfx = "[prep] " if prep else ""
             suggestions.append({
                 "outcome_id": outcome_id,
-                "label": f"Explain {outcome_id}",
+                "label": f"{pfx}Explain {outcome_id}",
                 "prompt": f"Explain this learning outcome in simple, exam-focused terms: {short_text}",
             })
             suggestions.append({
                 "outcome_id": outcome_id,
-                "label": f"Pitfalls {outcome_id}",
+                "label": f"{pfx}Pitfalls {outcome_id}",
                 "prompt": f"What are the main exam pitfalls for this outcome and how do I avoid them? Outcome: {short_text}",
             })
             suggestions.append({
                 "outcome_id": outcome_id,
-                "label": f"Drill {outcome_id}",
+                "label": f"{pfx}Drill {outcome_id}",
                 "prompt": f"Give me 3–5 short practice questions with answers for this outcome: {short_text}",
             })
         return suggestions
@@ -5796,6 +5925,11 @@ class StudyPlanEngine:
         syllabus outcome count, and how many syllabus outcomes have ≥1 linked question (syllabus ingest Phase 3).
         Used by Module → View Module Metadata and outcome-linking improvement.
         """
+        sig = self._outcome_coverage_counts_fingerprint()
+        if getattr(self, "_outcome_coverage_counts_sig", None) == sig:
+            cached = getattr(self, "_outcome_coverage_counts_cache", None)
+            if isinstance(cached, dict):
+                return copy.deepcopy(cached)
         total = 0
         with_resolved = 0
         with_explicit = 0
@@ -5832,7 +5966,7 @@ class StudyPlanEngine:
             with_resolved += ch_resolved
             with_explicit += ch_explicit
             by_chapter[ch] = {"total": ch_total, "with_resolved": ch_resolved, "with_explicit": ch_explicit}
-        return {
+        out = {
             "total_questions": total,
             "questions_with_resolved_outcome": with_resolved,
             "questions_with_explicit_outcome_ids": with_explicit,
@@ -5840,6 +5974,9 @@ class StudyPlanEngine:
             "outcomes_with_linked_question": len(outcome_ids_with_linked_question),
             "by_chapter": by_chapter,
         }
+        self._outcome_coverage_counts_cache = copy.deepcopy(out)
+        self._outcome_coverage_counts_sig = sig
+        return out
 
     def _is_outcome_covered(self, stats: Dict[str, Any] | None) -> bool:
         """Return whether an outcome is considered covered."""
@@ -6126,6 +6263,32 @@ class StudyPlanEngine:
         except Exception:
             return False
 
+    def _fr_preparation_outcome_routing_enabled(self) -> bool:
+        """Prefer preparation-style outcomes in interleave routing for FR (F7) only."""
+        return (self.module_id or "").strip().lower() == "acca_f7"
+
+    def _outcome_is_preparation_focus(self, chapter: str, outcome_id: str) -> bool:
+        """True when syllabus marks this outcome as preparation or text starts with Prepare…"""
+        oid = str(outcome_id or "").strip()
+        if not oid:
+            return False
+        structure = getattr(self, "syllabus_structure", {}) or {}
+        if not isinstance(structure, dict):
+            return False
+        info = structure.get(chapter)
+        if not isinstance(info, dict):
+            return False
+        for o in info.get("learning_outcomes") or []:
+            if not isinstance(o, dict):
+                continue
+            if str(o.get("id", "") or "").strip() != oid:
+                continue
+            if str(o.get("type", "") or "").strip().lower() == "preparation":
+                return True
+            low = str(o.get("text", "") or "").strip().lower()
+            return low.startswith("prepare ") or low.startswith("prepare a ") or "prepare the " in low[:48]
+        return False
+
     def _resolve_interleave_target_outcomes(
         self, chapter: str, target_outcome_ids: List[str] | None = None
     ) -> list[str]:
@@ -6168,10 +6331,13 @@ class StudyPlanEngine:
                 except Exception:
                     correct = 0
                 accuracy = 0.0 if attempts <= 0 else (correct / max(1, attempts))
-                ranked_outcomes.append((accuracy, attempts, oid))
-            ranked_outcomes.sort(key=lambda x: (x[0], x[1], outcome_pos.get(x[2], 9999)))
+                prep_rank = 1
+                if self._fr_preparation_outcome_routing_enabled() and self._outcome_is_preparation_focus(chapter, oid):
+                    prep_rank = 0
+                ranked_outcomes.append((accuracy, attempts, prep_rank, oid))
+            ranked_outcomes.sort(key=lambda x: (x[0], x[1], x[2], outcome_pos.get(x[3], 9999)))
             if ranked_outcomes:
-                normalized_targets.append(ranked_outcomes[0][2])
+                normalized_targets.append(ranked_outcomes[0][3])
         if not normalized_targets:
             normalized_targets = [outcome_order[0]]
         return normalized_targets
@@ -7310,6 +7476,7 @@ class StudyPlanEngine:
         # not just QUESTIONS_DEFAULT keys (e.g. F9's 19 when config has no "questions").
         _qkeys = list(self.CHAPTERS) if self.CHAPTERS else (list(self.QUESTIONS_DEFAULT.keys()) if self.QUESTIONS_DEFAULT else [])
         self.QUESTIONS = {k: self.QUESTIONS_DEFAULT.get(k, []) + questions_from_json.get(k, []) for k in _qkeys}
+        self._invalidate_outcome_coverage_counts_cache()
         self._cached_total_question_count_valid = False
         self._semantic_invalidate_chapter_assets(None)
 
@@ -7486,6 +7653,7 @@ class StudyPlanEngine:
         })
         self.QUESTIONS.setdefault(chapter, []).append(dict(question_dict))
         self._cached_total_question_count_valid = False
+        self._invalidate_outcome_coverage_counts_cache()
         self._semantic_invalidate_chapter_assets(chapter)
 
         # Save SRS data
@@ -7509,6 +7677,7 @@ class StudyPlanEngine:
         if not isinstance(q, dict):
             return
         q["outcome_ids"] = [str(x).strip() for x in outcome_ids if str(x).strip()]
+        self._invalidate_outcome_coverage_counts_cache()
         self.save_questions()
         self._semantic_invalidate_chapter_assets(chapter)
 
@@ -8183,6 +8352,7 @@ class StudyPlanEngine:
 
         self.QUESTIONS.setdefault(chapter, []).extend(valid)
         self._cached_total_question_count_valid = False
+        self._invalidate_outcome_coverage_counts_cache()
         self.srs_data.setdefault(chapter, [])
         self.srs_data[chapter].extend(
             [{"last_review": None, "interval": 1, "efactor": 2.5} for _ in valid]
@@ -11961,9 +12131,15 @@ class StudyPlanEngine:
         )
 
     def _load_json_file_with_limit(self, file_path: str, max_bytes: int, label: str) -> Any:
-        self._enforce_file_size_limit(file_path, max_bytes, label)
-        with open(file_path, "r", newline="", encoding="utf-8") as f:
-            return json.load(f)
+        # Centralized JSON safety: corrupt files are quarantined so recovery is possible.
+        from studyplan.json_safety import load_json_file_with_limit as _safe_load_json
+
+        return _safe_load_json(
+            file_path,
+            max_bytes,
+            label,
+            quarantine_corrupt=True,
+        )
 
     def import_data_snapshot(self, file_path: str) -> dict[str, Any]:
         """

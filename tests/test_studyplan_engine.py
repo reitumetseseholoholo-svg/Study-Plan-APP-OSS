@@ -24,6 +24,89 @@ def engine_no_io(monkeypatch):
     return eng
 
 
+def test_acca_f7_load_infers_type_standard_from_outcome_text(engine_no_io):
+    """Bundled FR paths: acca_f7 outcomes get type/standard from wording when missing."""
+    eng = engine_no_io
+    eng.module_id = "acca_f7"
+    eng._apply_module_config(
+        {
+            "title": "FR (F7) Financial Reporting",
+            "chapters": ["Chapter 22: Consolidated Statement of Financial Position"],
+            "syllabus_structure": {
+                "Chapter 22: Consolidated Statement of Financial Position": {
+                    "capability": "D",
+                    "learning_outcomes": [
+                        {
+                            "id": "D2a",
+                            "text": "Prepare a consolidated statement of financial position.[2]",
+                            "level": 2,
+                        },
+                    ],
+                }
+            },
+        }
+    )
+    los = eng.syllabus_structure["Chapter 22: Consolidated Statement of Financial Position"][
+        "learning_outcomes"
+    ]
+    assert los[0].get("type") == "preparation"
+
+
+def test_acca_f7_enrichment_does_not_overwrite_explicit_type(engine_no_io):
+    eng = engine_no_io
+    eng.module_id = "acca_f7"
+    eng._apply_module_config(
+        {
+            "title": "FR",
+            "chapters": ["Ch1"],
+            "syllabus_structure": {
+                "Ch1": {
+                    "capability": "A",
+                    "learning_outcomes": [
+                        {
+                            "id": "x1",
+                            "text": "Prepare a note.[2]",
+                            "level": 2,
+                            "type": "explain",
+                        },
+                    ],
+                }
+            },
+        }
+    )
+    assert eng.syllabus_structure["Ch1"]["learning_outcomes"][0].get("type") == "explain"
+
+
+def test_syllabus_outcome_optional_type_standard_preserved(engine_no_io):
+    """Optional learning_outcome type/standard survive normalization; invalid type is dropped."""
+    eng = engine_no_io
+    eng._apply_module_config(
+        {
+            "title": "T",
+            "chapters": ["Alpha"],
+            "syllabus_structure": {
+                "Alpha": {
+                    "capability": "A",
+                    "learning_outcomes": [
+                        {
+                            "id": "a1",
+                            "text": "Prepare SoFP",
+                            "level": 2,
+                            "type": "preparation",
+                            "standard": "IAS 1",
+                        },
+                        {"id": "a2", "text": "Explain X", "level": 2, "type": "not_a_valid_enum"},
+                    ],
+                }
+            },
+        }
+    )
+    los = eng.syllabus_structure["Alpha"]["learning_outcomes"]
+    assert los[0].get("type") == "preparation"
+    assert los[0].get("standard") == "IAS 1"
+    assert "type" not in los[1]
+
+
 def _make_fm_questions(n: int):
     """Minimal valid question dicts for FM Function (used by engine_with_fm_questions fixture)."""
     return [
@@ -1873,6 +1956,21 @@ def test_syllabus_parser_extracts_outcomes_and_levels(engine_no_io):
     assert 3 in levels
 
 
+def test_get_outcome_tutor_prompt_suggestions_marks_preparation_outcomes(engine_no_io):
+    eng = engine_no_io
+    chapter = "Ch prep"
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "D",
+            "learning_outcomes": [
+                {"id": "D1a", "text": "Prepare the statement of financial position.[2]", "level": 2},
+            ],
+        }
+    }
+    suggestions = eng.get_outcome_tutor_prompt_suggestions(chapter)
+    assert suggestions and all(s["label"].startswith("[prep] ") for s in suggestions)
+
+
 def test_get_outcome_tutor_prompt_suggestions_returns_label_prompt_outcome_id(engine_no_io):
     eng = engine_no_io
     chapter = eng.CHAPTERS[0] if eng.CHAPTERS else "A. Test chapter"
@@ -1893,7 +1991,8 @@ def test_get_outcome_tutor_prompt_suggestions_returns_label_prompt_outcome_id(en
         assert "label" in s
         assert "prompt" in s
         assert s["outcome_id"] in ("A.1", "A.2")
-        assert s["label"].startswith(("Explain ", "Pitfalls ", "Drill "))
+        lab = s["label"]
+        assert "Explain " in lab or "Pitfalls " in lab or "Drill " in lab
     outcome_ids = [s["outcome_id"] for s in suggestions]
     assert "A.1" in outcome_ids
     assert "A.2" in outcome_ids
@@ -2716,6 +2815,47 @@ def test_get_outcome_coverage_counts_mix_explicit_and_resolved(engine_no_io, mon
     assert counts["total_questions"] >= 2
     assert counts["questions_with_explicit_outcome_ids"] >= 1
     assert counts["questions_with_resolved_outcome"] >= 2
+
+
+def test_question_quality_meta_memory_cache_is_deep_copied(engine_no_io, tmp_path, monkeypatch):
+    """Repeated load hits in-process snapshot; callers get a copy and cannot corrupt cache."""
+    eng = engine_no_io
+    path = tmp_path / "question_quality_meta.json"
+    path.write_text('{"Ch1": {"0": {"quarantine": true, "error_streak": 0, "last_used_iso": ""}}}', encoding="utf-8")
+    monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(path))
+    eng._question_quality_meta_cache = None
+    eng._question_quality_meta_mtime = None
+    first = eng._load_question_quality_meta()
+    second = eng._load_question_quality_meta()
+    assert first == second
+    first["Ch1"]["0"]["quarantine"] = False
+    third = eng._load_question_quality_meta()
+    assert third["Ch1"]["0"]["quarantine"] is True
+
+
+def test_get_outcome_coverage_counts_session_cache(engine_no_io, monkeypatch):
+    """Second call with same bank reuses cache (no extra resolve_question_outcomes work)."""
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.QUESTIONS[chapter] = [{"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}]
+    eng.syllabus_structure = {
+        chapter: {"learning_outcomes": [{"id": "o1", "text": "Outcome 1", "level": 1}]},
+    }
+    calls = {"n": 0}
+
+    def _track(ch, idx):
+        calls["n"] += 1
+        return {"outcome_ids": ["o1"]}
+
+    monkeypatch.setattr(eng, "resolve_question_outcomes", _track)
+    eng.get_outcome_coverage_counts()
+    n1 = calls["n"]
+    assert n1 >= 1
+    eng.get_outcome_coverage_counts()
+    assert calls["n"] == n1
+    eng._invalidate_outcome_coverage_counts_cache()
+    eng.get_outcome_coverage_counts()
+    assert calls["n"] > n1
 
 
 def test_import_syllabus_meta_from_json_only_syllabus_meta(engine_no_io):

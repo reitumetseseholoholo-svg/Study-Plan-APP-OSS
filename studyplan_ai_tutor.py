@@ -509,10 +509,66 @@ def _rag_tokens(text: str) -> list[str]:
     return [tok for tok in re.findall(r"[a-z0-9]{2,}", str(text or "").lower()) if tok]
 
 
+# Phrases that suggest tutor is asking about presentation / statements (boost matching PDF chunks for FR).
+_FR_PRESENTATION_RAG_PHRASES: tuple[str, ...] = (
+    "ias 1",
+    "ias 7",
+    "ifrs 18",
+    "statement of financial position",
+    "statement of cash flows",
+    "statement of profit or loss",
+    "statement of profit",
+    "other comprehensive income",
+    "presentation of financial",
+    "notes to the financial",
+    "disclosure",
+    "operating activities",
+    "investing activities",
+    "financing activities",
+    "current assets",
+    "non-current liabilities",
+)
+
+
+def tutor_query_suggests_format_rag_focus(query: str) -> bool:
+    """Heuristic: learner question is about format, layout, or where items appear in financial statements."""
+    q = str(query or "").strip().lower()
+    if not q:
+        return False
+    needles = (
+        "format",
+        "layout",
+        "present ",
+        "presentation",
+        "ias 1",
+        "ias 7",
+        "ifrs 18",
+        "statement of financial",
+        "statement of cash",
+        "sof p",
+        "sofp",
+        "socf",
+        "cash flow",
+        "disclosure",
+        "where does",
+        "where should",
+        "which statement",
+        "which line",
+        "line item",
+        "operating activities",
+        "investing activities",
+        "financing activities",
+        "minimum line",
+    )
+    return any(n in q for n in needles)
+
+
 def lexical_rank_rag_chunks(
     query: str,
     chunks: list[str],
     top_n: int = 40,
+    *,
+    fr_presentation_rag_boost: bool = False,
 ) -> list[tuple[int, float]]:
     if not chunks:
         return []
@@ -543,6 +599,11 @@ def lexical_rank_rag_chunks(
                     phrase_hits += 1
             if phrase_hits:
                 score += min(0.18, 0.03 * float(phrase_hits))
+        if fr_presentation_rag_boost:
+            low = text.lower()
+            hits = sum(1 for phrase in _FR_PRESENTATION_RAG_PHRASES if phrase in low)
+            if hits:
+                score += min(0.14, 0.022 * float(hits))
         if score <= 0:
             continue
         scored.append((idx, float(score)))

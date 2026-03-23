@@ -10,6 +10,7 @@ chunks, batched retrieval, schema-bound extraction.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -23,6 +24,14 @@ LLMGenerate = Callable[[str, int], str]
 
 # Minimum confidence (0..1) to auto-apply reconfig without user review.
 DEFAULT_AUTO_APPLY_CONFIDENCE_THRESHOLD = 0.75
+# Auto-save a disk draft when confidence is in [low, threshold) (manual review still possible).
+DEFAULT_PENDING_RECONFIG_CONFIDENCE_LOW = 0.45
+
+# Chapter-level outcome count drop vs previous config (only chapters with old count > 0).
+DEFAULT_OUTCOME_DROP_SEVERE_RATIO = 0.30
+DEFAULT_OUTCOME_DROP_WARN_RATIO = 0.20
+
+RECONFIG_CHECKPOINT_VERSION = 1
 
 
 def validate_capabilities_and_aliases(config: dict[str, Any]) -> list[str]:
@@ -94,6 +103,134 @@ def validate_module_config(config: dict[str, Any]) -> list[str]:
     """
     errors = validate_syllabus_structure(config) + validate_capabilities_and_aliases(config)
     return errors
+
+
+def chapter_outcome_counts(config: dict[str, Any]) -> dict[str, int]:
+    """Per-chapter count of learning_outcomes in syllabus_structure."""
+    structure = config.get("syllabus_structure") or {}
+    if not isinstance(structure, dict):
+        return {}
+    out: dict[str, int] = {}
+    for ch, info in structure.items():
+        key = str(ch).strip()
+        if not key:
+            continue
+        if not isinstance(info, dict):
+            out[key] = 0
+            continue
+        los = info.get("learning_outcomes")
+        out[key] = len(los) if isinstance(los, list) else 0
+    return out
+
+
+def analyze_outcome_count_regressions(
+    original_config: dict[str, Any],
+    proposed_config: dict[str, Any],
+    *,
+    severe_ratio: float | None = None,
+    warn_ratio: float | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Compare per-chapter outcome counts before/after a proposed reconfig.
+    Returns (severe, warnings) where each entry is
+    {"chapter", "old", "new", "drop_ratio"} for chapters whose count dropped.
+    Severe: drop_ratio >= severe_ratio (default 30%). Warn: >= warn_ratio (default 20%) but not severe.
+    """
+    def _ratio_from_env(key: str, default: float) -> float:
+        raw = os.environ.get(key, "").strip()
+        if not raw:
+            return default
+        try:
+            return max(0.01, min(0.95, float(raw)))
+        except ValueError:
+            return default
+
+    sr = (
+        float(severe_ratio)
+        if severe_ratio is not None
+        else _ratio_from_env("STUDYPLAN_RECONFIG_OUTCOME_DROP_SEVERE", DEFAULT_OUTCOME_DROP_SEVERE_RATIO)
+    )
+    wr = (
+        float(warn_ratio)
+        if warn_ratio is not None
+        else _ratio_from_env("STUDYPLAN_RECONFIG_OUTCOME_DROP_WARN", DEFAULT_OUTCOME_DROP_WARN_RATIO)
+    )
+    sr = max(0.01, min(0.95, float(sr)))
+    wr = max(0.01, min(0.95, float(wr)))
+    if wr > sr:
+        wr = sr
+    old_c = chapter_outcome_counts(original_config)
+    new_c = chapter_outcome_counts(proposed_config)
+    severe: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    for ch in sorted(set(old_c) | set(new_c)):
+        o = int(old_c.get(ch, 0))
+        n = int(new_c.get(ch, 0))
+        if o <= 0 or n >= o:
+            continue
+        drop = (o - n) / float(o)
+        entry: dict[str, Any] = {
+            "chapter": ch,
+            "old": o,
+            "new": n,
+            "drop_ratio": round(drop, 4),
+        }
+        if drop >= sr:
+            severe.append(entry)
+        elif drop >= wr:
+            warnings.append(entry)
+    return severe, warnings
+
+
+def reconfig_run_fingerprint(
+    config: dict[str, Any],
+    chunk_paths: list[str],
+    *,
+    fast_mode: bool,
+    target_chapters_only: bool,
+) -> str:
+    """Stable id for a reconfig run (chapters list + RAG paths + mode flags)."""
+    ch = json.dumps(config.get("chapters") or [], ensure_ascii=True, sort_keys=True)
+    paths = sorted(
+        os.path.normpath(os.path.abspath(os.path.expanduser(str(p)))).replace("\\", "/")
+        for p in chunk_paths
+        if str(p).strip()
+    )
+    raw = f"v{RECONFIG_CHECKPOINT_VERSION}|{ch}|{json.dumps(paths, ensure_ascii=True)}|{fast_mode}|{target_chapters_only}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:48]
+
+
+def load_reconfig_checkpoint(path: str) -> dict[str, Any] | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+
+
+def _write_reconfig_checkpoint_file(path: str, payload: dict[str, Any]) -> None:
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=True, indent=2)
+    os.replace(tmp, path)
+
+
+def reconfig_outcome_totals_and_changed_chapters(
+    original_config: dict[str, Any],
+    proposed_config: dict[str, Any],
+) -> tuple[int, int, int]:
+    """Return (old_total_outcomes, new_total_outcomes, chapters_with_changed_count)."""
+    old_c = chapter_outcome_counts(original_config)
+    new_c = chapter_outcome_counts(proposed_config)
+    old_total = sum(old_c.values())
+    new_total = sum(new_c.values())
+    keys = set(old_c) | set(new_c)
+    changed = sum(1 for k in keys if old_c.get(k, 0) != new_c.get(k, 0))
+    return old_total, new_total, changed
 
 
 def compute_reconfig_confidence(
@@ -466,6 +603,8 @@ def reconfigure_from_rag(
     syllabus_paths: list[str] | None = None,
     fast_mode: bool = False,
     target_chapters_only: bool = True,
+    resume_checkpoint: dict[str, Any] | None = None,
+    checkpoint_path: str | None = None,
 ) -> dict[str, Any]:
     """
     Propose an updated module config from RAG chunks (syllabus + study guide).
@@ -481,6 +620,9 @@ def reconfigure_from_rag(
       subtopics extraction) for fewer LLM calls and faster runs.
     - target_chapters_only: if True, only run outcome extraction for chapters with zero or
       below-median outcome count; other chapters keep existing structure (incremental).
+    - resume_checkpoint: optional dict from load_reconfig_checkpoint (fast_mode runs only).
+    - checkpoint_path: if set with fast_mode, writes progress after each batch for resume; removed
+      when the run completes.
 
     Returns a full proposed config (copy of config with syllabus_structure, importance_weights,
     syllabus_meta.reconfigured_at / reconfigured_from_rag_paths updated). Learning outcomes
@@ -597,11 +739,68 @@ def reconfigure_from_rag(
                         existing_aliases[a_str] = key
             proposed["aliases"] = existing_aliases
 
+    write_checkpoint = bool(checkpoint_path) and fast_mode
+    chunk_path_list = sorted(chunks_by_path.keys())
+    fp_now = reconfig_run_fingerprint(
+        config, list(chunk_path_list), fast_mode=fast_mode, target_chapters_only=target_chapters_only
+    )
+    if checkpoint_path and not resume_checkpoint:
+        stale = load_reconfig_checkpoint(checkpoint_path)
+        if stale and stale.get("fingerprint") and stale.get("fingerprint") != fp_now:
+            try:
+                os.remove(checkpoint_path)
+            except OSError:
+                pass
+
+    resume = resume_checkpoint
+    if resume and (
+        resume.get("version") != RECONFIG_CHECKPOINT_VERSION
+        or resume.get("fingerprint") != fp_now
+        or resume.get("fast_mode") is not True
+        or fast_mode is not True
+    ):
+        resume = None
+
+    start_batch_offset = 0
     by_chapter: dict[str, list[dict[str, Any]]] = {ch: [] for ch in chapters_clean}
     seen_dedup: dict[str, set[str]] = {ch: set() for ch in chapters_clean}
     chapter_set = set(chapters_clean)
 
-    for start in range(0, len(ordered_chapters), batch_size):
+    if resume:
+        if (
+            resume.get("chapters_clean") != chapters_clean
+            or resume.get("ordered_chapters") != ordered_chapters
+            or int(resume.get("batch_size", batch_size) or batch_size) != batch_size
+        ):
+            resume = None
+        else:
+            start_batch_offset = max(0, int(resume.get("next_batch_start", 0)))
+            bc_raw = resume.get("by_chapter") or {}
+            if isinstance(bc_raw, dict):
+                for ch in chapters_clean:
+                    items = bc_raw.get(ch)
+                    if isinstance(items, list):
+                        restored: list[dict[str, Any]] = []
+                        for it in items:
+                            if not isinstance(it, dict):
+                                continue
+                            entry: dict[str, Any] = {
+                                "id": str(it.get("id", "") or "").strip(),
+                                "text": str(it.get("text", "") or "").strip(),
+                                "level": max(1, min(3, int(it.get("level", 2) or 2))),
+                            }
+                            if "id_stable" in it:
+                                entry["id_stable"] = bool(it.get("id_stable"))
+                            restored.append(entry)
+                        by_chapter[ch] = restored
+            sd_raw = resume.get("seen_dedup") or {}
+            if isinstance(sd_raw, dict):
+                for ch in chapters_clean:
+                    keys = sd_raw.get(ch)
+                    if isinstance(keys, list):
+                        seen_dedup[ch] = {str(x) for x in keys if str(x).strip()}
+
+    for start in range(start_batch_offset, len(ordered_chapters), batch_size):
         batch = ordered_chapters[start : start + batch_size]
         context = retrieve_from_chunks_by_path(
             chunks_by_path,
@@ -660,6 +859,49 @@ def reconfigure_from_rag(
             seen_dedup.setdefault(ch, set()).add(dedupe_key)
             oid, id_stable = _stable_outcome_id(ch, len(by_chapter[ch]), txt, existing_by_chapter)
             by_chapter[ch].append({"id": oid, "text": txt, "level": level, "id_stable": id_stable})
+
+        next_idx = start + batch_size
+        if write_checkpoint and checkpoint_path and next_idx < len(ordered_chapters):
+            serial_by: dict[str, list[dict[str, Any]]] = {}
+            for ch, items in by_chapter.items():
+                serial_by[ch] = []
+                for o in items:
+                    row: dict[str, Any] = {
+                        "id": o.get("id"),
+                        "text": o.get("text"),
+                        "level": o.get("level"),
+                    }
+                    if "id_stable" in o:
+                        row["id_stable"] = o.get("id_stable")
+                    serial_by[ch].append(row)
+            serial_sd = {ch: sorted(seen_dedup.get(ch, set())) for ch in chapters_clean}
+            try:
+                _write_reconfig_checkpoint_file(
+                    checkpoint_path,
+                    {
+                        "version": RECONFIG_CHECKPOINT_VERSION,
+                        "fingerprint": fp_now,
+                        "fast_mode": True,
+                        "target_chapters_only": target_chapters_only,
+                        "batch_size": batch_size,
+                        "chapters_clean": list(chapters_clean),
+                        "ordered_chapters": list(ordered_chapters),
+                        "target_set": sorted(target_set),
+                        "syllabus_paths": list(syllabus_paths or []),
+                        "next_batch_start": next_idx,
+                        "by_chapter": serial_by,
+                        "seen_dedup": serial_sd,
+                    },
+                )
+            except OSError:
+                pass
+
+    if write_checkpoint and checkpoint_path:
+        try:
+            if os.path.isfile(checkpoint_path):
+                os.remove(checkpoint_path)
+        except OSError:
+            pass
 
     # Merge into structure: use chapter→capability mapping; set learning_outcomes and subtopics (Phase 4).
     def _cap_for_chapter(ch: str) -> str:

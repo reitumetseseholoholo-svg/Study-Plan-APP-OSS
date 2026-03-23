@@ -84,6 +84,8 @@ class LlamaRuntime:
         if not server_bin:
             server_bin = shutil.which("llama-server") or "llama-server"
 
+        idle_shutdown = float(getattr(cfg, "LLAMA_CPP_SERVER_IDLE_SHUTDOWN_SECONDS", 0.0) or 0.0)
+        idle_poll = float(getattr(cfg, "LLAMA_CPP_SERVER_IDLE_POLL_SECONDS", 10.0) or 10.0)
         server_cfg = LlamaServerConfig(
             binary=server_bin,
             port=int(getattr(cfg, "LLAMA_CPP_SERVER_PORT", 8090) or 8090),
@@ -92,6 +94,8 @@ class LlamaRuntime:
             startup_timeout_seconds=float(
                 getattr(cfg, "LLAMA_CPP_SERVER_STARTUP_TIMEOUT", 60.0) or 60.0
             ),
+            idle_shutdown_seconds=max(0.0, idle_shutdown),
+            idle_poll_interval_seconds=max(1.0, min(300.0, idle_poll)),
         )
 
         ram_mb = int(getattr(cfg, "LLAMA_CPP_RAM_BUDGET_MB", 0) or 0)
@@ -213,6 +217,10 @@ class LlamaRuntime:
         """Return the active endpoint URL, starting server if needed."""
         status = self.ensure_ready(purpose)
         return status.endpoint if status.healthy else ""
+
+    def mark_server_used(self) -> None:
+        """Refresh idle timer after HTTP traffic to the managed llama-server."""
+        self.server.mark_used()
 
     def get_active_model(self) -> str:
         if self.server.is_running:

@@ -85,6 +85,7 @@ from studyplan_ai_tutor import (
     format_ai_tutor_transcript,
     normalize_tutor_timeout_seconds,
     lexical_rank_rag_chunks,
+    tutor_query_suggests_format_rag_focus,
     should_force_stream_flush,
     should_keep_response_bottom,
     classify_ollama_error,
@@ -1687,6 +1688,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._tutor_workspace_response_scroll: Gtk.ScrolledWindow | None = None
         self._tutor_workspace_send_btn: Gtk.Button | None = None
         self._tutor_workspace_gap_generate_btn: Gtk.Button | None = None
+        self._tutor_workspace_gap_classify_btn: Gtk.Button | None = None
         self._tutor_workspace_section_c_btn: Gtk.Button | None = None
         self._tutor_workspace_stop_btn: Gtk.Button | None = None
         self._tutor_workspace_new_chat_btn: Gtk.Button | None = None
@@ -1795,8 +1797,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._perf_middleware = None
         if self._perf_cache is None:
             from studyplan.components.performance.caching import PerformanceCacheService
+
+            try:
+                rag_doc_cap = int(str(os.environ.get("STUDYPLAN_RAG_MEMORY_DOC_CAP", "") or "32").strip() or "32")
+            except ValueError:
+                rag_doc_cap = 32
+            rag_doc_cap = max(0, min(512, rag_doc_cap))
             self._perf_cache = PerformanceCacheService(
-                {"cache_max_size": 500, "default_ttl_seconds": 300, "cache_ttl": {}}
+                {
+                    "cache_max_size": 500,
+                    "default_ttl_seconds": 300,
+                    "cache_ttl": {},
+                    "rag_doc_memory_max": rag_doc_cap,
+                }
             )
 
         # Days to exam label
@@ -3375,6 +3388,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             btn.set_tooltip_text(template.replace("{topic}", "current topic").replace("{module}", "module"))
             quick_prompts_box.append(btn)
             quick_prompt_buttons.append((btn, template, action_type))
+        self._tutor_fr_quick_buttons: list[Gtk.Button] = []
+        fr_quick_templates: list[tuple[str, str]] = [
+            (
+                "IAS 7 / SoCF",
+                "How do I format the statement of cash flows under IAS 7 for '{topic}' in {module}? "
+                "Cover operating, investing, and financing and typical exam presentation pitfalls.",
+            ),
+            (
+                "IAS 1 / SoFP",
+                "What are the minimum line items and presentation requirements for the statement of financial position "
+                "under IAS 1 for '{topic}' in {module}? Keep it exam-focused.",
+            ),
+        ]
+        for label, template in fr_quick_templates:
+            btn = Gtk.Button(label=label)
+            btn.add_css_class("flat")
+            btn.set_tooltip_text(template.replace("{topic}", "current topic").replace("{module}", "module"))
+            btn.set_visible(bool(self._is_fr_financial_reporting_module()))
+            quick_prompts_box.append(btn)
+            quick_prompt_buttons.append((btn, template, None))
+            self._tutor_fr_quick_buttons.append(btn)
         quick_prompt_button_labels: dict[Gtk.Button, tuple[str, str]] = {}
         for btn, _template, _action_type in quick_prompt_buttons:
             try:
@@ -3388,6 +3422,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "Drill 5": "Drill",
                 "Formula sheet": "Formulas",
                 "Exam pitfalls": "Pitfalls",
+                "IAS 7 / SoCF": "SoCF",
+                "IAS 1 / SoFP": "SoFP",
             }
             quick_prompt_button_labels[btn] = (text or "Prompt", short_map.get(text, text or "Prompt"))
         quick_prompt_scroll = Gtk.ScrolledWindow()
@@ -3488,6 +3524,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         send_btn.add_css_class("suggested-action")
         gap_generate_btn = Gtk.Button(label="Generate gaps")
         gap_generate_btn.set_tooltip_text("Generate topic-targeted gap questions using local AI.")
+        gap_classify_btn = Gtk.Button(label="Classification drill")
+        gap_classify_btn.set_tooltip_text(
+            "Generate MCQs focused on where items appear in the financial statements and related disclosures (FR)."
+        )
+        gap_classify_btn.set_visible(bool(self._is_fr_financial_reporting_module()))
         try:
             _sec_c_label = self._constructed_response_button_label()
         except Exception:
@@ -3514,6 +3555,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         tutor_action_button_labels: dict[Gtk.Button, tuple[str, str, str]] = {
             send_btn: ("Send", "Send", "Go"),
             gap_generate_btn: ("Generate gaps", "Gaps", "Gaps"),
+            gap_classify_btn: ("Classification drill", "Classify", "Cls."),
             section_c_btn: (_sec_c_label, "Sec C" if _sec_c_label == "Section C" else "Const.", "Sec C" if _sec_c_label == "Section C" else "Const."),
             stop_btn: ("Stop", "Stop", "Stop"),
             new_chat_btn: ("New chat", "New chat", "New"),
@@ -3539,6 +3581,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         for btn in (
             gap_generate_btn,
+            gap_classify_btn,
             section_c_btn,
             clear_prompt_btn,
             copy_btn,
@@ -3554,6 +3597,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         self._tutor_workspace_send_btn = send_btn
         self._tutor_workspace_gap_generate_btn = gap_generate_btn
+        self._tutor_workspace_gap_classify_btn = gap_classify_btn
         self._tutor_workspace_section_c_btn = section_c_btn
         self._tutor_workspace_stop_btn = stop_btn
         self._tutor_workspace_new_chat_btn = new_chat_btn
@@ -5857,6 +5901,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 and bool(getattr(self, "_has_chapters", lambda: False)())
             )
             gap_generate_btn.set_sensitive(gap_enabled)
+            try:
+                gap_classify_btn.set_sensitive(gap_enabled and bool(self._is_fr_financial_reporting_module()))
+            except Exception:
+                pass
             section_c_btn.set_sensitive(not bool(running))
             _refresh_help_feedback_buttons()
             _update_follow_button()
@@ -5877,6 +5925,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 and bool(getattr(self, "_has_chapters", lambda: False)())
             )
             gap_generate_btn.set_sensitive(gap_enabled)
+            try:
+                gap_classify_btn.set_sensitive(gap_enabled and bool(self._is_fr_financial_reporting_module()))
+            except Exception:
+                pass
 
         def _copy_to_clipboard(text: str, success_message: str, empty_message: str) -> None:
             payload = str(text or "").strip()
@@ -7307,6 +7359,71 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
             StudyPlanGUI._start_managed_background_thread(self, _worker)
 
+        def _generate_classification_gap_questions(*_args) -> None:
+            if bool(run_state.get("active", False)):
+                _set_status("Wait for current tutor turn to finish before generating classification questions.")
+                return
+            if bool(run_state.get("gap_generation_active", False)):
+                _set_status("Gap-style generation is already running.")
+                return
+            if not bool(getattr(self, "ai_tutor_gap_generation_enabled", True)):
+                _set_status("AI gap-question generation is disabled in Preferences.")
+                return
+            if not bool(self.local_llm_enabled):
+                _set_status("Local AI tutor is disabled in Preferences.")
+                return
+            if not bool(self._is_fr_financial_reporting_module()):
+                _set_status("Classification drill is available for Financial Reporting (FR) modules.")
+                return
+            chapter, chapter_err = self._resolve_chapter_for_gap_generation()
+            if not chapter or chapter_err:
+                _set_status(str(chapter_err or "Select a valid topic before generating classification questions."))
+                return
+            _set_gap_generation_running(True)
+            _set_status(f"Generating classification/presentation questions for {chapter}…")
+
+            def _worker() -> None:
+                from studyplan.ai.prompt_design import TASK_ID_CLASSIFICATION_DRILL
+
+                try:
+                    snapshot = self._build_ai_tutor_autopilot_snapshot()
+                    ok, msg = self._generate_gap_drill_questions(
+                        chapter,
+                        snapshot,
+                        requested_count=AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS,
+                        prompt_task_id=TASK_ID_CLASSIFICATION_DRILL,
+                    )
+                except Exception as exc:
+                    ok = False
+                    msg = self._compose_ollama_recovery_status(
+                        str(exc),
+                        model=str(run_state.get("model", "") or ""),
+                        attempted_models=[str(run_state.get("model", "") or "")] if str(run_state.get("model", "") or "").strip() else None,
+                    )
+
+                def _finish() -> bool:
+                    _set_gap_generation_running(False)
+                    _set_status(str(msg or "Classification drill generation finished."))
+                    _refresh_status_line()
+                    if ok:
+                        try:
+                            self.send_notification("AI Tutor", str(msg or "Classification questions generated."))
+                        except Exception:
+                            pass
+                        try:
+                            self.update_dashboard()
+                        except Exception:
+                            pass
+                        try:
+                            self.update_study_room_card()
+                        except Exception:
+                            pass
+                    return False
+
+                GLib.idle_add(_finish)
+
+            StudyPlanGUI._start_managed_background_thread(self, _worker)
+
         def _on_prompt_key(_controller, keyval, _keycode, state) -> bool:
             ctrl_mask = int(getattr(Gdk.ModifierType, "CONTROL_MASK", 0))
             return_key = int(getattr(Gdk, "KEY_Return", 65293))
@@ -7325,6 +7442,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         refresh_btn.connect("clicked", _refresh_models)
         send_btn.connect("clicked", _generate)
         gap_generate_btn.connect("clicked", _generate_gap_questions)
+        gap_classify_btn.connect("clicked", _generate_classification_gap_questions)
         section_c_btn.connect("clicked", lambda *_: self._open_section_c_practice_dialog(topic=self.current_topic))
         stop_btn.connect("clicked", _stop_generation)
         new_chat_btn.connect("clicked", _new_chat)
@@ -7433,6 +7551,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if callable(refresh_status):
             try:
                 refresh_status()
+            except Exception:
+                pass
+        fr_vis = bool(self._is_fr_financial_reporting_module())
+        for b in getattr(self, "_tutor_fr_quick_buttons", None) or []:
+            try:
+                b.set_visible(fr_vis)
+            except Exception:
+                pass
+        gc_btn = getattr(self, "_tutor_workspace_gap_classify_btn", None)
+        if gc_btn is not None:
+            try:
+                gc_btn.set_visible(fr_vis)
+                gc_btn.set_sensitive(
+                    fr_vis
+                    and bool(self.local_llm_enabled)
+                    and bool(getattr(self, "ai_tutor_gap_generation_enabled", True))
+                    and bool(getattr(self, "_has_chapters", lambda: False)())
+                )
             except Exception:
                 pass
         self._refresh_workbench_shell_status()
@@ -8614,7 +8750,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_reconfigure_from_rag(self, _button) -> None:
         """Reconfigure module structure from RAG (syllabus + study guide PDFs): outcomes, weights, then apply/save."""
-        from studyplan.module_reconfig import reconfigure_from_rag, validate_module_config
+        from studyplan.module_reconfig import load_reconfig_checkpoint, reconfig_run_fingerprint
 
         module_id = getattr(self, "module_id", "") or ""
         if not module_id or not str(module_id).strip():
@@ -8634,8 +8770,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         chapters = config.get("chapters")
         if not isinstance(chapters, list) or not chapters:
             chapters = getattr(engine, "CHAPTERS", []) or []
-        # When module config has no or weak chapters, RAG syllabus PDF can act as structure source:
-        # reconfigure_from_rag will derive chapters from RAG text via _derive_chapters_from_rag_text.
         config.setdefault("chapters", chapters or [])
         rag_paths = self._get_rag_pdf_paths_for_reconfig()
         if not rag_paths:
@@ -8647,7 +8781,78 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
             return
 
-        # Show progress so the user sees immediate feedback (loading + LLM run in background)
+        ck_path = self._reconfig_checkpoint_path(module_id, engine)
+        raw_ck: dict[str, Any] | None = None
+        if ck_path and os.path.isfile(ck_path):
+            loaded = load_reconfig_checkpoint(ck_path)
+            fp = reconfig_run_fingerprint(config, rag_paths, fast_mode=True, target_chapters_only=True)
+            if isinstance(loaded, dict) and loaded.get("fingerprint") == fp:
+                raw_ck = loaded
+
+        if raw_ck is not None:
+            dlg = self._new_dialog(title="Resume RAG reconfiguration?", transient_for=self, modal=True)
+            dlg.set_default_size(460, 168)
+            area = dlg.get_content_area()
+            hint = Gtk.Label(
+                label="An incomplete fast RAG reconfiguration checkpoint was found.\n"
+                "Resume from the last completed batch, start fresh (discards the checkpoint), or cancel."
+            )
+            hint.set_wrap(True)
+            hint.set_halign(Gtk.Align.START)
+            area.append(hint)
+            dlg.add_buttons(
+                "_Cancel",
+                Gtk.ResponseType.CANCEL,
+                "_Start fresh",
+                20,
+                "_Resume",
+                Gtk.ResponseType.OK,
+            )
+            dlg.set_default_response(Gtk.ResponseType.OK)
+
+            def _on_pick(d, resp):
+                d.destroy()
+                if resp == Gtk.ResponseType.CANCEL:
+                    return
+                resume_arg: dict[str, Any] | None = None
+                if resp == 20:
+                    try:
+                        os.remove(ck_path)
+                    except OSError:
+                        pass
+                elif resp == Gtk.ResponseType.OK:
+                    resume_arg = raw_ck
+                self._run_reconfigure_from_rag_pipeline(module_id, engine, config, chapters, rag_paths, resume_checkpoint=resume_arg)
+
+            dlg.connect("response", _on_pick)
+            dlg.present()
+            return
+
+        self._run_reconfigure_from_rag_pipeline(module_id, engine, config, chapters, rag_paths, resume_checkpoint=None)
+
+    def _run_reconfigure_from_rag_pipeline(
+        self,
+        module_id: str,
+        engine,
+        config: dict[str, Any],
+        chapters: list[str],
+        rag_paths: list[str],
+        *,
+        resume_checkpoint: dict[str, Any] | None,
+    ) -> None:
+        from studyplan.module_reconfig import (
+            DEFAULT_AUTO_APPLY_CONFIDENCE_THRESHOLD,
+            DEFAULT_PENDING_RECONFIG_CONFIDENCE_LOW,
+            analyze_outcome_count_regressions,
+            compute_reconfig_confidence,
+            reconfig_outcome_totals_and_changed_chapters,
+            reconfigure_from_rag,
+            validate_module_config,
+        )
+
+        ck_path = self._reconfig_checkpoint_path(module_id, engine)
+        RESPONSE_SAVE_DRAFT = 100
+
         progress_dialog = self._new_dialog(title="Reconfigure from RAG", transient_for=self, modal=True)
         progress_dialog.set_default_size(360, 120)
         progress_content = progress_dialog.get_content_area()
@@ -8694,6 +8899,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         syllabus_paths=syllabus_paths,
                         fast_mode=True,
                         target_chapters_only=True,
+                        resume_checkpoint=resume_checkpoint,
+                        checkpoint_path=ck_path,
                     )
             except Exception as exc:
                 err_msg = str(exc)
@@ -8716,134 +8923,122 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not isinstance(proposed, dict):
                 self._show_text_dialog("Reconfigure from RAG", "Reconfiguration produced no result.", Gtk.MessageType.ERROR)
                 return
-            errs = validate_module_config(proposed)
-            if errs:
+            val_errs = validate_module_config(proposed)
+            if val_errs:
                 self._show_text_dialog(
                     "Reconfigure from RAG",
-                    "Proposed config has validation issues:\n" + "\n".join(errs[:8]) + (("\n…" if len(errs) > 8 else "")),
+                    "Proposed config has validation issues:\n" + "\n".join(val_errs[:8]) + (("\n…" if len(val_errs) > 8 else "")),
                     Gtk.MessageType.WARNING,
                 )
-            old_structure = cfg.get("syllabus_structure") or {}
-            new_structure = proposed.get("syllabus_structure") or {}
-            def _count_outcomes(s: dict) -> int:
-                total = 0
-                for info in (s or {}).values():
-                    if isinstance(info, dict):
-                        los = info.get("learning_outcomes")
-                        total += len(los) if isinstance(los, list) else 0
-                return total
-            old_total = _count_outcomes(old_structure)
-            new_total = _count_outcomes(new_structure)
+            severe, warns = analyze_outcome_count_regressions(cfg, proposed)
+            old_total, new_total, ch_changed = reconfig_outcome_totals_and_changed_chapters(cfg, proposed)
+            conf = compute_reconfig_confidence(proposed, cfg, val_errs)
+            try:
+                draft_low = float(os.environ.get("STUDYPLAN_PENDING_RECONFIG_CONFIDENCE_LOW", "").strip() or DEFAULT_PENDING_RECONFIG_CONFIDENCE_LOW)
+            except ValueError:
+                draft_low = DEFAULT_PENDING_RECONFIG_CONFIDENCE_LOW
+            draft_low = max(0.0, min(1.0, draft_low))
+            auto_thr = float(os.environ.get("STUDYPLAN_AUTO_RECONFIGURE_CONFIDENCE", "").strip() or DEFAULT_AUTO_APPLY_CONFIDENCE_THRESHOLD)
+            try:
+                auto_thr = max(0.0, min(1.0, float(auto_thr)))
+            except ValueError:
+                auto_thr = DEFAULT_AUTO_APPLY_CONFIDENCE_THRESHOLD
+
             lines = [
                 f"RAG sources: {len(chunks_by_path)} PDF(s).",
-                f"Learning outcomes: {old_total} → {new_total}.",
-                "Importance weights and syllabus_meta updated.",
-                "Apply to save the new configuration and reload the module.",
+                f"Learning outcomes: {old_total} → {new_total} (total).",
+                f"Chapters with changed outcome count: {ch_changed}.",
+                f"Estimated confidence: {conf:.0%} (auto-apply threshold {auto_thr:.0%}).",
+                "Fast mode: outcomes only; capabilities/aliases/subtopics were not re-extracted.",
+                "Apply saves and reloads the module; Save draft stores a pending proposal on disk.",
             ]
+            if warns:
+                lines.append("")
+                lines.append("Moderate per-chapter drops (warn, ~20%):")
+                for w in warns[:6]:
+                    lines.append(f"  • {w['chapter']}: {w['old']} → {w['new']} ({100 * float(w['drop_ratio']):.0f}% fewer)")
+            if severe:
+                lines.append("")
+                lines.append("Large per-chapter drops (≥30%): you must confirm before Apply.")
             if old_total == new_total and len(chunks_by_path) > 0:
                 lines.append("")
-                lines.append("No new learning outcomes were extracted. Ensure an LLM is configured (Preferences → AI Tutor) if you expected outcome extraction.")
+                lines.append("No net change in total outcomes. Ensure an LLM is configured (Preferences → AI Tutor) if you expected new outcomes.")
+            if conf < draft_low and not val_errs:
+                lines.append("")
+                lines.append("Low confidence: consider Save draft and review before applying.")
+
             dialog = self._new_dialog(title="Reconfigure from RAG", transient_for=self, modal=True)
-            dialog.set_default_size(420, 260)
+            dialog.set_default_size(460, 320)
             content = dialog.get_content_area()
             summary = Gtk.Label(label="\n".join(lines))
             summary.set_wrap(True)
             summary.set_halign(Gtk.Align.START)
             summary.set_selectable(True)
             content.append(summary)
-            dialog.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Apply", Gtk.ResponseType.OK)
+            dialog.add_buttons(
+                "_Cancel",
+                Gtk.ResponseType.CANCEL,
+                "_Save draft",
+                RESPONSE_SAVE_DRAFT,
+                "_Apply",
+                Gtk.ResponseType.OK,
+            )
             dialog.set_default_response(Gtk.ResponseType.OK)
+
+            def _do_apply_merge() -> None:
+                ok, msg = self._apply_reconfig_merge_and_save(
+                    module_id,
+                    engine,
+                    proposed,
+                    cfg,
+                    notification_title="Module",
+                    notification_detail=f"Reconfigured and saved {module_id}.json",
+                )
+                if not ok:
+                    self._show_text_dialog("Reconfigure from RAG", msg, Gtk.MessageType.ERROR)
 
             def _on_response(_d, response):
                 _d.destroy()
+                if response == Gtk.ResponseType.CANCEL:
+                    return
+                if response == RESPONSE_SAVE_DRAFT:
+                    reason = "manual_save_draft"
+                    if self._save_pending_reconfig_disk(module_id, engine, proposed, conf, reason):
+                        self.send_notification(
+                            "Module",
+                            "Pending RAG reconfig saved. Open View Module Metadata to apply or discard.",
+                        )
+                    else:
+                        self._show_text_dialog("Reconfigure from RAG", "Could not save draft to disk.", Gtk.MessageType.ERROR)
+                    return
                 if response != Gtk.ResponseType.OK:
                     return
-                ok, err = self._validate_module_id_for_save(module_id)
-                if not ok:
-                    self._show_text_dialog("Reconfigure from RAG", err or "Invalid module ID.", Gtk.MessageType.ERROR)
-                    return
-                # Merge proposed with current config so outcomes are merged (no drop); same as PDF import (syllabus ingest plan).
-                try:
-                    merged = engine.build_module_config_from_syllabus(proposed, base_config=cfg)
-                except Exception as e:
-                    self._show_text_dialog("Reconfigure from RAG", f"Merge failed: {e}", Gtk.MessageType.ERROR)
-                    return
-                # Complete truncated syllabus outcomes via AI before save
-                n_completed_rag = 0
-                try:
-                    from studyplan.syllabus_outcomes import complete_truncated_syllabus_outcomes
-                    merged, n_completed_rag = complete_truncated_syllabus_outcomes(
-                        merged, self._syllabus_ai_llm_generate, max_tokens=256, max_to_complete=50
+                if severe:
+                    detail = "\n".join(f"• {s['chapter']}: {s['old']} → {s['new']} outcomes" for s in severe[:10])
+                    cdlg = self._new_dialog(title="Confirm large outcome drop", transient_for=self, modal=True)
+                    cdlg.set_default_size(440, 220)
+                    c_area = cdlg.get_content_area()
+                    c_lbl = Gtk.Label(
+                        label="One or more chapters would lose at least ~30% of learning outcomes compared to your current config.\n\n"
+                        + detail
+                        + ("\n…" if len(severe) > 10 else "")
                     )
-                except Exception:
-                    pass
-                # Phase 6: validate merged config; flag in notification (do not block apply).
-                merge_warnings = engine.validate_module_config(merged) if hasattr(engine, "validate_module_config") else []
-                _, save_path = self._module_config_active_path(module_id)
-                if not save_path:
-                    folder = getattr(engine, "MODULES_DIR", "") or os.path.join(Config.CONFIG_HOME, "modules")
-                    try:
-                        os.makedirs(folder, exist_ok=True)
-                        save_path = os.path.join(folder, f"{module_id}.json")
-                    except Exception as e:
-                        self._show_text_dialog("Reconfigure from RAG", f"Could not create save path: {e}", Gtk.MessageType.ERROR)
-                        return
-                try:
-                    with open(save_path, "w", encoding="utf-8") as f:
-                        json.dump(merged, f, ensure_ascii=True, indent=2)
-                except Exception as e:
-                    self._show_text_dialog("Reconfigure from RAG", f"Save failed: {e}", Gtk.MessageType.ERROR)
+                    c_lbl.set_wrap(True)
+                    c_lbl.set_halign(Gtk.Align.START)
+                    c_lbl.set_selectable(True)
+                    c_area.append(c_lbl)
+                    cdlg.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Apply anyway", Gtk.ResponseType.OK)
+                    cdlg.set_default_response(Gtk.ResponseType.CANCEL)
+
+                    def _confirm(_d2, r2):
+                        _d2.destroy()
+                        if r2 == Gtk.ResponseType.OK:
+                            _do_apply_merge()
+
+                    cdlg.connect("response", _confirm)
+                    cdlg.present()
                     return
-                engine._apply_module_config(merged)
-                title = merged.get("title")
-                if isinstance(title, str) and title.strip():
-                    engine.module_title = title.strip()
-                    self.module_title = engine.module_title
-                msg = f"Reconfigured and saved {module_id}.json"
-                if n_completed_rag > 0:
-                    msg += f" Completed {n_completed_rag} truncated outcome(s) with AI."
-                meta = merged.get("syllabus_meta") or {}
-                unmapped = meta.get("unmapped_chapters") or []
-                if isinstance(unmapped, list) and unmapped:
-                    msg += f". {len(unmapped)} chapter(s) unmapped (no outcomes)."
-                if merge_warnings:
-                    msg += " Merged config has validation warnings (View Module Metadata)."
-                # Phase 6: optional post-apply quality hint if outcome count dropped a lot.
-                def _outcome_count(c: dict) -> int:
-                    s = c.get("syllabus_structure") or {}
-                    return sum(int((info or {}).get("outcome_count", 0) or 0) for info in s.values() if isinstance(info, dict))
-                old_n, new_n = _outcome_count(cfg), _outcome_count(merged)
-                if old_n > 0 and new_n < old_n * 0.8:
-                    msg += " Outcome count decreased; consider Re-run from RAG or re-import if unexpected."
-                # Streamlined pipeline: rebuild concept graph and run heuristic outcome linking.
-                link_result = self._run_refresh_and_link_after_apply(engine)
-                linked = (link_result.get("linking") or {}).get("questions_linked", 0) or 0
-                if linked > 0:
-                    msg += f" Linked {linked} question(s) to outcomes (heuristic)."
-                self.send_notification("Module", msg)
-                self._refresh_workbench_shell_status()
-                self._refresh_tutor_workspace_page()
-                self._refresh_coach_workspace_page()
-                self._refresh_insights_workspace_page()
-                self._refresh_settings_workspace_page()
-                try:
-                    _meta_rag = merged.get("syllabus_meta")
-                    GLib.idle_add(
-                        lambda m=_meta_rag: self._maybe_prompt_add_syllabus_pdfs_to_tutor_rag(m) or False
-                    )
-                except Exception:
-                    pass
-                if getattr(self, "_refresh_and_link_unified_summary", False):
-                    def _outcome_count(c: dict) -> int:
-                        s = c.get("syllabus_structure") or {}
-                        return sum(int((info or {}).get("outcome_count", 0) or 0) for info in s.values() if isinstance(info, dict))
-                    summary = self._build_refresh_and_link_summary(
-                        _outcome_count(merged),
-                        link_result,
-                        unmapped_chapters=meta.get("unmapped_chapters") if isinstance(meta.get("unmapped_chapters"), list) else None,
-                    )
-                    self._show_text_dialog("Refresh syllabus & link outcomes", summary, Gtk.MessageType.INFO)
-                    self._refresh_and_link_unified_summary = False
+                _do_apply_merge()
 
             dialog.connect("response", _on_response)
             dialog.present()
@@ -8871,6 +9066,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         """If auto-reconfig is enabled and module/RAG are stale, run reconfig in background; apply if confidence high else notify for review."""
         from studyplan.module_reconfig import (
             DEFAULT_AUTO_APPLY_CONFIDENCE_THRESHOLD,
+            DEFAULT_PENDING_RECONFIG_CONFIDENCE_LOW,
+            analyze_outcome_count_regressions,
             compute_reconfig_confidence,
             reconfigure_from_rag,
             should_auto_reconfigure,
@@ -8911,6 +9108,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
 
         syllabus_paths = self._syllabus_paths_from_config(config)
+        ck_path = self._reconfig_checkpoint_path(module_id, engine)
+
         def _run_in_thread() -> None:
             try:
                 proposed = reconfigure_from_rag(
@@ -8924,6 +9123,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     syllabus_paths=syllabus_paths,
                     fast_mode=True,
                     target_chapters_only=True,
+                    resume_checkpoint=None,
+                    checkpoint_path=ck_path,
                 )
             except Exception:
                 proposed = None
@@ -8940,60 +9141,77 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 threshold = max(0.0, min(1.0, float(threshold)))
             except Exception:
                 threshold = DEFAULT_AUTO_APPLY_CONFIDENCE_THRESHOLD
+            try:
+                draft_low = float(os.environ.get("STUDYPLAN_PENDING_RECONFIG_CONFIDENCE_LOW", "").strip() or DEFAULT_PENDING_RECONFIG_CONFIDENCE_LOW)
+            except ValueError:
+                draft_low = DEFAULT_PENDING_RECONFIG_CONFIDENCE_LOW
+            draft_low = max(0.0, min(1.0, draft_low))
             if errs:
                 return
-            if confidence >= threshold:
-                ok, _ = self._validate_module_id_for_save(module_id)
-                if not ok:
-                    return
-                try:
-                    merged = engine.build_module_config_from_syllabus(proposed, base_config=original_config)
-                except Exception:
-                    return
-                try:
-                    from studyplan.syllabus_outcomes import complete_truncated_syllabus_outcomes
-                    merged, _ = complete_truncated_syllabus_outcomes(
-                        merged, self._syllabus_ai_llm_generate, max_tokens=256, max_to_complete=50
-                    )
-                except Exception:
-                    pass
-                _, save_path = self._module_config_active_path(module_id)
-                if not save_path:
-                    folder = getattr(engine, "MODULES_DIR", "") or os.path.join(Config.CONFIG_HOME, "modules")
-                    try:
-                        os.makedirs(folder, exist_ok=True)
-                        save_path = os.path.join(folder, f"{module_id}.json")
-                    except Exception:
-                        return
-                try:
-                    with open(save_path, "w", encoding="utf-8") as f:
-                        json.dump(merged, f, ensure_ascii=True, indent=2)
-                except Exception:
-                    return
-                engine._apply_module_config(merged)
-                if isinstance(merged.get("title"), str) and merged["title"].strip():
-                    engine.module_title = merged["title"].strip()
-                    self.module_title = engine.module_title
-                self.send_notification("Module", f"Auto-reconfigured from RAG ({confidence:.0%} confidence).")
-                self._refresh_workbench_shell_status()
-                self._refresh_tutor_workspace_page()
-                self._refresh_coach_workspace_page()
-                self._refresh_insights_workspace_page()
-                self._refresh_settings_workspace_page()
-            else:
+            severe, _warns = analyze_outcome_count_regressions(original_config, proposed)
+            if severe:
                 setattr(self, "_pending_reconfig_proposal", (module_id, proposed, confidence))
-                outcome_total = sum(
-                    len((info or {}).get("learning_outcomes") or [])
-                    for info in (proposed.get("syllabus_structure") or {}).values()
-                    if isinstance(info, dict)
+                self._save_pending_reconfig_disk(
+                    module_id,
+                    engine,
+                    proposed,
+                    confidence,
+                    "severe_chapter_outcome_drop",
                 )
+                names = ", ".join(str(s.get("chapter", "")) for s in severe[:4])
                 self._log_message(
-                    "reconfig_below_threshold",
-                    f"confidence={confidence:.2f} outcomes={outcome_total} (review in Module → Reconfigure from RAG)",
+                    "reconfig_severe_drop",
+                    f"confidence={confidence:.2f} severe_chapter_drop chapters={names}",
                 )
                 self.send_notification(
                     "Module",
-                    f"Reconfiguration ready for review ({confidence:.0%} confidence). Use Module → Reconfigure from RAG to apply.",
+                    "RAG reconfig not auto-applied: large per-chapter outcome drop (≥30%). "
+                    "Review or apply the pending proposal from View Module Metadata.",
+                )
+                return
+            if confidence >= threshold:
+                ok, _msg = self._apply_reconfig_merge_and_save(
+                    module_id,
+                    engine,
+                    proposed,
+                    original_config,
+                    notification_title="Module",
+                    notification_detail=f"Auto-reconfigured from RAG ({confidence:.0%} confidence).",
+                )
+                if not ok:
+                    self._log_message("auto_reconfig_apply_failed", _msg)
+                return
+            setattr(self, "_pending_reconfig_proposal", (module_id, proposed, confidence))
+            draft_saved = False
+            if confidence >= draft_low:
+                draft_saved = bool(
+                    self._save_pending_reconfig_disk(
+                        module_id,
+                        engine,
+                        proposed,
+                        confidence,
+                        "below_auto_threshold",
+                    )
+                )
+            outcome_total = sum(
+                len((info or {}).get("learning_outcomes") or [])
+                for info in (proposed.get("syllabus_structure") or {}).values()
+                if isinstance(info, dict)
+            )
+            self._log_message(
+                "reconfig_below_threshold",
+                f"confidence={confidence:.2f} outcomes={outcome_total} (review in View Module Metadata or Reconfigure from RAG)",
+            )
+            if draft_saved:
+                self.send_notification(
+                    "Module",
+                    f"RAG reconfig saved as pending ({confidence:.0%} confidence). Open View Module Metadata to apply or discard.",
+                )
+            else:
+                self.send_notification(
+                    "Module",
+                    f"RAG reconfig not auto-applied ({confidence:.0%} confidence, below draft threshold). "
+                    "Run Module → Reconfigure from RAG to review.",
                 )
 
         if not StudyPlanGUI._start_managed_background_thread(self, _run_in_thread, name="auto-reconfigure-rag"):
@@ -9325,6 +9543,45 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         """Called by Insights 'View Module Metadata' button and app action; opens the metadata dialog."""
         self.on_menu_view_module_metadata(None, None)
 
+    def _open_statement_format_checklists_dialog(self) -> None:
+        """Read-only IAS 1 / IAS 7 style checklists (SoFP, SoPL, SoCF, notes)."""
+        from studyplan.statement_format_checklists import format_checklists_as_text, load_statement_format_checklists
+
+        try:
+            data = load_statement_format_checklists()
+        except Exception as exc:
+            self._show_text_dialog(
+                "Statement format checklists",
+                f"Could not load checklists: {exc}",
+                Gtk.MessageType.ERROR,
+            )
+            return
+        body = format_checklists_as_text(data)
+        dialog = self._new_dialog(title="Statement format checklists", transient_for=self, modal=True)
+        try:
+            dialog.set_default_size(560, 480)
+        except Exception:
+            pass
+        area = dialog.get_content_area()
+        area.set_spacing(8)
+        sc = Gtk.ScrolledWindow()
+        sc.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        sc.set_hexpand(True)
+        sc.set_vexpand(True)
+        tv = Gtk.TextView()
+        tv.set_editable(False)
+        tv.set_cursor_visible(False)
+        tv.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        tv.get_buffer().set_text(body if body else "(empty)")
+        sc.set_child(tv)
+        area.append(sc)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        close = Gtk.Button(label="Close")
+        close.connect("clicked", lambda _b: dialog.destroy())
+        row.append(close)
+        area.append(row)
+        dialog.present()
+
     def on_menu_view_module_metadata(self, _action, _param):
         engine = getattr(self, "engine", None)
         if engine is None:
@@ -9450,6 +9707,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         lines.append(f"  Sections defined: {len(structure)}")
         lines.append(f"  Declared outcomes: {outcome_total}")
         lines.append(f"  Declared subtopics: {subtopic_total}")
+        if self._is_fr_financial_reporting_module() and isinstance(structure, dict) and structure:
+            prep_n = 0
+            for info in structure.values():
+                if not isinstance(info, dict):
+                    continue
+                for o in info.get("learning_outcomes") or []:
+                    if not isinstance(o, dict):
+                        continue
+                    if str(o.get("type", "") or "").strip().lower() == "preparation":
+                        prep_n += 1
+                        continue
+                    tx = str(o.get("text", "") or "").strip().lower()
+                    if tx.startswith("prepare ") or tx.startswith("prepare a ") or "prepare the " in tx[:56]:
+                        prep_n += 1
+            lines.append(f"  Preparation-style outcomes (count): {prep_n}")
         if structure:
             sample_keys = list(structure.keys())[:6]
             lines.append(f"  Sample sections: {_format_list(sample_keys)}")
@@ -9462,6 +9734,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 lines.append(f"  • {warning}")
         else:
             lines.append("Schema validation: ok")
+
+        pending_disk = self._load_pending_reconfig_disk(module_id, engine)
+        if pending_disk:
+            lines.append("")
+            lines.append("Pending RAG reconfiguration (on disk)")
+            lines.append(f"  Saved: {pending_disk.get('saved_at') or '(unknown)'}")
+            lines.append(f"  Confidence: {pending_disk.get('confidence', '(n/a)')}")
+            lines.append(f"  Reason: {pending_disk.get('reason', '')}")
+            pp_pending = self._pending_reconfig_json_path(module_id, engine)
+            if pp_pending:
+                lines.append(f"  File: {pp_pending}")
 
         content = "\n".join(lines)
         active_label, active_path = self._module_config_active_path(module_id)
@@ -9481,6 +9764,92 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         textview.get_buffer().set_text(content if content else "(empty)")
         scroller.set_child(textview)
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        if pending_disk:
+            from studyplan.module_reconfig import analyze_outcome_count_regressions, validate_module_config
+
+            apply_pending_btn = Gtk.Button(label="Apply pending RAG reconfig")
+            apply_pending_btn.set_tooltip_text("Merge and save the pending proposal from a previous RAG reconfiguration.")
+
+            def _on_apply_pending(_b):
+                prop = pending_disk.get("proposed")
+                if not isinstance(prop, dict):
+                    return
+                ve = validate_module_config(prop)
+                if ve:
+                    self._show_text_dialog(
+                        "Module metadata",
+                        "Pending proposal has validation issues. Discard it or run Reconfigure from RAG again.",
+                        Gtk.MessageType.WARNING,
+                    )
+                    return
+                base = engine._load_module_config(module_id)
+                if not isinstance(base, dict):
+                    base = {}
+                sev, _w = analyze_outcome_count_regressions(base, prop)
+
+                def _finalize_pending_apply() -> None:
+                    ok, msg = self._apply_reconfig_merge_and_save(
+                        module_id,
+                        engine,
+                        prop,
+                        base,
+                        notification_title="Module",
+                        notification_detail=f"Applied pending RAG reconfig for {module_id}.",
+                    )
+                    if ok:
+                        dialog.destroy()
+                    else:
+                        self._show_text_dialog("Module metadata", msg, Gtk.MessageType.ERROR)
+
+                if sev:
+                    det = "\n".join(f"• {s['chapter']}: {s['old']} → {s['new']}" for s in sev[:8])
+                    c2 = self._new_dialog(title="Confirm large outcome drop", transient_for=self, modal=True)
+                    c2.set_default_size(420, 200)
+                    ca = c2.get_content_area()
+                    cl = Gtk.Label(
+                        label="Applying this pending proposal would reduce outcomes by ≥30% on at least one chapter:\n\n"
+                        + det
+                        + ("\n…" if len(sev) > 8 else "")
+                    )
+                    cl.set_wrap(True)
+                    cl.set_halign(Gtk.Align.START)
+                    ca.append(cl)
+                    c2.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Apply anyway", Gtk.ResponseType.OK)
+                    c2.set_default_response(Gtk.ResponseType.CANCEL)
+
+                    def _c2_resp(d2, r2):
+                        d2.destroy()
+                        if r2 == Gtk.ResponseType.OK:
+                            _finalize_pending_apply()
+
+                    c2.connect("response", _c2_resp)
+                    c2.present()
+                    return
+                _finalize_pending_apply()
+
+            apply_pending_btn.connect("clicked", _on_apply_pending)
+            btn_row.append(apply_pending_btn)
+
+            discard_pending_btn = Gtk.Button(label="Discard pending RAG reconfig")
+
+            def _on_discard_pending(_b):
+                self._clear_pending_reconfig_disk(module_id, engine)
+                try:
+                    delattr(self, "_pending_reconfig_proposal")
+                except Exception:
+                    pass
+                self.send_notification("Module", "Discarded pending RAG reconfiguration.")
+                dialog.destroy()
+
+            discard_pending_btn.connect("clicked", _on_discard_pending)
+            btn_row.append(discard_pending_btn)
+
+        if self._is_fr_financial_reporting_module():
+            fmt_check_btn = Gtk.Button(label="Statement format checklists…")
+            fmt_check_btn.set_tooltip_text("SoFP / SoPL / SoCF / notes — presentation reminders (IAS 1, IAS 7, etc.).")
+            fmt_check_btn.connect("clicked", lambda _b: self._open_statement_format_checklists_dialog())
+            btn_row.append(fmt_check_btn)
+
         copy_path_btn = Gtk.Button(label="Copy module path")
         copy_path_btn.set_tooltip_text("Copy the active module config or data file path to clipboard.")
         def _on_copy_path(_b):
@@ -16372,6 +16741,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if partial:
                 return partial, None
             return "", f"llama_server_error: {exc}"
+        finally:
+            try:
+                rt.mark_server_used()
+            except Exception:
+                pass
 
         full_text = "".join(chunks).strip()
         if not full_text:
@@ -16394,6 +16768,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self,
         prompt: str,
         max_tokens: int = 1024,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[str, str | None]:
         """Non-streaming generation via managed llama-server."""
         rt = self._ensure_llama_runtime()
@@ -16404,6 +16779,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if not status.healthy or not status.endpoint:
             return "", "llama_server_not_healthy"
         max_tokens = max(256, min(8192, int(max_tokens)))
+
+        if cancel_check and cancel_check():
+            return "", "cancelled"
 
         payload = {
             "model": status.model_name,
@@ -16425,6 +16803,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             method="POST",
         )
         try:
+            if cancel_check and cancel_check():
+                return "", "cancelled"
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read()
         except Exception as exc:
@@ -17229,6 +17609,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             " ".join(recent_user_lines).strip(),
         ]
         query_text = " ".join(part for part in query_parts if part).strip()
+        fr_format_rag_boost = False
+        is_fr_reader = getattr(self, "_is_fr_financial_reporting_module", None)
+        if callable(is_fr_reader):
+            try:
+                fr_format_rag_boost = bool(
+                    is_fr_reader() and tutor_query_suggests_format_rag_focus(query_text)
+                )
+            except Exception:
+                fr_format_rag_boost = False
         target_query_key = cache_sha1(
             json.dumps(
                 {
@@ -17304,6 +17693,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         "rag_min_score": rag_min_score,
                         "rag_preset": resolved_rag_preset,
                         "max_chunks_per_source": max_chunks_per_source,
+                        "fr_format_rag_boost": 1 if fr_format_rag_boost else 0,
                     },
                     "semantic_enabled": bool(getattr(self, "semantic_enabled", True)),
                     "doc_keys": doc_keys,
@@ -17490,7 +17880,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     continue
             doc_scores: dict[int, dict[str, Any]] = {}
             for query_idx, (query_variant, weight) in enumerate(query_variants):
-                ranked = lexical_rank_rag_chunks(query_variant, chunk_texts, top_n=lexical_top_n)
+                ranked = lexical_rank_rag_chunks(
+                    query_variant,
+                    chunk_texts,
+                    top_n=lexical_top_n,
+                    fr_presentation_rag_boost=fr_format_rag_boost,
+                )
                 for chunk_idx, lex_score in ranked:
                     if chunk_idx < 0 or chunk_idx >= len(chunk_texts):
                         continue
@@ -21463,9 +21858,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return action in AI_TUTOR_SAFE_AUTONOMOUS_ACTIONS
         return action in AI_TUTOR_ALLOWED_ACTIONS
 
-    def _build_gap_generation_prompt(self, topic: str, count: int, snapshot: dict[str, Any]) -> str:
-        from studyplan.ai.prompt_design import build_generation_prompt, get_task_prompt_spec
-        spec = get_task_prompt_spec("gap_generation")
+    def _build_gap_generation_prompt(
+        self,
+        topic: str,
+        count: int,
+        snapshot: dict[str, Any],
+        *,
+        prompt_task_id: str | None = None,
+    ) -> str:
+        from studyplan.ai.prompt_design import (
+            TASK_ID_CLASSIFICATION_DRILL,
+            TASK_ID_GAP_GENERATION,
+            build_generation_prompt,
+            gap_fr_classification_extra_rules,
+            get_task_prompt_spec,
+        )
+        task_id = str(prompt_task_id or TASK_ID_GAP_GENERATION).strip() or TASK_ID_GAP_GENERATION
+        try:
+            spec = get_task_prompt_spec(task_id)
+        except KeyError:
+            task_id = TASK_ID_GAP_GENERATION
+            spec = get_task_prompt_spec(task_id)
         payload = {
             "topic": str(topic or ""),
             "count": int(count),
@@ -21480,13 +21893,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         rules = list(_rules) if isinstance(_rules, (list, tuple)) else []
         schema_one_line = str(spec.get("schema_one_line", "") or "").strip()
         syllabus_scope = get_syllabus_scope_instruction(str(getattr(self, "module_id", "") or ""))
-        extra = ["Syllabus scope (strict — only examinable content): " + syllabus_scope.strip()] if (syllabus_scope and syllabus_scope.strip()) else None
+        extra_rules: list[str] = []
+        if syllabus_scope and syllabus_scope.strip():
+            extra_rules.append("Syllabus scope (strict — only examinable content): " + syllabus_scope.strip())
+        if task_id == TASK_ID_GAP_GENERATION:
+            extra_rules.extend(
+                gap_fr_classification_extra_rules(
+                    str(getattr(self, "module_id", "") or ""),
+                    str(getattr(self, "module_title", "") or ""),
+                )
+            )
         return build_generation_prompt(
             role_and_style=role,
             schema_one_line=schema_one_line,
             rules=rules,
             payload_json=json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True),
-            extra_rules=extra,
+            extra_rules=extra_rules if extra_rules else None,
         )
 
     def _parse_generated_gap_questions(self, text: str) -> tuple[str, list[dict[str, Any]], str | None]:
@@ -22153,7 +22575,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             for item in outline_raw:
                 text = str(item or "").strip()
                 if text:
-                    outline.append(text[:220])
+                    outline.append(text[:400])
         if not outline:
             outline = [
                 "Define the relevant model or objective.",
@@ -22331,8 +22753,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._save_section_c_question_bank()
         return normalized
 
+    def _is_fr_financial_reporting_module(self) -> bool:
+        """True for ACCA FR (F7) or titles that identify Financial Reporting (tutor / Section C FR rules)."""
+        mid = str(getattr(self, "module_id", "") or "").strip().lower()
+        if mid == "acca_f7":
+            return True
+        title = str(getattr(self, "module_title", "") or "").strip().lower()
+        return "financial reporting" in title
+
     def _build_section_c_generation_prompt(self, chapter: str, snapshot: dict[str, Any] | None = None) -> str:
-        from studyplan.ai.prompt_design import build_generation_prompt, get_task_prompt_spec
+        from studyplan.ai.prompt_design import (
+            build_generation_prompt,
+            get_task_prompt_spec,
+            section_c_fr_extra_rules,
+            section_c_schema_one_line,
+        )
         spec = get_task_prompt_spec("section_c")
         section_c_intel = self._build_section_c_intelligence_snapshot(chapter, snapshot=snapshot)
         payload = {
@@ -22353,15 +22788,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         role = str(spec.get("role_base", "") or "").strip()
         _rules = spec.get("rules", []) or []
         rules = list(_rules) if isinstance(_rules, (list, tuple)) else []
-        schema_one_line = str(spec.get("schema_one_line", "") or "").strip()
+        schema_one_line = section_c_schema_one_line(
+            str(getattr(self, "module_id", "") or ""),
+            str(getattr(self, "module_title", "") or ""),
+        ).strip()
         syllabus_scope = get_syllabus_scope_instruction(str(getattr(self, "module_id", "") or ""))
-        extra = ["Syllabus scope (strict): " + syllabus_scope.strip()] if (syllabus_scope and syllabus_scope.strip()) else None
+        extra_rules: list[str] = []
+        if syllabus_scope and syllabus_scope.strip():
+            extra_rules.append("Syllabus scope (strict): " + syllabus_scope.strip())
+        extra_rules.extend(
+            section_c_fr_extra_rules(
+                str(getattr(self, "module_id", "") or ""),
+                str(getattr(self, "module_title", "") or ""),
+            )
+        )
         return build_generation_prompt(
             role_and_style=role,
             schema_one_line=schema_one_line,
             rules=rules,
             payload_json=json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True),
-            extra_rules=extra,
+            extra_rules=extra_rules if extra_rules else None,
         )
 
     def _parse_generated_section_c_question(
@@ -23775,6 +24221,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         open_abiword_btn.set_tooltip_text("Open current answer in AbiWord (word processor). When done, use Import from file to bring content back.")
         import_file_btn = Gtk.Button(label="Import from file")
         import_file_btn.set_tooltip_text("Import text from a file (CSV, TXT, RTF) into the answer box.")
+        format_checklist_btn = Gtk.Button(label="Format checklist")
+        format_checklist_btn.set_tooltip_text("Statement presentation reminders (SoFP, SoPL, SoCF, notes).")
+        format_checklist_btn.set_visible(bool(self._is_fr_financial_reporting_module()))
+        format_checklist_btn.connect("clicked", lambda *_: self._open_statement_format_checklists_dialog())
         controls.append(load_btn)
         controls.append(generate_btn)
         controls.append(timer_btn)
@@ -23783,6 +24233,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         controls.append(open_gnumeric_btn)
         controls.append(open_abiword_btn)
         controls.append(import_file_btn)
+        controls.append(format_checklist_btn)
         content.append(controls)
 
         status_label = Gtk.Label(label="")
@@ -24233,11 +24684,45 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "clicked",
             lambda *_: self._import_file_into_text_view(answer_view, transient_for=dialog, title="Import into answer"),
         )
-        chapter_dropdown.connect(
-            "notify::selected",
-            lambda *_: _load_saved_case(_selected_chapter()),
-        )
+
+        def _sync_format_checklist_visibility(*_args: object) -> None:
+            try:
+                format_checklist_btn.set_visible(bool(self._is_fr_financial_reporting_module()))
+            except Exception:
+                pass
+
+        section_c_fr_poll_id: list[int] = [0]
+
+        def _stop_section_c_fr_poll(*_args: object) -> None:
+            pid = int(section_c_fr_poll_id[0] or 0)
+            if pid:
+                try:
+                    GLib.source_remove(pid)
+                except Exception:
+                    pass
+                section_c_fr_poll_id[0] = 0
+
+        def _poll_section_c_fr_module() -> bool:
+            try:
+                vis = bool(dialog.get_visible())
+            except Exception:
+                vis = False
+            if not vis:
+                section_c_fr_poll_id[0] = 0
+                return False
+            _sync_format_checklist_visibility()
+            return True
+
+        def _on_chapter_dropdown_changed(*_args: object) -> None:
+            _sync_format_checklist_visibility()
+            _load_saved_case(_selected_chapter())
+
+        chapter_dropdown.connect("notify::selected", _on_chapter_dropdown_changed)
+        dialog.connect("destroy", _stop_section_c_fr_poll)
         dialog.connect("response", lambda d, _r: d.destroy())
+
+        _sync_format_checklist_visibility()
+        section_c_fr_poll_id[0] = int(GLib.timeout_add(1000, _poll_section_c_fr_module))
 
         _load_saved_case(initial_chapter, question_index=initial_question_index)
         _refresh_rewrite_panel()
@@ -24429,6 +24914,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         topic: str,
         snapshot: dict[str, Any],
         requested_count: int = AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS,
+        *,
+        prompt_task_id: str | None = None,
     ) -> tuple[bool, str]:
         if not bool(getattr(self, "ai_tutor_gap_generation_enabled", True)):
             return False, "AI gap-question generation is disabled."
@@ -24439,6 +24926,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             chapter = str(snapshot.get("current_topic", "") or "").strip()
         if chapter not in getattr(self.engine, "CHAPTERS", []):
             return False, "No valid chapter for gap-question generation."
+        from studyplan.ai.prompt_design import TASK_ID_CLASSIFICATION_DRILL
+
+        resolved_prompt_task = str(prompt_task_id or "").strip() or None
+        is_classification_drill = resolved_prompt_task == TASK_ID_CLASSIFICATION_DRILL
         try:
             count = int(requested_count)
         except Exception:
@@ -24463,7 +24954,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     or "No local model available for gap-question generation. Install and run Ollama, then add a model (e.g. llama3.2)."
                 )
             model_candidates = [selected]
-        prompt = self._build_gap_generation_prompt(chapter, count, snapshot)
+        prompt_task_kwargs = {"prompt_task_id": resolved_prompt_task} if resolved_prompt_task is not None else {}
+        prompt = self._build_gap_generation_prompt(chapter, count, snapshot, **prompt_task_kwargs)
         model_name = ""
         parsed_chapter = ""
         questions: list[dict[str, Any]] = []
@@ -24480,7 +24972,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if parse_err and not questions:
                 from studyplan.ai.prompt_design import RETRY_SUFFIX_ONE_ITEM, append_retry_suffix
                 retry_prompt = append_retry_suffix(
-                    self._build_gap_generation_prompt(chapter, 1, snapshot),
+                    self._build_gap_generation_prompt(chapter, 1, snapshot, **prompt_task_kwargs),
                     RETRY_SUFFIX_ONE_ITEM,
                 )
                 text2, err2 = self._ollama_generate_text(candidate, retry_prompt)
@@ -24583,7 +25075,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             {"gap_q_saved_count": int(stats.get("gap_q_saved_count", 0) or 0) + added},
             persist=False,
         )
-        success_msg = f"Generated and saved {added} gap question(s) for {final_chapter}."
+        if is_classification_drill:
+            success_msg = f"Generated and saved {added} classification/presentation question(s) for {final_chapter}."
+        else:
+            success_msg = f"Generated and saved {added} gap question(s) for {final_chapter}."
         if parse_warning:
             success_msg += " Schema recovery applied."
         return True, success_msg
@@ -31701,6 +32196,175 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if os.path.exists(path):
                 return label, path
         return None, None
+
+    def _reconfig_checkpoint_path(self, module_id: str, engine) -> str:
+        data_file = getattr(engine, "DATA_FILE", "") or ""
+        if data_file:
+            return os.path.join(os.path.dirname(os.path.abspath(data_file)), "reconfig_checkpoint.json")
+        return os.path.join(Config.CONFIG_HOME, str(module_id or "module"), "reconfig_checkpoint.json")
+
+    def _pending_reconfig_json_path(self, module_id: str, engine) -> str | None:
+        _lbl, ap = self._module_config_active_path(module_id)
+        if ap:
+            return os.path.join(os.path.dirname(ap), f"{module_id}.pending_reconfig.json")
+        mod_dir = getattr(engine, "MODULES_DIR", "") or ""
+        if mod_dir:
+            return os.path.join(mod_dir, f"{module_id}.pending_reconfig.json")
+        return None
+
+    def _save_pending_reconfig_disk(
+        self,
+        module_id: str,
+        engine,
+        proposed: dict[str, Any],
+        confidence: float,
+        reason: str,
+    ) -> bool:
+        path = self._pending_reconfig_json_path(module_id, engine)
+        if not path:
+            return False
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            payload = {
+                "version": 1,
+                "saved_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "module_id": module_id,
+                "confidence": round(float(confidence), 4),
+                "reason": str(reason or "").strip(),
+                "proposed": proposed,
+            }
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=True, indent=2)
+            os.replace(tmp, path)
+            return True
+        except (OSError, TypeError, ValueError):
+            return False
+
+    def _load_pending_reconfig_disk(self, module_id: str, engine) -> dict[str, Any] | None:
+        path = self._pending_reconfig_json_path(module_id, engine)
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return None
+            if str(data.get("module_id", "")).strip() != str(module_id).strip():
+                return None
+            return data
+        except (OSError, json.JSONDecodeError, TypeError):
+            return None
+
+    def _clear_pending_reconfig_disk(self, module_id: str, engine) -> None:
+        path = self._pending_reconfig_json_path(module_id, engine)
+        if path and os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    def _apply_reconfig_merge_and_save(
+        self,
+        module_id: str,
+        engine,
+        proposed: dict[str, Any],
+        base_config: dict[str, Any],
+        *,
+        notification_title: str = "Module",
+        notification_detail: str = "",
+    ) -> tuple[bool, str]:
+        """Merge proposed reconfig with base_config, save module JSON, reload engine. Returns (ok, user message)."""
+        ok, err = self._validate_module_id_for_save(module_id)
+        if not ok:
+            return False, err or "Invalid module ID."
+        try:
+            merged = engine.build_module_config_from_syllabus(proposed, base_config=base_config)
+        except Exception as e:
+            return False, f"Merge failed: {e}"
+        n_completed_rag = 0
+        try:
+            from studyplan.syllabus_outcomes import complete_truncated_syllabus_outcomes
+
+            merged, n_completed_rag = complete_truncated_syllabus_outcomes(
+                merged, self._syllabus_ai_llm_generate, max_tokens=256, max_to_complete=50
+            )
+        except Exception:
+            pass
+        merge_warnings = engine.validate_module_config(merged) if hasattr(engine, "validate_module_config") else []
+        _, save_path = self._module_config_active_path(module_id)
+        if not save_path:
+            folder = getattr(engine, "MODULES_DIR", "") or os.path.join(Config.CONFIG_HOME, "modules")
+            try:
+                os.makedirs(folder, exist_ok=True)
+                save_path = os.path.join(folder, f"{module_id}.json")
+            except Exception as e:
+                return False, f"Could not create save path: {e}"
+        try:
+            with open(save_path, "w", encoding="utf-8") as f:
+                json.dump(merged, f, ensure_ascii=True, indent=2)
+        except Exception as e:
+            return False, f"Save failed: {e}"
+        engine._apply_module_config(merged)
+        title = merged.get("title")
+        if isinstance(title, str) and title.strip():
+            engine.module_title = title.strip()
+            self.module_title = engine.module_title
+        msg = notification_detail or f"Reconfigured and saved {module_id}.json"
+        if n_completed_rag > 0:
+            msg += f" Completed {n_completed_rag} truncated outcome(s) with AI."
+        meta = merged.get("syllabus_meta") or {}
+        unmapped = meta.get("unmapped_chapters") or []
+        if isinstance(unmapped, list) and unmapped:
+            msg += f". {len(unmapped)} chapter(s) unmapped (no outcomes)."
+        if merge_warnings:
+            msg += " Merged config has validation warnings (View Module Metadata)."
+
+        def _outcome_count_cfg(c: dict) -> int:
+            s = c.get("syllabus_structure") or {}
+            return sum(int((info or {}).get("outcome_count", 0) or 0) for info in s.values() if isinstance(info, dict))
+
+        old_n, new_n = _outcome_count_cfg(base_config), _outcome_count_cfg(merged)
+        if old_n > 0 and new_n < old_n * 0.8:
+            msg += " Outcome count decreased; consider re-running RAG reconfig or re-import if unexpected."
+
+        self._clear_pending_reconfig_disk(module_id, engine)
+        try:
+            delattr(self, "_pending_reconfig_proposal")
+        except Exception:
+            pass
+        link_result = self._run_refresh_and_link_after_apply(engine)
+        linked = (link_result.get("linking") or {}).get("questions_linked", 0) or 0
+        if linked > 0:
+            msg += f" Linked {linked} question(s) to outcomes (heuristic)."
+        if notification_title:
+            self.send_notification(notification_title, msg)
+        self._refresh_workbench_shell_status()
+        self._refresh_tutor_workspace_page()
+        self._refresh_coach_workspace_page()
+        self._refresh_insights_workspace_page()
+        self._refresh_settings_workspace_page()
+        try:
+            _meta_rag = merged.get("syllabus_meta")
+            GLib.idle_add(lambda m=_meta_rag: self._maybe_prompt_add_syllabus_pdfs_to_tutor_rag(m) or False)
+        except Exception:
+            pass
+        if getattr(self, "_refresh_and_link_unified_summary", False):
+
+            def _outcome_count(c: dict) -> int:
+                s = c.get("syllabus_structure") or {}
+                return sum(int((info or {}).get("outcome_count", 0) or 0) for info in s.values() if isinstance(info, dict))
+
+            summary = self._build_refresh_and_link_summary(
+                _outcome_count(merged),
+                link_result,
+                unmapped_chapters=meta.get("unmapped_chapters") if isinstance(meta.get("unmapped_chapters"), list) else None,
+            )
+            self._show_text_dialog("Refresh syllabus & link outcomes", summary, Gtk.MessageType.INFO)
+            self._refresh_and_link_unified_summary = False
+        return True, msg
 
     def _validate_module_config_schema(self, config: dict[str, Any] | None) -> list[str]:
         warnings: list[str] = []

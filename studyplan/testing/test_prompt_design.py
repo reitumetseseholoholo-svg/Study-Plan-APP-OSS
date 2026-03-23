@@ -79,6 +79,48 @@ def test_get_task_prompt_spec_unknown_task_raises() -> None:
         pd.get_task_prompt_spec("unknown_task")
 
 
+def test_section_c_schema_one_line_adds_suffix_for_fr() -> None:
+    fm_schema = pd.section_c_schema_one_line("acca_fm", "")
+    fr_schema = pd.section_c_schema_one_line("acca_f7", "")
+    assert pd.SECTION_C_SCHEMA_FR_SUFFIX.strip() in fr_schema
+    assert pd.SECTION_C_SCHEMA_FR_SUFFIX.strip() not in fm_schema
+    assert fr_schema.startswith(fm_schema[:30])
+
+
+def test_classification_drill_prompt_contains_presentation_rules() -> None:
+    spec = pd.get_task_prompt_spec(pd.TASK_ID_CLASSIFICATION_DRILL)
+    out = pd.build_generation_prompt(
+        role_and_style=str(spec.get("role_base", "") or ""),
+        schema_one_line=str(spec.get("schema_one_line", "") or ""),
+        rules=list(spec.get("rules") or []),
+        payload_json='{"topic":"Chapter 1","count":3}',
+    )
+    low = out.lower()
+    assert "presentation" in low or "classification" in low or "disclosure" in low
+
+
+def test_get_task_prompt_spec_classification_drill() -> None:
+    spec = pd.get_task_prompt_spec(pd.TASK_ID_CLASSIFICATION_DRILL)
+    assert spec.get("role_base") == pd.GAP_GENERATION_ROLE_BASE
+    assert spec.get("schema_one_line") == pd.GAP_SCHEMA_ONE_LINE
+    rules = spec.get("rules") or []
+    assert any("presentation" in str(r).lower() or "classification" in str(r).lower() for r in rules)
+
+
+def test_gap_fr_classification_extra_rules() -> None:
+    assert pd.gap_fr_classification_extra_rules("acca_f7", "")
+    assert not pd.gap_fr_classification_extra_rules("acca_fm", "")
+
+
+def test_section_c_fr_extra_rules_for_fr_module() -> None:
+    """FR Section C extra rules apply for acca_f7 or Financial Reporting titles."""
+    rules = pd.section_c_fr_extra_rules("acca_f7", "")
+    assert rules == list(pd.SECTION_C_FR_EXTRA_RULES)
+    assert rules and any("Prepare" in r for r in rules)
+    assert pd.section_c_fr_extra_rules("acca_fm", "") == []
+    assert pd.section_c_fr_extra_rules("", "Something Financial Reporting") == list(pd.SECTION_C_FR_EXTRA_RULES)
+
+
 def test_build_judge_prompt_3es_order() -> None:
     """build_judge_prompt_3es outputs Role → Schema → Rules → Payload → JSON (3Es order)."""
     out = pd.build_judge_prompt_3es(

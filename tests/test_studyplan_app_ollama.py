@@ -788,6 +788,20 @@ def test_lexical_rank_rag_chunks_prioritizes_relevant_chunk():
     assert ranked[0][0] == 0
 
 
+def test_lexical_rank_rag_chunks_fr_presentation_boost_raises_presentation_chunk_score():
+    chunks = [
+        "uniquemarkerfoo bar baz filler text.",
+        "ias 7 statement of cash flows operating activities investing activities financing activities disclosure.",
+    ]
+    q = "uniquemarkerfoo bar baz"
+    off = lexical_rank_rag_chunks(q, chunks, top_n=2, fr_presentation_rag_boost=False)
+    on = lexical_rank_rag_chunks(q, chunks, top_n=2, fr_presentation_rag_boost=True)
+    assert off and on
+    off_by = {idx: sc for idx, sc in off}
+    on_by = {idx: sc for idx, sc in on}
+    assert on_by.get(1, 0.0) > off_by.get(1, 0.0)
+
+
 def test_build_rag_context_block_formats_snippet_ids():
     block = build_rag_context_block(
         [

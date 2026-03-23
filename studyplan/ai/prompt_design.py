@@ -52,7 +52,13 @@ SECTION_C_SCHEMA_ONE_LINE = (
     '{"chapter":"...","scenario":"Full case narrative (company, situation, numbers). 150-400 words. No placeholders.",'
     '"requirements":[{"part":"a","requirement_text":"Requirement with command verb (e.g. Calculate, Evaluate, Recommend).","marks":8},'
     '{"part":"b","requirement_text":"...","marks":8},{"part":"c","requirement_text":"...","marks":4}],'
-    '"model_answer_outline":["...","...","..."],"time_budget_minutes":45}'
+    '"model_answer_outline":["bullet aligned to (a)","bullet aligned to (b)","bullet aligned to (c)"],'
+    '"time_budget_minutes":45}'
+)
+SECTION_C_SCHEMA_FR_SUFFIX = (
+    " For each requirement that asks to Prepare or Present a primary statement or a note extract, "
+    "the matching model_answer_outline entry must be a compact skeleton (main headings, material line items, "
+    "and key subtotals), not narrative paragraphs."
 )
 SYLLABUS_OUTCOMES_SCHEMA_ONE_LINE = (
     '{"outcomes":[{"id":"...","text":"...","level":1 or 2 or 3,"chapter":"<exact chapter title>"}],"warnings":["optional note"]}'
@@ -130,6 +136,16 @@ GAP_GENERATION_RULES = [
     GRAMMAR_QUALITY_RULE,
 ]
 
+# FR gap generation: classification / disclosure MCQs mixed into normal gap batches (acca_f7 or Financial Reporting title).
+GAP_FR_CLASSIFICATION_EXTRA_RULES = [
+    "Include at least one question that tests presentation or classification: stem asks where an item is reported "
+    '(e.g. "Where should … be presented?" or "In which section of the financial statements …?") with four options '
+    'that name the statement and area (e.g. "Statement of financial position – equity", '
+    '"Statement of cash flows – operating activities").',
+    "Optionally include one disclosure-style question: which items must be disclosed or presented for a named IFRS/IAS "
+    "when it fits the topic; single best answer with four substantive options.",
+]
+
 # Section C generation: role + rules; app may add extra_rules (syllabus_scope).
 SECTION_C_ROLE_BASE = (
     "Generate one ACCA exam-type Section C constructed-response case as "
@@ -141,12 +157,20 @@ SECTION_C_RULES = [
     "requirements: Exactly 3 parts (a), (b), (c). Each has part (a/b/c), requirement_text (one clear task with command verb), and marks. Total marks must equal 20.",
     "Command verbs: Calculate, Evaluate, Recommend, Discuss, Explain, Assess, Compare, Advise.",
     "Part (a) often 8 marks (calculation/application), (b) 8 marks (discussion), (c) 4 marks (recommendation). Adjust so total = 20.",
-    "model_answer_outline: 3 short bullets matching (a)(b)(c).",
+    "model_answer_outline: exactly 3 strings in order (a)(b)(c); each must map to its requirement. Use heading-style bullets for preparation tasks; short prose bullets for discussion-only parts.",
     "time_budget_minutes: 20-90 (typically 45).",
     "Intelligence level (use payload.section_c_intelligence.target_difficulty): supportive = clearer scenario, more guided requirements; standard = typical ACCA exam difficulty; stretch = more complex scenario or integrated requirements.",
     "Use payload.section_c_intelligence.target_difficulty to tune scenario complexity.",
     "If payload.section_c_intelligence.rubric_emphasis is set, emphasise that skill in one requirement.",
     "Grammar: scenario, requirements, and model_answer_outline must be in correct English with no grammatical or spelling errors.",
+]
+
+# FR / financial reporting: appended to Section C generation when module is FR (acca_f7 or Financial Reporting title).
+SECTION_C_FR_EXTRA_RULES = [
+    "FR focus: At least one requirement should use Prepare or Present (e.g. 'Prepare the statement of financial position for …', 'Prepare the statement of cash flows …', 'Prepare extracts of notes to the financial statements …'). Other parts may be calculation, explanation, or interpretation as appropriate.",
+    "Marks split: When using preparation tasks, typical split is (a) main statement 10–14 marks, (b) second statement or detailed workings 4–8 marks, (c) short explanation, disclosure, or recommendation 2–6 marks; total must remain 20.",
+    "model_answer_outline: For any part that asks to prepare or present a statement, the matching bullet must be a clear statement skeleton (key headings and line items, e.g. non-current assets, current assets, equity, subtotals), not only a generic narrative.",
+    "Use IFRS/IAS terminology where the scenario implies a standard (e.g. IAS 1 presentation, IAS 7 cash flows, relevant recognition standards).",
 ]
 
 # Syllabus extraction: default role for build_syllabus_extraction_prompt and reconfig.
@@ -200,6 +224,16 @@ TASK_ID_AUTOPILOT = "autopilot"
 TASK_ID_COACH = "coach"
 TASK_ID_GAP_GENERATION = "gap_generation"
 TASK_ID_SECTION_C = "section_c"
+TASK_ID_CLASSIFICATION_DRILL = "classification_drill"
+
+CLASSIFICATION_DRILL_RULES = [
+    "Same JSON schema and length-balance rules as gap_generation (chapter + questions array or bare array).",
+    "Every stem in this batch uses presentation/classification or disclosure focus: where reported, which statement, "
+    "which section (operating/investing/financing), or required disclosures under a standard.",
+    "Options must name real statement areas (SoFP/SoPL/SoCF/notes; equity/liabilities/NCA/current assets; OCI; etc.) "
+    "— not vague wording.",
+    GRAMMAR_QUALITY_RULE,
+]
 
 _TASK_SPECS: dict[str, dict[str, object]] = {
     TASK_ID_AUTOPILOT: {
@@ -224,6 +258,11 @@ _TASK_SPECS: dict[str, dict[str, object]] = {
         "rules": SECTION_C_RULES,
         "schema_one_line": SECTION_C_SCHEMA_ONE_LINE,
     },
+    TASK_ID_CLASSIFICATION_DRILL: {
+        "role_base": GAP_GENERATION_ROLE_BASE,
+        "rules": CLASSIFICATION_DRILL_RULES,
+        "schema_one_line": GAP_SCHEMA_ONE_LINE,
+    },
 }
 
 # Optional versioned overrides for A/B or rollout. Key: task_id -> version -> spec (same shape as _TASK_SPECS).
@@ -240,6 +279,37 @@ def get_prompt_version(task_id: str) -> str:
     key = "STUDYPLAN_PROMPT_VERSION_" + (task_id or "").strip().upper()
     raw = (os.environ.get(key) or "").strip().lower()
     return raw if raw else "default"
+
+
+def section_c_schema_one_line(module_id: str = "", module_title: str = "") -> str:
+    """Section C JSON schema hint; FR modules get stricter model_answer_outline wording."""
+    base = str(SECTION_C_SCHEMA_ONE_LINE or "").strip()
+    if section_c_fr_extra_rules(module_id, module_title):
+        return base + SECTION_C_SCHEMA_FR_SUFFIX
+    return base
+
+
+def gap_fr_classification_extra_rules(module_id: str = "", module_title: str = "") -> list[str]:
+    """Extra gap-generation rules for FR (classification / disclosure MCQs)."""
+    mid = (module_id or "").strip().lower()
+    title_l = (module_title or "").strip().lower()
+    if mid != "acca_f7" and "financial reporting" not in title_l:
+        return []
+    return list(GAP_FR_CLASSIFICATION_EXTRA_RULES)
+
+
+def section_c_fr_extra_rules(module_id: str = "", module_title: str = "") -> list[str]:
+    """
+    Return extra Section C rules for FR (Financial Reporting) modules.
+
+    Used by the app when building Section C generation prompts so cases align with
+    statement preparation and presentation-style requirements.
+    """
+    mid = (module_id or "").strip().lower()
+    title_l = (module_title or "").strip().lower()
+    if mid != "acca_f7" and "financial reporting" not in title_l:
+        return []
+    return list(SECTION_C_FR_EXTRA_RULES)
 
 
 def get_task_prompt_spec(task_id: str, version: str | None = None) -> dict[str, object]:

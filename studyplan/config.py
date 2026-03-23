@@ -196,6 +196,18 @@ class Config:
     LLAMA_CPP_SERVER_STARTUP_TIMEOUT = _parse_float(
         "STUDYPLAN_LLAMA_SERVER_STARTUP_TIMEOUT", 60.0, min_value=10.0, max_value=180.0,
     )
+    LLAMA_CPP_SERVER_IDLE_SHUTDOWN_SECONDS = _parse_float(
+        "STUDYPLAN_LLAMA_SERVER_IDLE_SHUTDOWN_SECONDS",
+        300.0,
+        min_value=0.0,
+        max_value=86400.0,
+    )
+    LLAMA_CPP_SERVER_IDLE_POLL_SECONDS = _parse_float(
+        "STUDYPLAN_LLAMA_SERVER_IDLE_POLL_SECONDS",
+        10.0,
+        min_value=1.0,
+        max_value=300.0,
+    )
     # Ollama model dirs: default from OLLAMA_MODELS_DIR; override with full paths if needed
     LLAMA_CPP_OLLAMA_MANIFESTS_DIR = _env_text(
         "STUDYPLAN_LLAMA_CPP_OLLAMA_MANIFESTS_DIR",

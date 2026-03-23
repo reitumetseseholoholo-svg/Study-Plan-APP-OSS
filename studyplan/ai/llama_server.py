@@ -47,6 +47,10 @@ class LlamaServerConfig:
     startup_timeout_seconds: float = 60.0
     health_poll_interval: float = 0.5
     shutdown_timeout_seconds: float = 10.0
+    # After this many seconds without mark_used / successful ensure_running touch, stop llama-server
+    # to drop resident model memory. 0 disables.
+    idle_shutdown_seconds: float = 0.0
+    idle_poll_interval_seconds: float = 10.0
 
 
 @dataclass
@@ -60,6 +64,8 @@ class LlamaServerManager:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _registered_atexit: bool = field(default=False, init=False, repr=False)
     _startup_latency_ms: int = field(default=0, init=False, repr=False)
+    _last_activity_mono: float = field(default=0.0, init=False, repr=False)
+    _idle_watcher_thread: threading.Thread | None = field(default=None, init=False, repr=False)
 
     @property
     def endpoint(self) -> str:
@@ -91,6 +97,7 @@ class LlamaServerManager:
             if self._process and self._process.poll() is None:
                 if self._current_model_path == model_path:
                     if self._health_check_unlocked():
+                        self._last_activity_mono = time.monotonic()
                         return True
                 self._stop_unlocked()
 
@@ -103,6 +110,13 @@ class LlamaServerManager:
     def swap_model(self, model_path: str, model_name: str = "") -> bool:
         """Stop current server and start with a different model."""
         return self.ensure_running(model_path, model_name)
+
+    def mark_used(self) -> None:
+        """Record activity so idle shutdown does not stop a busy server."""
+        with self._lock:
+            if self._process is None or self._process.poll() is not None:
+                return
+            self._last_activity_mono = time.monotonic()
 
     def status(self) -> dict[str, Any]:
         return {
@@ -168,6 +182,8 @@ class LlamaServerManager:
         self._startup_latency_ms = elapsed
 
         if ok:
+            self._last_activity_mono = time.monotonic()
+            self._ensure_idle_watcher_started_unlocked()
             log.info(
                 "llama-server ready in %dms (pid=%d, model=%s)",
                 elapsed,
@@ -184,6 +200,46 @@ class LlamaServerManager:
 
         return ok
 
+    def _ensure_idle_watcher_started_unlocked(self) -> None:
+        lim = float(self.config.idle_shutdown_seconds or 0.0)
+        if lim <= 0:
+            return
+        if self._idle_watcher_thread is not None and self._idle_watcher_thread.is_alive():
+            return
+        thread = threading.Thread(
+            target=self._idle_watcher_loop,
+            name="studyplan-llama-idle",
+            daemon=True,
+        )
+        self._idle_watcher_thread = thread
+        thread.start()
+
+    def _idle_watcher_loop(self) -> None:
+        poll = float(self.config.idle_poll_interval_seconds or 10.0)
+        poll = max(1.0, min(120.0, poll))
+        while True:
+            time.sleep(poll)
+            lim = float(self.config.idle_shutdown_seconds or 0.0)
+            if lim <= 0:
+                continue
+            to_finalize: subprocess.Popen[bytes] | None = None
+            with self._lock:
+                proc = self._process
+                if proc is None or proc.poll() is not None:
+                    continue
+                if (time.monotonic() - self._last_activity_mono) <= lim:
+                    continue
+                log.info(
+                    "llama-server idle for %.0fs; stopping to free model memory",
+                    lim,
+                )
+                self._process = None
+                self._current_model_path = ""
+                self._current_model_name = ""
+                to_finalize = proc
+            if to_finalize is not None:
+                self._finalize_subprocess(to_finalize)
+
     def _stop_unlocked(self) -> None:
         proc = self._process
         if proc is None:
@@ -195,6 +251,9 @@ class LlamaServerManager:
         if proc.poll() is not None:
             return
 
+        self._finalize_subprocess(proc)
+
+    def _finalize_subprocess(self, proc: subprocess.Popen[bytes]) -> None:
         log.info("Stopping llama-server (pid=%d)", proc.pid)
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)

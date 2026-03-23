@@ -42,6 +42,12 @@ class PerformanceCacheService:
         self.max_size = config.get('cache_max_size', 1000)
         self.default_ttl = config.get('default_ttl_seconds', 300)  # 5 minutes
         self.ttl_config = config.get('cache_ttl', {})
+        # Large RAG doc payloads: cap in-memory rag_doc:* entries separately from total cache size.
+        _rag_cap = config.get('rag_doc_memory_max', 32)
+        try:
+            self.rag_doc_memory_max = max(0, int(_rag_cap))
+        except (TypeError, ValueError):
+            self.rag_doc_memory_max = 32
         
         # Thread-safe cache storage
         self._cache: Dict[str, CacheEntry[Any]] = {}
@@ -79,6 +85,25 @@ class PerformanceCacheService:
                 self._cache.pop(key, None)
                 self._access_order.pop(key, None)
     
+    def _evict_excess_rag_docs(self) -> None:
+        """Remove oldest rag_doc:* entries until at or below rag_doc_memory_max."""
+        if self.rag_doc_memory_max <= 0:
+            return
+        with self._lock:
+            rag_keys = [k for k in self._access_order if k.startswith("rag_doc:")]
+            while len(rag_keys) > self.rag_doc_memory_max:
+                victim = None
+                for k in self._access_order:
+                    if k.startswith("rag_doc:"):
+                        victim = k
+                        break
+                if victim is None:
+                    break
+                self._cache.pop(victim, None)
+                self._access_order.pop(victim, None)
+                self._stats['evictions'] += 1
+                rag_keys = [k for k in self._access_order if k.startswith("rag_doc:")]
+
     def _evict_lru(self) -> None:
         """Evict least recently used entries when cache is full"""
         with self._lock:
@@ -167,6 +192,10 @@ class PerformanceCacheService:
             
             self._cache[key] = entry
             self._access_order[key] = time.time()
+            self._access_order.move_to_end(key)
+
+            if key.startswith("rag_doc:"):
+                self._evict_excess_rag_docs()
     
     def delete(self, key: str) -> bool:
         """Delete entry from cache"""
@@ -267,5 +296,10 @@ PERFORMANCE_CACHE_CONFIG_SCHEMA = {
             'ui_render': {'type': 'integer', 'default': 30}
         },
         'description': 'TTL configuration per cache type'
-    }
+    },
+    'rag_doc_memory_max': {
+        'type': 'integer',
+        'default': 32,
+        'description': 'Max in-memory rag_doc:* entries (large PDF chunk payloads); 0 = no separate cap',
+    },
 }
