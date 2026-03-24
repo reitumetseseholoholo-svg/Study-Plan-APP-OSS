@@ -25,9 +25,38 @@ from typing import Any
 from ..config import Config
 from .gguf_registry import GgufModel, GgufRegistry, GgufRegistryConfig
 from .llama_server import LlamaServerConfig, LlamaServerManager
+from .model_infer_tuning import resolve_model_runtime_tuning
 from .model_selector import ModelSelector, Purpose
 
 log = logging.getLogger(__name__)
+
+
+def _launch_kw_for_gguf(model: GgufModel, purpose: str, cfg: type) -> dict[str, int]:
+    """Per-model llama-server flags derived from ``model_infer_tuning`` + Config."""
+    tun = resolve_model_runtime_tuning(model.name, purpose=purpose, gguf=model)
+    base_th = int(getattr(cfg, "LLAMA_CPP_SERVER_THREADS", 4) or 4)
+    base_ctx = int(getattr(cfg, "LLAMA_CPP_SERVER_CTX_SIZE", 4096) or 4096)
+    ngl_cfg = int(getattr(cfg, "LLAMA_CPP_SERVER_N_GPU_LAYERS", 0) or 0)
+    bs_cfg = int(getattr(cfg, "LLAMA_CPP_SERVER_BATCH_SIZE", 512) or 512)
+    opt_threads = tun.llama_server_threads
+    if opt_threads is None:
+        opt_threads = max(1, min(32, int(round(base_th * float(tun.thread_multiplier)))))
+    opt_ctx = tun.llama_server_ctx_size
+    if opt_ctx is None:
+        opt_ctx = min(base_ctx, int(tun.num_ctx))
+    opt_ctx = max(512, min(32768, int(opt_ctx)))
+    opt_ngl = tun.llama_server_n_gpu_layers
+    if opt_ngl is None:
+        opt_ngl = ngl_cfg
+    opt_batch = tun.llama_server_batch_size
+    if opt_batch is None:
+        opt_batch = bs_cfg
+    return {
+        "threads": int(opt_threads),
+        "ctx_size": int(opt_ctx),
+        "n_gpu_layers": int(opt_ngl),
+        "batch_size": int(opt_batch),
+    }
 
 
 @dataclass(frozen=True)
@@ -91,6 +120,8 @@ class LlamaRuntime:
             port=int(getattr(cfg, "LLAMA_CPP_SERVER_PORT", 8090) or 8090),
             threads=int(getattr(cfg, "LLAMA_CPP_SERVER_THREADS", 4) or 4),
             ctx_size=int(getattr(cfg, "LLAMA_CPP_SERVER_CTX_SIZE", 4096) or 4096),
+            n_gpu_layers=int(getattr(cfg, "LLAMA_CPP_SERVER_N_GPU_LAYERS", 0) or 0),
+            batch_size=int(getattr(cfg, "LLAMA_CPP_SERVER_BATCH_SIZE", 512) or 512),
             startup_timeout_seconds=float(
                 getattr(cfg, "LLAMA_CPP_SERVER_STARTUP_TIMEOUT", 60.0) or 60.0
             ),
@@ -167,7 +198,11 @@ class LlamaRuntime:
                 catalog_size=len(catalog),
             )
 
-        ok = self.server.ensure_running(best.path, best.name)
+        ok = self.server.ensure_running(
+            best.path,
+            best.name,
+            **_launch_kw_for_gguf(best, purpose, Config),
+        )
         if ok:
             self._last_purpose = purpose
             return RuntimeStatus(
@@ -186,7 +221,11 @@ class LlamaRuntime:
         )
         ranked = self.selector.rank(catalog, purpose)
         for ranking in ranked[1:4]:
-            ok = self.server.ensure_running(ranking.model.path, ranking.model.name)
+            ok = self.server.ensure_running(
+                ranking.model.path,
+                ranking.model.name,
+                **_launch_kw_for_gguf(ranking.model, purpose, Config),
+            )
             if ok:
                 self._last_purpose = purpose
                 return RuntimeStatus(

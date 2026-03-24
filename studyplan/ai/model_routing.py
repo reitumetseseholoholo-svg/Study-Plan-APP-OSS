@@ -16,6 +16,7 @@ from typing import Any
 
 _PURPOSE_ALIASES: dict[str, tuple[str, ...]] = {
     "tutor": ("tutor",),
+    "deep_reason": ("deep_reason",),
     "coach": ("coach",),
     "autopilot": ("autopilot",),
     "gap_generation": ("gap_generation", "gap_gen"),

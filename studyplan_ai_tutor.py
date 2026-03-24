@@ -10,7 +10,12 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, cast
 
 from studyplan.ai.context_policy import adaptive_tutor_recent_cap, long_history_threshold_with_tier
-from studyplan.ai.tutor_prompt_layers import TUTOR_COACH_IDENTITY_LINES, derive_pedagogical_mode
+from studyplan.ai.tutor_prompt_layers import (
+    TUTOR_COACH_IDENTITY_LINES,
+    TUTOR_STEP_BY_STEP_RESPONSE_CONTRACT,
+    derive_pedagogical_mode,
+)
+from studyplan.ai.tutor_llm_purpose import infer_tutor_llm_purpose
 from studyplan.ai.llm_telemetry import PURPOSE_TUTOR_POPUP
 from studyplan.services import get_module_display_code, get_syllabus_scope_instruction
 
@@ -1013,6 +1018,8 @@ def build_ai_tutor_context_prompt_details(
         "do not quote or cite the syllabus document. Use snippets when relevant from reference materials for explanations and citations."
     )
     lines.append("")
+    if not exam_technique_only and not concise_mode:
+        lines.extend(TUTOR_STEP_BY_STEP_RESPONSE_CONTRACT)
     if exam_technique_only:
         lines.extend([
             "Response contract (exam technique only — no practice checks):",
@@ -2117,6 +2124,13 @@ class AITutorDialogController:
             if bool(run_state.get("active", False)):
                 status_label.set_text("Generation already running.")
                 return
+            user_prompt = _current_prompt_text(strip=True)
+            if not user_prompt:
+                status_label.set_text("Enter a prompt first.")
+                return
+            tutor_llm_purpose = infer_tutor_llm_purpose(user_prompt)
+            new_req_id = getattr(app, "_new_llm_routing_request_id", None)
+            routing_request_id = str(new_req_id() if callable(new_req_id) else "").strip()
             model_name = _selected_model_name() or str(app.local_llm_model or "").strip()
             auto_model_note = ""
             failover_note = ""
@@ -2132,9 +2146,11 @@ class AITutorDialogController:
                         Any,
                         selector(
                             model_override=None,
-                            purpose="tutor",
+                            purpose=tutor_llm_purpose,
                             available_models=available_models or None,
                             persist=True,
+                            routing_request_id=routing_request_id,
+                            prompt_chars=len(user_prompt),
                         ),
                     )
                 except Exception:
@@ -2157,10 +2173,12 @@ class AITutorDialogController:
                     failover_models, _failover_err = cast(
                         Any,
                         failover_builder(
-                            purpose="tutor",
+                            purpose=tutor_llm_purpose,
                             model_override=None,
                             available_models=available_models or None,
                             persist=True,
+                            routing_request_id=routing_request_id,
+                            prompt_chars=len(user_prompt),
                         ),
                     )
                 except Exception:
@@ -2180,10 +2198,6 @@ class AITutorDialogController:
                 model_candidates = [str(model_name or "").strip()]
             if len(model_candidates) > 1:
                 failover_note = f"Failover armed: {len(model_candidates)} models"
-            user_prompt = _current_prompt_text(strip=True)
-            if not user_prompt:
-                status_label.set_text("Enter a prompt first.")
-                return
             cognitive_runtime_brief = ""
             cognitive_guard: dict[str, Any] = {}
             try:
@@ -2829,6 +2843,7 @@ class AITutorDialogController:
                         full_prompt,
                         on_chunk=_on_chunk,
                         cancel_check=_cancel_check,
+                        inference_purpose=tutor_llm_purpose,
                     )
                     if not err or err == "cancelled":
                         break

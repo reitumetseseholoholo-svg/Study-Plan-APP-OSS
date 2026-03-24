@@ -88,10 +88,20 @@ class LlamaServerManager:
     def startup_latency_ms(self) -> int:
         return self._startup_latency_ms
 
-    def ensure_running(self, model_path: str, model_name: str = "") -> bool:
+    def ensure_running(
+        self,
+        model_path: str,
+        model_name: str = "",
+        *,
+        threads: int | None = None,
+        ctx_size: int | None = None,
+        n_gpu_layers: int | None = None,
+        batch_size: int | None = None,
+    ) -> bool:
         """Start the server with the given model, or confirm it's already running it.
 
         Returns True if the server is healthy and ready.
+        Optional launch overrides apply only when starting (or restarting) the process.
         """
         with self._lock:
             if self._process and self._process.poll() is None:
@@ -101,7 +111,14 @@ class LlamaServerManager:
                         return True
                 self._stop_unlocked()
 
-            return self._start_unlocked(model_path, model_name or os.path.basename(model_path))
+            return self._start_unlocked(
+                model_path,
+                model_name or os.path.basename(model_path),
+                threads=threads,
+                ctx_size=ctx_size,
+                n_gpu_layers=n_gpu_layers,
+                batch_size=batch_size,
+            )
 
     def stop(self) -> None:
         with self._lock:
@@ -132,7 +149,16 @@ class LlamaServerManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _start_unlocked(self, model_path: str, model_name: str) -> bool:
+    def _start_unlocked(
+        self,
+        model_path: str,
+        model_name: str,
+        *,
+        threads: int | None = None,
+        ctx_size: int | None = None,
+        n_gpu_layers: int | None = None,
+        batch_size: int | None = None,
+    ) -> bool:
         binary = self.config.binary
         if not binary or not shutil.which(binary):
             log.error("llama-server binary not found: %s", binary)
@@ -142,15 +168,23 @@ class LlamaServerManager:
             log.error("GGUF model file not found: %s", model_path)
             return False
 
+        t_val = int(self.config.threads if threads is None else threads)
+        c_val = int(self.config.ctx_size if ctx_size is None else ctx_size)
+        ngl_val = int(self.config.n_gpu_layers if n_gpu_layers is None else n_gpu_layers)
+        b_val = int(self.config.batch_size if batch_size is None else batch_size)
+        t_val = max(1, min(32, t_val))
+        c_val = max(512, min(32768, c_val))
+        b_val = max(32, min(4096, b_val))
+
         cmd = [
             binary,
             "-m", model_path,
             "--host", self.config.host,
             "--port", str(self.config.port),
-            "-t", str(self.config.threads),
-            "-c", str(self.config.ctx_size),
-            "-ngl", str(self.config.n_gpu_layers),
-            "-b", str(self.config.batch_size),
+            "-t", str(t_val),
+            "-c", str(c_val),
+            "-ngl", str(ngl_val),
+            "-b", str(b_val),
             "--log-disable",
         ]
         cmd.extend(self.config.extra_args)

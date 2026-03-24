@@ -50,14 +50,17 @@ def _make_dummy(host: str = "127.0.0.1:11434"):
     dummy._get_ollama_retry_limit = types.MethodType(StudyPlanGUI._get_ollama_retry_limit, dummy)
     dummy._get_ollama_retry_backoff_seconds = types.MethodType(StudyPlanGUI._get_ollama_retry_backoff_seconds, dummy)
     dummy._is_transient_ollama_error = types.MethodType(StudyPlanGUI._is_transient_ollama_error, dummy)
+    dummy._ensure_llama_runtime = lambda: None
+    dummy._runtime_tuning_for_model = types.MethodType(StudyPlanGUI._runtime_tuning_for_model, dummy)
+    dummy._effective_ollama_num_threads = types.MethodType(StudyPlanGUI._effective_ollama_num_threads, dummy)
     dummy._gpt4all_auto_import_enabled = types.MethodType(StudyPlanGUI._gpt4all_auto_import_enabled, dummy)
     dummy._gpt4all_models_dir = types.MethodType(StudyPlanGUI._gpt4all_models_dir, dummy)
     dummy._normalize_gpt4all_filename_to_ollama_model = types.MethodType(
         StudyPlanGUI._normalize_gpt4all_filename_to_ollama_model, dummy
     )
     # Stub llama.cpp path so tests that mock Ollama hit the Ollama code path
-    dummy._generate_via_llama_server = lambda _prompt: ("", "llama_server_not_healthy")
-    dummy._generate_via_llama_server_stream = lambda _prompt, on_chunk=None, cancel_check=None: (
+    dummy._generate_via_llama_server = lambda _prompt, *args, **kwargs: ("", "llama_server_not_healthy")
+    dummy._generate_via_llama_server_stream = lambda _prompt, on_chunk=None, cancel_check=None, **kwargs: (
         "",
         "llama_server_not_healthy",
     )
@@ -450,6 +453,30 @@ def test_select_local_llm_model_cold_start_prefers_coach_default_when_available(
     assert picked == str(DEFAULT_OLLAMA_MODEL_COACH)
 
 
+def test_resolve_local_llm_default_prefers_qwen35_4b_for_tutor_when_available():
+    dummy = types.SimpleNamespace()
+    picked = StudyPlanGUI._resolve_local_llm_default_for_purpose(
+        dummy,
+        "tutor",
+        ["other-7b:latest", "gpt4all-qwen3-5-4b-q4-0:latest", "small-3b:latest"],
+    )
+    assert picked == "gpt4all-qwen3-5-4b-q4-0:latest"
+
+
+def test_resolve_local_llm_default_skips_incomplete_qwen35_4b_tags():
+    dummy = types.SimpleNamespace()
+    coach_fallback = str(DEFAULT_OLLAMA_MODEL_COACH or "").strip() or "coach-fallback:latest"
+    picked = StudyPlanGUI._resolve_local_llm_default_for_purpose(
+        dummy,
+        "coach",
+        [
+            "gpt4all-incomplete-qwen3-5-4b-q4-0:latest",
+            coach_fallback,
+        ],
+    )
+    assert picked == coach_fallback
+
+
 def test_build_local_llm_model_failover_sequence_orders_selected_then_alternatives(monkeypatch):
     monkeypatch.setenv("STUDYPLAN_AI_TUTOR_MODEL_FAILOVER_MAX", "2")
     dummy = types.SimpleNamespace(
@@ -487,6 +514,77 @@ def test_build_local_llm_model_failover_sequence_orders_selected_then_alternativ
     assert err is None
     assert seq[0] == "best-8b:latest"
     assert len(seq) == 2
+
+
+def test_select_local_llm_model_records_routing_event():
+    dummy = types.SimpleNamespace(
+        local_llm_model="",
+        local_llm_auto_select=False,
+        _ai_tutor_telemetry_events=[],
+        _llm_routing_events=[],
+        _llm_routing_events_max=16,
+        save_preferences=lambda: None,
+    )
+    dummy._record_llm_routing_event = types.MethodType(StudyPlanGUI._record_llm_routing_event, dummy)
+    dummy._coerce_local_llm_auto_select = types.MethodType(StudyPlanGUI._coerce_local_llm_auto_select, dummy)
+    dummy._is_local_llm_auto_select_enabled = types.MethodType(StudyPlanGUI._is_local_llm_auto_select_enabled, dummy)
+    dummy._estimate_local_llm_model_size_b = types.MethodType(StudyPlanGUI._estimate_local_llm_model_size_b, dummy)
+    dummy._heuristic_local_llm_model_prior = types.MethodType(StudyPlanGUI._heuristic_local_llm_model_prior, dummy)
+    dummy._score_local_llm_model = types.MethodType(StudyPlanGUI._score_local_llm_model, dummy)
+    dummy._rank_local_llm_models = types.MethodType(StudyPlanGUI._rank_local_llm_models, dummy)
+
+    picked, err = StudyPlanGUI._select_local_llm_model(
+        dummy,
+        purpose="deep_reason",
+        available_models=["model-a:latest"],
+        persist=False,
+        routing_request_id="rid-123",
+        prompt_chars=432,
+    )
+    assert err is None
+    assert picked == "model-a:latest"
+    assert len(dummy._llm_routing_events) == 1
+    event = dummy._llm_routing_events[0]
+    assert event["request_id"] == "rid-123"
+    assert event["stage"] == "select"
+    assert event["purpose"] == "deep_reason"
+    assert "purpose_deep_reason" in event["reason_codes"]
+    assert event["prompt_chars"] == 432
+
+
+def test_failover_sequence_records_event_and_keeps_request_id():
+    dummy = types.SimpleNamespace(
+        local_llm_model="",
+        local_llm_auto_select=False,
+        _ai_tutor_telemetry_events=[],
+        _llm_routing_events=[],
+        _llm_routing_events_max=16,
+        save_preferences=lambda: None,
+    )
+    dummy._record_llm_routing_event = types.MethodType(StudyPlanGUI._record_llm_routing_event, dummy)
+    dummy._coerce_local_llm_auto_select = types.MethodType(StudyPlanGUI._coerce_local_llm_auto_select, dummy)
+    dummy._is_local_llm_auto_select_enabled = types.MethodType(StudyPlanGUI._is_local_llm_auto_select_enabled, dummy)
+    dummy._estimate_local_llm_model_size_b = types.MethodType(StudyPlanGUI._estimate_local_llm_model_size_b, dummy)
+    dummy._heuristic_local_llm_model_prior = types.MethodType(StudyPlanGUI._heuristic_local_llm_model_prior, dummy)
+    dummy._score_local_llm_model = types.MethodType(StudyPlanGUI._score_local_llm_model, dummy)
+    dummy._rank_local_llm_models = types.MethodType(StudyPlanGUI._rank_local_llm_models, dummy)
+    dummy._select_local_llm_model = types.MethodType(StudyPlanGUI._select_local_llm_model, dummy)
+    dummy._coerce_local_llm_model_failover_max = types.MethodType(
+        StudyPlanGUI._coerce_local_llm_model_failover_max, dummy
+    )
+
+    seq, err = StudyPlanGUI._build_local_llm_model_failover_sequence(
+        dummy,
+        purpose="tutor",
+        available_models=["model-a:latest", "model-b:latest"],
+        persist=False,
+        routing_request_id="rid-xyz",
+    )
+    assert err is None
+    assert seq
+    assert len(dummy._llm_routing_events) >= 2
+    assert all(row.get("request_id") == "rid-xyz" for row in dummy._llm_routing_events[-2:])
+    assert dummy._llm_routing_events[-1]["stage"] == "failover"
 
 
 def test_record_local_llm_model_outcome_sets_cooldown_after_threshold(monkeypatch):
@@ -580,7 +678,7 @@ def test_request_ai_tutor_action_plan_fails_over_to_next_model():
 
     calls = {"count": 0}
 
-    def _fake_generate(model, _prompt):
+    def _fake_generate(model, _prompt, **_kwargs):
         calls["count"] += 1
         if model == "broken-3b:latest":
             return "", "HTTP 503: service unavailable"
@@ -654,7 +752,7 @@ def test_request_ai_coach_recommendation_fails_over_to_next_model():
     )
     dummy._build_ai_coach_prompt = lambda _payload: "coach-prompt"
 
-    def _fake_generate(model, _prompt):
+    def _fake_generate(model, _prompt, **_kwargs):
         if model == "broken-3b:latest":
             return "", "HTTP 503: service unavailable"
         return '{"action":"focus","topic":"Topic A","duration_minutes":25,"reason":"ok","confidence":0.8}', None
@@ -692,7 +790,7 @@ def test_request_ai_tutor_action_plan_invalid_output_returns_guided_recovery():
     )
     dummy._build_local_llm_model_failover_sequence = lambda **_kwargs: (["good-7b:latest"], None)
     dummy._build_ai_tutor_autopilot_prompt = lambda _snapshot: "prompt"
-    dummy._ollama_generate_text = lambda _model, _prompt: ("no-json-here", None)
+    dummy._ollama_generate_text = lambda _model, _prompt, **_kwargs: ("no-json-here", None)
     dummy._extract_first_json_object = lambda _text: ""
     dummy._build_ai_tutor_fallback_action = types.MethodType(StudyPlanGUI._build_ai_tutor_fallback_action, dummy)
     dummy._compose_ollama_guardrail_status = types.MethodType(StudyPlanGUI._compose_ollama_guardrail_status, dummy)
@@ -714,7 +812,7 @@ def test_request_ai_coach_recommendation_invalid_output_returns_guided_recovery(
     dummy._build_ai_coach_payload = lambda: {"recommended_topic": "Topic A"}
     dummy._build_local_llm_model_failover_sequence = lambda **_kwargs: (["good-7b:latest"], None)
     dummy._build_ai_coach_prompt = lambda _payload: "coach-prompt"
-    dummy._ollama_generate_text = lambda _model, _prompt: ("no-json-here", None)
+    dummy._ollama_generate_text = lambda _model, _prompt, **_kwargs: ("no-json-here", None)
     dummy._extract_first_json_object = lambda _text: ""
     dummy._build_ai_coach_fallback_recommendation = lambda _payload, issue: {
         "action": "focus",
@@ -3584,7 +3682,7 @@ def test_ollama_generate_text_stream_recovers_with_compact_non_stream_fallback(m
     dummy._reduce_prompt_for_recovery = lambda prompt: f"compact::{str(prompt)[:18]}"
     dummy._coerce_ollama_reduced_num_ctx = lambda _value=None: 1024
     dummy._ollama_generate_text_with_options = (
-        lambda model, prompt, *, num_ctx, temperature=0.2, use_response_cache=False: ("Recovered text", None)
+        lambda model, prompt, *, num_ctx, temperature=0.2, use_response_cache=False, **kwargs: ("Recovered text", None)
     )
 
     monkeypatch.setattr(

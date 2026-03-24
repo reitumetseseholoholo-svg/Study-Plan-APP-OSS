@@ -3375,6 +3375,18 @@ def test_load_json_file_with_limit_reads_json(engine_no_io, tmp_path):
     assert loaded == {"k": 1}
 
 
+def test_load_json_file_with_limit_quarantines_corrupt_json(engine_no_io, tmp_path):
+    eng = engine_no_io
+    path = tmp_path / "bad.json"
+    path.write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        eng._load_json_file_with_limit(str(path), 1024, "Snapshot")
+
+    quarantined = list(tmp_path.glob("bad.json.corrupt.*"))
+    assert quarantined, "Expected a quarantined corrupt file to be created."
+
+
 def test_import_data_snapshot_rejects_oversized_file(engine_no_io, tmp_path):
     eng = engine_no_io
     eng.MAX_SNAPSHOT_IMPORT_BYTES = 128

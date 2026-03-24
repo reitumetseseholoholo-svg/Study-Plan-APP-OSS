@@ -193,6 +193,19 @@ class Config:
     LLAMA_CPP_SERVER_CTX_SIZE = _parse_int(
         "STUDYPLAN_LLAMA_SERVER_CTX_SIZE", 4096, min_value=512, max_value=32768,
     )
+    # llama-server -ngl: 0 = CPU only; 99 or -1 typically offload all layers when a GPU is available.
+    LLAMA_CPP_SERVER_N_GPU_LAYERS = _parse_int(
+        "STUDYPLAN_LLAMA_SERVER_N_GPU_LAYERS",
+        0,
+        min_value=-1,
+        max_value=999999,
+    )
+    LLAMA_CPP_SERVER_BATCH_SIZE = _parse_int(
+        "STUDYPLAN_LLAMA_SERVER_BATCH_SIZE",
+        512,
+        min_value=32,
+        max_value=4096,
+    )
     LLAMA_CPP_SERVER_STARTUP_TIMEOUT = _parse_float(
         "STUDYPLAN_LLAMA_SERVER_STARTUP_TIMEOUT", 60.0, min_value=10.0, max_value=180.0,
     )

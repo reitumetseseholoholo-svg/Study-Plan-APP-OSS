@@ -94,6 +94,9 @@ from studyplan_ai_tutor import (
 from studyplan.ai.context_policy import context_drop_order_for_role, map_packet_kind_to_role
 from studyplan.ai.rag_presets import apply_rag_preset_to_runtime, normalize_rag_preset_name
 from studyplan.ai.model_routing import routed_failover_chain_for_purpose, routed_primary_for_purpose
+from studyplan.ai.model_infer_tuning import ModelRuntimeTuning, resolve_model_runtime_tuning
+from studyplan.ai.llm_output_sanitize import ollama_think_request_value, strip_thinking_traces
+from studyplan.ai.tutor_llm_purpose import infer_tutor_llm_purpose
 from studyplan.ai.llm_telemetry import PURPOSE_TUTOR_EMBEDDED, normalize_purpose
 from studyplan_ui_runtime import (
     UISectionState,
@@ -194,6 +197,7 @@ import logging
 import threading
 import sqlite3
 import hashlib
+import uuid
 import ipaddress
 import urllib.error
 import urllib.parse
@@ -456,7 +460,7 @@ DEFAULT_OLLAMA_MODEL = str(
 ).strip()
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 300
 DEFAULT_OLLAMA_TRANSIENT_RETRIES = 1
-DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS = 0.4
+DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS = 2.0
 DEFAULT_OLLAMA_AUTO_SELECT = True
 DEFAULT_OLLAMA_MAX_CONCURRENT_REQUESTS = 1
 DEFAULT_OLLAMA_QUEUE_WAIT_SECONDS = 1.5
@@ -885,6 +889,7 @@ class TutorWorkspaceState(dict[str, Any]):
                 "refresh_layout": None,
                 "set_running": None,
                 "gap_generation_active": False,
+                "gap_cancel_event": None,
                 "practice_session_id": str(practice_session_id or "tutor-workspace"),
                 "tutor_trust_summary": "",
                 "tutor_trust_details": "",
@@ -1571,6 +1576,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         }
         self._ai_tutor_telemetry_events: list[dict[str, Any]] = []
         self._ai_tutor_telemetry_max = int(AI_TUTOR_TELEMETRY_MAX_EVENTS)
+        self._llm_routing_events: list[dict[str, Any]] = []
+        self._llm_routing_events_max = 240
         self.ai_tutor_autopilot_enabled = True
         self.ai_tutor_autopilot_paused = False
         self.ai_tutor_autonomy_mode = str(AI_TUTOR_DEFAULT_AUTONOMY_MODE)
@@ -3582,12 +3589,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         for btn in (
             gap_generate_btn,
             gap_classify_btn,
+            # Cancel + working indicator for non-streaming gap generation.
+            # (Spinner is toggled by _set_gap_generation_running below.)
             section_c_btn,
             clear_prompt_btn,
             copy_btn,
             copy_last_btn,
         ):
             secondary_actions_box.append(btn)
+        gap_spinner = Gtk.Spinner()
+        gap_spinner.set_visible(False)
+        secondary_actions_box.append(gap_spinner)
+
+        gap_cancel_btn = Gtk.Button(label="Cancel gaps")
+        gap_cancel_btn.set_sensitive(False)
+        gap_cancel_btn.set_visible(False)
+        secondary_actions_box.append(gap_cancel_btn)
         secondary_actions_popover = Gtk.Popover()
         secondary_actions_popover.set_child(secondary_actions_box)
         more_actions_btn.set_popover(secondary_actions_popover)
@@ -5929,6 +5946,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 gap_classify_btn.set_sensitive(gap_enabled and bool(self._is_fr_financial_reporting_module()))
             except Exception:
                 pass
+            # Working indicator + cancel button.
+            try:
+                if bool(active):
+                    gap_spinner.set_visible(True)
+                    gap_spinner.start()
+                    gap_cancel_btn.set_visible(True)
+                    gap_cancel_btn.set_sensitive(True)
+                else:
+                    gap_spinner.stop()
+                    gap_spinner.set_visible(False)
+                    gap_cancel_btn.set_visible(False)
+                    gap_cancel_btn.set_sensitive(False)
+            except Exception:
+                pass
 
         def _copy_to_clipboard(text: str, success_message: str, empty_message: str) -> None:
             payload = str(text or "").strip()
@@ -6424,6 +6455,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if bool(run_state.get("active", False)):
                 _set_status("Generation already running.")
                 return
+            raw_prompt = _current_prompt_text(strip=True) or ""
+            user_prompt = raw_prompt[:MAX_TUTOR_PROMPT_CHARS]
+            if len(raw_prompt) > MAX_TUTOR_PROMPT_CHARS:
+                _set_status(f"Prompt truncated to {MAX_TUTOR_PROMPT_CHARS:,} characters.")
+            if not user_prompt:
+                _set_status("Enter a prompt first.")
+                return
+            tutor_llm_purpose = infer_tutor_llm_purpose(user_prompt)
+            routing_request_id = self._new_llm_routing_request_id()
             model_name = _selected_model_name() or str(self.local_llm_model or "").strip()
             auto_model_note = ""
             failover_note = ""
@@ -6439,9 +6479,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         Any,
                         selector(
                             model_override=None,
-                            purpose="tutor",
+                            purpose=tutor_llm_purpose,
                             available_models=available_models or None,
                             persist=True,
+                            routing_request_id=routing_request_id,
+                            prompt_chars=len(user_prompt),
                         ),
                     )
                 except Exception:
@@ -6464,10 +6506,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     failover_models, _failover_err = cast(
                         Any,
                         failover_builder(
-                            purpose="tutor",
+                            purpose=tutor_llm_purpose,
                             model_override=None,
                             available_models=available_models or None,
                             persist=True,
+                            routing_request_id=routing_request_id,
+                            prompt_chars=len(user_prompt),
                         ),
                     )
                 except Exception:
@@ -6487,13 +6531,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 model_candidates = [str(model_name or "").strip()]
             if len(model_candidates) > 1:
                 failover_note = f"Failover armed: {len(model_candidates)} models"
-            raw_prompt = _current_prompt_text(strip=True) or ""
-            user_prompt = raw_prompt[:MAX_TUTOR_PROMPT_CHARS]
-            if len(raw_prompt) > MAX_TUTOR_PROMPT_CHARS:
-                _set_status(f"Prompt truncated to {MAX_TUTOR_PROMPT_CHARS:,} characters.")
-            if not user_prompt:
-                _set_status("Enter a prompt first.")
-                return
             if not any(str(m or "").strip() for m in model_candidates):
                 _set_status("Choose a model in Preferences → AI Tutor.")
                 return
@@ -7017,6 +7054,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 full_prompt,
                                 on_chunk=_on_chunk,
                                 cancel_check=_cancel_check,
+                                inference_purpose=tutor_llm_purpose,
                             )
                         except recoverable_tutor_runtime_errors as exc:
                             _log_tutor_runtime_warning("generate_text_stream", exc, candidate_model=candidate_name)
@@ -7300,6 +7338,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._ollama_stop_model(str(run_state.get("model", "") or ""))
             _set_status("Stopping…")
 
+        def _cancel_gap_generation(*_args) -> None:
+            if not bool(run_state.get("gap_generation_active", False)):
+                return
+            cancel_event = run_state.get("gap_cancel_event")
+            if isinstance(cancel_event, threading.Event):
+                cancel_event.set()
+            _set_status("Cancelling gap generation…")
+
         def _generate_gap_questions(*_args) -> None:
             if bool(run_state.get("active", False)):
                 _set_status("Wait for current tutor turn to finish before generating gap questions.")
@@ -7322,11 +7368,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
             def _worker() -> None:
                 try:
+                    cancel_event = threading.Event()
+                    run_state["gap_cancel_event"] = cancel_event
+                    cancel_check = lambda: bool(cancel_event.is_set())
                     snapshot = self._build_ai_tutor_autopilot_snapshot()
                     ok, msg = self._generate_gap_drill_questions(
                         chapter,
                         snapshot,
                         requested_count=AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS,
+                        cancel_check=cancel_check,
                     )
                 except Exception as exc:
                     ok = False
@@ -7338,6 +7388,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
                 def _finish() -> bool:
                     _set_gap_generation_running(False)
+                    run_state["gap_cancel_event"] = None
                     _set_status(str(msg or "Gap-question generation finished."))
                     _refresh_status_line()
                     if ok:
@@ -7386,12 +7437,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 from studyplan.ai.prompt_design import TASK_ID_CLASSIFICATION_DRILL
 
                 try:
+                    cancel_event = threading.Event()
+                    run_state["gap_cancel_event"] = cancel_event
+                    cancel_check = lambda: bool(cancel_event.is_set())
                     snapshot = self._build_ai_tutor_autopilot_snapshot()
                     ok, msg = self._generate_gap_drill_questions(
                         chapter,
                         snapshot,
                         requested_count=AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS,
                         prompt_task_id=TASK_ID_CLASSIFICATION_DRILL,
+                        cancel_check=cancel_check,
                     )
                 except Exception as exc:
                     ok = False
@@ -7403,6 +7458,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
                 def _finish() -> bool:
                     _set_gap_generation_running(False)
+                    run_state["gap_cancel_event"] = None
                     _set_status(str(msg or "Classification drill generation finished."))
                     _refresh_status_line()
                     if ok:
@@ -7443,6 +7499,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         send_btn.connect("clicked", _generate)
         gap_generate_btn.connect("clicked", _generate_gap_questions)
         gap_classify_btn.connect("clicked", _generate_classification_gap_questions)
+        gap_cancel_btn.connect("clicked", _cancel_gap_generation)
         section_c_btn.connect("clicked", lambda *_: self._open_section_c_practice_dialog(topic=self.current_topic))
         stop_btn.connect("clicked", _stop_generation)
         new_chat_btn.connect("clicked", _new_chat)
@@ -13831,6 +13888,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         if not isinstance(row, dict):
             return None
+        cache_key_safe = str(cache_key or "")
         expires_at = str(row.get("expires_at", "") or "").strip()
         if expires_at:
             try:
@@ -13839,18 +13897,48 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     return None
             except Exception:
                 pass
+        corrupt = False
         try:
             refs = json.loads(str(row.get("snippet_ids_json", "[]") or "[]"))
         except Exception:
             refs = []
+            corrupt = True
         try:
             meta = json.loads(str(row.get("meta_json", "{}") or "{}"))
         except Exception:
             meta = {}
+            corrupt = True
         if not isinstance(refs, list):
             refs = []
+            corrupt = True
         if not isinstance(meta, dict):
             meta = {}
+            corrupt = True
+        # Validate shape lightly. If it's corrupted, delete the cache row so we can recover cleanly.
+        if refs:
+            for ref in refs:
+                if not isinstance(ref, dict):
+                    corrupt = True
+                    break
+                # Must have at least some identifier fields.
+                if not str(ref.get("doc_key", "") or "").strip():
+                    corrupt = True
+                    break
+                try:
+                    _ = int(ref.get("chunk_index", 0) or 0)
+                except Exception:
+                    corrupt = True
+                    break
+        if corrupt:
+            try:
+                conn = self._ai_cache_open()
+                if conn is not None:
+                    with self._ai_cache_lock:
+                        conn.execute("DELETE FROM rag_query_cache WHERE cache_key = ?", (cache_key_safe,))
+                        conn.commit()
+            except Exception:
+                pass
+            return None
         return {"snippet_refs": refs, "meta": meta}
 
     def _ai_cache_put_rag_query(
@@ -14730,7 +14818,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
-    def _effective_ollama_num_threads(self, *, model_name: str = "", num_ctx: int | None = None) -> int:
+    def _runtime_tuning_for_model(self, model_name: str, purpose: str = "tutor") -> ModelRuntimeTuning:
+        gguf = None
+        rt = self._ensure_llama_runtime()
+        if rt is not None:
+            try:
+                gguf = rt.registry.find_best_match(str(model_name or ""))
+            except Exception:
+                gguf = None
+        return resolve_model_runtime_tuning(str(model_name or ""), purpose=str(purpose or "tutor"), gguf=gguf)
+
+    def _effective_ollama_num_threads(
+        self,
+        *,
+        model_name: str = "",
+        num_ctx: int | None = None,
+        tuning: ModelRuntimeTuning | None = None,
+    ) -> int:
         override_raw = os.environ.get("STUDYPLAN_OLLAMA_NUM_THREADS", os.environ.get("OLLAMA_NUM_THREADS", ""))
         logical = max(1, int(os.cpu_count() or 1))
         if str(override_raw or "").strip():
@@ -14741,32 +14845,46 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         profile = getattr(self, "_cpu_runtime_profile", None)
         if not isinstance(profile, dict):
             base = int(DEFAULT_OLLAMA_NUM_THREADS)
-            return max(1, min(logical, base))
-        preferred = max(1, int(profile.get("preferred_ollama_threads", DEFAULT_OLLAMA_NUM_THREADS) or DEFAULT_OLLAMA_NUM_THREADS))
-        physical = max(1, int(profile.get("physical_cores_est", logical) or logical))
-        is_mobile = bool(profile.get("is_ryzen_mobile", False))
-        active_requests = max(0, int(getattr(self, "_ollama_active_requests", 0) or 0))
-        ctx_tokens = max(512, int(num_ctx or DEFAULT_OLLAMA_CONTEXT))
-        threads = preferred
-        size_b = None
-        estimator = getattr(self, "_estimate_local_llm_model_size_b", None)
-        if callable(estimator):
+            out = max(1, min(logical, base))
+        else:
+            preferred = max(1, int(profile.get("preferred_ollama_threads", DEFAULT_OLLAMA_NUM_THREADS) or DEFAULT_OLLAMA_NUM_THREADS))
+            physical = max(1, int(profile.get("physical_cores_est", logical) or logical))
+            is_mobile = bool(profile.get("is_ryzen_mobile", False))
+            active_requests = max(0, int(getattr(self, "_ollama_active_requests", 0) or 0))
+            ctx_tokens = max(512, int(num_ctx or DEFAULT_OLLAMA_CONTEXT))
+            threads = preferred
+            size_b = None
+            estimator = getattr(self, "_estimate_local_llm_model_size_b", None)
+            if callable(estimator):
+                try:
+                    size_b = estimator(str(model_name or ""))
+                except Exception:
+                    size_b = None
+            if isinstance(size_b, (int, float)) and float(size_b) >= 7.0:
+                threads = min(threads, max(physical, 4))
+            if ctx_tokens >= 8192:
+                threads = min(threads, max(physical, 4))
+            if ctx_tokens >= 16384:
+                threads = min(threads, max(3, physical))
+            if active_requests >= 1:
+                # Another request is already active; avoid SMT oversubscription on laptop APUs.
+                threads = min(threads, max(2, physical))
+            if is_mobile:
+                threads = min(threads, max(4, min(logical, physical + 2)))
+            out = max(1, min(logical, int(threads)))
+        if tuning is not None:
             try:
-                size_b = estimator(str(model_name or ""))
+                scaled = int(round(float(out) * float(tuning.thread_multiplier)))
             except Exception:
-                size_b = None
-        if isinstance(size_b, (int, float)) and float(size_b) >= 7.0:
-            threads = min(threads, max(physical, 4))
-        if ctx_tokens >= 8192:
-            threads = min(threads, max(physical, 4))
-        if ctx_tokens >= 16384:
-            threads = min(threads, max(3, physical))
-        if active_requests >= 1:
-            # Another request is already active; avoid SMT oversubscription on laptop APUs.
-            threads = min(threads, max(2, physical))
-        if is_mobile:
-            threads = min(threads, max(4, min(logical, physical + 2)))
-        return max(1, min(logical, int(threads)))
+                scaled = int(out)
+            cap = tuning.thread_cap
+            if cap is not None:
+                try:
+                    scaled = min(int(scaled), max(1, int(cap)))
+                except Exception:
+                    pass
+            return max(1, min(logical, int(scaled)))
+        return int(out)
 
     def _coerce_ai_model_failure_threshold(self, value: Any = None) -> int:
         raw = value if value is not None else os.environ.get(
@@ -15350,6 +15468,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if not ordered_candidates:
             return ""
 
+        def _qwen35_4b_match() -> str:
+            best = ""
+            for item in ordered_candidates:
+                lower = item.lower()
+                compact = lower.replace("_", "").replace("-", "").replace(" ", "")
+                if "incomplete" in lower:
+                    continue
+                if ("qwen3.5" in compact or "qwen35" in compact) and "4b" in compact:
+                    # Prefer canonical "gpt4all-qwen3-5-4b" tag if present.
+                    if "gpt4allqwen354b" in compact:
+                        return item
+                    if not best:
+                        best = item
+            return best
+
+        if purpose_key in {"coach", "autopilot", "tutor"}:
+            qwen35_4b = _qwen35_4b_match()
+            if qwen35_4b:
+                return qwen35_4b
+
         routed = routed_primary_for_purpose(purpose_key, ordered_candidates)
         if routed:
             return routed
@@ -15361,7 +15499,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
                 str(DEFAULT_OLLAMA_MODEL or "").strip(),
             ]
-        elif purpose_key in {"tutor", "section_c_generation", "gap_generation"}:
+        elif purpose_key in {"tutor", "deep_reason", "section_c_generation", "gap_generation"}:
             preferred = [
                 str(DEFAULT_OLLAMA_MODEL_TUTOR or "").strip(),
                 str(DEFAULT_OLLAMA_MODEL or "").strip(),
@@ -15408,6 +15546,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         else:
             if purpose_key in {"coach", "autopilot"}:
                 center = 1.5
+            elif purpose_key == "deep_reason":
+                center = 6.5
             elif purpose_key in {"tutor", "section_c_generation", "gap_generation"}:
                 center = 5.0
             else:
@@ -15437,7 +15577,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 quant_adjust += 0.14
             if "phi-3-mini" in name:
                 quant_adjust += 0.08
-        elif purpose_key in {"tutor", "section_c_generation", "gap_generation"}:
+        elif purpose_key in {"tutor", "deep_reason", "section_c_generation", "gap_generation"}:
             if "llama-3-2-3b" in name:
                 quant_adjust += 0.14
             if "phi-3-mini" in name:
@@ -15557,6 +15697,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         purpose_key = str(purpose or "").strip().lower()
         if purpose_key in {"coach", "autopilot"}:
             combined = (0.55 * combined) + (0.45 * perf_score)
+        elif purpose_key == "deep_reason":
+            combined = (0.42 * combined) + (0.58 * float(quality_score))
         return {
             "model": model,
             "score": max(0.0, min(1.0, float(combined))),
@@ -15694,15 +15836,136 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ollama_models_cache = clean
         return list(clean), None
 
+    def _new_llm_routing_request_id(self) -> str:
+        return uuid.uuid4().hex
+
+    def _record_llm_routing_event(
+        self,
+        *,
+        request_id: str,
+        stage: str,
+        purpose: str,
+        selected_model: str,
+        candidate_models: list[str],
+        reason_codes: list[str],
+        top_scores: list[dict[str, Any]] | None = None,
+        prompt_chars: int = 0,
+        cooling_filtered_count: int = 0,
+        available_filtered_count: int = 0,
+        error: str = "",
+    ) -> None:
+        rid = str(request_id or "").strip()[:64]
+        if not rid:
+            rid = self._new_llm_routing_request_id()
+        stg = str(stage or "").strip().lower()[:32] or "select"
+        purpose_key = normalize_purpose(str(purpose or ""), default="general")
+        selected = str(selected_model or "").strip()[:120]
+        cands: list[str] = []
+        seen: set[str] = set()
+        for item in list(candidate_models or []):
+            name = str(item or "").strip()[:120]
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            cands.append(name)
+            if len(cands) >= 8:
+                break
+        allowed_reason_chars = re.compile(r"[^a-z0-9_]")
+        reasons: list[str] = []
+        seen_reason: set[str] = set()
+        for code in list(reason_codes or []):
+            norm = allowed_reason_chars.sub("_", str(code or "").strip().lower())[:40].strip("_")
+            if not norm or norm in seen_reason:
+                continue
+            seen_reason.add(norm)
+            reasons.append(norm)
+            if len(reasons) >= 8:
+                break
+        rows: list[dict[str, Any]] = []
+        for row in list(top_scores or []):
+            if not isinstance(row, dict):
+                continue
+            model = str(row.get("model", "") or "").strip()[:120]
+            if not model:
+                continue
+            try:
+                score = max(0.0, min(1.0, float(row.get("score", 0.0) or 0.0)))
+            except Exception:
+                score = 0.0
+            try:
+                quality = max(0.0, min(1.0, float(row.get("quality_score", 0.0) or 0.0)))
+            except Exception:
+                quality = 0.0
+            try:
+                perf = max(0.0, min(1.0, float(row.get("perf_score", 0.0) or 0.0)))
+            except Exception:
+                perf = 0.0
+            rows.append({"model": model, "score": score, "quality_score": quality, "perf_score": perf})
+            if len(rows) >= 3:
+                break
+        event = {
+            "ts_utc": (
+                datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            )[:40],
+            "request_id": rid,
+            "stage": stg,
+            "purpose": purpose_key,
+            "selected_model": selected,
+            "candidate_models": cands,
+            "reason_codes": reasons,
+            "top_scores": rows,
+            "prompt_chars": max(0, min(200000, int(prompt_chars or 0))),
+            "cooling_filtered_count": max(0, min(1000, int(cooling_filtered_count or 0))),
+            "available_filtered_count": max(0, min(1000, int(available_filtered_count or 0))),
+            "error": str(error or "").strip()[:220],
+        }
+        history = [row for row in list(getattr(self, "_llm_routing_events", []) or []) if isinstance(row, dict)]
+        history.append(event)
+        cap = max(20, min(1000, int(getattr(self, "_llm_routing_events_max", 240) or 240)))
+        self._llm_routing_events = history[-cap:]
+        if str(os.environ.get("STUDYPLAN_LLM_ROUTING_DEBUG_LOG", "") or "").strip().lower() in {"1", "true", "yes", "on"}:
+            try:
+                log.info(
+                    "llm-routing stage=%s purpose=%s request_id=%s selected=%s reasons=%s",
+                    stg,
+                    purpose_key,
+                    rid,
+                    selected,
+                    ",".join(reasons),
+                )
+            except Exception:
+                pass
+
     def _select_local_llm_model(
         self,
         model_override: str | None = None,
         purpose: str = "general",
         available_models: list[str] | None = None,
         persist: bool = True,
+        routing_request_id: str | None = None,
+        prompt_chars: int = 0,
     ) -> tuple[str, str | None]:
+        route_emit = getattr(self, "_record_llm_routing_event", None)
+
+        def _emit(**kwargs: Any) -> None:
+            if not callable(route_emit):
+                return
+            try:
+                cast(Any, route_emit)(**kwargs)
+            except Exception:
+                pass
+
         override = str(model_override or "").strip()
         if override:
+            _emit(
+                request_id=str(routing_request_id or ""),
+                stage="select",
+                purpose=purpose,
+                selected_model=override,
+                candidate_models=[override],
+                reason_codes=["explicit_override"],
+                prompt_chars=prompt_chars,
+            )
             return override, None
         if isinstance(available_models, list):
             models = [
@@ -15716,9 +15979,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if list_err:
             fallback = str(getattr(self, "local_llm_model", "") or "").strip()
             if fallback:
+                _emit(
+                    request_id=str(routing_request_id or ""),
+                    stage="select",
+                    purpose=purpose,
+                    selected_model=fallback,
+                    candidate_models=[fallback],
+                    reason_codes=["model_list_lookup_error", "configured_fallback"],
+                    prompt_chars=prompt_chars,
+                    error=str(list_err),
+                )
                 return fallback, f"Ollama model lookup failed: {list_err}"
+            _emit(
+                request_id=str(routing_request_id or ""),
+                stage="select",
+                purpose=purpose,
+                selected_model="",
+                candidate_models=[],
+                reason_codes=["model_list_lookup_error"],
+                prompt_chars=prompt_chars,
+                error=str(list_err),
+            )
             return "", f"Ollama model lookup failed: {list_err}"
         if not models:
+            _emit(
+                request_id=str(routing_request_id or ""),
+                stage="select",
+                purpose=purpose,
+                selected_model="",
+                candidate_models=[],
+                reason_codes=["no_available_models"],
+                prompt_chars=prompt_chars,
+            )
             return "", "No local Ollama models found."
         healthy_models: list[str] = []
         cooling_models: list[str] = []
@@ -15754,7 +16046,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
                     str(DEFAULT_OLLAMA_MODEL or "").strip(),
                 ]
-            elif purpose_key in {"tutor", "section_c_generation", "gap_generation"}:
+            elif purpose_key in {"tutor", "deep_reason", "section_c_generation", "gap_generation"}:
                 fallback_defaults = [
                     str(DEFAULT_OLLAMA_MODEL_TUTOR or "").strip(),
                     str(DEFAULT_OLLAMA_MODEL or "").strip(),
@@ -15770,6 +16062,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if preferred and preferred in candidate_models:
                     purpose_default = preferred
                     break
+        reason_codes: list[str] = []
         selected = ""
         if auto_select:
             ranked = self._rank_local_llm_models(candidate_models, purpose=purpose)
@@ -15794,6 +16087,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if isinstance(slo, dict):
                         slo_status = str(slo.get("status", "insufficient") or "insufficient").strip().lower() or "insufficient"
                 if load_level in {"warn", "critical"} or slo_status in {"warn", "fail"}:
+                    reason_codes.append("latency_bias_applied")
                     ranked_pick.sort(
                         key=lambda row: (
                             -float(row.get("perf_score", 0.0) or 0.0),
@@ -15803,6 +16097,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         )
                     )
                 selected = str(ranked_pick[0].get("model", "") or "").strip()
+                if selected:
+                    reason_codes.append("quality_score_highest")
                 if configured and configured in candidate_models and selected and selected != configured:
                     row_map = {
                         str(row.get("model", "") or ""): row
@@ -15826,6 +16122,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     selected_score = float(selected_row.get("score", 0.0) or 0.0) if isinstance(selected_row, dict) else 0.0
                     if (selected_score - current_score) < float(switch_margin):
                         selected = configured
+                        reason_codes.append("switch_margin_guard")
                     else:
                         try:
                             cooldown_seconds = int(
@@ -15848,6 +16145,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 # During cooldown only switch if improvement is clearly material.
                                 if (selected_score - current_score) < float(switch_margin * 2.0):
                                     selected = configured
+                                    reason_codes.append("switch_cooldown_guard")
                 if purpose_default:
                     try:
                         sample_total = sum(
@@ -15859,17 +16157,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         sample_total = 0
                     if sample_total <= 0:
                         selected = purpose_default
+                        reason_codes.append("cold_start_default")
             elif purpose_default:
                 selected = purpose_default
+                reason_codes.append("purpose_default")
         if auto_select and not selected and purpose_default:
             selected = purpose_default
+            reason_codes.append("purpose_default")
         if not selected:
             if configured and configured in candidate_models:
                 selected = configured
+                reason_codes.append("configured_model")
             else:
                 selected = str(candidate_models[0]).strip()
+                reason_codes.append("first_candidate")
         if not selected and cooling_models:
             selected = str(cooling_models[0]).strip()
+            reason_codes.append("all_models_on_cooldown")
+        if str(purpose or "").strip().lower() == "deep_reason":
+            reason_codes.append("purpose_deep_reason")
         if selected and selected != configured:
             self.local_llm_model = selected
             self._local_llm_last_switch_at = float(time.monotonic())
@@ -15878,6 +16184,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.save_preferences()
                 except Exception:
                     pass
+        _emit(
+            request_id=str(routing_request_id or ""),
+            stage="select",
+            purpose=purpose,
+            selected_model=selected,
+            candidate_models=list(candidate_models or []),
+            reason_codes=reason_codes or (["manual_mode"] if not auto_select else ["selected"]),
+            top_scores=(list(ranked[:3]) if auto_select and "ranked" in locals() and isinstance(ranked, list) else []),
+            prompt_chars=prompt_chars,
+            cooling_filtered_count=len(cooling_models),
+            available_filtered_count=max(0, len(models) - len(candidate_models)),
+        )
         return selected, None
 
     def _coerce_local_llm_model_failover_max(self, value: Any) -> int:
@@ -15894,7 +16212,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         available_models: list[str] | None = None,
         persist: bool = True,
         max_candidates: int | None = None,
+        routing_request_id: str | None = None,
+        prompt_chars: int = 0,
     ) -> tuple[list[str], str | None]:
+        route_emit = getattr(self, "_record_llm_routing_event", None)
+
+        def _emit(**kwargs: Any) -> None:
+            if not callable(route_emit):
+                return
+            try:
+                cast(Any, route_emit)(**kwargs)
+            except Exception:
+                pass
+
         max_raw: Any = max_candidates
         if max_raw is None:
             max_raw = os.environ.get(
@@ -15907,10 +16237,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             purpose=purpose,
             available_models=available_models,
             persist=persist,
+            routing_request_id=routing_request_id,
+            prompt_chars=prompt_chars,
         )
         if str(model_override or "").strip():
             chosen = str(model_override or "").strip()
             err_text = str(selected_err or "").strip()
+            _emit(
+                request_id=str(routing_request_id or ""),
+                stage="failover",
+                purpose=purpose,
+                selected_model=chosen,
+                candidate_models=[chosen],
+                reason_codes=["explicit_override"],
+                prompt_chars=prompt_chars,
+                error=err_text,
+            )
             return ([chosen] if chosen else []), (err_text or None)
 
         if isinstance(available_models, list):
@@ -15970,6 +16312,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             msg = f"Ollama model lookup failed: {list_err}"
             if msg not in errors:
                 errors.append(msg)
+        _emit(
+            request_id=str(routing_request_id or ""),
+            stage="failover",
+            purpose=purpose,
+            selected_model=(ordered[0] if ordered else ""),
+            candidate_models=list(ordered[: int(limit)]),
+            reason_codes=["failover_sequence_built"],
+            top_scores=list(ranked[:3]) if isinstance(ranked, list) else [],
+            prompt_chars=prompt_chars,
+            error="; ".join(errors) if errors else "",
+        )
         return ordered[: int(limit)], ("; ".join(errors) if errors else None)
 
     def _get_ollama_retry_limit(self) -> int:
@@ -15981,11 +16334,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return max(0, min(3, limit))
 
     def _get_ollama_retry_backoff_seconds(self, attempt_index: int) -> float:
+        raw = str(os.environ.get("STUDYPLAN_OLLAMA_RETRY_BASE_DELAY_SECONDS", "") or "").strip()
         try:
-            base = float(DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS)
+            base = float(raw) if raw else float(DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS)
         except Exception:
-            base = 0.4
-        return max(0.0, min(2.0, base * (2 ** max(0, int(attempt_index)))))
+            base = float(DEFAULT_OLLAMA_RETRY_BACKOFF_SECONDS)
+        delay = base * (2 ** max(0, int(attempt_index)))
+        return max(0.0, min(30.0, float(delay)))
 
     def _is_transient_ollama_error(self, err: str) -> bool:
         code, _friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
@@ -16468,12 +16823,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         num_ctx: int,
         temperature: float = 0.2,
         use_response_cache: bool = True,
+        cancel_check: Callable[[], bool] | None = None,
+        inference_purpose: str = "tutor",
+        apply_runtime_tuning: bool = True,
     ) -> tuple[str, str | None]:
         prompt_text = str(prompt or "").strip()
         if not prompt_text:
             return "", "prompt is empty"
 
-        text, err = self._generate_via_llama_server(prompt_text)
+        if cancel_check and cancel_check():
+            return "", "cancelled"
+
+        try:
+            text, err = self._generate_via_llama_server(
+                prompt_text,
+                cancel_check=cancel_check,
+                inference_purpose=inference_purpose,
+            )
+        except TypeError:
+            # Backward compatibility for test doubles / older call signatures.
+            text, err = self._generate_via_llama_server(prompt_text)
         if err is None:
             return text, None
         if text:
@@ -16523,28 +16892,57 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cache_hash = getattr(self, "_ai_cache_sha1", None)
         cache_get_response = getattr(self, "_ai_cache_get_response", None)
         cache_put_response = getattr(self, "_ai_cache_put_response", None)
-        ctx_value = max(512, min(8192, int(num_ctx)))
-        temp_value = max(0.0, min(1.0, float(temperature)))
+        tuning: ModelRuntimeTuning | None = None
+        if apply_runtime_tuning:
+            try:
+                tuning = self._runtime_tuning_for_model(model_name, str(inference_purpose or "tutor"))
+            except Exception:
+                tuning = None
+        if tuning is not None:
+            ctx_value = max(512, min(8192, min(int(num_ctx), int(tuning.num_ctx))))
+            temp_value = max(0.0, min(1.0, float(tuning.temperature)))
+            top_p_value = max(0.0, min(1.0, float(tuning.top_p)))
+        else:
+            ctx_value = max(512, min(8192, int(num_ctx)))
+            temp_value = max(0.0, min(1.0, float(temperature)))
+            top_p_value = None
         thread_reader = getattr(self, "_effective_ollama_num_threads", None)
         if callable(thread_reader):
             try:
-                thread_value = int(cast(Any, thread_reader)(model_name=model_name, num_ctx=ctx_value))
+                thread_value = int(
+                    cast(Any, thread_reader)(
+                        model_name=model_name,
+                        num_ctx=ctx_value,
+                        tuning=tuning,
+                    )
+                )
+            except TypeError:
+                try:
+                    thread_value = int(cast(Any, thread_reader)(model_name=model_name, num_ctx=ctx_value))
+                except Exception:
+                    thread_value = int(DEFAULT_OLLAMA_NUM_THREADS)
             except Exception:
                 thread_value = int(DEFAULT_OLLAMA_NUM_THREADS)
         else:
             thread_value = int(DEFAULT_OLLAMA_NUM_THREADS)
         thread_value = max(1, thread_value)
         response_cache_key = ""
+        think_req = ollama_think_request_value(model_name)
         if can_cache and callable(cache_hash):
+            cache_obj: dict[str, Any] = {
+                "model": model_name,
+                "prompt": prompt_text,
+                "num_ctx": int(ctx_value),
+                "num_thread": int(thread_value),
+                "temperature": float(temp_value),
+            }
+            if top_p_value is not None:
+                cache_obj["top_p"] = float(top_p_value)
+            if think_req is not None:
+                cache_obj["think"] = think_req
             response_cache_key = cache_hash(
                 json.dumps(
-                    {
-                        "model": model_name,
-                        "prompt": prompt_text,
-                        "num_ctx": int(ctx_value),
-                        "num_thread": int(thread_value),
-                        "temperature": float(temp_value),
-                    },
+                    cache_obj,
                     ensure_ascii=True,
                     sort_keys=True,
                     separators=(",", ":"),
@@ -16552,21 +16950,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
             cached_response = cache_get_response(response_cache_key) if callable(cache_get_response) else ""
             if cached_response:
-                cached_text = str(cached_response)
+                cached_text = strip_thinking_traces(str(cached_response))
                 cache_debug = getattr(self, "_ai_cache_debug_last", None)
                 if isinstance(cache_debug, dict):
                     cache_debug["response_cache_hit"] = int(cache_debug.get("response_cache_hit", 0) or 0) + 1
                 return cached_text, None
-        payload = {
+        opt_payload: dict[str, Any] = {
+            "num_ctx": int(ctx_value),
+            "num_thread": int(thread_value),
+            "temperature": float(temp_value),
+        }
+        if top_p_value is not None:
+            opt_payload["top_p"] = float(top_p_value)
+        payload: dict[str, Any] = {
             "model": model_name,
             "prompt": prompt_text,
             "stream": False,
-            "options": {
-                "num_ctx": int(ctx_value),
-                "num_thread": int(thread_value),
-                "temperature": float(temp_value),
-            },
+            "options": opt_payload,
         }
+        if think_req is not None:
+            payload["think"] = think_req
         retries = int(self._get_ollama_retry_limit())
         max_attempts = retries + 1
         last_err = ""
@@ -16579,6 +16982,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     pass
             for attempt in range(max_attempts):
+                if cancel_check and cancel_check():
+                    return "", "cancelled"
                 data, err = self._ollama_request_json(
                     "/api/generate",
                     payload=payload,
@@ -16587,6 +16992,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if err:
                     last_err = err
                     if attempt < retries and self._is_transient_ollama_error(err):
+                        if cancel_check and cancel_check():
+                            return "", "cancelled"
                         time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
                         continue
                     if callable(record_outcome):
@@ -16602,7 +17009,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         except Exception:
                             pass
                     return "", "invalid Ollama response"
-                response_text = str(data.get("response", "") or "").strip()
+                response_text = strip_thinking_traces(str(data.get("response", "") or "").strip())
                 if response_text:
                     if can_cache and response_cache_key and callable(cache_put_response):
                         cache_put_response(response_cache_key, model_name, response_text)
@@ -16616,6 +17023,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if api_err:
                     last_err = api_err
                     if attempt < retries and self._is_transient_ollama_error(api_err):
+                        if cancel_check and cancel_check():
+                            return "", "cancelled"
                         time.sleep(self._get_ollama_retry_backoff_seconds(attempt))
                         continue
                     if callable(record_outcome):
@@ -16644,7 +17053,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     pass
 
-    def _ollama_generate_text(self, model: str, prompt: str) -> tuple[str, str | None]:
+    def _ollama_generate_text(
+        self,
+        model: str,
+        prompt: str,
+        *,
+        cancel_check: Callable[[], bool] | None = None,
+        inference_purpose: str = "tutor",
+    ) -> tuple[str, str | None]:
         return StudyPlanGUI._ollama_generate_text_with_options(
             self,
             model=model,
@@ -16652,6 +17068,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             num_ctx=int(DEFAULT_OLLAMA_CONTEXT),
             temperature=0.2,
             use_response_cache=True,
+            cancel_check=cancel_check,
+            inference_purpose=str(inference_purpose or "tutor"),
         )
 
     def _ensure_llama_runtime(self) -> LlamaRuntime | None:
@@ -16681,21 +17099,39 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         prompt: str,
         on_chunk: Callable[[str], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        *,
+        inference_purpose: str = "general",
     ) -> tuple[str, str | None]:
         """Generate text via the managed llama-server (OpenAI-compatible streaming)."""
         rt = self._ensure_llama_runtime()
         if rt is None:
             return "", "llama_runtime_unavailable"
         rt.ollama_host = self._normalize_ollama_host()
-        status = rt.ensure_ready()
+        try:
+            status = rt.ensure_ready(purpose=str(inference_purpose or "general"))
+        except TypeError:
+            status = rt.ensure_ready()
         if not status.healthy or not status.endpoint:
             return "", "llama_server_not_healthy"
+
+        gguf = None
+        try:
+            gguf = rt.registry.find_best_match(str(status.model_name or ""))
+        except Exception:
+            gguf = None
+        tun = resolve_model_runtime_tuning(
+            str(status.model_name or ""),
+            purpose=str(inference_purpose or "general"),
+            gguf=gguf,
+        )
+        max_tok = max(256, min(8192, int(tun.max_output_tokens)))
 
         payload = {
             "model": status.model_name,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2,
-            "max_tokens": 1024,
+            "temperature": float(tun.temperature),
+            "top_p": float(tun.top_p),
+            "max_tokens": int(max_tok),
             "stream": True,
         }
         try:
@@ -16769,16 +17205,31 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         prompt: str,
         max_tokens: int = 1024,
         cancel_check: Callable[[], bool] | None = None,
+        *,
+        inference_purpose: str = "general",
     ) -> tuple[str, str | None]:
         """Non-streaming generation via managed llama-server."""
         rt = self._ensure_llama_runtime()
         if rt is None:
             return "", "llama_runtime_unavailable"
         rt.ollama_host = self._normalize_ollama_host()
-        status = rt.ensure_ready()
+        try:
+            status = rt.ensure_ready(purpose=str(inference_purpose or "general"))
+        except TypeError:
+            status = rt.ensure_ready()
         if not status.healthy or not status.endpoint:
             return "", "llama_server_not_healthy"
-        max_tokens = max(256, min(8192, int(max_tokens)))
+        gguf = None
+        try:
+            gguf = rt.registry.find_best_match(str(status.model_name or ""))
+        except Exception:
+            gguf = None
+        tun = resolve_model_runtime_tuning(
+            str(status.model_name or ""),
+            purpose=str(inference_purpose or "general"),
+            gguf=gguf,
+        )
+        max_tokens = max(256, min(8192, min(int(max_tokens), int(tun.max_output_tokens))))
 
         if cancel_check and cancel_check():
             return "", "cancelled"
@@ -16786,8 +17237,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         payload = {
             "model": status.model_name,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2,
-            "max_tokens": max_tokens,
+            "temperature": float(tun.temperature),
+            "top_p": float(tun.top_p),
+            "max_tokens": int(max_tokens),
             "stream": False,
         }
         try:
@@ -16826,14 +17278,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _syllabus_ai_llm_generate(self, prompt: str, max_tokens: int = 4096) -> str:
         """Single call for syllabus AI parsing: try llama-server then Ollama. Returns model output or empty string."""
-        text, err = self._generate_via_llama_server(prompt, max_tokens=max_tokens)
+        text, err = self._generate_via_llama_server(
+            prompt,
+            max_tokens=max_tokens,
+            inference_purpose="gap_generation",
+        )
         if err is None and text:
             return text
         if text:
             return text
         model = str(getattr(self, "local_llm_model", "") or "").strip()
         if model:
-            fallback, _ = self._ollama_generate_text(model, prompt)
+            fallback, _ = self._ollama_generate_text(model, prompt, inference_purpose="gap_generation")
             return fallback or ""
         return ""
 
@@ -16843,13 +17299,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         prompt: str,
         on_chunk: Callable[[str], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        *,
+        inference_purpose: str = "tutor",
     ) -> tuple[str, str | None]:
         prompt_text = str(prompt or "").strip()
         if not prompt_text:
             return "", "prompt is empty"
 
         text, err = self._generate_via_llama_server_stream(
-            prompt_text, on_chunk=on_chunk, cancel_check=cancel_check,
+            prompt_text,
+            on_chunk=on_chunk,
+            cancel_check=cancel_check,
+            inference_purpose=str(inference_purpose or "tutor"),
         )
         if err is None:
             return text, None
@@ -16893,24 +17354,49 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return "", "Ollama runtime busy. Retry shortly."
         host = self._normalize_ollama_host()
         url = f"{host}/api/generate"
+        try:
+            stream_tuning = self._runtime_tuning_for_model(model_name, str(inference_purpose or "tutor"))
+        except Exception:
+            stream_tuning = None
+        ctx_stream = int(DEFAULT_OLLAMA_CONTEXT)
+        temp_stream = 0.2
+        top_stream: float | None = None
+        if stream_tuning is not None:
+            ctx_stream = max(512, min(8192, int(stream_tuning.num_ctx)))
+            temp_stream = max(0.0, min(1.0, float(stream_tuning.temperature)))
+            top_stream = max(0.0, min(1.0, float(stream_tuning.top_p)))
         thread_reader = getattr(self, "_effective_ollama_num_threads", None)
         if callable(thread_reader):
             try:
-                thread_value = int(cast(Any, thread_reader)(model_name=model_name, num_ctx=DEFAULT_OLLAMA_CONTEXT))
+                thread_value = int(
+                    cast(Any, thread_reader)(
+                        model_name=model_name,
+                        num_ctx=ctx_stream,
+                        tuning=stream_tuning,
+                    )
+                )
+            except TypeError:
+                try:
+                    thread_value = int(cast(Any, thread_reader)(model_name=model_name, num_ctx=ctx_stream))
+                except Exception:
+                    thread_value = int(DEFAULT_OLLAMA_NUM_THREADS)
             except Exception:
                 thread_value = int(DEFAULT_OLLAMA_NUM_THREADS)
         else:
             thread_value = int(DEFAULT_OLLAMA_NUM_THREADS)
         thread_value = max(1, thread_value)
+        stream_opts: dict[str, Any] = {
+            "num_ctx": int(ctx_stream),
+            "num_thread": int(thread_value),
+            "temperature": float(temp_stream),
+        }
+        if top_stream is not None:
+            stream_opts["top_p"] = float(top_stream)
         payload = {
             "model": model_name,
             "prompt": prompt_text,
             "stream": True,
-            "options": {
-                "num_ctx": int(DEFAULT_OLLAMA_CONTEXT),
-                "num_thread": int(thread_value),
-                "temperature": 0.2,
-            },
+            "options": stream_opts,
         }
         try:
             timeout = int(self.local_llm_timeout_seconds)
@@ -16975,6 +17461,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     num_ctx=int(reduced_ctx),
                     temperature=0.2,
                     use_response_cache=False,
+                    inference_purpose=str(inference_purpose or "tutor"),
                 )
             except Exception as rec_exc:
                 return "", str(rec_exc)
@@ -18178,7 +18665,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             raw_text = str(item.get("text", "") or "").strip()
             if not raw_text:
                 continue
-            signature = re.sub(r"\s+", " ", raw_text.lower())[:260]
+            # Stable deduplication key: avoids accidental collisions from truncated prefixes.
+            signature_src = re.sub(r"\s+", " ", raw_text.lower())
+            signature = hashlib.sha1(signature_src.encode("utf-8", errors="ignore")).hexdigest()
             if signature in seen_text:
                 continue
             remaining = int(char_budget) - int(char_used)
@@ -19463,7 +19952,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         if not model_name:
             return None
-        text, err = self._ollama_generate_text(model_name, prompt)
+        text, err = self._ollama_generate_text(model_name, prompt, inference_purpose="tutor")
         if err or not str(text or "").strip():
             return None
         topic = str(context.get("topic", "") or "").strip() or "current topic"
@@ -19561,7 +20050,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         if not model_name:
             return "", str(model_err or "No model available for AI judge.")
-        text, err = self._ollama_generate_text(model_name, prompt)
+        text, err = self._ollama_generate_text(model_name, prompt, inference_purpose="assess")
         return (text or "").strip(), err
 
     def _get_suggested_tags_for_judge(self, module: str, topic: str) -> list[str]:
@@ -21762,7 +22251,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 last_request_err = f"model cooldown active ({cooldown_remaining}s)"
                 continue
             attempted_models.append(candidate_name)
-            text, err = self._ollama_generate_text(candidate_name, prompt)
+            text, err = self._ollama_generate_text(candidate_name, prompt, inference_purpose="autopilot")
             if err:
                 should_compact = bool(callable(compact_retry_check) and compact_retry_check(err))
                 if should_compact and callable(reduce_prompt) and callable(generate_with_options):
@@ -21773,6 +22262,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         num_ctx=int(reduced_ctx),
                         temperature=0.2,
                         use_response_cache=False,
+                        inference_purpose="autopilot",
                     )
                 if err:
                     last_request_err = str(err)
@@ -22413,7 +22903,30 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         save_failed is True only when questions were added in memory but persist raised."""
         if not questions:
             return 0, False
-        added, _stats = self.engine._add_questions_with_stats(chapter, questions)
+        # Extra safety: ensure payload is persist-safe even if callers bypass validation.
+        safe_rows: list[dict[str, Any]] = []
+        for row in list(questions or []):
+            if not isinstance(row, dict):
+                continue
+            q = str(row.get("question", "") or "").strip()
+            opts = row.get("options", [])
+            corr = str(row.get("correct", "") or "").strip()
+            expl = str(row.get("explanation", "") or "").strip()
+            if not q or not expl:
+                continue
+            if not isinstance(opts, list) or len(opts) != 4:
+                continue
+            norm_opts = [str(o or "").strip() for o in opts]
+            if any(not o for o in norm_opts):
+                continue
+            if corr not in norm_opts:
+                continue
+            safe_rows.append({"question": q, "options": norm_opts, "correct": corr, "explanation": expl})
+
+        if not safe_rows:
+            return 0, False
+
+        added, _stats = self.engine._add_questions_with_stats(chapter, safe_rows)
         save_failed = False
         if added > 0:
             try:
@@ -22840,11 +23353,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self,
         chapter: str,
         snapshot: dict[str, Any] | None = None,
+        *,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any], str | None]:
         chapter_name = str(chapter or "").strip()
         if chapter_name not in getattr(self.engine, "CHAPTERS", []):
             fallback = self._default_section_c_question(str(getattr(self, "current_topic", "") or ""))
             return fallback, "Invalid chapter; using default Section C case."
+        if cancel_check and cancel_check():
+            return self._default_section_c_question(chapter_name), "cancelled"
         if not bool(self.local_llm_enabled):
             fallback = self._default_section_c_question(chapter_name)
             saved = self._upsert_section_c_question(chapter_name, fallback, persist=True)
@@ -22879,14 +23396,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         last_llm_err: str | None = None
         for candidate in model_candidates:
             attempted_models.append(str(candidate or "").strip())
-            text, err = self._ollama_generate_text(candidate, prompt)
+            if cancel_check and cancel_check():
+                return self._default_section_c_question(chapter_name), "cancelled"
+            try:
+                text, err = self._ollama_generate_text(
+                    candidate,
+                    prompt,
+                    cancel_check=cancel_check,
+                    inference_purpose="section_c_generation",
+                )
+            except TypeError:
+                # Backward compatibility for test doubles / older call signatures.
+                text, err = self._ollama_generate_text(candidate, prompt)
             if err:
                 last_llm_err = str(err)
                 continue
             parsed, parse_err = self._parse_generated_section_c_question(text, chapter_name)
             if not isinstance(parsed, dict) and parse_err:
                 retry_prompt = append_retry_suffix(prompt, RETRY_SUFFIX_ONE_CASE)
-                text2, err2 = self._ollama_generate_text(candidate, retry_prompt)
+                if cancel_check and cancel_check():
+                    return self._default_section_c_question(chapter_name), "cancelled"
+                try:
+                    text2, err2 = self._ollama_generate_text(
+                        candidate,
+                        retry_prompt,
+                        cancel_check=cancel_check,
+                        inference_purpose="section_c_generation",
+                    )
+                except TypeError:
+                    text2, err2 = self._ollama_generate_text(candidate, retry_prompt)
                 if not err2:
                     parsed2, _ = self._parse_generated_section_c_question(text2, chapter_name)
                     if isinstance(parsed2, dict):
@@ -22914,6 +23452,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     attempted_models=attempted_models,
                 ),
             )
+        # Extra safety: lightweight schema guard before persistence.
+        requirements = parsed.get("requirements")
+        model_outline = parsed.get("model_answer_outline")
+        time_budget = parsed.get("time_budget_minutes")
+        scenario = parsed.get("scenario")
+        valid_shape = (
+            isinstance(scenario, str)
+            and scenario.strip()
+            and isinstance(requirements, list)
+            and len(requirements) == 3
+            and isinstance(model_outline, list)
+            and len(model_outline) == 3
+            and isinstance(time_budget, (int, float))
+        )
+        if not valid_shape:
+            # Treat as invalid AI output and persist a deterministic fallback when possible.
+            default_fn = getattr(self, "_default_section_c_question", None)
+            if callable(default_fn):
+                fallback = default_fn(chapter_name)
+                saved = self._upsert_section_c_question(chapter_name, fallback, persist=True)
+                return (
+                    (saved if isinstance(saved, dict) else fallback),
+                    "Generated Section C case failed schema validation.",
+                )
+            # Backward compatibility: some tests use minimal payloads without this helper.
+            # Best-effort persist to avoid crashing and preserve historical behavior (no warn).
+            saved = self._upsert_section_c_question(chapter_name, parsed, persist=True)
+            return (saved if isinstance(saved, dict) else parsed), None
+
         parsed["source"] = "ai_generated"
         saved = self._upsert_section_c_question(chapter_name, parsed, persist=True)
         return (saved if isinstance(saved, dict) else parsed), None
@@ -23233,6 +23800,61 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         response_text: str,
         evaluation: dict[str, Any],
     ) -> None:
+        # Extra safety: only persist evaluation payloads that match the app's expected shape.
+        # This prevents malformed AI outputs from polluting attempt logs.
+        if not isinstance(evaluation, dict):
+            return
+        try:
+            total_mark = int(evaluation.get("total_mark", 0) or 0)
+            max_mark = int(evaluation.get("max_mark", 0) or 0) or 20
+        except Exception:
+            return
+        criterion_scores_raw = evaluation.get("criterion_scores")
+        if not isinstance(criterion_scores_raw, list) or not criterion_scores_raw:
+            return
+        safe_criterion_scores: list[dict[str, Any]] = []
+        for row in list(criterion_scores_raw or []):
+            if not isinstance(row, dict):
+                continue
+            criterion = str(row.get("criterion", "") or "").strip()
+            feedback = str(row.get("feedback", "") or "").strip()
+            try:
+                score = int(row.get("score", 0) or 0)
+            except Exception:
+                score = 0
+            try:
+                row_max_mark = int(row.get("max_mark", max_mark) or max_mark)
+            except Exception:
+                row_max_mark = max_mark
+            if not criterion or not feedback:
+                continue
+            safe_criterion_scores.append(
+                {
+                    "criterion": criterion[:180],
+                    "score": max(0, min(score, row_max_mark)),
+                    "max_mark": max(1, row_max_mark),
+                    "feedback": feedback[:220],
+                }
+            )
+        if not safe_criterion_scores:
+            return
+
+        strengths_raw = evaluation.get("strengths", [])
+        improvements_raw = evaluation.get("improvements", [])
+        strengths = [str(x or "").strip() for x in list(strengths_raw or []) if str(x or "").strip()]
+        improvements = [str(x or "").strip() for x in list(improvements_raw or []) if str(x or "").strip()]
+        if not isinstance(strengths, list):
+            strengths = []
+        if not isinstance(improvements, list):
+            improvements = []
+
+        evaluation = dict(evaluation)
+        evaluation["total_mark"] = int(total_mark)
+        evaluation["max_mark"] = int(max_mark)
+        evaluation["criterion_scores"] = safe_criterion_scores
+        evaluation["strengths"] = strengths[:4]
+        evaluation["improvements"] = improvements[:4]
+
         payload = {
             "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
             "chapter": str(chapter or ""),
@@ -24064,9 +24686,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self,
         question: dict[str, Any],
         response_text: str,
+        *,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any], str | None]:
         deterministic = self._evaluate_section_c_response_deterministic(question, response_text)
         response = str(response_text or "").strip()
+        if cancel_check and cancel_check():
+            return deterministic, "cancelled"
         if len(response) < 24:
             return deterministic, "Response is short; using deterministic feedback."
         if not bool(self.local_llm_enabled):
@@ -24140,6 +24766,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             num_ctx=int(DEFAULT_OLLAMA_CONTEXT),
             temperature=0.2,
             use_response_cache=True,
+            cancel_check=cancel_check,
+            inference_purpose="coach",
         )
         if err:
             _code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
@@ -24214,6 +24842,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         generate_btn = Gtk.Button(label="Generate case")
         timer_btn = Gtk.Button(label="Start timer")
         eval_btn = Gtk.Button(label="Evaluate answer")
+        cancel_btn = Gtk.Button(label="Cancel AI")
+        cancel_btn.set_sensitive(False)
         clear_btn = Gtk.Button(label="Clear answer")
         open_gnumeric_btn = Gtk.Button(label="Open in Gnumeric")
         open_gnumeric_btn.set_tooltip_text("Open current answer in Gnumeric (spreadsheet). When done, use Import from file to bring content back.")
@@ -24227,6 +24857,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         format_checklist_btn.connect("clicked", lambda *_: self._open_statement_format_checklists_dialog())
         controls.append(load_btn)
         controls.append(generate_btn)
+        controls.append(cancel_btn)
         controls.append(timer_btn)
         controls.append(eval_btn)
         controls.append(clear_btn)
@@ -24236,10 +24867,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         controls.append(format_checklist_btn)
         content.append(controls)
 
+        status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         status_label = Gtk.Label(label="")
         status_label.set_halign(Gtk.Align.START)
         status_label.add_css_class("muted")
-        content.append(status_label)
+        status_row.append(status_label)
+        busy_spinner = Gtk.Spinner()
+        busy_spinner.set_visible(False)
+        status_row.append(busy_spinner)
+        content.append(status_row)
 
         question_label = Gtk.Label(label="Scenario & requirements (20 marks)")
         question_label.set_halign(Gtk.Align.START)
@@ -24322,6 +24958,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "section_c_intelligence": None,
         }
 
+        # Cancellation support for non-streaming AI calls (generate/evaluate).
+        section_c_cancel_event = threading.Event()
+
         def _set_view_text(view: Gtk.TextView, text: str) -> None:
             try:
                 buf = view.get_buffer()
@@ -24353,6 +24992,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         def _set_status(text: str) -> None:
             status_label.set_label(str(text or ""))
+
+        def _cancel_check() -> bool:
+            return bool(section_c_cancel_event.is_set())
+
+        def _on_cancel_ai(*_args) -> None:
+            if not bool(state.get("busy", False)):
+                return
+            section_c_cancel_event.set()
+            _set_status("Cancelling AI…")
 
         def _refresh_rewrite_panel() -> None:
             rewrite_plan = state.get("rewrite_plan")
@@ -24430,6 +25078,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         def _set_busy(busy: bool) -> None:
             state["busy"] = bool(busy)
+            try:
+                cancel_btn.set_sensitive(bool(busy))
+            except Exception:
+                pass
+            try:
+                busy_spinner.set_visible(bool(busy))
+                if bool(busy):
+                    busy_spinner.start()
+                else:
+                    busy_spinner.stop()
+            except Exception:
+                pass
             editable = not bool(busy)
             chapter_dropdown.set_sensitive(editable)
             load_btn.set_sensitive(editable)
@@ -24474,6 +25134,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if bool(state.get("busy", False)):
                 return
             chapter_name = _selected_chapter()
+            section_c_cancel_event.clear()
             _set_busy(True)
             _set_status(f"Generating new Section C case for {chapter_name}...")
 
@@ -24481,12 +25142,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 try:
                     snapshot_builder = getattr(self, "_build_ai_tutor_autopilot_snapshot", None)
                     snapshot = snapshot_builder() if callable(snapshot_builder) else {}
-                    case, err = self._generate_section_c_question(chapter_name, snapshot if isinstance(snapshot, dict) else None)
+                    case, err = self._generate_section_c_question(
+                        chapter_name,
+                        snapshot if isinstance(snapshot, dict) else None,
+                        cancel_check=_cancel_check,
+                    )
                 except Exception as exc:
                     case = self._default_section_c_question(chapter_name)
                     err = str(exc)
 
                 def _finish() -> bool:
+                    if str(err or "").strip().lower() == "cancelled":
+                        _set_status("Generation cancelled.")
+                        _set_busy(False)
+                        return False
                     state["chapter"] = str(chapter_name)
                     state["question"] = dict(case)
                     state["last_evaluation"] = None
@@ -24519,6 +25188,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if len(response) < 8:
                 _set_status("Write a response first, then evaluate.")
                 return
+            section_c_cancel_event.clear()
             _set_busy(True)
             _set_status("Evaluating response...")
             baseline_eval = state.get("rewrite_baseline_evaluation") if isinstance(state.get("rewrite_baseline_evaluation"), dict) else None
@@ -24526,18 +25196,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
             def _worker() -> None:
                 try:
-                    evaluation, warn = self._evaluate_section_c_response(question, response)
-                    self._append_section_c_attempt(
-                        chapter=str(question.get("chapter", state.get("chapter", "")) or ""),
-                        question=question,
-                        response_text=response,
-                        evaluation=evaluation,
+                    evaluation, warn = self._evaluate_section_c_response(
+                        question,
+                        response,
+                        cancel_check=_cancel_check,
                     )
+                    if str(warn or "").strip().lower() != "cancelled":
+                        self._append_section_c_attempt(
+                            chapter=str(question.get("chapter", state.get("chapter", "")) or ""),
+                            question=question,
+                            response_text=response,
+                            evaluation=evaluation,
+                        )
                 except Exception as exc:
                     evaluation = self._evaluate_section_c_response_deterministic(question, response)
                     warn = f"Evaluation fallback: {exc}"
 
                 def _finish() -> bool:
+                    if str(warn or "").strip().lower() == "cancelled":
+                        _set_status("Evaluation cancelled.")
+                        _set_busy(False)
+                        return False
                     state["last_evaluation"] = dict(evaluation) if isinstance(evaluation, dict) else None
                     try:
                         section_c_intelligence = state.get("section_c_intelligence")
@@ -24661,6 +25340,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         load_btn.connect("clicked", lambda *_: _load_saved_case(_selected_chapter()))
         generate_btn.connect("clicked", _on_generate_case)
+        cancel_btn.connect("clicked", _on_cancel_ai)
         timer_btn.connect("clicked", _on_start_timer)
         eval_btn.connect("clicked", _on_evaluate)
         rewrite_btn.connect("clicked", _on_rewrite_weakest)
@@ -24916,7 +25596,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         requested_count: int = AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS,
         *,
         prompt_task_id: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[bool, str]:
+        if cancel_check and cancel_check():
+            return False, "Gap question generation cancelled."
         if not bool(getattr(self, "ai_tutor_gap_generation_enabled", True)):
             return False, "AI gap-question generation is disabled."
         if not bool(self.local_llm_enabled):
@@ -24963,8 +25646,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         attempted_models: list[str] = []
         last_llm_err: str | None = None
         for candidate in model_candidates:
+            if cancel_check and cancel_check():
+                return False, "Gap question generation cancelled."
             attempted_models.append(str(candidate or "").strip())
-            text, err = self._ollama_generate_text(candidate, prompt)
+            try:
+                text, err = self._ollama_generate_text(
+                    candidate,
+                    prompt,
+                    cancel_check=cancel_check,
+                    inference_purpose="gap_generation",
+                )
+            except TypeError:
+                # Backward compatibility for test doubles / older call signatures.
+                text, err = self._ollama_generate_text(candidate, prompt)
             if err:
                 last_llm_err = str(err)
                 continue
@@ -24975,7 +25669,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self._build_gap_generation_prompt(chapter, 1, snapshot, **prompt_task_kwargs),
                     RETRY_SUFFIX_ONE_ITEM,
                 )
-                text2, err2 = self._ollama_generate_text(candidate, retry_prompt)
+                if cancel_check and cancel_check():
+                    return False, "Gap question generation cancelled."
+                try:
+                    text2, err2 = self._ollama_generate_text(
+                        candidate,
+                        retry_prompt,
+                        cancel_check=cancel_check,
+                        inference_purpose="gap_generation",
+                    )
+                except TypeError:
+                    text2, err2 = self._ollama_generate_text(candidate, retry_prompt)
                 if not err2:
                     parsed_chapter2, questions2, parse_err2 = self._parse_generated_gap_questions(text2)
                     if questions2:
@@ -26503,7 +27207,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             attempted_models.append(candidate_name)
             payload["model"] = candidate_name
             prompt = self._build_ai_coach_prompt(payload)
-            text, err = self._ollama_generate_text(candidate_name, prompt)
+            text, err = self._ollama_generate_text(candidate_name, prompt, inference_purpose="coach")
             should_compact = bool(err and callable(compact_retry_check) and compact_retry_check(err))
             if should_compact and callable(reduce_prompt) and callable(generate_with_options):
                 compact_prompt = str(reduce_prompt(prompt))
@@ -26513,6 +27217,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     num_ctx=int(reduced_ctx),
                     temperature=0.2,
                     use_response_cache=False,
+                    inference_purpose="coach",
                 )
             if err:
                 last_err = str(err)
@@ -36965,12 +37670,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._apply_snapshot_import_result(result, title_prefix="Snapshot imported safely.")
         except Exception as e:
             self._log_error("import_data_snapshot", e)
+            msg = str(e)
+            actionable = ""
+            if "Quarantined copy created at:" in msg:
+                actionable = (
+                    "\n\nWhat you can do: "
+                    "Open the quarantined copy, fix/replace it (or restore from a backup), "
+                    "then try importing the snapshot again."
+                )
             err = self._new_message_dialog(
                 transient_for=self,
                 modal=True,
                 message_type=Gtk.MessageType.ERROR,
                 buttons=Gtk.ButtonsType.OK,
-                text=f"Failed to import snapshot: {e}",
+                text=f"Failed to import snapshot: {msg}{actionable}",
             )
             err.connect("response", lambda d, _r: d.destroy())
             err.present()

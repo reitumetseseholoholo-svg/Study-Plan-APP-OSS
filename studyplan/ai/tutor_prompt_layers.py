@@ -33,6 +33,14 @@ ALL_PEDAGOGICAL_MODES: Final[frozenset[str]] = frozenset(
     }
 )
 
+# Ordered reasoning in the visible answer (local models follow this more reliably than a vague “explain”).
+TUTOR_STEP_BY_STEP_RESPONSE_CONTRACT: list[str] = [
+    "Use a clear order in your reply: (1) isolate what the learner is asking, (2) explain the idea simply "
+    "(short intuition or analogy if it helps), (3) give method or worked steps, then apply the response "
+    "contract below for checks, pitfalls, and next step.",
+    "",
+]
+
 TUTOR_COACH_IDENTITY_LINES: list[str] = [
     "Coach identity:",
     "- maximize exam readiness per minute using learner state and syllabus context.",
