@@ -2372,16 +2372,44 @@ def test_refresh_workbench_page_routes_through_safe_render_section():
     dummy = types.SimpleNamespace(
         _safe_render_section=_safe,
         _refresh_tutor_workspace_page=lambda: calls.append(("refresh", "tutor")),
-        _refresh_coach_workspace_page=lambda: calls.append(("refresh", "coach")),
-        _refresh_insights_workspace_page=lambda: calls.append(("refresh", "insights")),
-        _refresh_settings_workspace_page=lambda: calls.append(("refresh", "settings")),
+        _refresh_coach_workspace_page=lambda *args, **kwargs: calls.append(("refresh", f"coach:{kwargs.get('force', False)}")),
+        _refresh_insights_workspace_page=lambda *args, **kwargs: calls.append(("refresh", f"insights:{kwargs.get('force', False)}")),
+        _refresh_settings_workspace_page=lambda *args, **kwargs: calls.append(("refresh", f"settings:{kwargs.get('force', False)}")),
         _refresh_workbench_shell_status=lambda: calls.append(("refresh", "shell")),
         _set_workbench_refresh_fallback=lambda _page, _report: calls.append(("fallback", "workbench")),
     )
 
     StudyPlanGUI._refresh_workbench_page(dummy, "coach")
 
-    assert calls == [("safe", "coach_workspace"), ("refresh", "coach"), ("refresh", "shell")]
+    assert calls == [("safe", "coach_workspace"), ("refresh", "coach:True"), ("refresh", "shell")]
+
+
+def test_hidden_workbench_pages_skip_refresh_until_visible():
+    class _FakeStack:
+        def __init__(self, visible_child_name: str):
+            self._visible_child_name = visible_child_name
+
+        def get_visible_child_name(self):
+            return self._visible_child_name
+
+    calls: list[str] = []
+    dummy = types.SimpleNamespace(
+        workbench_stack=_FakeStack("dashboard"),
+        _coach_workspace_state={},
+        _coach_workspace_model_label=None,
+        _coach_workspace_status_label=None,
+        _coach_workspace_view=None,
+        _refresh_workbench_shell_status=lambda: calls.append("shell"),
+    )
+    dummy._workbench_visible_page_name = types.MethodType(StudyPlanGUI._workbench_visible_page_name, dummy)
+    dummy._should_refresh_workbench_page = types.MethodType(StudyPlanGUI._should_refresh_workbench_page, dummy)
+
+    assert StudyPlanGUI._should_refresh_workbench_page(dummy, "coach") is False
+    StudyPlanGUI._refresh_coach_workspace_page(dummy)
+    assert calls == []
+
+    dummy.workbench_stack = _FakeStack("coach")
+    assert StudyPlanGUI._should_refresh_workbench_page(dummy, "coach") is True
 
 
 def test_render_study_room_card_guarded_uses_safe_render_section_and_clears_source():
@@ -4184,6 +4212,58 @@ def test_cloud_endpoint_auto_discovers_provider_key(monkeypatch) -> None:
     assert text == "auto-discovered"
     assert captured["authorization"] == "Bearer router-token"
     assert captured["x_api_key"] is None
+
+
+def test_gateway_endpoint_prefers_gateway_models_and_skips_legacy_llama_server(monkeypatch) -> None:
+    dummy = _make_dummy()
+    dummy._resolve_openai_compatible_endpoint = types.MethodType(StudyPlanGUI._resolve_openai_compatible_endpoint, dummy)
+    dummy._cloud_model_candidates = types.MethodType(StudyPlanGUI._cloud_model_candidates, dummy)
+    dummy._cloud_endpoint_is_candidate = types.MethodType(StudyPlanGUI._cloud_endpoint_is_candidate, dummy)
+
+    monkeypatch.setattr("studyplan.config.Config.LLM_GATEWAY_ENDPOINT", "https://gateway.example.com/v1/chat/completions")
+    monkeypatch.setattr("studyplan.config.Config.LLAMA_CPP_ENDPOINT", "https://legacy.example.com/v1/chat/completions")
+    monkeypatch.setattr("studyplan.config.Config.LLM_GATEWAY_MODEL", "openrouter/google/gemini-2.5-flash")
+    monkeypatch.setattr(
+        "studyplan.config.Config.LLM_GATEWAY_MODEL_FALLBACKS",
+        "openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet",
+    )
+    monkeypatch.setenv("STUDYPLAN_LLM_GATEWAY_API_KEY", "gateway-token")
+
+    assert dummy._cloud_endpoint_is_candidate() is True
+
+    llama_calls = {"n": 0}
+
+    def _llama(_prompt: str, *args, **kwargs):
+        llama_calls["n"] += 1
+        return "", "llama_server_not_healthy"
+
+    dummy._generate_via_llama_server = _llama
+
+    captured: dict[str, object] = {}
+
+    def _gateway(prompt_text, *, candidate_models, inference_purpose, cancel_check=None):
+        captured["prompt"] = prompt_text
+        captured["models"] = list(candidate_models)
+        captured["purpose"] = inference_purpose
+        return "gateway-response", None
+
+    dummy._generate_via_cloud_llama_cpp_endpoint = _gateway
+
+    text, err = StudyPlanGUI._ollama_generate_text_with_options(
+        dummy,
+        model="",
+        prompt="ping",
+        num_ctx=2048,
+        temperature=0.2,
+        use_response_cache=False,
+    )
+
+    assert err is None
+    assert text == "gateway-response"
+    assert llama_calls["n"] == 0
+    assert captured["models"][0] == "openrouter/google/gemini-2.5-flash"
+    assert "openrouter/openai/gpt-4o-mini" in captured["models"]
+    assert "openrouter/anthropic/claude-3.5-sonnet" in captured["models"]
 
 
 def test_ollama_generate_text_stream_retries_transient_error_before_chunks(monkeypatch):

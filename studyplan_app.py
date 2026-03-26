@@ -99,6 +99,11 @@ from studyplan.ai.rag_presets import apply_rag_preset_to_runtime, normalize_rag_
 from studyplan.ai.model_routing import routed_failover_chain_for_purpose, routed_primary_for_purpose
 from studyplan.ai.model_infer_tuning import ModelRuntimeTuning, resolve_model_runtime_tuning
 from studyplan.ai.llm_auth import discover_llm_auth_headers
+from studyplan.ai.llm_gateway import (
+    ResolvedOpenAICompatibleEndpoint,
+    resolve_openai_compatible_endpoint,
+    resolve_openai_compatible_model_candidates,
+)
 from studyplan.ai.llm_output_sanitize import (
     ollama_think_request_value,
     ollama_think_request_value_for_section_c_judgment,
@@ -183,6 +188,7 @@ from studyplan.ai.recovery import (
 )
 from studyplan.telemetry.slo import evaluate_latency_slo
 from studyplan.working_memory_service import WorkingMemoryService
+from studyplan.state_locking import get_cognitive_state_lock, locked_cognitive_state
 from studyplan.lifecycle import ShutdownBarrier
 from studyplan.ui import UIBuilder
 from studyplan.dialog_ux import DisclosureLevel, TutorDialogRenderer
@@ -1792,6 +1798,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "Module isolation: engine.module_id must match app module_id. "
                 "Check that load_preferences() sets module_id before engine creation."
             )
+        self._cognitive_state_lock = getattr(self.engine, "_cognitive_state_lock", None)
         self.engine.semantic_enabled = bool(self.semantic_enabled)
         self.engine.adaptive_quiz_prioritization = bool(self.adaptive_quiz_prioritization)
         self._tutor_session_controller = InMemoryTutorSessionController()
@@ -3261,10 +3268,38 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             section_id, refresh_fn = target
             self._safe_render_section(
                 section_id,
-                lambda: refresh_fn(),
+                lambda: refresh_fn(force=True) if key in {"coach", "insights", "settings"} else refresh_fn(),
                 fallback_fn=lambda report, page_key=key: self._set_workbench_refresh_fallback(page_key, report),
             )
         self._refresh_workbench_shell_status()
+
+    def _workbench_visible_page_name(self) -> str:
+        stack = getattr(self, "workbench_stack", None)
+        if stack is None:
+            return ""
+        try:
+            return str(stack.get_visible_child_name() or "").strip().lower()
+        except Exception:
+            return ""
+
+    def _should_refresh_workbench_page(self, page: str, *, force: bool = False) -> bool:
+        if bool(force):
+            return True
+        visible_reader = getattr(self, "_workbench_visible_page_name", None)
+        if callable(visible_reader):
+            try:
+                current = str(visible_reader() or "").strip().lower()
+            except Exception:
+                current = ""
+        else:
+            current = ""
+            stack = getattr(self, "workbench_stack", None)
+            if stack is not None:
+                try:
+                    current = str(stack.get_visible_child_name() or "").strip().lower()
+                except Exception:
+                    current = ""
+        return current == str(page or "").strip().lower()
 
     def _open_workspace_tab(self, page: str, *, present: bool = True) -> bool:
         stack = getattr(self, "workbench_stack", None)
@@ -7811,7 +7846,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             rec = state.get("recommendation")
             apply_btn.set_sensitive((not bool(active)) and isinstance(rec, dict))
 
-    def _refresh_coach_workspace_page(self) -> None:
+    def _refresh_coach_workspace_page(self, *, force: bool = False) -> None:
+        if not self._should_refresh_workbench_page("coach", force=force):
+            return
         model_label = getattr(self, "_coach_workspace_model_label", None)
         status_label = getattr(self, "_coach_workspace_status_label", None)
         view = getattr(self, "_coach_workspace_view", None)
@@ -8004,7 +8041,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._refresh_insights_workspace_page()
         return page_scroll
 
-    def _refresh_insights_workspace_page(self) -> None:
+    def _refresh_insights_workspace_page(self, *, force: bool = False) -> None:
+        if not self._should_refresh_workbench_page("insights", force=force):
+            return
         view = getattr(self, "_insights_workspace_view", None)
         status_label = getattr(self, "_insights_workspace_status_label", None)
         if view is None or status_label is None:
@@ -8178,7 +8217,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._refresh_settings_workspace_page()
         return page_scroll
 
-    def _refresh_settings_workspace_page(self) -> None:
+    def _refresh_settings_workspace_page(self, *, force: bool = False) -> None:
+        if not self._should_refresh_workbench_page("settings", force=force):
+            return
         llm_enabled = getattr(self, "_settings_workspace_llm_enabled_toggle", None)
         llm_auto_select = getattr(self, "_settings_workspace_auto_select_toggle", None)
         semantic_enabled = getattr(self, "_settings_workspace_semantic_toggle", None)
@@ -15316,80 +15357,82 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         model = str(model_name or "").strip()
         if not model:
             return False, 0, ""
-        health = getattr(self, "_llm_model_health", {})
-        if not isinstance(health, dict):
-            return False, 0, ""
-        row = health.get(model)
-        if not isinstance(row, dict):
-            return False, 0, ""
-        try:
-            until_ts = float(row.get("cooldown_until", 0.0) or 0.0)
-        except Exception:
-            until_ts = 0.0
-        now_ts = float(time.monotonic())
-        if until_ts <= now_ts:
-            return False, 0, ""
-        remaining = int(max(1.0, until_ts - now_ts))
-        reason = str(row.get("last_error", "") or "").strip()
-        return True, int(remaining), reason
+        with self._ollama_runtime_lock:
+            health = getattr(self, "_llm_model_health", {})
+            if not isinstance(health, dict):
+                return False, 0, ""
+            row = health.get(model)
+            if not isinstance(row, dict):
+                return False, 0, ""
+            try:
+                until_ts = float(row.get("cooldown_until", 0.0) or 0.0)
+            except Exception:
+                until_ts = 0.0
+            now_ts = float(time.monotonic())
+            if until_ts <= now_ts:
+                return False, 0, ""
+            remaining = int(max(1.0, until_ts - now_ts))
+            reason = str(row.get("last_error", "") or "").strip()
+            return True, int(remaining), reason
 
     def _record_local_llm_model_outcome(self, model_name: str, *, success: bool, err: str = "") -> None:
         model = str(model_name or "").strip()
         if not model:
             return
-        now_ts = float(time.monotonic())
-        threshold = self._coerce_ai_model_failure_threshold()
-        window_seconds = self._coerce_ai_model_failure_window_seconds()
-        base_cooldown = self._coerce_ai_model_cooldown_seconds()
-        health = getattr(self, "_llm_model_health", None)
-        if not isinstance(health, dict):
-            health = {}
-            self._llm_model_health = health
-        row = health.get(model)
-        if not isinstance(row, dict):
-            row = {}
-            health[model] = row
-        failures = row.get("failure_times")
-        if not isinstance(failures, list):
-            failures = []
-        failure_times: list[float] = []
-        for raw in failures:
-            try:
-                ts = float(raw)
-            except Exception:
-                continue
-            if (now_ts - ts) <= float(window_seconds):
-                failure_times.append(ts)
-        if success:
-            row["failure_times"] = []
-            row["consecutive_failures"] = 0
-            row["cooldown_until"] = 0.0
-            row["last_success_at"] = now_ts
-            row["last_error"] = ""
-            row["updated_at"] = now_ts
-        else:
-            failure_times.append(now_ts)
-            consecutive = max(0, int(row.get("consecutive_failures", 0) or 0)) + 1
-            row["failure_times"] = failure_times[-32:]
-            row["consecutive_failures"] = consecutive
-            row["last_error"] = str(err or "").strip()[:240]
-            row["last_error_at"] = now_ts
-            row["updated_at"] = now_ts
-            if consecutive >= int(threshold) or len(failure_times) >= int(threshold):
-                step = max(0, consecutive - int(threshold))
-                cooldown = min(int(AI_MODEL_COOLDOWN_MAX_SECONDS), int(base_cooldown) * (1 + step))
-                row["cooldown_until"] = now_ts + float(cooldown)
-        # Keep map bounded.
-        if len(health) > int(AI_MODEL_HEALTH_MAX_TRACKED):
-            items = sorted(
-                health.items(),
-                key=lambda pair: float((pair[1] or {}).get("updated_at", 0.0) or 0.0),
-            )
-            overflow = len(items) - int(AI_MODEL_HEALTH_MAX_TRACKED)
-            for idx in range(max(0, overflow)):
-                stale_key = str(items[idx][0] or "")
-                if stale_key and stale_key in health:
-                    health.pop(stale_key, None)
+        with self._ollama_runtime_lock:
+            now_ts = float(time.monotonic())
+            threshold = self._coerce_ai_model_failure_threshold()
+            window_seconds = self._coerce_ai_model_failure_window_seconds()
+            base_cooldown = self._coerce_ai_model_cooldown_seconds()
+            health = getattr(self, "_llm_model_health", None)
+            if not isinstance(health, dict):
+                health = {}
+                self._llm_model_health = health
+            row = health.get(model)
+            if not isinstance(row, dict):
+                row = {}
+                health[model] = row
+            failures = row.get("failure_times")
+            if not isinstance(failures, list):
+                failures = []
+            failure_times: list[float] = []
+            for raw in failures:
+                try:
+                    ts = float(raw)
+                except Exception:
+                    continue
+                if (now_ts - ts) <= float(window_seconds):
+                    failure_times.append(ts)
+            if success:
+                row["failure_times"] = []
+                row["consecutive_failures"] = 0
+                row["cooldown_until"] = 0.0
+                row["last_success_at"] = now_ts
+                row["last_error"] = ""
+                row["updated_at"] = now_ts
+            else:
+                failure_times.append(now_ts)
+                consecutive = max(0, int(row.get("consecutive_failures", 0) or 0)) + 1
+                row["failure_times"] = failure_times[-32:]
+                row["consecutive_failures"] = consecutive
+                row["last_error"] = str(err or "").strip()[:240]
+                row["last_error_at"] = now_ts
+                row["updated_at"] = now_ts
+                if consecutive >= int(threshold) or len(failure_times) >= int(threshold):
+                    step = max(0, consecutive - int(threshold))
+                    cooldown = min(int(AI_MODEL_COOLDOWN_MAX_SECONDS), int(base_cooldown) * (1 + step))
+                    row["cooldown_until"] = now_ts + float(cooldown)
+            # Keep map bounded.
+            if len(health) > int(AI_MODEL_HEALTH_MAX_TRACKED):
+                items = sorted(
+                    health.items(),
+                    key=lambda pair: float((pair[1] or {}).get("updated_at", 0.0) or 0.0),
+                )
+                overflow = len(items) - int(AI_MODEL_HEALTH_MAX_TRACKED)
+                for idx in range(max(0, overflow)):
+                    stale_key = str(items[idx][0] or "")
+                    if stale_key and stale_key in health:
+                        health.pop(stale_key, None)
 
     def _is_local_or_private_host(self, hostname: str) -> bool:
         host = str(hostname or "").strip().lower().strip(".")
@@ -17264,14 +17307,41 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._last_llm_inference_backend = str(backend or "").strip()[:64]
         self._last_llm_inference_model = str(model_id or "").strip()[:256]
 
-    def _cloud_endpoint_is_candidate(self) -> bool:
-        """Return True when `Config.LLAMA_CPP_ENDPOINT` looks internet-hosted."""
+    def _resolve_openai_compatible_endpoint(self) -> ResolvedOpenAICompatibleEndpoint | None:
         try:
             from studyplan.config import Config as _Cfg
 
-            if not bool(getattr(_Cfg, "CLOUD_LLAMACPP_PREFER_EXTERNAL", False)):
+            return resolve_openai_compatible_endpoint(_Cfg)
+        except Exception:
+            return None
+
+    def _cloud_model_candidates(self, *, inference_purpose: str, requested_model: str = "") -> list[str]:
+        try:
+            from studyplan.config import Config as _Cfg
+
+            resolved = resolve_openai_compatible_endpoint(_Cfg)
+            if resolved is not None and resolved.source == "gateway":
+                configured_model = str(getattr(_Cfg, "LLM_GATEWAY_MODEL", "") or "").strip()
+                fallback_models = str(getattr(_Cfg, "LLM_GATEWAY_MODEL_FALLBACKS", "") or "").strip()
+            else:
+                configured_model = str(getattr(_Cfg, "LLAMA_CPP_MODEL", "") or "").strip()
+                fallback_models = ""
+            return resolve_openai_compatible_model_candidates(
+                purpose=str(inference_purpose or "tutor"),
+                requested_model=str(requested_model or "").strip(),
+                configured_model=configured_model,
+                fallback_models=fallback_models,
+            )
+        except Exception:
+            return []
+
+    def _cloud_endpoint_is_candidate(self) -> bool:
+        """Return True when an OpenAI-compatible cloud endpoint is configured and authenticated."""
+        try:
+            resolved = self._resolve_openai_compatible_endpoint()
+            if resolved is None:
                 return False
-            endpoint = str(getattr(_Cfg, "LLAMA_CPP_ENDPOINT", "") or "").strip()
+            endpoint = str(resolved.endpoint or "").strip()
             if not endpoint:
                 return False
             parsed = urllib.parse.urlparse(endpoint)
@@ -17281,9 +17351,154 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             scheme = str(getattr(parsed, "scheme", "") or "").strip().lower()
             if scheme not in {"http", "https"}:
                 return False
-            return not bool(self._is_local_or_private_host(hostname))
+            if resolved.source != "gateway" and bool(self._is_local_or_private_host(hostname)):
+                return False
+            try:
+                from studyplan.config import Config as _Cfg
+
+                auth = discover_llm_auth_headers(
+                    endpoint,
+                    search_paths=[
+                        str(getattr(_Cfg, "CONFIG_HOME", "") or ""),
+                        os.getcwd(),
+                    ],
+                )
+            except Exception:
+                auth = None
+            return auth is not None and bool(auth.headers)
         except Exception:
             return False
+
+    def _brave_search_ai_is_candidate(self) -> bool:
+        """Return True when Brave Search AI is enabled and configured."""
+        try:
+            from studyplan.config import Config as _Cfg
+
+            if not bool(getattr(_Cfg, "BRAVE_SEARCH_AI_ENABLED", False)):
+                return False
+            endpoint = str(getattr(_Cfg, "BRAVE_SEARCH_AI_ENDPOINT", "") or "").strip()
+            if not endpoint:
+                return False
+            parsed = urllib.parse.urlparse(endpoint)
+            scheme = str(getattr(parsed, "scheme", "") or "").strip().lower()
+            hostname = str(getattr(parsed, "hostname", "") or "").strip().lower()
+            if scheme not in {"http", "https"} or not hostname:
+                return False
+            if bool(self._is_local_or_private_host(hostname)):
+                return False
+            # Only attempt if we can discover auth headers (avoids noisy failed calls).
+            try:
+                auth = discover_llm_auth_headers(
+                    endpoint,
+                    search_paths=[
+                        str(getattr(_Cfg, "CONFIG_HOME", "") or ""),
+                        os.getcwd(),
+                    ],
+                )
+            except Exception:
+                auth = None
+            return auth is not None and bool(auth.headers)
+        except Exception:
+            return False
+
+    def _generate_via_brave_search_ai(
+        self,
+        prompt_text: str,
+        *,
+        inference_purpose: str = "tutor",
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> tuple[str, str | None]:
+        """Non-streaming OpenAI-compatible request to Brave Search AI endpoint."""
+        try:
+            from studyplan.config import Config as _Cfg
+
+            endpoint = str(getattr(_Cfg, "BRAVE_SEARCH_AI_ENDPOINT", "") or "").strip()
+            if not endpoint:
+                return "", "brave_endpoint_missing"
+            model = str(getattr(_Cfg, "BRAVE_SEARCH_AI_MODEL", "") or "brave").strip() or "brave"
+            timeout_s = float(getattr(_Cfg, "BRAVE_SEARCH_AI_TIMEOUT_SECONDS", 12.0) or 12.0)
+            timeout_s = max(1.0, min(60.0, timeout_s))
+
+            if cancel_check and cancel_check():
+                return "", "cancelled"
+
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            try:
+                resolved_auth = discover_llm_auth_headers(
+                    endpoint,
+                    search_paths=[
+                        str(getattr(_Cfg, "CONFIG_HOME", "") or ""),
+                        os.getcwd(),
+                    ],
+                )
+            except Exception:
+                resolved_auth = None
+            if resolved_auth is not None:
+                headers.update(resolved_auth.headers)
+            if not any(k.lower() == "x-subscription-token" for k in headers):
+                # Without auth this will just fail; treat as "not configured" to keep UI quiet.
+                return "", "brave_auth_missing"
+
+            temp = float(getattr(_Cfg, "LLAMA_CPP_TEMPERATURE", 0.2) or 0.2)
+            top_p = float(getattr(_Cfg, "LLAMA_CPP_TOP_P", 0.95) or 0.95)
+            ctx_window = int(getattr(_Cfg, "LLAMA_CPP_CONTEXT_WINDOW", 8192) or 8192)
+            approx_prompt_tokens = max(1, len(prompt_text or "") // 4)
+            max_completion_tokens = max(96, min(1024, int(ctx_window) - approx_prompt_tokens))
+
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt_text}],
+                "temperature": float(temp),
+                "top_p": float(top_p),
+                "max_tokens": int(max_completion_tokens),
+                "stream": False,
+            }
+            body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+            req = urllib.request.Request(
+                endpoint,
+                data=body,
+                headers=headers,
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                    status = int(getattr(resp, "status", 200) or 200)
+                    raw = resp.read().decode("utf-8", "replace")
+            except urllib.error.HTTPError as exc:
+                status = int(getattr(exc, "code", 500) or 500)
+                try:
+                    raw = (exc.read() or b"").decode("utf-8", "replace")
+                except Exception:
+                    raw = ""
+                if status in {401, 403}:
+                    return "", "brave_auth_failed"
+                return "", "brave_http_error"
+            except Exception:
+                return "", "brave_unreachable"
+
+            try:
+                decoded = json.loads(raw) if str(raw or "").strip() else {}
+            except Exception:
+                return "", "brave_invalid_json"
+            if not isinstance(decoded, dict):
+                return "", "brave_invalid_json"
+            choices = decoded.get("choices")
+            if isinstance(choices, list) and choices:
+                first = choices[0]
+                if isinstance(first, dict):
+                    msg = first.get("message")
+                    if isinstance(msg, dict):
+                        content = msg.get("content")
+                        if isinstance(content, str) and content.strip():
+                            return content.strip(), None
+                    text = first.get("text")
+                    if isinstance(text, str) and text.strip():
+                        return text.strip(), None
+            if status >= 400:
+                return "", "brave_error"
+            return "", "brave_empty_output"
+        except Exception:
+            return "", "brave_error"
 
     def _generate_via_cloud_llama_cpp_endpoint(
         self,
@@ -17297,9 +17512,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         try:
             from studyplan.config import Config as _Cfg
 
-            endpoint = str(getattr(_Cfg, "LLAMA_CPP_ENDPOINT", "") or "").strip()
+            resolved_endpoint = resolve_openai_compatible_endpoint(_Cfg)
+            endpoint = str(resolved_endpoint.endpoint if resolved_endpoint is not None else "").strip()
             if not endpoint:
                 return "", "cloud_endpoint_missing"
+            if not candidate_models:
+                candidate_models = self._cloud_model_candidates(
+                    inference_purpose=inference_purpose,
+                    requested_model="",
+                )
             if not candidate_models:
                 return "", "cloud_model_missing"
             try:
@@ -17455,18 +17676,58 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if cancel_check and cancel_check():
             return "", "cancelled"
 
-        self._clear_llm_inference_attribution()
-        if self._cloud_endpoint_is_candidate():
-            model_candidates: list[str] = []
+        acquire_slot = getattr(self, "_acquire_ollama_request_slot", None)
+        if callable(acquire_slot):
             try:
-                requested = str(model or "").strip()
-                configured = str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip()
-                if requested:
-                    model_candidates.append(requested)
-                if configured and configured not in model_candidates:
-                    model_candidates.append(configured)
+                acquired, queue_ms = cast(Any, acquire_slot)()
             except Exception:
+                acquired, queue_ms = True, 0
+        else:
+            acquired, queue_ms = True, 0
+        if not acquired:
+            record_outcome = getattr(self, "_record_local_llm_model_outcome", None)
+            if callable(record_outcome):
+                try:
+                    record_outcome(str(model or "").strip(), success=False, err="runtime_busy_queue_timeout")
+                except Exception:
+                    pass
+            return "", "Ollama runtime busy. Retry shortly."
+
+        self._clear_llm_inference_attribution()
+        brave_candidate = getattr(self, "_brave_search_ai_is_candidate", None)
+        if callable(brave_candidate) and bool(brave_candidate()):
+            brave_text, brave_err = self._generate_via_brave_search_ai(
+                prompt_text,
+                inference_purpose=str(inference_purpose or "tutor"),
+                cancel_check=cancel_check,
+            )
+            if brave_err is None and str(brave_text or "").strip():
+                try:
+                    from studyplan.config import Config as _Cfg
+
+                    used_model = str(getattr(_Cfg, "BRAVE_SEARCH_AI_MODEL", "") or "brave").strip() or "brave"
+                except Exception:
+                    used_model = "brave"
+                self._note_llm_inference_attribution("brave_search", used_model)
+                return brave_text, None
+        if self._cloud_endpoint_is_candidate():
+            cloud_model_candidates_fn = getattr(self, "_cloud_model_candidates", None)
+            if callable(cloud_model_candidates_fn):
+                model_candidates = cloud_model_candidates_fn(
+                    inference_purpose=str(inference_purpose or "tutor"),
+                    requested_model=str(model or "").strip(),
+                )
+            else:
                 model_candidates = []
+                try:
+                    requested = str(model or "").strip()
+                    configured = str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip()
+                    if requested:
+                        model_candidates.append(requested)
+                    if configured and configured not in model_candidates:
+                        model_candidates.append(configured)
+                except Exception:
+                    model_candidates = []
             cloud_text, cloud_err = self._generate_via_cloud_llama_cpp_endpoint(
                 prompt_text,
                 candidate_models=model_candidates,
@@ -17510,22 +17771,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     pass
             return "", f"model cooldown active ({cooldown_remaining}s)"
-        acquire_slot = getattr(self, "_acquire_ollama_request_slot", None)
-        if callable(acquire_slot):
+        ram_budget_reader = getattr(self, "_get_ollama_ram_budget_bytes", None)
+        estimate_reader = getattr(self, "_estimate_local_llm_model_ram_bytes", None)
+        ram_budget = 0
+        if callable(ram_budget_reader):
             try:
-                acquired, queue_ms = cast(Any, acquire_slot)()
+                ram_budget = int(cast(Any, ram_budget_reader)())
             except Exception:
-                acquired, queue_ms = True, 0
-        else:
-            acquired, queue_ms = True, 0
-        if not acquired:
-            record_outcome = getattr(self, "_record_local_llm_model_outcome", None)
-            if callable(record_outcome):
-                try:
-                    record_outcome(model_name, success=False, err="runtime_busy_queue_timeout")
-                except Exception:
-                    pass
-            return "", "Ollama runtime busy. Retry shortly."
+                ram_budget = 0
+        if ram_budget > 0 and callable(estimate_reader):
+            try:
+                estimated_ram = int(cast(Any, estimate_reader)(model_name))
+            except Exception:
+                estimated_ram = 0
+            if estimated_ram > 0 and estimated_ram > ram_budget:
+                record_outcome = getattr(self, "_record_local_llm_model_outcome", None)
+                if callable(record_outcome):
+                    try:
+                        record_outcome(model_name, success=False, err="model_exceeds_ram_budget")
+                    except Exception:
+                        pass
+                return "", "Selected local model exceeds the configured RAM budget."
         cache_allowed_fn = getattr(self, "_can_use_response_cache", None)
         can_cache = bool(
             use_response_cache
@@ -18017,18 +18283,59 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if not prompt_text:
             return "", "prompt is empty"
 
-        self._clear_llm_inference_attribution()
-        if self._cloud_endpoint_is_candidate():
-            model_candidates: list[str] = []
+        acquire_slot = getattr(self, "_acquire_ollama_request_slot", None)
+        if callable(acquire_slot):
             try:
-                requested = str(model or "").strip()
-                configured = str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip()
-                if requested:
-                    model_candidates.append(requested)
-                if configured and configured not in model_candidates:
-                    model_candidates.append(configured)
+                acquired, queue_ms = cast(Any, acquire_slot)()
             except Exception:
+                acquired, queue_ms = True, 0
+        else:
+            acquired, queue_ms = True, 0
+        if not acquired:
+            record_outcome = getattr(self, "_record_local_llm_model_outcome", None)
+            if callable(record_outcome):
+                try:
+                    record_outcome(str(model or "").strip(), success=False, err="runtime_busy_queue_timeout")
+                except Exception:
+                    pass
+            return "", "Ollama runtime busy. Retry shortly."
+
+        self._clear_llm_inference_attribution()
+        brave_candidate = getattr(self, "_brave_search_ai_is_candidate", None)
+        if callable(brave_candidate) and bool(brave_candidate()):
+            brave_text, brave_err = self._generate_via_brave_search_ai(
+                prompt_text,
+                inference_purpose=str(inference_purpose or "tutor"),
+                cancel_check=cancel_check,
+            )
+            if brave_err is None and str(brave_text or "").strip():
+                try:
+                    from studyplan.config import Config as _Cfg
+
+                    used_model = str(getattr(_Cfg, "BRAVE_SEARCH_AI_MODEL", "") or "brave").strip() or "brave"
+                except Exception:
+                    used_model = "brave"
+                self._note_llm_inference_attribution("brave_search", used_model)
+                self._emit_text_as_chunks(brave_text, on_chunk)
+                return brave_text, None
+        if self._cloud_endpoint_is_candidate():
+            cloud_model_candidates_fn = getattr(self, "_cloud_model_candidates", None)
+            if callable(cloud_model_candidates_fn):
+                model_candidates = cloud_model_candidates_fn(
+                    inference_purpose=str(inference_purpose or "tutor"),
+                    requested_model=str(model or "").strip(),
+                )
+            else:
                 model_candidates = []
+                try:
+                    requested = str(model or "").strip()
+                    configured = str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip()
+                    if requested:
+                        model_candidates.append(requested)
+                    if configured and configured not in model_candidates:
+                        model_candidates.append(configured)
+                except Exception:
+                    model_candidates = []
             cloud_text, cloud_err = self._generate_via_cloud_llama_cpp_endpoint(
                 prompt_text,
                 candidate_models=model_candidates,
@@ -18070,22 +18377,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     pass
             return "", f"model cooldown active ({cooldown_remaining}s)"
-        acquire_slot = getattr(self, "_acquire_ollama_request_slot", None)
-        if callable(acquire_slot):
+        ram_budget_reader = getattr(self, "_get_ollama_ram_budget_bytes", None)
+        estimate_reader = getattr(self, "_estimate_local_llm_model_ram_bytes", None)
+        ram_budget = 0
+        if callable(ram_budget_reader):
             try:
-                acquired, queue_ms = cast(Any, acquire_slot)()
+                ram_budget = int(cast(Any, ram_budget_reader)())
             except Exception:
-                acquired, queue_ms = True, 0
-        else:
-            acquired, queue_ms = True, 0
-        if not acquired:
-            record_outcome = getattr(self, "_record_local_llm_model_outcome", None)
-            if callable(record_outcome):
-                try:
-                    record_outcome(model_name, success=False, err="runtime_busy_queue_timeout")
-                except Exception:
-                    pass
-            return "", "Ollama runtime busy. Retry shortly."
+                ram_budget = 0
+        if ram_budget > 0 and callable(estimate_reader):
+            try:
+                estimated_ram = int(cast(Any, estimate_reader)(model_name))
+            except Exception:
+                estimated_ram = 0
+            if estimated_ram > 0 and estimated_ram > ram_budget:
+                record_outcome = getattr(self, "_record_local_llm_model_outcome", None)
+                if callable(record_outcome):
+                    try:
+                        record_outcome(model_name, success=False, err="model_exceeds_ram_budget")
+                    except Exception:
+                        pass
+                return "", "Selected local model exceeds the configured RAM budget."
         host = self._normalize_ollama_host()
         url = f"{host}/api/generate"
         try:
@@ -20332,30 +20644,42 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         state = getattr(eng, "cognitive_state", None) if eng is not None else None
         return state if isinstance(state, CognitiveState) else None
 
+    def _cognitive_state_lock_for(self, state: CognitiveState | None = None) -> Any | None:
+        eng = getattr(self, "engine", None)
+        lock = getattr(eng, "_cognitive_state_lock", None) if eng is not None else None
+        if lock is not None:
+            return lock
+        candidate = state if isinstance(state, CognitiveState) else self._cognitive_state()
+        if candidate is None:
+            return None
+        return get_cognitive_state_lock(candidate)
+
     def _format_tutor_memory_context_line(self) -> str:
         """One-line summary of tutor memory (FSM, topic, struggle, posterior) for the workspace context label."""
         state = self._cognitive_state()
         if not isinstance(state, CognitiveState):
             return "Tutor context: —"
-        try:
-            fsm = str(getattr(state.working_memory, "socratic_state", None) or "DIAGNOSE").strip() or "DIAGNOSE"
-        except Exception:
-            fsm = "DIAGNOSE"
-        try:
-            topic = str(getattr(state.working_memory, "active_chapter", None) or "").strip() or "—"
-        except Exception:
-            topic = "—"
-        struggle = "on" if bool(getattr(state, "struggle_mode", False)) else "off"
-        try:
-            post_mean = 0.0
-            t = topic if topic != "—" else str(getattr(self, "current_topic", "") or "").strip()
-            if t and hasattr(state, "posteriors") and isinstance(state.posteriors, dict) and t in state.posteriors:
-                post = state.posteriors.get(t)
-                if post is not None:
-                    post_mean = float(getattr(post, "mean", 0.0) or 0.0)
-            mastery = f"{int(round(post_mean * 100))}%" if post_mean > 0 or topic != "—" else "—"
-        except Exception:
-            mastery = "—"
+        lock = self._cognitive_state_lock_for(state)
+        with locked_cognitive_state(state, lock):
+            try:
+                fsm = str(getattr(state.working_memory, "socratic_state", None) or "DIAGNOSE").strip() or "DIAGNOSE"
+            except Exception:
+                fsm = "DIAGNOSE"
+            try:
+                topic = str(getattr(state.working_memory, "active_chapter", None) or "").strip() or "—"
+            except Exception:
+                topic = "—"
+            struggle = "on" if bool(getattr(state, "struggle_mode", False)) else "off"
+            try:
+                post_mean = 0.0
+                t = topic if topic != "—" else str(getattr(self, "current_topic", "") or "").strip()
+                if t and hasattr(state, "posteriors") and isinstance(state.posteriors, dict) and t in state.posteriors:
+                    post = state.posteriors.get(t)
+                    if post is not None:
+                        post_mean = float(getattr(post, "mean", 0.0) or 0.0)
+                mastery = f"{int(round(post_mean * 100))}%" if post_mean > 0 or topic != "—" else "—"
+            except Exception:
+                mastery = "—"
         return f"Tutor context: FSM={fsm} • topic={topic} • struggle={struggle} • mastery≈{mastery}"
 
     def _working_memory_service(self) -> WorkingMemoryService | None:
@@ -20421,24 +20745,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         }
         if state is None:
             return result
-        if svc is not None:
+        lock = self._cognitive_state_lock_for(state)
+        with locked_cognitive_state(state, lock):
+            if svc is not None:
+                try:
+                    result["wm_context"] = str(svc.get_context_string(max_items=2) or "").strip()
+                except Exception:
+                    result["wm_context"] = ""
             try:
-                result["wm_context"] = str(svc.get_context_string(max_items=2) or "").strip()
+                fsm = SocraticFSM(state, state_lock=lock)
+                decision = fsm.transition(event, {"chapter": str(chapter or state.working_memory.active_chapter or "").strip()})
+                result["fsm_state"] = str(decision.state or "").strip()
+                result["permission"] = str(decision.permission or "hint_ok").strip() or "hint_ok"
+                result["suffix"] = str(fsm.get_system_prompt_suffix() or "").strip()
             except Exception:
-                result["wm_context"] = ""
-        try:
-            fsm = SocraticFSM(state)
-            decision = fsm.transition(event, {"chapter": str(chapter or state.working_memory.active_chapter or "").strip()})
-            result["fsm_state"] = str(decision.state or "").strip()
-            result["permission"] = str(decision.permission or "hint_ok").strip() or "hint_ok"
-            result["suffix"] = str(fsm.get_system_prompt_suffix() or "").strip()
-        except Exception:
-            pass
-        if bool(state.quiz_active) and self._is_quiz_answer_request_text(user_prompt):
-            result["blocked_response"] = (
-                "I can't give the direct answer during an active quiz. "
-                "Share your reasoning or chosen option and I'll help you test it step by step."
-            )
+                pass
+            if bool(state.quiz_active) and self._is_quiz_answer_request_text(user_prompt):
+                result["blocked_response"] = (
+                    "I can't give the direct answer during an active quiz. "
+                    "Share your reasoning or chosen option and I'll help you test it step by step."
+                )
         return result
 
     def _cognitive_tutor_postfilter_response(
@@ -20497,29 +20823,31 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         svc = self._working_memory_service()
         if svc is None:
             return
-        qid: str | None = None
-        eng = getattr(self, "engine", None)
-        if eng is not None:
-            try:
-                if isinstance(question_index, int) and hasattr(eng, "_question_qid"):
-                    qid = cast(Any, eng)._question_qid(str(chapter or ""), int(question_index))
-            except Exception:
-                qid = None
-            if not qid and isinstance(question, dict) and hasattr(eng, "_question_id"):
+        state = self._cognitive_state()
+        lock = self._cognitive_state_lock_for(state)
+        with locked_cognitive_state(state, lock):
+            qid: str | None = None
+            eng = getattr(self, "engine", None)
+            if eng is not None:
                 try:
-                    qid = cast(Any, eng)._question_id(question)
+                    if isinstance(question_index, int) and hasattr(eng, "_question_qid"):
+                        qid = cast(Any, eng)._question_qid(str(chapter or ""), int(question_index))
                 except Exception:
                     qid = None
-        try:
-            svc.set_active_question(chapter=str(chapter or ""), question_id=qid)
-        except Exception:
-            pass
-        try:
-            state = self._cognitive_state()
-            if state is not None:
-                SocraticFSM(state).transition("QUIZ_START", {"chapter": str(chapter or "").strip()})
-        except Exception:
-            pass
+                if not qid and isinstance(question, dict) and hasattr(eng, "_question_id"):
+                    try:
+                        qid = cast(Any, eng)._question_id(question)
+                    except Exception:
+                        qid = None
+            try:
+                svc.set_active_question(chapter=str(chapter or ""), question_id=qid)
+            except Exception:
+                pass
+            try:
+                if state is not None:
+                    SocraticFSM(state, state_lock=lock).transition("QUIZ_START", {"chapter": str(chapter or "").strip()})
+            except Exception:
+                pass
 
     def _cognitive_quiz_record_attempt(
         self,
@@ -20534,52 +20862,54 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         svc = self._working_memory_service()
         if svc is None:
             return
-        eng = getattr(self, "engine", None)
-        qid: str | None = None
-        if eng is not None:
-            try:
-                if hasattr(eng, "_question_qid"):
-                    qid = cast(Any, eng)._question_qid(str(chapter or ""), int(question_index))
-            except Exception:
-                qid = None
-            if not qid:
+        state = self._cognitive_state()
+        lock = self._cognitive_state_lock_for(state)
+        with locked_cognitive_state(state, lock):
+            eng = getattr(self, "engine", None)
+            qid: str | None = None
+            if eng is not None:
                 try:
-                    if hasattr(eng, "_question_id"):
-                        qid = cast(Any, eng)._question_id(question)
+                    if hasattr(eng, "_question_qid"):
+                        qid = cast(Any, eng)._question_qid(str(chapter or ""), int(question_index))
                 except Exception:
                     qid = None
+                if not qid:
+                    try:
+                        if hasattr(eng, "_question_id"):
+                            qid = cast(Any, eng)._question_id(question)
+                    except Exception:
+                        qid = None
+                try:
+                    mastery_kernel = getattr(eng, "mastery_kernel", None)
+                    if mastery_kernel is not None and hasattr(mastery_kernel, "record_attempt"):
+                        cast(
+                            Any,
+                            mastery_kernel,
+                        ).record_attempt(
+                            chapter=str(chapter or ""),
+                            question_id=qid,
+                            correct=bool(correct),
+                            latency_ms=latency_ms,
+                            hints_used=int(hints_used or 0),
+                        )
+                except Exception:
+                    pass
             try:
-                mastery_kernel = getattr(eng, "mastery_kernel", None)
-                if mastery_kernel is not None and hasattr(mastery_kernel, "record_attempt"):
-                    cast(
-                        Any,
-                        mastery_kernel,
-                    ).record_attempt(
-                        chapter=str(chapter or ""),
-                        question_id=qid,
-                        correct=bool(correct),
-                        latency_ms=latency_ms,
-                        hints_used=int(hints_used or 0),
-                    )
+                svc.capture_attempt(
+                    str(chapter or ""),
+                    qid,
+                    bool(correct),
+                    latency_ms=latency_ms,
+                    hints_used=int(hints_used or 0),
+                )
             except Exception:
                 pass
-        try:
-            svc.capture_attempt(
-                str(chapter or ""),
-                qid,
-                bool(correct),
-                latency_ms=latency_ms,
-                hints_used=int(hints_used or 0),
-            )
-        except Exception:
-            pass
-        state = self._cognitive_state()
-        if state is not None:
-            try:
-                event = "CORRECT_ATTEMPT" if bool(correct) else "ERROR"
-                SocraticFSM(state).transition(event, {"chapter": str(chapter or "").strip()})
-            except Exception:
-                pass
+            if state is not None:
+                try:
+                    event = "CORRECT_ATTEMPT" if bool(correct) else "ERROR"
+                    SocraticFSM(state, state_lock=lock).transition(event, {"chapter": str(chapter or "").strip()})
+                except Exception:
+                    pass
 
     def _cognitive_quiz_clear_active(self) -> None:
         svc = self._working_memory_service()
@@ -20590,11 +20920,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
         state = self._cognitive_state()
         if state is not None:
-            try:
-                state.struggle_mode = False
-                SocraticFSM(state).transition("QUIZ_END", {"chapter": str(state.working_memory.active_chapter or "").strip()})
-            except Exception:
-                pass
+            lock = self._cognitive_state_lock_for(state)
+            with locked_cognitive_state(state, lock):
+                try:
+                    state.struggle_mode = False
+                    SocraticFSM(state, state_lock=lock).transition("QUIZ_END", {"chapter": str(state.working_memory.active_chapter or "").strip()})
+                except Exception:
+                    pass
 
     def _is_cognitive_runtime_enabled(self) -> bool:
         raw = str(os.environ.get("STUDYPLAN_COGNITIVE_RUNTIME_ENABLED", "1") or "1").strip().lower()
@@ -20606,30 +20938,32 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         state = self._cognitive_state()
         if not isinstance(state, CognitiveState):
             return {"enabled": False}
-        topic = str(chapter or getattr(self, "current_topic", "") or "").strip()
-        if not topic and bool(getattr(state, "quiz_active", False)):
-            topic = str(state.working_memory.active_chapter or "").strip()
-        post_mean = 0.0
-        post_var = 0.0
-        if topic:
-            try:
-                post = state.posteriors.get(topic)
-                if post is not None:
-                    post_mean = float(getattr(post, "mean", 0.0) or 0.0)
-                    post_var = float(getattr(post, "variance", 0.0) or 0.0)
-            except Exception:
-                post_mean = 0.0
-                post_var = 0.0
-        return {
-            "enabled": True,
-            "topic": topic,
-            "posterior_mean": max(0.0, min(1.0, post_mean)),
-            "posterior_variance": max(0.0, min(1.0, post_var)),
-            "struggle_mode": bool(state.struggle_mode),
-            "quiz_active": bool(state.quiz_active),
-            "fsm_state": str(state.working_memory.socratic_state or "DIAGNOSE"),
-            "wm_chunks": len(list(state.working_memory.context_chunks or [])),
-        }
+        lock = self._cognitive_state_lock_for(state)
+        with locked_cognitive_state(state, lock):
+            topic = str(chapter or getattr(self, "current_topic", "") or "").strip()
+            if not topic and bool(getattr(state, "quiz_active", False)):
+                topic = str(state.working_memory.active_chapter or "").strip()
+            post_mean = 0.0
+            post_var = 0.0
+            if topic:
+                try:
+                    post = state.posteriors.get(topic)
+                    if post is not None:
+                        post_mean = float(getattr(post, "mean", 0.0) or 0.0)
+                        post_var = float(getattr(post, "variance", 0.0) or 0.0)
+                except Exception:
+                    post_mean = 0.0
+                    post_var = 0.0
+            return {
+                "enabled": True,
+                "topic": topic,
+                "posterior_mean": max(0.0, min(1.0, post_mean)),
+                "posterior_variance": max(0.0, min(1.0, post_var)),
+                "struggle_mode": bool(state.struggle_mode),
+                "quiz_active": bool(state.quiz_active),
+                "fsm_state": str(state.working_memory.socratic_state or "DIAGNOSE"),
+                "wm_chunks": len(list(state.working_memory.context_chunks or [])),
+            }
 
     def _build_practice_loop_ai_context(
         self,
@@ -21218,10 +21552,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         state = self._cognitive_state()
         if state is not None:
-            try:
-                state.record_transfer_exposure(structure_id, attempt_id=str(attempt.attempt_id or ""))
-            except Exception:
-                pass
+            lock = self._cognitive_state_lock_for(state)
+            with locked_cognitive_state(state, lock):
+                try:
+                    state.record_transfer_exposure(structure_id, attempt_id=str(attempt.attempt_id or ""))
+                except Exception:
+                    pass
         try:
             summary = dict(score.to_insight_summary()) if hasattr(score, "to_insight_summary") else {}
         except Exception:
@@ -21405,26 +21741,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             raw = f"{key_payload.get('module','')}|{key_payload.get('topic','')}|{prompt_text}"
         claim_key = hashlib.sha1(str(raw).encode("utf-8", errors="ignore")).hexdigest()
-        try:
-            claim_map = state.claim_confidence
-            if claim_key in claim_map:
-                # Refresh insertion order so trimming keeps newest observations.
-                try:
-                    claim_map.pop(claim_key, None)
-                except Exception:
-                    pass
-            claim_map[claim_key] = float(score)
-            max_rows = 256
-            while len(claim_map) > max_rows:
-                try:
-                    oldest = next(iter(claim_map))
-                except Exception:
-                    break
-                if oldest == claim_key and len(claim_map) == 1:
-                    break
-                claim_map.pop(oldest, None)
-        except Exception:
-            pass
+        lock = self._cognitive_state_lock_for(state)
+        with locked_cognitive_state(state, lock):
+            try:
+                claim_map = state.claim_confidence
+                if claim_key in claim_map:
+                    # Refresh insertion order so trimming keeps newest observations.
+                    try:
+                        claim_map.pop(claim_key, None)
+                    except Exception:
+                        pass
+                claim_map[claim_key] = float(score)
+                max_rows = 256
+                while len(claim_map) > max_rows:
+                    try:
+                        oldest = next(iter(claim_map))
+                    except Exception:
+                        break
+                    if oldest == claim_key and len(claim_map) == 1:
+                        break
+                    claim_map.pop(oldest, None)
+            except Exception:
+                pass
 
     def _build_local_ai_context_packet(self, kind: str, horizon_days: int = 14) -> dict[str, Any]:
         def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:

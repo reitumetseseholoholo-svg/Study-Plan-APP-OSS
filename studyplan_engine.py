@@ -27,6 +27,7 @@ from studyplan.question_quality import (
     get_poor_quality_indices,
     option_looks_like_see_explanation,
 )
+from studyplan.state_locking import bind_cognitive_state_lock, snapshot_cognitive_state
 from studyplan.working_memory_service import WorkingMemoryService
 from studyplan.syllabus_fr import (
     is_fr_syllabus_text,
@@ -3036,8 +3037,9 @@ class StudyPlanEngine:
             self._load_error = str(e) or type(e).__name__
             print(f"Unexpected error loading data: {e}")
         self.cognitive_state = self._load_or_build_cognitive_state()
-        self.working_memory_service = WorkingMemoryService(self.cognitive_state)
-        self.mastery_kernel = MasteryKernel(self, self.cognitive_state)
+        self._cognitive_state_lock = bind_cognitive_state_lock(self.cognitive_state, threading.RLock())
+        self.working_memory_service = WorkingMemoryService(self.cognitive_state, state_lock=self._cognitive_state_lock)
+        self.mastery_kernel = MasteryKernel(self, self.cognitive_state, state_lock=self._cognitive_state_lock)
 
         self._load_recall_model()
         self._load_recall_model_sklearn()
@@ -12369,12 +12371,20 @@ class StudyPlanEngine:
         path = str(getattr(self, "COGNITIVE_STATE_FILE", "") or "").strip()
         if not path:
             return
-        payload = state.to_json_snapshot()
+        payload = snapshot_cognitive_state(state)
         self._atomic_write_json(path, payload, indent=2)
         ts = str(payload.get("timestamp", "") or "").strip() or datetime.datetime.now().isoformat(timespec="seconds")
-        state.last_persisted_at = ts
-        state.last_persist_ok = True
-        state.last_persist_error = None
+        with contextlib.suppress(Exception):
+            lock = getattr(self, "_cognitive_state_lock", None)
+            if lock is not None:
+                with lock:
+                    state.last_persisted_at = ts
+                    state.last_persist_ok = True
+                    state.last_persist_error = None
+            else:
+                state.last_persisted_at = ts
+                state.last_persist_ok = True
+                state.last_persist_error = None
 
     def reset_data(self):
         """

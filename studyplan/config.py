@@ -184,6 +184,20 @@ class Config:
         max_value=1.0,
     )
 
+    # OpenAI-compatible gateway for multiple cloud providers.
+    # Keep this separate from the llama.cpp endpoint so a single gateway key can route to OpenAI,
+    # Anthropic, Gemini, OpenRouter, etc., without affecting local backends.
+    LLM_GATEWAY_ENABLED = _parse_bool("STUDYPLAN_LLM_GATEWAY_ENABLED", default=False)
+    LLM_GATEWAY_ENDPOINT = _env_text("STUDYPLAN_LLM_GATEWAY_ENDPOINT", "")
+    LLM_GATEWAY_MODEL = _env_text("STUDYPLAN_LLM_GATEWAY_MODEL", "")
+    LLM_GATEWAY_MODEL_FALLBACKS = _env_text("STUDYPLAN_LLM_GATEWAY_MODEL_FALLBACKS", "")
+    LLM_GATEWAY_REQUEST_TIMEOUT_SECONDS = _parse_float(
+        "STUDYPLAN_LLM_GATEWAY_REQUEST_TIMEOUT_SECONDS",
+        8.0,
+        min_value=1.0,
+        max_value=60.0,
+    )
+
     # Cloud-prefer mode: when `LLAMA_CPP_ENDPOINT` points to a non-local host,
     # try that endpoint first (so “internet available => cloud first”).
     CLOUD_LLAMACPP_PREFER_EXTERNAL = _parse_bool(
@@ -197,6 +211,20 @@ class Config:
         max_value=60.0,
     )
     CLOUD_LLAMACPP_AUTH_BEARER = _env_text("STUDYPLAN_CLOUD_LLAMACPP_AUTH_BEARER", "")
+
+    # Brave Search AI (OpenAI-compatible, web-grounded answers)
+    BRAVE_SEARCH_AI_ENABLED = _parse_bool("STUDYPLAN_BRAVE_SEARCH_AI_ENABLED", default=False)
+    BRAVE_SEARCH_AI_ENDPOINT = _env_text(
+        "STUDYPLAN_BRAVE_SEARCH_AI_ENDPOINT",
+        "https://api.search.brave.com/res/v1/chat/completions",
+    )
+    BRAVE_SEARCH_AI_MODEL = _env_text("STUDYPLAN_BRAVE_SEARCH_AI_MODEL", "brave")
+    BRAVE_SEARCH_AI_TIMEOUT_SECONDS = _parse_float(
+        "STUDYPLAN_BRAVE_SEARCH_AI_TIMEOUT_SECONDS",
+        12.0,
+        min_value=1.0,
+        max_value=60.0,
+    )
     LLAMA_CPP_AUTO_MODEL_DISCOVERY = _parse_bool(
         "STUDYPLAN_LLAMA_CPP_AUTO_MODEL_DISCOVERY",
         default=True,
