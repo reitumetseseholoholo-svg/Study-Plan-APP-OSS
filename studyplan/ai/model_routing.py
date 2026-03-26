@@ -21,6 +21,24 @@ _PURPOSE_ALIASES: dict[str, tuple[str, ...]] = {
     "autopilot": ("autopilot",),
     "gap_generation": ("gap_generation", "gap_gen"),
     "section_c_generation": ("section_c_generation", "section_c"),
+    # Section C constructed-response: separate grading / judgment from generic coach chat.
+    "section_c_evaluation": (
+        "section_c_evaluation",
+        "section_c_eval",
+        "section_c_assess",
+        "section_c_marking",
+    ),
+    "section_c_judgment": (
+        "section_c_judgment",
+        "section_c_judge",
+        "section_c_thinking",
+        "section_c_deep_judge",
+    ),
+    "section_c_loop_diff": (
+        "section_c_loop_diff",
+        "section_c_rewrite",
+        "section_c_recheck",
+    ),
     "general": ("general",),
 }
 

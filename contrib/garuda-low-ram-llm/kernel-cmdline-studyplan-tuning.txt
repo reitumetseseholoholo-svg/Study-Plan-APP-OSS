@@ -1,0 +1,1 @@
+transparent_hugepage=madvise zswap.enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 split_lock_detect=off sysrq_always_enabled=1 amdgpu.noretry=0 amdgpu.gttsize=2048

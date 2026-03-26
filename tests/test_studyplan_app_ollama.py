@@ -14,6 +14,7 @@ from studyplan_ai_tutor import (
     AI_TUTOR_RAG_USAGE_HINT,
     assess_tutor_coverage,
     assemble_ai_tutor_turn_prompt,
+    build_ai_tutor_assistant_history_row,
     build_ai_tutor_context_prompt_details,
     build_tutor_coverage_checklist_note,
     build_targeted_rag_queries,
@@ -64,6 +65,14 @@ def _make_dummy(host: str = "127.0.0.1:11434"):
         "",
         "llama_server_not_healthy",
     )
+    # Cloud-first hooks: default off for the existing test suite.
+    dummy._cloud_endpoint_is_candidate = lambda: False
+    dummy._generate_via_cloud_llama_cpp_endpoint = lambda *_args, **_kwargs: ("", "cloud_disabled")
+    dummy._emit_text_as_chunks = lambda *_args, **_kwargs: None
+    dummy._last_llm_inference_backend = ""
+    dummy._last_llm_inference_model = ""
+    dummy._clear_llm_inference_attribution = types.MethodType(StudyPlanGUI._clear_llm_inference_attribution, dummy)
+    dummy._note_llm_inference_attribution = types.MethodType(StudyPlanGUI._note_llm_inference_attribution, dummy)
     return dummy
 
 
@@ -348,7 +357,7 @@ def test_select_local_llm_model_auto_mode_avoids_switch_for_small_score_gap():
     dummy._estimate_local_llm_model_size_b = types.MethodType(StudyPlanGUI._estimate_local_llm_model_size_b, dummy)
     dummy._heuristic_local_llm_model_prior = types.MethodType(StudyPlanGUI._heuristic_local_llm_model_prior, dummy)
     dummy._score_local_llm_model = types.MethodType(StudyPlanGUI._score_local_llm_model, dummy)
-    dummy._rank_local_llm_models = lambda models, purpose="general": [
+    dummy._rank_local_llm_models = lambda models, purpose="general", **_: [
         {"model": "best-7b:latest", "score": 0.81, "perf_score": 0.82, "quality_score": 0.80},
         {"model": "steady-7b:latest", "score": 0.79, "perf_score": 0.79, "quality_score": 0.79},
     ]
@@ -463,6 +472,20 @@ def test_resolve_local_llm_default_prefers_qwen35_4b_for_tutor_when_available():
     assert picked == "gpt4all-qwen3-5-4b-q4-0:latest"
 
 
+def test_resolve_local_llm_default_prefers_kimi_k25_for_tutor_when_available():
+    dummy = types.SimpleNamespace()
+    picked = StudyPlanGUI._resolve_local_llm_default_for_purpose(
+        dummy,
+        "tutor",
+        [
+            "gpt4all-qwen3-5-4b-q4-0:latest",
+            "kimi-k2.5:cloud",
+            "other-7b:latest",
+        ],
+    )
+    assert picked == "kimi-k2.5:cloud"
+
+
 def test_resolve_local_llm_default_skips_incomplete_qwen35_4b_tags():
     dummy = types.SimpleNamespace()
     coach_fallback = str(DEFAULT_OLLAMA_MODEL_COACH or "").strip() or "coach-fallback:latest"
@@ -491,7 +514,7 @@ def test_build_local_llm_model_failover_sequence_orders_selected_then_alternativ
     dummy._estimate_local_llm_model_size_b = types.MethodType(StudyPlanGUI._estimate_local_llm_model_size_b, dummy)
     dummy._heuristic_local_llm_model_prior = types.MethodType(StudyPlanGUI._heuristic_local_llm_model_prior, dummy)
     dummy._score_local_llm_model = types.MethodType(StudyPlanGUI._score_local_llm_model, dummy)
-    dummy._rank_local_llm_models = lambda models, purpose="general": [
+    dummy._rank_local_llm_models = lambda models, purpose="general", **_: [
         {"model": "best-8b:latest", "score": 0.93, "perf_score": 0.91, "quality_score": 0.95},
         {"model": "steady-7b:latest", "score": 0.76, "perf_score": 0.78, "quality_score": 0.74},
         {"model": "small-3b:latest", "score": 0.62, "perf_score": 0.88, "quality_score": 0.52},
@@ -514,6 +537,61 @@ def test_build_local_llm_model_failover_sequence_orders_selected_then_alternativ
     assert err is None
     assert seq[0] == "best-8b:latest"
     assert len(seq) == 2
+
+
+def test_compute_rag_grounding_confidence_disabled_is_neutral():
+    dummy = _make_dummy()
+    assert StudyPlanGUI._compute_rag_grounding_confidence(dummy, {"method": "disabled"}) is None
+    assert StudyPlanGUI._compute_rag_grounding_confidence(dummy, None) is None
+
+
+def test_compute_rag_grounding_confidence_stronger_when_target_hits():
+    dummy = _make_dummy()
+    strong = StudyPlanGUI._compute_rag_grounding_confidence(
+        dummy,
+        {"method": "semantic_hybrid", "target_query_count": 4, "target_hit_snippets": 4, "snippet_count": 2},
+    )
+    weak = StudyPlanGUI._compute_rag_grounding_confidence(
+        dummy,
+        {"method": "lexical", "target_query_count": 4, "target_hit_snippets": 0, "snippet_count": 1},
+    )
+    assert strong is not None and weak is not None
+    assert strong > weak
+
+
+def test_select_local_llm_model_records_rag_grounding_bias_reason():
+    dummy = types.SimpleNamespace(
+        local_llm_model="",
+        local_llm_auto_select=True,
+        _ai_tutor_telemetry_events=[],
+        _llm_routing_events=[],
+        _llm_routing_events_max=32,
+        _local_llm_last_switch_at=0.0,
+        save_preferences=lambda: None,
+    )
+    dummy._record_llm_routing_event = types.MethodType(StudyPlanGUI._record_llm_routing_event, dummy)
+    dummy._coerce_local_llm_auto_select = types.MethodType(StudyPlanGUI._coerce_local_llm_auto_select, dummy)
+    dummy._is_local_llm_auto_select_enabled = types.MethodType(StudyPlanGUI._is_local_llm_auto_select_enabled, dummy)
+    dummy._estimate_local_llm_model_size_b = types.MethodType(StudyPlanGUI._estimate_local_llm_model_size_b, dummy)
+    dummy._resolve_local_llm_default_for_purpose = types.MethodType(
+        StudyPlanGUI._resolve_local_llm_default_for_purpose, dummy
+    )
+    dummy._heuristic_local_llm_model_prior = types.MethodType(StudyPlanGUI._heuristic_local_llm_model_prior, dummy)
+    dummy._score_local_llm_model = types.MethodType(StudyPlanGUI._score_local_llm_model, dummy)
+    dummy._rank_local_llm_models = types.MethodType(StudyPlanGUI._rank_local_llm_models, dummy)
+    dummy._get_ai_tutor_latency_profile = lambda window=24: {"load_level": "normal"}
+    dummy._get_ai_tutor_latency_slo_status = lambda window=24: {"status": "pass"}
+    StudyPlanGUI._select_local_llm_model(
+        dummy,
+        purpose="tutor",
+        available_models=["alpha-7b:latest", "beta-7b:latest"],
+        persist=False,
+        routing_request_id="rg-bias-test",
+        rag_grounding_confidence=0.25,
+    )
+    assert dummy._llm_routing_events
+    rc = list(dummy._llm_routing_events[-1].get("reason_codes") or [])
+    assert "rag_grounding_rank_bias" in rc
 
 
 def test_select_local_llm_model_records_routing_event():
@@ -1045,6 +1123,90 @@ def test_load_ai_tutor_rag_doc_handles_bytes_from_extraction(tmp_path, monkeypat
     assert isinstance(chunks, list)
     assert len(chunks) >= 1
     assert all(isinstance(c, dict) and c.get("text") for c in chunks)
+
+
+def test_load_ai_tutor_rag_doc_respects_ingest_max_chunks_env(tmp_path, monkeypatch):
+    """Tutor RAG ingest should honor STUDYPLAN_AI_TUTOR_RAG_INGEST_MAX_CHUNKS."""
+    import studyplan_app as spa
+
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_INGEST_MAX_CHUNKS", "60")
+
+    pdf_path = tmp_path / "syllabus.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 minimal")
+
+    # Path validation requires the file under home or CONFIG_HOME; treat tmp_path as home for this test.
+    _orig_expanduser = os.path.expanduser
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if (p == "~" or p == "~/" or not p) else _orig_expanduser(p))
+
+    recorded: dict[str, int] = {}
+
+    def _fake_chunk_text_for_rag(_text, *, chunk_chars, overlap_chars, max_chunks, boundary):
+        recorded["max_chunks"] = int(max_chunks)
+        return [f"chunk-{i}" for i in range(int(max_chunks))]
+
+    monkeypatch.setattr(spa, "chunk_text_for_rag", _fake_chunk_text_for_rag)
+
+    dummy = types.SimpleNamespace(
+        _perf_cache=None,
+        _ai_cache_get_rag_doc=lambda k: None,
+        _ai_cache_put_rag_doc=None,
+        _ai_tutor_rag_doc_cache_key=lambda p, **_kwargs: f"key_{os.path.basename(p)}",
+    )
+    dummy._get_ai_tutor_rag_ingest_max_chunks = types.MethodType(
+        StudyPlanGUI._get_ai_tutor_rag_ingest_max_chunks, dummy
+    )
+    dummy._classify_ai_tutor_rag_source_tier = lambda _path, _name: "syllabus"
+    dummy._extract_pdf_text_for_syllabus = lambda p: (b"Chapter 1: Introduction. Learning outcome 1.1 explain the framework.", {})
+
+    doc, err = StudyPlanGUI._load_ai_tutor_rag_doc(dummy, str(pdf_path))
+    assert err is None
+    assert recorded.get("max_chunks") == 60
+    chunks = doc.get("chunks") or []
+    assert isinstance(chunks, list)
+    assert len(chunks) == 60
+
+
+def test_load_ai_tutor_rag_doc_meta_mode_does_not_cache_chunks_in_memory(tmp_path, monkeypatch):
+    import studyplan_app as spa
+    from studyplan.components.performance.caching import PerformanceCacheService
+
+    monkeypatch.setattr(spa.Config, "PERFORMANCE_CACHE_RAG_DOC_STORE_MODE", "meta", raising=False)
+
+    pdf_path = tmp_path / "syllabus.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 minimal")
+
+    # Path validation requires the file under home or CONFIG_HOME; treat tmp_path as home for this test.
+    _orig_expanduser = os.path.expanduser
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if (p == "~" or p == "~/" or not p) else _orig_expanduser(p))
+
+    perf_cache = PerformanceCacheService({"cache_max_size": 100, "default_ttl_seconds": 300, "cache_ttl": {}})
+    disk_payload = {"chunks": [{"chunk_index": 0, "text": "hello world", "chunk_hash": "x"}]}
+
+    dummy = types.SimpleNamespace(
+        _perf_cache=perf_cache,
+        _ai_cache_get_rag_doc=lambda k: dict(disk_payload),
+        _ai_cache_put_rag_doc=None,
+        _ai_tutor_rag_doc_cache_key=lambda p, **_kwargs: "key_syllabus",
+    )
+    dummy._classify_ai_tutor_rag_source_tier = lambda _path, _name: "syllabus"
+    dummy._extract_pdf_text_for_syllabus = lambda _p: (_ for _ in ()).throw(AssertionError("should hit disk cache"))
+
+    doc1, err1 = StudyPlanGUI._load_ai_tutor_rag_doc(dummy, str(pdf_path))
+    assert err1 is None
+    assert isinstance(doc1, dict)
+    assert isinstance(doc1.get("chunks"), list) and doc1.get("chunks")
+    cached1 = perf_cache.get("rag_doc:key_syllabus")
+    assert isinstance(cached1, dict)
+    assert "_rag_doc_ref" in cached1
+    assert "chunks" not in cached1
+
+    doc2, err2 = StudyPlanGUI._load_ai_tutor_rag_doc(dummy, str(pdf_path))
+    assert err2 is None
+    assert isinstance(doc2, dict)
+    assert isinstance(doc2.get("chunks"), list) and doc2.get("chunks")
+    cached2 = perf_cache.get("rag_doc:key_syllabus")
+    assert isinstance(cached2, dict)
+    assert "chunks" not in cached2
 
 
 def test_rag_prompt_context_dynamic_target_and_budget(monkeypatch):
@@ -3194,6 +3356,206 @@ def test_evaluate_section_c_response_falls_back_when_llm_disabled():
     assert "Local AI disabled" in str(warn or "")
 
 
+def test_parse_section_c_evaluation_payload_accepts_examiner_rationale_aliases():
+    dummy = types.SimpleNamespace()
+    dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
+    question = {
+        "marking_rubric": [
+            {"criterion": "Technical accuracy", "max_marks": 8},
+            {"criterion": "Recommendation", "max_marks": 6},
+        ]
+    }
+    payload = json.dumps(
+        {
+            "total_mark": 10,
+            "criterion_scores": [
+                {"criterion": "Technical accuracy", "score": 6, "max_mark": 8, "feedback": "Solid."},
+                {"criterion": "Recommendation", "score": 4, "max_mark": 6, "feedback": "Okay."},
+            ],
+            "strengths": ["Clear"],
+            "improvements": ["More depth"],
+            "next_drill": "Redo conclusion.",
+            "marking_rationale": "  Balanced credit for method and recommendation.  ",
+        },
+        ensure_ascii=True,
+    )
+    parsed, err = StudyPlanGUI._parse_section_c_evaluation_payload(dummy, payload, question)
+    assert err is None
+    assert isinstance(parsed, dict)
+    assert "Balanced credit" in str(parsed.get("examiner_rationale", ""))
+
+
+def test_format_section_c_feedback_shows_passes_and_examiner_notes():
+    dummy = types.SimpleNamespace()
+    ev = {
+        "total_mark": 10,
+        "max_mark": 20,
+        "criterion_scores": [],
+        "examiner_rationale": "Marks follow rubric bands.",
+        "evaluation_meta": {"passes": ["primary", "judgment"]},
+    }
+    text = StudyPlanGUI._format_section_c_feedback_text(dummy, ev)
+    assert "Marking passes:" in text
+    assert "judgment" in text
+    assert "Examiner notes:" in text
+    assert "rubric" in text.lower()
+
+
+def test_evaluate_section_c_uses_evaluation_purpose_and_optional_judgment_pass(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_SECTION_C_JUDGMENT_PASS", "1")
+    question = {
+        "prompt": "Advise on working capital using the case.",
+        "marking_rubric": [
+            {"criterion": "Technical application to case facts", "max_marks": 8},
+            {"criterion": "Method, workings, and assumptions", "max_marks": 6},
+            {"criterion": "Evaluation and recommendation", "max_marks": 4},
+            {"criterion": "Structure and exam communication", "max_marks": 2},
+        ],
+        "time_budget_minutes": 45,
+    }
+    response = (
+        "Assumptions: collection days fall by 12; funding cost is 11%.\n"
+        "Workings: incremental cash from faster collection vs discount cost.\n"
+        "Recommendation: adopt with monitoring because sensitivity to uptake matters."
+    )
+
+    def _primary_payload() -> dict[str, object]:
+        return {
+            "total_mark": 10,
+            "criterion_scores": [
+                {"criterion": "Technical application to case facts", "score": 4, "max_mark": 8, "feedback": "Partial."},
+                {"criterion": "Method, workings, and assumptions", "score": 3, "max_mark": 6, "feedback": "Partial."},
+                {"criterion": "Evaluation and recommendation", "score": 2, "max_mark": 4, "feedback": "Thin."},
+                {"criterion": "Structure and exam communication", "score": 1, "max_mark": 2, "feedback": "Okay."},
+            ],
+            "strengths": ["Some case use"],
+            "improvements": ["Stronger conclusion"],
+            "next_drill": "Add sensitivity.",
+        }
+
+    def _judgment_payload() -> dict[str, object]:
+        p = _primary_payload()
+        p["total_mark"] = 11
+        p["criterion_scores"] = list(p["criterion_scores"])
+        p["criterion_scores"][0] = dict(p["criterion_scores"][0])  # type: ignore[index]
+        p["criterion_scores"][0]["score"] = 5  # type: ignore[index]
+        return p
+
+    calls: list[tuple[str, bool | None, object | None]] = []
+    idx = {"n": 0}
+
+    def _failover(self, purpose: str = "general", **kwargs: object) -> tuple[list[str], None]:
+        return (["stub-model"], None)
+
+    def _ollama(self, model: str, prompt: str, **kwargs: object) -> tuple[str, None]:
+        purpose = str(kwargs.get("inference_purpose") or "")
+        use_cache = kwargs.get("use_response_cache")
+        think_ov = kwargs.get("ollama_think_override")
+        calls.append((purpose, bool(use_cache) if use_cache is not None else None, think_ov))
+        n = idx["n"]
+        idx["n"] = n + 1
+        if n == 0:
+            return json.dumps(_primary_payload(), ensure_ascii=True), None
+        return json.dumps(_judgment_payload(), ensure_ascii=True), None
+
+    dummy = types.SimpleNamespace(local_llm_enabled=True, module_id="")
+    dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
+    dummy._parse_section_c_evaluation_payload = types.MethodType(
+        StudyPlanGUI._parse_section_c_evaluation_payload, dummy
+    )
+    dummy._evaluate_section_c_response_deterministic = types.MethodType(
+        StudyPlanGUI._evaluate_section_c_response_deterministic, dummy
+    )
+    dummy._build_section_c_evaluation_prompt = types.MethodType(
+        StudyPlanGUI._build_section_c_evaluation_prompt, dummy
+    )
+    dummy._new_llm_routing_request_id = lambda: "test-rid"
+    dummy._build_local_llm_model_failover_sequence = types.MethodType(_failover, dummy)
+    dummy._ollama_generate_text_with_options = types.MethodType(_ollama, dummy)
+    dummy._section_c_judgment_second_pass_enabled = types.MethodType(
+        StudyPlanGUI._section_c_judgment_second_pass_enabled, dummy
+    )
+    dummy._section_c_should_run_judgment_pass = types.MethodType(
+        lambda self, det, parsed, q: True,  # noqa: ARG005
+        dummy,
+    )
+
+    evaluation, warn = StudyPlanGUI._evaluate_section_c_response(dummy, question, response)
+    assert isinstance(evaluation, dict)
+    assert evaluation.get("total_mark") == 11
+    meta = evaluation.get("evaluation_meta")
+    assert isinstance(meta, dict)
+    assert meta.get("passes") == ["primary", "judgment"]
+    assert len(calls) == 2
+    assert calls[0][0] == "section_c_evaluation"
+    assert calls[0][1] is True
+    assert calls[1][0] == "section_c_judgment"
+    assert calls[1][1] is False
+    assert warn and "judgment" in str(warn).lower()
+
+
+def test_evaluate_section_c_rewrite_uses_loop_diff_purpose(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_SECTION_C_JUDGMENT_PASS", "0")
+    question = {
+        "prompt": "Case",
+        "marking_rubric": [
+            {"criterion": "A", "max_marks": 10},
+            {"criterion": "B", "max_marks": 10},
+        ],
+    }
+    response = "Answer text with enough length for evaluation path. " * 3
+    payload = {
+        "total_mark": 12,
+        "criterion_scores": [
+            {"criterion": "A", "score": 6, "max_mark": 10, "feedback": "ok"},
+            {"criterion": "B", "score": 6, "max_mark": 10, "feedback": "ok"},
+        ],
+        "strengths": ["s"],
+        "improvements": ["i"],
+        "next_drill": "d",
+    }
+
+    def _failover(self, purpose: str = "general", **kwargs: object) -> tuple[list[str], None]:
+        return (["stub-model"], None)
+
+    def _ollama(self, model: str, prompt: str, **kwargs: object) -> tuple[str, None]:
+        assert kwargs.get("inference_purpose") == "section_c_loop_diff"
+        return json.dumps(payload, ensure_ascii=True), None
+
+    dummy = types.SimpleNamespace(local_llm_enabled=True, module_id="")
+    dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
+    dummy._parse_section_c_evaluation_payload = types.MethodType(
+        StudyPlanGUI._parse_section_c_evaluation_payload, dummy
+    )
+    dummy._evaluate_section_c_response_deterministic = types.MethodType(
+        StudyPlanGUI._evaluate_section_c_response_deterministic, dummy
+    )
+    dummy._build_section_c_evaluation_prompt = types.MethodType(
+        StudyPlanGUI._build_section_c_evaluation_prompt, dummy
+    )
+    dummy._new_llm_routing_request_id = lambda: "test-rid"
+    dummy._build_local_llm_model_failover_sequence = types.MethodType(_failover, dummy)
+    dummy._ollama_generate_text_with_options = types.MethodType(_ollama, dummy)
+    dummy._section_c_judgment_second_pass_enabled = types.MethodType(
+        StudyPlanGUI._section_c_judgment_second_pass_enabled, dummy
+    )
+    dummy._section_c_should_run_judgment_pass = types.MethodType(
+        StudyPlanGUI._section_c_should_run_judgment_pass, dummy
+    )
+
+    evaluation, warn = StudyPlanGUI._evaluate_section_c_response(
+        dummy,
+        question,
+        response,
+        rewrite_loop_diff=True,
+        prior_response_for_loop="older draft",
+        prior_total_mark=9,
+    )
+    assert isinstance(evaluation, dict)
+    assert evaluation.get("evaluation_meta", {}).get("loop_diff") is True
+    assert warn and "Rewrite" in str(warn)
+
+
 def test_section_c_rewrite_planner_picks_weakest_by_ratio_then_mark_weight():
     dummy = types.SimpleNamespace()
     question = {
@@ -3306,6 +3668,48 @@ def test_build_section_c_generation_prompt_includes_intelligence_payload():
     assert "\"target_difficulty\":\"stretch\"" in prompt
     assert "\"rubric_emphasis\":\"Evaluation and recommendation\"" in prompt
     assert "Use payload.section_c_intelligence.target_difficulty" in prompt
+    assert "exhibits" in prompt.lower()
+
+
+def test_format_section_c_question_text_includes_exhibits_when_scenario_has_requirements():
+    """Regression: AI-shaped cases use scenario+requirements branch; exhibits must still appear."""
+    q = {
+        "scenario": "Delta Co asks you to use the financial information provided below.",
+        "requirements": [
+            {"part": "a", "requirement_text": "Calculate net working capital.", "marks": 8},
+            {"part": "b", "requirement_text": "Discuss liquidity risk.", "marks": 8},
+            {"part": "c", "requirement_text": "Recommend actions.", "marks": 4},
+        ],
+        "exhibits": ["| Item | $000 |\n| Inventory | 420 |\n| Payables | 180 |"],
+        "time_budget_minutes": 45,
+        "total_marks": 20,
+    }
+    text = StudyPlanGUI._format_section_c_question_text(types.SimpleNamespace(), q)
+    assert "Financial information" in text
+    assert "Exhibit 1" in text
+    assert "Inventory" in text
+
+
+def test_normalize_section_c_question_merges_financial_exhibits():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    dummy = types.SimpleNamespace(engine=engine)
+    dummy._section_c_question_id = types.MethodType(StudyPlanGUI._section_c_question_id, dummy)
+    row = {
+        "chapter": "Topic A",
+        "prompt": "Working capital case.",
+        "scenario": "Use the exhibit figures.",
+        "requirements": [
+            {"part": "a", "requirement_text": "Calculate.", "marks": 8},
+            {"part": "b", "requirement_text": "Discuss.", "marks": 8},
+            {"part": "c", "requirement_text": "Recommend.", "marks": 4},
+        ],
+        "model_answer_outline": ["a", "b", "c"],
+        "time_budget_minutes": 45,
+        "financial_exhibits": [{"title": "Extract — current assets", "table": "| Cash | 50 |\n| Rec | 120 |"}],
+    }
+    out = StudyPlanGUI._normalize_section_c_question(dummy, "Topic A", row)
+    assert isinstance(out, dict)
+    assert any("Extract" in str(ex) and "Cash" in str(ex) for ex in out.get("exhibits", []))
 
 
 def test_section_c_rewrite_planner_adapts_instruction_from_intelligence():
@@ -3425,6 +3829,53 @@ def test_generate_section_c_question_failover_uses_second_model():
     assert "sec-1" in calls and "sec-2" in calls
 
 
+def test_build_ai_tutor_assistant_history_row_prefers_requested_model_for_ollama():
+    """Stale global attribution must not override the failover-resolved tutor model."""
+    app = types.SimpleNamespace(
+        _last_llm_inference_backend="ollama",
+        _last_llm_inference_model="first-model:latest",
+    )
+    row = build_ai_tutor_assistant_history_row(app, "Answer text", "second-model:latest")
+    assert row["model"] == "second-model:latest"
+    assert row.get("llm_backend") == "ollama"
+
+
+def test_build_ai_tutor_assistant_history_row_uses_llama_server_model_when_backend_is_llama_cpp():
+    """When inference is served by managed llama.cpp, credit that runtime model, not the Ollama pick."""
+    app = types.SimpleNamespace(
+        _last_llm_inference_backend="llama.cpp",
+        _last_llm_inference_model="custom.gguf",
+    )
+    row = build_ai_tutor_assistant_history_row(app, "Answer text", "mistral:latest")
+    assert row["model"] == "custom.gguf"
+    assert row.get("llm_backend") == "llama.cpp"
+
+
+def test_build_ai_tutor_assistant_history_row_falls_back_to_last_model_when_requested_empty():
+    app = types.SimpleNamespace(
+        _last_llm_inference_backend="ollama",
+        _last_llm_inference_model="fallback:latest",
+    )
+    row = build_ai_tutor_assistant_history_row(app, "Answer text", "")
+    assert row["model"] == "fallback:latest"
+
+
+def test_build_ai_tutor_assistant_history_row_inference_snapshot_beats_stale_app_globals():
+    """Worker-thread snapshot must win over globals (e.g. another call updated _last_* before idle ran)."""
+    app = types.SimpleNamespace(
+        _last_llm_inference_backend="ollama",
+        _last_llm_inference_model="stale-wrong:latest",
+    )
+    row = build_ai_tutor_assistant_history_row(
+        app,
+        "Answer text",
+        "requested:latest",
+        inference_snapshot=("ollama", "snap-actual:latest"),
+    )
+    assert row["model"] == "snap-actual:latest"
+    assert row.get("llm_backend") == "ollama"
+
+
 def test_format_ai_tutor_transcript_labels_roles():
     dummy = _make_dummy()
     transcript = StudyPlanGUI._format_ai_tutor_transcript(
@@ -3500,6 +3951,26 @@ def test_clean_ai_tutor_text_human_readable_math():
     assert "beta" in cleaned
 
 
+def test_clean_ai_tutor_text_strips_model_thinking_wrappers():
+    """Reasoning / thinking wrappers are removed before other cleanup (streaming + final render)."""
+    from studyplan_ai_tutor import clean_ai_tutor_text
+
+    raw = "<think>\nhidden\n</think>\nHello **world**"
+    cleaned = clean_ai_tutor_text(raw)
+    assert "hidden" not in cleaned
+    assert "Hello world" in cleaned
+
+
+def test_sanitize_visible_local_llm_answer_is_canonical_thinking_strip():
+    """Visible-output pipeline should use sanitize_visible_local_llm_answer (Ollama + tutor)."""
+    from studyplan.ai.llm_output_sanitize import sanitize_visible_local_llm_answer
+
+    raw = "<think>\nsecret\n</think>\nAnswer"
+    out = sanitize_visible_local_llm_answer(raw)
+    assert "secret" not in out
+    assert "Answer" in out
+
+
 def test_ollama_generate_text_stream_parses_ndjson_and_emits_chunks(monkeypatch):
     dummy = _make_dummy()
 
@@ -3523,8 +3994,12 @@ def test_ollama_generate_text_stream_parses_ndjson_and_emits_chunks(monkeypatch)
                 return b""
             return self._lines.pop(0)
 
-    def _fake_urlopen(_req, timeout=None):
+    def _fake_urlopen(req, timeout=None):
         assert timeout is not None
+        body = json.loads(req.data.decode("utf-8"))
+        assert body.get("stream") is True
+        assert body.get("think") is False
+        assert "keep_alive" in body
         return _FakeResponse(lines)
 
     monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
@@ -3619,6 +4094,96 @@ def test_ollama_generate_text_returns_busy_when_runtime_slot_unavailable():
     assert text == ""
     assert isinstance(err, str) and "runtime busy" in err.lower()
     assert calls and calls[-1][0] == "demo:latest" and calls[-1][1] is False
+
+
+def test_cloud_endpoint_precedes_llama_server_in_text_with_options() -> None:
+    dummy = _make_dummy()
+    dummy._cloud_endpoint_is_candidate = lambda: True
+    dummy._generate_via_cloud_llama_cpp_endpoint = lambda *_args, **_kwargs: ("cloud-response", None)
+    llama_calls = {"n": 0}
+
+    def _llama(_prompt: str, *args, **kwargs):
+        llama_calls["n"] += 1
+        return "", "llama_server_not_healthy"
+
+    dummy._generate_via_llama_server = _llama
+
+    text, err = StudyPlanGUI._ollama_generate_text_with_options(
+        dummy,
+        model="demo:latest",
+        prompt="ping",
+        num_ctx=2048,
+        temperature=0.2,
+        use_response_cache=False,
+    )
+    assert err is None
+    assert text == "cloud-response"
+    assert llama_calls["n"] == 0
+
+
+def test_cloud_endpoint_precedes_llama_server_in_text_stream() -> None:
+    dummy = _make_dummy()
+    dummy._cloud_endpoint_is_candidate = lambda: True
+    dummy._generate_via_cloud_llama_cpp_endpoint = lambda *_args, **_kwargs: ("cloud streamed", None)
+    dummy._emit_text_as_chunks = lambda full_text, on_chunk, **_kwargs: on_chunk(str(full_text))
+
+    seen: list[str] = []
+    text, err = StudyPlanGUI._ollama_generate_text_stream(
+        dummy,
+        model="demo:latest",
+        prompt="stream",
+        on_chunk=lambda piece: seen.append(piece),
+    )
+    assert err is None
+    assert text == "cloud streamed"
+    assert seen == ["cloud streamed"]
+
+
+def test_cloud_endpoint_auto_discovers_provider_key(monkeypatch) -> None:
+    dummy = _make_dummy()
+    monkeypatch.setattr("studyplan.config.Config.CLOUD_LLAMACPP_AUTH_BEARER", "", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "router-token")
+    monkeypatch.setattr("studyplan.config.Config.LLAMA_CPP_ENDPOINT", "https://openrouter.ai/api/v1/chat/completions")
+
+    captured: dict[str, str | None] = {}
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "auto-discovered",
+                        }
+                    }
+                ]
+            }
+            return json.dumps(payload).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=None):
+        captured["authorization"] = req.get_header("Authorization")
+        captured["x_api_key"] = req.get_header("x-api-key")
+        return _FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+
+    text, err = StudyPlanGUI._generate_via_cloud_llama_cpp_endpoint(
+        dummy,
+        prompt_text="ping",
+        candidate_models=["openrouter/google/gemini-2.5-flash"],
+        inference_purpose="tutor",
+    )
+
+    assert err is None
+    assert text == "auto-discovered"
+    assert captured["authorization"] == "Bearer router-token"
+    assert captured["x_api_key"] is None
 
 
 def test_ollama_generate_text_stream_retries_transient_error_before_chunks(monkeypatch):

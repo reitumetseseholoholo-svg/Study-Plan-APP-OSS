@@ -11,6 +11,7 @@ from studyplan.module_reconfig.reconfig import (
     _extract_syllabus_meta,
     _stable_outcome_id,
     analyze_outcome_count_regressions,
+    cap_chunks_by_path,
     compute_reconfig_confidence,
     load_reconfig_checkpoint,
     reconfig_outcome_totals_and_changed_chapters,
@@ -70,6 +71,17 @@ def test_retrieve_from_chunks_by_path_syllabus_boost() -> None:
         syllabus_paths=[syllabus_path],
     )
     assert "syllabus" in out
+
+
+def test_cap_chunks_by_path_downsamples_and_budgets() -> None:
+    chunks = [{"text": "x" * 1000, "id": i} for i in range(50)]
+    by = {"/a.pdf": list(chunks)}
+    capped = cap_chunks_by_path(by, max_chunks_per_path=10, max_chars_per_path=4500)
+    assert "/a.pdf" in capped
+    assert 1 <= len(capped["/a.pdf"]) <= 10
+    assert sum(len(str(c.get("text") or "")) for c in capped["/a.pdf"]) <= 4500
+    # Deterministic: order preserved, stride-like sample includes the first chunk
+    assert capped["/a.pdf"][0].get("id") == 0
 
 
 def test_analyze_outcome_count_regressions_severe() -> None:

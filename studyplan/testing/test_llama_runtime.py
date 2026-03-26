@@ -164,6 +164,39 @@ class TestLlamaCppPrecedence:
             # Runtime tried llama-server first (ensure_running was called)
             assert fake_server.ensure_running.call_count >= 1
 
+    def test_preferred_gguf_attempted_before_auto_rank(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_fake_gguf(os.path.join(tmpdir, "aaa-1b-q4.gguf"))
+            _write_fake_gguf(os.path.join(tmpdir, "zzz-7b-q4.gguf"))
+            cfg = GgufRegistryConfig(
+                gpt4all_dir=tmpdir,
+                ollama_manifests_dir="/nonexistent",
+                ollama_blobs_dir="/nonexistent",
+            )
+            fake_server = MagicMock(spec=LlamaServerManager)
+            fake_server.is_running = False
+            fake_server.current_model = ""
+            fake_server.endpoint = ""
+            fake_server.startup_latency_ms = 0
+            fake_server.ensure_running.return_value = True
+            fake_server.stop.return_value = None
+            fake_server.status.return_value = {"running": False}
+
+            rt = LlamaRuntime(
+                registry=GgufRegistry(config=cfg),
+                selector=ModelSelector(),
+                server=fake_server,
+                ollama_fallback_enabled=False,
+                ollama_host="",
+            )
+            status = rt.ensure_ready(
+                Purpose.GENERAL, preferred_gguf_name="zzz-7b-q4.gguf"
+            )
+            assert status.healthy
+            assert status.model_name == "zzz-7b-q4"
+            first = fake_server.ensure_running.call_args_list[0]
+            assert first[0][1] == "zzz-7b-q4"
+
 
 class TestRuntimeFromConfig:
     def test_builds_from_defaults(self):

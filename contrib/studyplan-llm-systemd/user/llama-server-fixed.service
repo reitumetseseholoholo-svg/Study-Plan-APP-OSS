@@ -1,0 +1,19 @@
+# Optional: fixed-model llama-server under your user session (see ../README.md).
+# Conflicts with Study Plan "managed" llama-server if same PORT — use one or the other.
+
+[Unit]
+Description=llama-server (fixed GGUF, user session)
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/studyplan/llama-server.env
+# cgroup RAM ceiling for 8 GiB-class laptops (tune freely)
+MemoryHigh=3500M
+MemoryMax=4500M
+ExecStart=/bin/sh -c 'exec /usr/bin/llama-server -m "${GGUF}" --host "${HOST}" --port "${PORT}" -t "${THREADS}" -c "${CTX}" -b "${BATCH}" -ngl "${NGL}" --log-disable'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

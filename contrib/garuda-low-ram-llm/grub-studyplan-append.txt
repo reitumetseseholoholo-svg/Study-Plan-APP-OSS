@@ -1,0 +1,11 @@
+# Tokens merged by install-garuda-host.sh / merge_kernel_cmdline.py live in:
+#   kernel-cmdline-studyplan-tuning.txt
+#
+# After merge, your GRUB_CMDLINE_LINUX_DEFAULT keeps your existing options
+# (root=, quiet, …) and adds/overrides Study Plan tuning, e.g.:
+#   transparent_hugepage=madvise zswap.enabled=1 zswap.compressor=zstd
+#   zswap.max_pool_percent=20 split_lock_detect=off sysrq_always_enabled=1
+#   amdgpu.noretry=0 amdgpu.gttsize=2048
+#
+# Machine-specific flags (only if you need them — not added automatically):
+#   audit=0 intel_pstate=disable amd_pstate=disable

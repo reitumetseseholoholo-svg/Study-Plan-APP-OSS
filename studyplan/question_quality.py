@@ -32,6 +32,14 @@ META_OPTION_PATTERN = re.compile(
     r"\b(all of the above|none of the above|all of these|both a and b|both b and c|both a and c)\b",
     re.IGNORECASE,
 )
+# LLM gap-generation failures: template phrases instead of real distractors.
+_GAP_OPTION_PLACEHOLDER_FULL = re.compile(
+    r"(?i)^\s*(?:full|complete)\s+option\s+text\s*[:\s]*[abcd]\s*$"
+)
+_GAP_OPTION_GENERIC = re.compile(
+    r"(?i)^\s*(?:option|choice)\s*[abcd]\s*$|^\s*[abcd][\.\:\)]\s*(?:option|text|choice)\s*\d?\s*$"
+)
+_GAP_OPTION_TBD = re.compile(r"(?i)\b(?:placeholder|tbd|todo|lorem\s+ipsum|\[insert)\b")
 CALC_KEYWORDS_PATTERN = re.compile(
     r"\b(calculate|compute|derive|estimate|evaluate|discount|npv|irr|wacc|capm|variance|sensitivity)\b",
     re.IGNORECASE,
@@ -44,6 +52,28 @@ MCQ_GAP_MIN_AVG_DISTRACTOR_CHARS_LONG_RULE = 10
 MCQ_GAP_LONG_OUTLIER_VS_DISTRACTOR_MEAN = 2.5  # reject if len(correct) >= this * mean(other options)
 MCQ_GAP_SHORT_OUTLIER_VS_DISTRACTOR_MEAN = 0.35  # reject if len(correct) <= this * mean(other options)
 MCQ_GAP_MIN_AVG_DISTRACTOR_CHARS_SHORT_RULE = 24
+
+
+def gap_options_look_like_llm_placeholders(options: list[str]) -> bool:
+    """True when all four strings look like template / placeholder MCQ options from a weak model."""
+    if len(options) != 4:
+        return False
+    norm = [str(o or "").strip() for o in options]
+    if any(not x for x in norm):
+        return True
+    hits = 0
+    for o in norm:
+        if _GAP_OPTION_PLACEHOLDER_FULL.search(o) or _GAP_OPTION_GENERIC.search(o):
+            hits += 1
+        if _GAP_OPTION_TBD.search(o):
+            hits += 1
+    if hits >= 2:
+        return True
+    # Same wording with only A/B/C/D changed, e.g. "Full option text A" … "Full option text D"
+    stems = [re.sub(r"(?i)\s*[abcd]\s*$", "", o).strip().lower() for o in norm]
+    if stems and len(set(stems)) == 1 and len(stems[0]) >= 8:
+        return True
+    return False
 
 
 def option_looks_like_see_explanation(option_text: str) -> bool:

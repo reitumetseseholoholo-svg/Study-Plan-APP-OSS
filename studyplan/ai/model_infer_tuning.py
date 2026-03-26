@@ -99,6 +99,10 @@ def _purpose_task_kind(purpose: str) -> str:
     p = str(purpose or "").strip().lower()
     if p in {"coach", "autopilot", "gap_generation", "section_c_generation", "assess", "judge"}:
         return "json_task"
+    if p in {"section_c_evaluation", "section_c_loop_diff"}:
+        return "json_task"
+    if p in {"section_c_judgment"}:
+        return "judgment_task"
     if p in {"deep_reason"}:
         return "deep_tutor"
     return "tutor"
@@ -224,6 +228,15 @@ def _apply_purpose(t: ModelRuntimeTuning, task: str) -> ModelRuntimeTuning:
             temperature=max(0.08, min(0.22, t.temperature * 0.65)),
             top_p=min(0.90, t.top_p),
             thread_multiplier=min(1.0, t.thread_multiplier + 0.05),
+        )
+    if task == "judgment_task":
+        # Second-pass Section C marking: slightly more headroom for structured JSON + brief rationale.
+        return replace(
+            t,
+            temperature=max(0.10, min(0.26, t.temperature * 0.72)),
+            top_p=min(0.92, t.top_p),
+            max_output_tokens=min(4096, int(t.max_output_tokens * 1.4)),
+            num_ctx=max(t.num_ctx, min(8192, int(t.num_ctx * 1.05))),
         )
     if task == "deep_tutor":
         return replace(

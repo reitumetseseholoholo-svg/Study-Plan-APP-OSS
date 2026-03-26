@@ -23,6 +23,7 @@ from .ai.prompt_design import (
     JUDGE_JSON_ONLY,
     build_judge_prompt_3es,
 )
+from .ai.llm_auth import discover_llm_auth_headers
 from .ai.recovery import build_deterministic_fallback_response
 from .config import Config
 from .contracts import (
@@ -242,6 +243,8 @@ class LlamaCppTutorService:
 
     # llama.cpp-first managed runtime (None = use legacy Ollama discovery path)
     managed_runtime: Any = field(default=None)
+    # Registry model name to try before automatic ranking (same semantics as app Preferences).
+    preferred_managed_gguf: str = field(default_factory=lambda: "")
     _runtime_init_done: bool = field(default=False, init=False, repr=False)
 
     # Performance optimization fields
@@ -552,10 +555,23 @@ class LlamaCppTutorService:
     def _invoke_once(self, normalized: dict[str, Any]) -> tuple[bool, str, str, dict[str, Any]]:
         payload = self._build_payload(normalized)
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        try:
+            resolved_auth = discover_llm_auth_headers(
+                self.endpoint,
+                search_paths=[
+                    str(getattr(Config, "CONFIG_HOME", "") or ""),
+                    os.getcwd(),
+                ],
+            )
+        except Exception:
+            resolved_auth = None
+        if resolved_auth is not None:
+            headers.update(resolved_auth.headers)
         request = urllib.request.Request(
             url=self.endpoint,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
@@ -692,7 +708,13 @@ class LlamaCppTutorService:
         if self._runtime_init_done and endpoint_ok:
             return
         try:
-            status = rt.ensure_ready(purpose)
+            pref = str(getattr(self, "preferred_managed_gguf", "") or "").strip()
+            status = rt.ensure_ready(purpose, preferred_gguf_name=pref)
+        except TypeError:
+            try:
+                status = rt.ensure_ready(purpose)
+            except Exception:
+                return
         except Exception:
             return
         if status.healthy and status.endpoint:

@@ -1,21 +1,23 @@
 """Main application window for ACCA Study Plan App using GTK4."""
 
+from pathlib import Path
+
 import gi
 gi.require_version('Gtk', '4.0')
 from gi.repository import Gtk, Gdk, GLib, GObject
 
-from ..practice_loop_controller import PracticeLoopController
-from ..cognitive_state import CognitiveState
-from ..services import InMemoryTutorSessionController, InMemoryTutorLearnerModelStore
+from studyplan.practice_loop_controller import PracticeLoopController
+from studyplan.cognitive_state import CognitiveState
+from studyplan.services import InMemoryTutorSessionController, InMemoryTutorLearnerModelStore
 from .practice_session import PracticeSessionWindow
 from .cognitive_dashboard import CognitiveDashboard
 from .hint_system import HintSystemWidget
 from .confidence_calibrator import ConfidenceCalibratorWidget
 from .transfer_analyzer import TransferAnalyzerWidget
-from ..performance_monitor import PerformanceMonitor
+from studyplan.performance_monitor import PerformanceMonitor
 
 
-@Gtk.Template(filename="ui/gtk4/templates/main_window.ui")
+@Gtk.Template(filename=str(Path(__file__).with_name("templates") / "main_window.ui"))
 class StudyPlanMainWindow(Gtk.ApplicationWindow):
     """Main application window with tabbed interface."""
     
@@ -48,6 +50,14 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
         self.hint_system = HintSystemWidget(self)
         self.confidence_calibrator = ConfidenceCalibratorWidget(self)
         self.transfer_analyzer = TransferAnalyzerWidget(self)
+
+        # Register stack pages so navigation actually works.
+        self.stack.add_named(self.practice_session, "practice_session")
+        self.stack.add_named(self.cognitive_dashboard, "cognitive_dashboard")
+        self.stack.add_named(self.hint_system, "hint_system")
+        self.stack.add_named(self.confidence_calibrator, "confidence_calibrator")
+        self.stack.add_named(self.transfer_analyzer, "transfer_analyzer")
+        self.stack.set_visible_child(self.practice_session)
         
         # Connect signals
         self._setup_signals()

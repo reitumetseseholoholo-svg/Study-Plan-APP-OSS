@@ -49,7 +49,9 @@ GAP_SCHEMA_ONE_LINE = (
     '"explanation":"brief syllabus-grounded rationale"}]}'
 )
 SECTION_C_SCHEMA_ONE_LINE = (
-    '{"chapter":"...","scenario":"Full case narrative (company, situation, numbers). 150-400 words. No placeholders.",'
+    '{"chapter":"...","scenario":"Full case narrative (company, situation). 150-400 words. No placeholders.",'
+    '"exhibits":["1-4 strings. Each is Exhibit 1/2… with ALL numeric financial data (pipe/ASCII tables OK). '
+    'If any requirement says information below/appendix/exhibit, exhibits MUST contain those numbers — never empty.",'
     '"requirements":[{"part":"a","requirement_text":"Requirement with command verb (e.g. Calculate, Evaluate, Recommend).","marks":8},'
     '{"part":"b","requirement_text":"...","marks":8},{"part":"c","requirement_text":"...","marks":4}],'
     '"model_answer_outline":["bullet aligned to (a)","bullet aligned to (b)","bullet aligned to (c)"],'
@@ -150,10 +152,15 @@ GAP_FR_CLASSIFICATION_EXTRA_RULES = [
 SECTION_C_ROLE_BASE = (
     "Generate one ACCA exam-type Section C constructed-response case as "
     + JSON_ONLY_NO_PROSE
-    + " Question must be ACCA exam-style: syllabus-aligned, professional level, realistic scenario and requirements as in real ACCA Section C papers. Output must match live exam format: one scenario narrative and requirements (a), (b), (c) with mark allocation. Do not use empty exhibits."
+    + " Question must be ACCA exam-style: syllabus-aligned, professional level, realistic scenario and requirements as in real ACCA Section C papers. "
+    "Output must match live exam format: scenario narrative, a non-empty exhibits array with any numeric/tabular data the candidate needs, "
+    "then requirements (a), (b), (c) with mark allocation. Do not reference unseen appendices or 'information below' without putting that data in exhibits."
 )
 SECTION_C_RULES = [
-    "scenario: Single narrative with case facts, figures, and context. No empty exhibits or [Exhibit 1] placeholders.",
+    "scenario: Single narrative with case facts and context. Put every figure the candidate needs in exhibits (not only in prose).",
+    "exhibits: Non-empty array (1-4 strings). Each string is one exhibit: title line then pipe/ASCII table or bullet facts with currency/units. "
+    "If you write 'using the information below', 'appendix', or 'financial statements provided', those numbers MUST appear verbatim in exhibits.",
+    "Never reference exhibits, appendices, or 'data below' without including that data inside exhibits in this JSON.",
     "requirements: Exactly 3 parts (a), (b), (c). Each has part (a/b/c), requirement_text (one clear task with command verb), and marks. Total marks must equal 20.",
     "Command verbs: Calculate, Evaluate, Recommend, Discuss, Explain, Assess, Compare, Advise.",
     "Part (a) often 8 marks (calculation/application), (b) 8 marks (discussion), (c) 4 marks (recommendation). Adjust so total = 20.",
@@ -232,6 +239,7 @@ CLASSIFICATION_DRILL_RULES = [
     "which section (operating/investing/financing), or required disclosures under a standard.",
     "Options must name real statement areas (SoFP/SoPL/SoCF/notes; equity/liabilities/NCA/current assets; OCI; etc.) "
     "— not vague wording.",
+    "Never use placeholder option strings (e.g. 'Full option text A', 'Option B', 'Choice C', 'TBD'); each option must be a full, distinct accounting answer.",
     GRAMMAR_QUALITY_RULE,
 ]
 

@@ -1,14 +1,16 @@
 """Practice session window for ACCA Study Plan App using GTK4."""
 
+from pathlib import Path
+
 import gi
 gi.require_version('Gtk', '4.0')
 from gi.repository import Gtk, Gdk, GLib, GObject, Pango
 
-from ..contracts import TutorPracticeItem, TutorAssessmentSubmission, TutorAssessmentResult
-from ..performance_monitor import PerformanceMonitor
+from studyplan.contracts import TutorPracticeItem, TutorAssessmentSubmission, TutorAssessmentResult
+from studyplan.performance_monitor import PerformanceMonitor
 
 
-@Gtk.Template(filename="ui/gtk4/templates/practice_session.ui")
+@Gtk.Template(filename=str(Path(__file__).with_name("templates") / "practice_session.ui"))
 class PracticeSessionWindow(Gtk.Box):
     """Main practice session interface with intelligent tutoring."""
     
@@ -50,7 +52,7 @@ class PracticeSessionWindow(Gtk.Box):
         """Connect UI signals."""
         self.submit_button.connect("clicked", self._on_submit_clicked)
         self.hint_button.connect("clicked", self._on_hint_clicked)
-        self.answer_input.connect("activate", self._on_submit_clicked)
+        # GtkTextView does not emit "activate"; submission happens via the button.
         
     def start_session(self):
         """Start a new practice session."""
@@ -74,8 +76,8 @@ class PracticeSessionWindow(Gtk.Box):
             
     def _create_loop_state(self):
         """Create practice loop state for item generation."""
-        from ..practice_loop_controller import PracticeLoopSessionState
-        from ..contracts import TutorSessionState, TutorLearnerProfileSnapshot, AppStateSnapshot
+        from studyplan.practice_loop_controller import PracticeLoopSessionState
+        from studyplan.contracts import TutorSessionState, TutorLearnerProfileSnapshot, AppStateSnapshot
         
         session_state = TutorSessionState(
             session_id="practice_session",
@@ -119,7 +121,7 @@ class PracticeSessionWindow(Gtk.Box):
         self.question_display.set_markup(question_text)
         
         # Clear previous input and feedback
-        self.answer_input.set_text("")
+        self._set_answer_text("")
         self.feedback_display.set_markup("")
         
         # Update hint button state
@@ -138,7 +140,7 @@ class PracticeSessionWindow(Gtk.Box):
             
         with self.performance_monitor.context("assessment"):
             # Get user input
-            answer_text = self.answer_input.get_text().strip()
+            answer_text = self._get_answer_text()
             confidence = int(self.confidence_slider.get_value())
             
             if not answer_text:
@@ -259,6 +261,7 @@ class PracticeSessionWindow(Gtk.Box):
             self._display_current_item()
         else:
             self._end_session()
+        return False
             
     def _end_session(self):
         """End the practice session and show summary."""
@@ -276,10 +279,11 @@ class PracticeSessionWindow(Gtk.Box):
         • Check cognitive dashboard for progress
         • Try transfer tasks for deeper learning
         """
-        
+
         self.feedback_display.set_markup(summary)
         self.submit_button.set_sensitive(False)
         self.hint_button.set_sensitive(False)
+        return False
         
     def _update_session_header(self):
         """Update session header with current information."""
@@ -299,6 +303,18 @@ class PracticeSessionWindow(Gtk.Box):
         """Update session statistics display."""
         stats_text = f"Correct: {self.correct_count} | Total: {self.total_attempts}"
         self.session_stats.set_text(stats_text)
+
+    def _get_answer_text(self) -> str:
+        """Read the current answer from the GtkTextView buffer."""
+        buffer = self.answer_input.get_buffer()
+        start_iter = buffer.get_start_iter()
+        end_iter = buffer.get_end_iter()
+        return buffer.get_text(start_iter, end_iter, True).strip()
+
+    def _set_answer_text(self, text: str) -> None:
+        """Replace the current answer text."""
+        buffer = self.answer_input.get_buffer()
+        buffer.set_text(text, -1)
         
     def _show_feedback(self, message: str, message_type: str = "info"):
         """Show feedback message with appropriate styling."""

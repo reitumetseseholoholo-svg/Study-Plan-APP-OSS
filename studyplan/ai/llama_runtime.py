@@ -8,6 +8,11 @@ to provide a single entry point that:
 3. Ensures llama-server is running with that model
 4. Returns the endpoint URL for LlamaCppTutorService
 5. Falls back to Ollama API if direct serving fails
+
+Memory note: when both managed ``llama-server`` and ``ollama`` are resident, RAM use is
+approximately the sum of loaded weights (plus KV). Prefer one primary backend, lower
+``num_ctx``, ``OLLAMA_MAX_LOADED_MODELS=1``, and app-side Ollama concurrency limits on
+small machines; see ``host_inference_profile`` and Preferences.
 """
 
 from __future__ import annotations
@@ -29,6 +34,46 @@ from .model_infer_tuning import resolve_model_runtime_tuning
 from .model_selector import ModelSelector, Purpose
 
 log = logging.getLogger(__name__)
+
+
+def _resolve_preferred_gguf(
+    registry: GgufRegistry,
+    selector: ModelSelector,
+    catalog: list[GgufModel],
+    preferred_name: str,
+) -> GgufModel | None:
+    """Return a catalog model matching ``preferred_name``, or None.
+
+    Honors the selector RAM budget the same way as automatic ranking.
+    """
+    pref = (preferred_name or "").strip()
+    if not pref:
+        return None
+    m = registry.find_by_name(pref)
+    if m is None:
+        pl = pref.lower()
+        bn = os.path.basename(pref).lower()
+        for cand in catalog:
+            if cand.name.lower() == pl or cand.name.lower() == bn:
+                m = cand
+                break
+            if os.path.basename(cand.path).lower() == bn:
+                m = cand
+                break
+    if m is None:
+        return None
+    if selector.ram_budget_bytes > 0:
+        overhead = 500_000_000
+        avail = max(0, int(selector.ram_budget_bytes) - overhead)
+        if m.size_bytes > avail:
+            log.warning(
+                "Preferred GGUF %r (~%d MiB) exceeds RAM budget (~%d MiB); ignoring preference",
+                m.name,
+                int(m.size_bytes // (1024 * 1024)),
+                int(avail // (1024 * 1024)),
+            )
+            return None
+    return m
 
 
 def _launch_kw_for_gguf(model: GgufModel, purpose: str, cfg: type) -> dict[str, int]:
@@ -115,6 +160,8 @@ class LlamaRuntime:
 
         idle_shutdown = float(getattr(cfg, "LLAMA_CPP_SERVER_IDLE_SHUTDOWN_SECONDS", 0.0) or 0.0)
         idle_poll = float(getattr(cfg, "LLAMA_CPP_SERVER_IDLE_POLL_SECONDS", 10.0) or 10.0)
+        extra = getattr(cfg, "LLAMA_CPP_SERVER_EXTRA_ARGS", None)
+        extra_list = list(extra) if isinstance(extra, (list, tuple)) else []
         server_cfg = LlamaServerConfig(
             binary=server_bin,
             port=int(getattr(cfg, "LLAMA_CPP_SERVER_PORT", 8090) or 8090),
@@ -127,6 +174,7 @@ class LlamaRuntime:
             ),
             idle_shutdown_seconds=max(0.0, idle_shutdown),
             idle_poll_interval_seconds=max(1.0, min(300.0, idle_poll)),
+            extra_args=extra_list,
         )
 
         ram_mb = int(getattr(cfg, "LLAMA_CPP_RAM_BUDGET_MB", 0) or 0)
@@ -150,10 +198,19 @@ class LlamaRuntime:
             ollama_host=host,
         )
 
-    def ensure_ready(self, purpose: str = Purpose.GENERAL) -> RuntimeStatus:
+    def ensure_ready(
+        self,
+        purpose: str = Purpose.GENERAL,
+        *,
+        preferred_gguf_name: str = "",
+    ) -> RuntimeStatus:
         """Make sure an inference backend is ready for the given purpose.
 
         Tries llama-server first, falls back to Ollama if configured.
+
+        When ``preferred_gguf_name`` is set (registry model name), that GGUF is
+        tried before automatic ranking. Unknown names or models over the RAM
+        budget are ignored with a log line.
         """
         catalog = self.registry.catalog()
         if not catalog:
@@ -171,8 +228,20 @@ class LlamaRuntime:
                 error="No GGUF models found",
             )
 
-        best = self.selector.pick_best(catalog, purpose)
-        if not best:
+        pref_raw = (preferred_gguf_name or "").strip()
+        preferred = None
+        if pref_raw:
+            preferred = _resolve_preferred_gguf(
+                self.registry, self.selector, catalog, pref_raw
+            )
+            if preferred is None:
+                log.warning(
+                    "Preferred managed GGUF %r not found or not usable; using auto selection",
+                    pref_raw,
+                )
+
+        ranked_models = [r.model for r in self.selector.rank(catalog, purpose)]
+        if not ranked_models:
             log.warning("Model selector returned no candidate for purpose=%s", purpose)
             if self.ollama_fallback_enabled:
                 return self._try_ollama_fallback(purpose)
@@ -187,64 +256,59 @@ class LlamaRuntime:
                 error="No suitable model for purpose",
             )
 
-        if self.server.is_running and self.server.current_model == best.name:
+        seen_names: set[str] = set()
+        attempts: list[GgufModel] = []
+        for m in ([preferred] if preferred is not None else []) + ranked_models:
+            if m.name in seen_names:
+                continue
+            seen_names.add(m.name)
+            attempts.append(m)
+            if len(attempts) >= 6:
+                break
+
+        first = attempts[0]
+        if self.server.is_running and self.server.current_model == first.name:
             return RuntimeStatus(
                 backend="llama_server",
-                model_name=best.name,
-                model_path=best.path,
+                model_name=first.name,
+                model_path=first.path,
                 endpoint=self.server.endpoint,
                 healthy=True,
                 startup_latency_ms=self.server.startup_latency_ms,
                 catalog_size=len(catalog),
             )
 
-        ok = self.server.ensure_running(
-            best.path,
-            best.name,
-            **_launch_kw_for_gguf(best, purpose, Config),
-        )
-        if ok:
-            self._last_purpose = purpose
-            return RuntimeStatus(
-                backend="llama_server",
-                model_name=best.name,
-                model_path=best.path,
-                endpoint=self.server.endpoint,
-                healthy=True,
-                startup_latency_ms=self.server.startup_latency_ms,
-                catalog_size=len(catalog),
-            )
-
-        log.warning(
-            "llama-server failed to start with %s, trying next candidates",
-            best.name,
-        )
-        ranked = self.selector.rank(catalog, purpose)
-        for ranking in ranked[1:4]:
+        last_tried = first
+        for model in attempts:
+            last_tried = model
             ok = self.server.ensure_running(
-                ranking.model.path,
-                ranking.model.name,
-                **_launch_kw_for_gguf(ranking.model, purpose, Config),
+                model.path,
+                model.name,
+                **_launch_kw_for_gguf(model, purpose, Config),
             )
             if ok:
                 self._last_purpose = purpose
                 return RuntimeStatus(
                     backend="llama_server",
-                    model_name=ranking.model.name,
-                    model_path=ranking.model.path,
+                    model_name=model.name,
+                    model_path=model.path,
                     endpoint=self.server.endpoint,
                     healthy=True,
                     startup_latency_ms=self.server.startup_latency_ms,
                     catalog_size=len(catalog),
                 )
+            log.warning(
+                "llama-server failed to start with %s, trying next candidates",
+                model.name,
+            )
 
         if self.ollama_fallback_enabled:
             return self._try_ollama_fallback(purpose)
 
         return RuntimeStatus(
             backend="none",
-            model_name=best.name,
-            model_path=best.path,
+            model_name=last_tried.name,
+            model_path=last_tried.path,
             endpoint="",
             healthy=False,
             startup_latency_ms=0,

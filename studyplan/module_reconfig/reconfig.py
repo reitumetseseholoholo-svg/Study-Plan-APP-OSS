@@ -34,6 +34,61 @@ DEFAULT_OUTCOME_DROP_WARN_RATIO = 0.20
 RECONFIG_CHECKPOINT_VERSION = 1
 
 
+def cap_chunks_by_path(
+    chunks_by_path: ChunksByPath,
+    *,
+    max_chunks_per_path: int = 220,
+    max_chars_per_path: int = 60_000,
+) -> ChunksByPath:
+    """
+    Reduce peak memory by downsampling/limiting chunk payloads.
+
+    Deterministic and order-preserving:
+    - If a path has more than max_chunks_per_path, keep evenly-spaced chunks (stride sampling).
+    - Then apply a per-path char budget (sums len(text)); stop when exceeded.
+
+    The output is a new mapping; chunk dicts are reused (not deep-copied).
+    """
+    try:
+        mcpp = int(max_chunks_per_path)
+    except Exception:
+        mcpp = 220
+    try:
+        mchars = int(max_chars_per_path)
+    except Exception:
+        mchars = 60_000
+    mcpp = max(1, min(5000, mcpp))
+    mchars = max(2000, min(5_000_000, mchars))
+
+    out: ChunksByPath = {}
+    for path, chunks in (chunks_by_path or {}).items():
+        if not isinstance(chunks, list) or not chunks:
+            out[str(path)] = []
+            continue
+        rows = [c for c in chunks if isinstance(c, dict) and c.get("text")]
+        if not rows:
+            out[str(path)] = []
+            continue
+        if len(rows) > mcpp:
+            stride = max(1, len(rows) // mcpp)
+            sampled = rows[::stride]
+            if len(sampled) > mcpp:
+                sampled = sampled[:mcpp]
+            rows = sampled
+        budgeted: list[dict[str, Any]] = []
+        used = 0
+        for c in rows:
+            t = c.get("text")
+            if not isinstance(t, str) or not t:
+                continue
+            used += len(t)
+            if used > mchars and budgeted:
+                break
+            budgeted.append(c)
+        out[str(path)] = budgeted
+    return out
+
+
 def validate_capabilities_and_aliases(config: dict[str, Any]) -> list[str]:
     """
     Validate capabilities (letter -> string) and aliases (alias -> canonical string) for reconfig quality.
