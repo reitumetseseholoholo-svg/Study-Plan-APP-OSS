@@ -3328,11 +3328,15 @@ class StudyPlanEngine:
             self.data_health["srs_fixed"] += 1
         interval = max(1, interval)
         efactor = max(1.3, min(2.5, efactor))
-        return {
+        entry = {
             "last_review": last_review.isoformat() if last_review else None,
             "interval": interval,
             "efactor": efactor,
         }
+        fingerprint = str(raw.get("question_key", "") or "").strip()
+        if fingerprint:
+            entry["question_key"] = fingerprint
+        return entry
 
     def _question_count_hints_from_questions_file(self) -> Dict[str, int]:
         """
@@ -6339,7 +6343,7 @@ class StudyPlanEngine:
                         normalized_targets.append(oid)
         if not normalized_targets:
             stats_by_ch = self.outcome_stats.get(chapter, {}) if isinstance(self.outcome_stats, dict) else {}
-            ranked_outcomes: list[tuple[float, int, str]] = []
+            ranked_outcomes: list[tuple[float, int, int, str]] = []
             for oid in outcome_order:
                 stats = stats_by_ch.get(oid, {}) if isinstance(stats_by_ch, dict) else {}
                 if not isinstance(stats, dict):
@@ -11410,9 +11414,10 @@ class StudyPlanEngine:
         except Exception:
             drift_alert_map = {}
         sticky_current = False
-        if current_topic in self.CHAPTERS:
-            curr_comp = _safe_float(self.competence.get(current_topic, 0) or 0)
-            curr_poms = _pomodoros_on_topic(current_topic)
+        current_topic_key = str(current_topic or "").strip()
+        if current_topic_key in self.CHAPTERS:
+            curr_comp = _safe_float(self.competence.get(current_topic_key, 0) or 0)
+            curr_poms = _pomodoros_on_topic(current_topic_key)
             if curr_comp < sticky_competence or curr_poms < sticky_pomodoros:
                 sticky_current = True
 

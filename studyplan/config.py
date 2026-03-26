@@ -354,3 +354,7 @@ class Config:
         )
         or str(default_performance_cache_rag_doc_store_mode())
     ).strip().lower()
+
+
+CONFIG_HOME = Config.CONFIG_HOME
+OLLAMA_MODELS_DIR = Config.OLLAMA_MODELS_DIR

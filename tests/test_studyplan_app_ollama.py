@@ -3,6 +3,7 @@
 import datetime
 import json
 import os
+import time
 import threading
 import types
 import urllib.error
@@ -10,6 +11,14 @@ import urllib.request
 
 import pytest
 from studyplan.cognitive_state import CognitiveState, CompetencyPosterior
+from studyplan.contracts import (
+    AppStateSnapshot,
+    TutorAssessmentResult,
+    TutorLearnerProfileSnapshot,
+    TutorLoopTurnResult,
+    TutorPracticeItem,
+    TutorSessionState,
+)
 from studyplan_ai_tutor import (
     AI_TUTOR_RAG_USAGE_HINT,
     assess_tutor_coverage,
@@ -34,6 +43,7 @@ try:
         DEFAULT_OLLAMA_MODEL_COACH,
         DEFAULT_OLLAMA_MODEL_TUTOR,
         StudyPlanGUI,
+        TutorWorkspaceState,
     )
 except Exception as exc:  # pragma: no cover - environment-dependent import gate
     pytest.skip(f"studyplan_app import unavailable: {exc}", allow_module_level=True)
@@ -161,6 +171,24 @@ def _make_local_context_dummy():
     dummy._effective_tutor_topic = types.MethodType(StudyPlanGUI._effective_tutor_topic, dummy)
     dummy._tutor_topic_for_context = types.MethodType(StudyPlanGUI._tutor_topic_for_context, dummy)
     dummy._is_cognitive_runtime_enabled = lambda: False
+    return dummy
+
+
+def _make_practice_workspace_dummy(run_state):
+    dummy = types.SimpleNamespace(_tutor_workspace_state=run_state)
+    dummy._clone_jsonish_value = types.MethodType(StudyPlanGUI._clone_jsonish_value, dummy)
+    dummy._snapshot_app_state = types.MethodType(StudyPlanGUI._snapshot_app_state, dummy)
+    dummy._snapshot_tutor_session_state = types.MethodType(StudyPlanGUI._snapshot_tutor_session_state, dummy)
+    dummy._snapshot_tutor_learner_profile = types.MethodType(StudyPlanGUI._snapshot_tutor_learner_profile, dummy)
+    dummy._snapshot_tutor_practice_item = types.MethodType(StudyPlanGUI._snapshot_tutor_practice_item, dummy)
+    dummy._snapshot_tutor_assessment_result = types.MethodType(StudyPlanGUI._snapshot_tutor_assessment_result, dummy)
+    dummy._snapshot_tutor_action_intent = types.MethodType(StudyPlanGUI._snapshot_tutor_action_intent, dummy)
+    dummy._snapshot_tutor_loop_turn_result = types.MethodType(StudyPlanGUI._snapshot_tutor_loop_turn_result, dummy)
+    dummy._practice_item_identity = types.MethodType(StudyPlanGUI._practice_item_identity, dummy)
+    dummy._apply_tutor_practice_plan_result = types.MethodType(StudyPlanGUI._apply_tutor_practice_plan_result, dummy)
+    dummy._apply_tutor_practice_assessment_result = types.MethodType(
+        StudyPlanGUI._apply_tutor_practice_assessment_result, dummy
+    )
     return dummy
 
 
@@ -2471,6 +2499,23 @@ def test_compute_tutor_control_state_running_disables_send_and_copy_last():
     assert state["quick_prompts_enabled"] is False
 
 
+def test_compute_tutor_control_state_paused_turn_keeps_stop_enabled():
+    state = compute_tutor_control_state(
+        running=False,
+        paused_turn=True,
+        model_ready=True,
+        llm_ready=True,
+        prompt_ready=True,
+        has_history=True,
+        has_latest_answer=True,
+        has_active_or_history=True,
+    )
+    assert state["send_enabled"] is True
+    assert state["stop_enabled"] is True
+    assert state["new_chat_enabled"] is True
+    assert state["prompt_editable"] is True
+
+
 def test_compute_tutor_control_state_blocks_send_without_prompt_or_model():
     no_prompt = compute_tutor_control_state(
         running=False,
@@ -3353,6 +3398,254 @@ def test_workflow_token_helpers_bump_and_validate():
     assert second == 2
     assert StudyPlanGUI._workflow_token_is_current(dummy, "section_c", second) is True
     assert StudyPlanGUI._workflow_token_is_current(dummy, "section_c", first) is False
+
+
+def test_tutor_snapshot_helpers_clone_nested_payloads():
+    run_state = TutorWorkspaceState()
+    dummy = _make_practice_workspace_dummy(run_state)
+    item_payload = {
+        "item_id": "practice-1",
+        "item_type": "mcq",
+        "prompt": "Explain the variance.",
+        "topic": "FM",
+        "meta": {"nested": {"tags": ["alpha"]}},
+    }
+    session_payload = {
+        "session_id": "session-1",
+        "module": "FM",
+        "topic": "FM",
+        "meta": {"nested": {"tags": ["beta"]}},
+    }
+    learner_payload = {
+        "learner_id": "learner-1",
+        "module": "FM",
+        "meta": {"nested": {"tags": ["gamma"]}},
+    }
+    result_payload = {
+        "item_id": "practice-1",
+        "outcome": "correct",
+        "marks_awarded": 1.0,
+        "marks_max": 1.0,
+        "feedback": "Good.",
+        "meta": {"nested": {"tags": ["delta"]}},
+    }
+    action_payload = {
+        "action": "review",
+        "topic": "FM",
+        "meta": {"nested": {"tags": ["epsilon"]}},
+    }
+    app_payload = AppStateSnapshot(
+        module="FM",
+        current_topic="Topic A",
+        coach_pick="Topic A",
+        days_to_exam=12,
+        must_review_due=3,
+        overdue_srs_count=1,
+        weak_topics_top3=("Topic A",),
+        risk_snapshot_top3=("Risk",),
+        due_snapshot_top3=("Due",),
+        meta={"nested": {"tags": ["zeta"]}},
+    )
+
+    item_snap = StudyPlanGUI._snapshot_tutor_practice_item(dummy, item_payload)
+    session_snap = StudyPlanGUI._snapshot_tutor_session_state(dummy, session_payload)
+    learner_snap = StudyPlanGUI._snapshot_tutor_learner_profile(dummy, learner_payload)
+    result_snap = StudyPlanGUI._snapshot_tutor_assessment_result(dummy, result_payload)
+    action_snap = StudyPlanGUI._snapshot_tutor_action_intent(dummy, action_payload)
+    app_snap = StudyPlanGUI._snapshot_app_state(dummy, app_payload)
+
+    assert item_snap is not None
+    assert session_snap is not None
+    assert learner_snap is not None
+    assert result_snap is not None
+    assert action_snap is not None
+    assert app_snap is not None
+
+    item_payload["meta"]["nested"]["tags"].append("mutated")
+    session_payload["meta"]["nested"]["tags"].append("mutated")
+    learner_payload["meta"]["nested"]["tags"].append("mutated")
+    result_payload["meta"]["nested"]["tags"].append("mutated")
+    action_payload["meta"]["nested"]["tags"].append("mutated")
+    app_payload.meta["nested"]["tags"].append("mutated")
+
+    assert item_snap.meta["nested"]["tags"] == ["alpha"]
+    assert session_snap.meta["nested"]["tags"] == ["beta"]
+    assert learner_snap.meta["nested"]["tags"] == ["gamma"]
+    assert result_snap.meta["nested"]["tags"] == ["delta"]
+    assert action_snap.meta["nested"]["tags"] == ["epsilon"]
+    assert app_snap.meta["nested"]["tags"] == ["zeta"]
+
+
+def test_practice_workspace_tokens_bump_when_state_changes():
+    run_state = TutorWorkspaceState()
+    plan_token_1 = run_state.practice_plan_token()
+    assessment_token_1 = run_state.practice_assessment_token()
+    session = TutorSessionState(session_id="session-1", module="FM", topic="Topic A")
+    learner = TutorLearnerProfileSnapshot(learner_id="learner-1", module="FM")
+    item = TutorPracticeItem(item_id="practice-1", item_type="short_answer", prompt="Q?", topic="Topic A")
+    result = TutorAssessmentResult(
+        item_id="practice-1",
+        outcome="correct",
+        marks_awarded=1.0,
+        marks_max=1.0,
+        feedback="Good.",
+    )
+
+    run_state.set_practice_plan(
+        plan_result={"mode_used": "guided_practice"},
+        session_state=session,
+        learner_profile=learner,
+        practice_item=item,
+        action_plan=None,
+        plan_token=plan_token_1,
+    )
+    assert run_state.practice_plan_token() == plan_token_1
+    assert run_state.practice_assessment_token() == assessment_token_1 + 1
+
+    run_state.record_practice_result(result, assessment_token=run_state.practice_assessment_token())
+    assert run_state.practice_result() == result
+    assert run_state.practice_plan_token() == plan_token_1 + 1
+
+    run_state.activate_variant(item)
+    assert run_state.practice_item() == item
+    assert run_state.practice_plan_token() == plan_token_1 + 2
+    assert run_state.practice_assessment_token() == assessment_token_1 + 2
+
+    run_state.clear_practice_plan()
+    assert run_state.practice_item() is None
+    assert run_state.practice_result() is None
+    assert run_state.practice_plan_token() == plan_token_1 + 3
+    assert run_state.practice_assessment_token() == assessment_token_1 + 3
+
+
+def test_apply_tutor_practice_plan_result_rejects_stale_token():
+    run_state = TutorWorkspaceState()
+    dummy = _make_practice_workspace_dummy(run_state)
+    stale_token = run_state.practice_plan_token()
+    live_item = TutorPracticeItem(item_id="practice-live", item_type="short_answer", prompt="Live?", topic="FM")
+    run_state.activate_variant(live_item)
+    current_plan_token = run_state.practice_plan_token()
+    assert current_plan_token != stale_token
+
+    session_fallback = TutorSessionState(session_id="session-1", module="FM", topic="Topic A")
+    learner_fallback = TutorLearnerProfileSnapshot(learner_id="learner-1", module="FM")
+    plan_result = TutorLoopTurnResult(
+        response_text="Plan the next drill.",
+        mode_used="guided_practice",
+        phase_after_turn="practice",
+        session_state=TutorSessionState(session_id="session-2", module="FM", topic="Topic B"),
+        learner_profile=TutorLearnerProfileSnapshot(learner_id="learner-2", module="FM"),
+        practice_items=(
+            TutorPracticeItem(item_id="practice-old", item_type="mcq", prompt="Old?", topic="Topic B"),
+        ),
+        action_intent=None,
+        telemetry={"nested": {"count": 1}},
+    )
+
+    applied = StudyPlanGUI._apply_tutor_practice_plan_result(
+        dummy,
+        run_state=run_state,
+        plan_token=stale_token,
+        result_raw=plan_result,
+        session_state_fallback=session_fallback,
+        learner_profile_fallback=learner_fallback,
+    )
+    assert applied is None
+    assert run_state.practice_item() == live_item
+
+    applied_fresh = StudyPlanGUI._apply_tutor_practice_plan_result(
+        dummy,
+        run_state=run_state,
+        plan_token=current_plan_token,
+        result_raw=plan_result,
+        session_state_fallback=session_fallback,
+        learner_profile_fallback=learner_fallback,
+    )
+    assert applied_fresh is not None
+    assert run_state.practice_item() is not None
+    assert run_state.practice_item().item_id == "practice-old"
+    assert run_state.practice_session_state() is not None
+    assert run_state.practice_session_state().session_id == "session-2"
+    assert run_state.practice_learner_profile() is not None
+    assert run_state.practice_learner_profile().learner_id == "learner-2"
+
+
+def test_apply_tutor_practice_assessment_result_requires_current_item_and_token():
+    run_state = TutorWorkspaceState()
+    dummy = _make_practice_workspace_dummy(run_state)
+    session_fallback = TutorSessionState(session_id="session-1", module="FM", topic="Topic A")
+    learner_fallback = TutorLearnerProfileSnapshot(learner_id="learner-1", module="FM")
+    item_a = TutorPracticeItem(item_id="practice-a", item_type="short_answer", prompt="A?", topic="Topic A")
+    item_b = TutorPracticeItem(item_id="practice-b", item_type="short_answer", prompt="B?", topic="Topic B")
+
+    run_state.activate_variant(item_a)
+    first_token = run_state.practice_assessment_token()
+    run_state.activate_variant(item_b)
+    current_token = run_state.practice_assessment_token()
+    assert current_token != first_token
+
+    stale_result = TutorAssessmentResult(
+        item_id="practice-a",
+        outcome="correct",
+        marks_awarded=1.0,
+        marks_max=1.0,
+        feedback="Good.",
+    )
+    applied_stale = StudyPlanGUI._apply_tutor_practice_assessment_result(
+        dummy,
+        run_state=run_state,
+        assessment_token=first_token,
+        item_raw=item_a,
+        result_raw=stale_result,
+        session_state_fallback=session_fallback,
+        learner_profile_fallback=learner_fallback,
+    )
+    assert applied_stale is None
+    assert run_state.practice_result() is None
+
+    current_result = TutorAssessmentResult(
+        item_id="practice-a",
+        outcome="correct",
+        marks_awarded=1.0,
+        marks_max=1.0,
+        feedback="Good.",
+    )
+    applied_mismatch = StudyPlanGUI._apply_tutor_practice_assessment_result(
+        dummy,
+        run_state=run_state,
+        assessment_token=current_token,
+        item_raw=item_a,
+        result_raw=current_result,
+        session_state_fallback=session_fallback,
+        learner_profile_fallback=learner_fallback,
+    )
+    assert applied_mismatch is None
+    assert run_state.practice_result() is None
+
+    live_result = TutorAssessmentResult(
+        item_id="practice-b",
+        outcome="correct",
+        marks_awarded=1.0,
+        marks_max=1.0,
+        feedback="Good.",
+        meta={"nested": {"tag": "live"}},
+    )
+    applied_live = StudyPlanGUI._apply_tutor_practice_assessment_result(
+        dummy,
+        run_state=run_state,
+        assessment_token=current_token,
+        item_raw=item_b,
+        result_raw=live_result,
+        session_state_fallback=session_fallback,
+        learner_profile_fallback=learner_fallback,
+    )
+    assert applied_live is not None
+    assert run_state.practice_result() is not None
+    assert run_state.practice_result().item_id == "practice-b"
+    assert run_state.practice_session_state() is not None
+    assert run_state.practice_session_state().session_id == "session-1"
+    assert run_state.practice_learner_profile() is not None
+    assert run_state.practice_learner_profile().learner_id == "learner-1"
 
 
 def test_start_quiz_session_snapshots_question_bank():
@@ -4498,6 +4791,96 @@ def test_gateway_endpoint_prefers_gateway_models_and_skips_legacy_llama_server(m
     assert captured["models"][0] == "openrouter/google/gemini-2.5-flash"
     assert "openrouter/openai/gpt-4o-mini" in captured["models"]
     assert "openrouter/anthropic/claude-3.5-sonnet" in captured["models"]
+
+
+def test_pause_and_resume_tutor_workspace_turn_snapshot() -> None:
+    dummy = _make_dummy()
+    state = TutorWorkspaceState()
+    cancel_event = threading.Event()
+    state["cancel_event"] = cancel_event
+    state["model"] = "demo:latest"
+    state["draft_user"] = "Explain working capital"
+    state["draft_assistant"] = "Working capital is..."
+    state["turn_started_at"] = 123.0
+    state["turn_full_prompt"] = "full prompt"
+    state["turn_model_candidates"] = ["demo:latest", "fallback:latest"]
+    state["turn_llm_purpose"] = "tutor"
+    dummy._tutor_workspace_state = state
+    stopped: dict[str, str] = {}
+    dummy._ollama_stop_model = lambda model: stopped.__setitem__("model", str(model or ""))
+
+    paused = StudyPlanGUI._pause_tutor_workspace_turn(dummy, reason="user_pause")
+    assert paused is not None
+    assert paused["reason"] == "user_pause"
+    assert cancel_event.is_set() is True
+    assert stopped["model"] == "demo:latest"
+    snapshot = state.paused_tutor_turn()
+    assert snapshot is not None
+    assert snapshot["user_prompt"] == "Explain working capital"
+    assert snapshot["model_candidates"] == ["demo:latest", "fallback:latest"]
+
+    resumed = StudyPlanGUI._resume_tutor_workspace_turn(dummy)
+    assert resumed is not None
+    assert resumed["user_prompt"] == "Explain working capital"
+    assert state.paused_tutor_turn() is None
+
+
+def test_auto_pause_policy_triggers_on_high_memory_pressure(monkeypatch) -> None:
+    monkeypatch.setattr("studyplan_app.summarize_for_logging", lambda: {"memory_pressure": "high"})
+    dummy = types.SimpleNamespace(_tutor_workspace_state=TutorWorkspaceState())
+    dummy._tutor_workspace_state["active"] = True
+    dummy._tutor_memory_pressure_level = types.MethodType(StudyPlanGUI._tutor_memory_pressure_level, dummy)
+
+    should_pause, reason = StudyPlanGUI._should_auto_pause_tutor_workspace_turn(dummy)
+
+    assert should_pause is True
+    assert reason == "memory_pressure"
+
+
+def test_auto_resume_policy_requires_matching_prompt_and_low_pressure(monkeypatch) -> None:
+    monkeypatch.setattr("studyplan_app.summarize_for_logging", lambda: {"memory_pressure": "low"})
+
+    class _FakeBuffer:
+        def __init__(self, text: str):
+            self.text = str(text)
+
+        def get_start_iter(self):
+            return object()
+
+        def get_end_iter(self):
+            return object()
+
+        def get_text(self, *_args, **_kwargs):
+            return self.text
+
+        def set_text(self, value):
+            self.text = str(value)
+
+    class _FakePromptView:
+        def __init__(self, text: str):
+            self._buffer = _FakeBuffer(text)
+
+        def get_buffer(self):
+            return self._buffer
+
+    state = TutorWorkspaceState()
+    paused_snapshot = {
+        "user_prompt": "Explain working capital",
+        "model": "demo:latest",
+        "paused_monotonic": time.monotonic() - 10.0,
+    }
+    state.set_paused_tutor_turn(paused_snapshot, reason="memory_pressure", at="2026-03-26T00:00:00Z")
+    dummy = types.SimpleNamespace(
+        _tutor_workspace_state=state,
+        _tutor_workspace_prompt_view=_FakePromptView("Explain working capital"),
+        _is_local_llm_model_on_cooldown=lambda _model: (False, 0, ""),
+    )
+    dummy._tutor_memory_pressure_level = types.MethodType(StudyPlanGUI._tutor_memory_pressure_level, dummy)
+    dummy._tutor_workspace_prompt_text = types.MethodType(StudyPlanGUI._tutor_workspace_prompt_text, dummy)
+
+    assert StudyPlanGUI._should_auto_resume_tutor_workspace_turn(dummy) is True
+    dummy._tutor_workspace_prompt_view = _FakePromptView("New prompt")
+    assert StudyPlanGUI._should_auto_resume_tutor_workspace_turn(dummy) is False
 
 
 def test_ollama_generate_text_stream_retries_transient_error_before_chunks(monkeypatch):

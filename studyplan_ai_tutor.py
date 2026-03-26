@@ -865,6 +865,7 @@ def should_force_stream_flush(
 def compute_tutor_control_state(
     *,
     running: bool,
+    paused_turn: bool = False,
     model_ready: bool,
     llm_ready: bool,
     prompt_ready: bool,
@@ -873,10 +874,11 @@ def compute_tutor_control_state(
     has_active_or_history: bool,
 ) -> dict[str, bool]:
     is_running = bool(running)
+    is_paused = bool(paused_turn)
     ready_to_send = bool(model_ready) and bool(llm_ready) and bool(prompt_ready)
     return {
         "send_enabled": (not is_running) and ready_to_send,
-        "stop_enabled": is_running,
+        "stop_enabled": is_running or is_paused,
         "new_chat_enabled": not is_running,
         "refresh_models_enabled": not is_running,
         "model_dropdown_enabled": not is_running,
@@ -2014,6 +2016,7 @@ class AITutorDialogController:
                 _ensure_stream_watchdog()
             controls = compute_tutor_control_state(
                 running=bool(running),
+                paused_turn=bool(run_state.get("paused_tutor_turn") is not None),
                 model_ready=bool(_selected_model_name()),
                 llm_ready=bool(app.local_llm_enabled),
                 prompt_ready=bool(_current_prompt_text(strip=True)),

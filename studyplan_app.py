@@ -117,6 +117,7 @@ from studyplan.ai.host_inference_profile import (
     default_ollama_app_max_concurrent_requests,
     default_ollama_app_queue_wait_seconds,
     default_ollama_client_num_ctx,
+    summarize_for_logging,
 )
 from studyplan_ui_runtime import (
     UISectionState,
@@ -144,6 +145,7 @@ from studyplan.contracts import (
     TutorActionIntent,
     TutorLearnerProfileSnapshot,
     TutorLoopTurnRequest,
+    TutorLoopTurnResult,
     TutorPracticeItem,
     TutorSessionState,
     TutorTurnRequest,
@@ -228,6 +230,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Optional, Any, Callable, cast
+
+
+log = logging.getLogger(__name__)
 
 
 def _capture_loky_diagnostics(label: str) -> dict[str, Any]:
@@ -914,6 +919,10 @@ class TutorWorkspaceState(dict[str, Any]):
                 "active": False,
                 "job_id": 0,
                 "cancel_event": None,
+                "paused_tutor_turn": None,
+                "paused_tutor_turn_reason": "",
+                "paused_tutor_turn_at": "",
+                "auto_pause_resume_tick_id": 0,
                 "model": "",
                 "draft_user": "",
                 "draft_assistant": "",
@@ -946,6 +955,8 @@ class TutorWorkspaceState(dict[str, Any]):
                 "tutor_help_feedback_at": str(tutor_help_feedback_at or ""),
                 "tutor_help_feedback_turn": 0,
                 "tutor_help_followup_prompt": "",
+                "practice_plan_token": 0,
+                "practice_assessment_token": 0,
             }
         )
         self.clear_practice_plan()
@@ -964,6 +975,8 @@ class TutorWorkspaceState(dict[str, Any]):
             self["draft_assistant"] = ""
 
     def clear_practice_plan(self) -> None:
+        self.issue_practice_plan_token()
+        self.issue_practice_assessment_token()
         self["practice_plan_result"] = None
         self["practice_session_state"] = None
         self["practice_learner_profile"] = None
@@ -986,6 +999,50 @@ class TutorWorkspaceState(dict[str, Any]):
         self["practice_next_guidance"] = None
         self["practice_session_quality_summary"] = {}
 
+    def _issue_turn_token(self, scope: str) -> int:
+        key = str(scope or "").strip()
+        if not key:
+            return 0
+        try:
+            current = int(self.get(key, 0) or 0) + 1
+        except Exception:
+            current = 1
+        self[key] = current
+        return int(current)
+
+    def _turn_token_is_current(self, scope: str, token: int | None) -> bool:
+        key = str(scope or "").strip()
+        if not key:
+            return False
+        try:
+            return int(self.get(key, 0) or 0) == int(token or 0)
+        except Exception:
+            return False
+
+    def issue_practice_plan_token(self) -> int:
+        return self._issue_turn_token("practice_plan_token")
+
+    def practice_plan_token_is_current(self, token: int | None) -> bool:
+        return self._turn_token_is_current("practice_plan_token", token)
+
+    def practice_plan_token(self) -> int:
+        try:
+            return max(0, int(self.get("practice_plan_token", 0) or 0))
+        except Exception:
+            return 0
+
+    def issue_practice_assessment_token(self) -> int:
+        return self._issue_turn_token("practice_assessment_token")
+
+    def practice_assessment_token_is_current(self, token: int | None) -> bool:
+        return self._turn_token_is_current("practice_assessment_token", token)
+
+    def practice_assessment_token(self) -> int:
+        try:
+            return max(0, int(self.get("practice_assessment_token", 0) or 0))
+        except Exception:
+            return 0
+
     def set_practice_plan(
         self,
         *,
@@ -994,6 +1051,7 @@ class TutorWorkspaceState(dict[str, Any]):
         learner_profile: Any,
         practice_item: Any,
         action_plan: Any,
+        plan_token: int | None = None,
     ) -> None:
         self["practice_plan_result"] = plan_result
         self["practice_session_state"] = session_state
@@ -1001,10 +1059,38 @@ class TutorWorkspaceState(dict[str, Any]):
         self["practice_item"] = practice_item
         self["practice_action_plan"] = action_plan
         self["practice_action_status"] = ""
+        self.issue_practice_assessment_token()
+        if plan_token is not None:
+            try:
+                self["practice_plan_token"] = int(plan_token)
+            except Exception:
+                self["practice_plan_token"] = self.issue_practice_plan_token()
+        else:
+            self.issue_practice_plan_token()
         self.reset_practice_attempt_state()
 
-    def activate_variant(self, variant_item: Any) -> None:
+    def activate_variant(
+        self,
+        variant_item: Any,
+        *,
+        assessment_token: int | None = None,
+        plan_token: int | None = None,
+    ) -> None:
         self["practice_item"] = variant_item
+        if plan_token is not None:
+            try:
+                self["practice_plan_token"] = int(plan_token)
+            except Exception:
+                self["practice_plan_token"] = self.issue_practice_plan_token()
+        else:
+            self.issue_practice_plan_token()
+        if assessment_token is not None:
+            try:
+                self["practice_assessment_token"] = int(assessment_token)
+            except Exception:
+                self["practice_assessment_token"] = self.issue_practice_assessment_token()
+        else:
+            self.issue_practice_assessment_token()
         self.reset_practice_attempt_state()
 
     def practice_session_id(self) -> str:
@@ -1037,11 +1123,17 @@ class TutorWorkspaceState(dict[str, Any]):
         candidate = self.get("practice_result")
         return candidate if isinstance(candidate, TutorAssessmentResult) else None
 
-    def record_practice_result(self, result: Any) -> TutorAssessmentResult | None:
+    def record_practice_result(self, result: Any, *, assessment_token: int | None = None) -> TutorAssessmentResult | None:
         self["practice_result"] = result if isinstance(result, TutorAssessmentResult) else None
         self["practice_variant_candidate"] = None
         self["practice_intervention_policy"] = None
         self["practice_hint_policy_last_decision"] = None
+        self.issue_practice_plan_token()
+        if assessment_token is not None:
+            try:
+                self["practice_assessment_token"] = int(assessment_token)
+            except Exception:
+                self["practice_assessment_token"] = self.issue_practice_assessment_token()
         return self.practice_result()
 
     def practice_variant_candidate(self) -> TutorPracticeItem | None:
@@ -1071,6 +1163,32 @@ class TutorWorkspaceState(dict[str, Any]):
 
     def set_practice_session_quality_summary(self, summary: Any) -> None:
         self["practice_session_quality_summary"] = dict(summary) if isinstance(summary, dict) else {}
+
+    def paused_tutor_turn(self) -> dict[str, Any] | None:
+        candidate = self.get("paused_tutor_turn")
+        return dict(candidate) if isinstance(candidate, dict) else None
+
+    def set_paused_tutor_turn(self, turn: Any, *, reason: str = "", at: str = "") -> None:
+        self["paused_tutor_turn"] = dict(turn) if isinstance(turn, dict) else None
+        self["paused_tutor_turn_reason"] = str(reason or "").strip()
+        self["paused_tutor_turn_at"] = str(at or "").strip()
+
+    def clear_paused_tutor_turn(self) -> None:
+        self["paused_tutor_turn"] = None
+        self["paused_tutor_turn_reason"] = ""
+        self["paused_tutor_turn_at"] = ""
+
+    def tutor_auto_pause_resume_tick_id(self) -> int:
+        try:
+            return max(0, int(self.get("auto_pause_resume_tick_id", 0) or 0))
+        except Exception:
+            return 0
+
+    def set_tutor_auto_pause_resume_tick_id(self, source_id: Any) -> None:
+        try:
+            self["auto_pause_resume_tick_id"] = max(0, int(source_id or 0))
+        except Exception:
+            self["auto_pause_resume_tick_id"] = 0
 
     def tutor_help_feedback(self) -> str:
         return str(self.get("tutor_help_feedback", "") or "").strip()
@@ -3268,7 +3386,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             section_id, refresh_fn = target
             self._safe_render_section(
                 section_id,
-                lambda: refresh_fn(force=True) if key in {"coach", "insights", "settings"} else refresh_fn(),
+                lambda: refresh_fn(),
                 fallback_fn=lambda report, page_key=key: self._set_workbench_refresh_fallback(page_key, report),
             )
         self._refresh_workbench_shell_status()
@@ -4076,6 +4194,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             state_token = "idle"
             if bool(run_state.get("active", False)):
                 state_token = "streaming"
+            elif isinstance(run_state, TutorWorkspaceState) and run_state.paused_tutor_turn() is not None:
+                state_token = "paused"
             elif bool(run_state.get("gap_generation_active", False)):
                 state_token = "gaps"
             cog_chip_display = ""
@@ -4220,6 +4340,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     follow_btn.set_label("Follow paused" if manual_override else "Follow live")
                 follow_btn.remove_css_class("flat")
                 follow_btn.add_css_class("suggested-action")
+
+        def _update_tutor_request_buttons() -> None:
+            paused_turn = run_state.paused_tutor_turn() if isinstance(run_state, TutorWorkspaceState) else None
+            active_now = bool(run_state.get("active", False))
+            if active_now:
+                send_label = "Send"
+                stop_label = "Pause"
+                send_tip = "Send a fresh tutor prompt."
+                stop_tip = "Pause the current tutor turn."
+            elif paused_turn is not None:
+                send_label = "Resume"
+                stop_label = "Discard"
+                send_tip = "Resume the paused tutor turn."
+                stop_tip = "Discard the paused tutor turn."
+            else:
+                send_label = "Send"
+                stop_label = "Stop"
+                send_tip = "Send the tutor prompt."
+                stop_tip = "Stop the current tutor turn."
+            try:
+                send_btn.set_label(send_label)
+                send_btn.set_tooltip_text(send_tip)
+            except Exception:
+                pass
+            try:
+                stop_btn.set_label(stop_label)
+                stop_btn.set_tooltip_text(stop_tip)
+            except Exception:
+                pass
 
         def _response_tail_gap() -> float:
             try:
@@ -5103,7 +5252,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if loop_service is None or not hasattr(loop_service, "run_turn"):
                 _set_status("Tutor practice planner unavailable.")
                 return
-            session_state, learner_profile, app_snapshot = _get_tutor_loop_session_profile()
+            session_state_raw, learner_profile_raw, app_snapshot_raw = _get_tutor_loop_session_profile()
+            session_state = self._snapshot_tutor_session_state(session_state_raw) or session_state_raw
+            learner_profile = self._snapshot_tutor_learner_profile(learner_profile_raw) or learner_profile_raw
+            app_snapshot = self._snapshot_app_state(app_snapshot_raw) or app_snapshot_raw
+            plan_token = run_state.issue_practice_plan_token()
             user_message = _current_prompt_text(strip=True) or "Help me learn this topic through practice."
             try:
                 turn_request = TutorLoopTurnRequest(
@@ -5130,7 +5283,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         ),
                     },
                 )
-                result = cast(Any, loop_service.run_turn(turn_request))
             except (AttributeError, RuntimeError, TypeError, ValueError, KeyError) as exc:
                 logging.getLogger(__name__).warning(
                     "practice planner run_turn failed",
@@ -5138,104 +5290,57 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
                 _set_status(f"Practice planner error: {exc}")
                 return
-            try:
-                practice_items = tuple(getattr(result, "practice_items", ()) or ())
-                run_state.set_practice_plan(
-                    plan_result=result,
-                    session_state=getattr(result, "session_state", None),
-                    learner_profile=getattr(result, "learner_profile", None),
-                    practice_item=practice_items[0] if practice_items else None,
-                    action_plan=getattr(result, "action_intent", None),
+            def _finish_plan(result_raw: Any = None, error: str = "") -> bool:
+                applied = self._apply_tutor_practice_plan_result(
+                    run_state=run_state,
+                    plan_token=plan_token,
+                    result_raw=result_raw,
+                    session_state_fallback=session_state if isinstance(session_state, TutorSessionState) else None,
+                    learner_profile_fallback=(
+                        learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else None
+                    ),
                 )
-            except (TypeError, ValueError, KeyError) as exc:
-                logging.getLogger(__name__).warning(
-                    "practice planner state update failed",
-                    extra={"error": str(exc)},
-                )
-                run_state.clear_practice_plan()
-            _reset_practice_answer_box()
-            _refresh_practice_panel()
-            # Render explicit next-action guidance only when an assessed result exists.
-            try:
-                current_item = run_state.practice_item()
-                current_result = run_state.practice_result()
-                if isinstance(current_item, TutorPracticeItem) and isinstance(current_result, TutorAssessmentResult):
-                    try:
-                        cog = self._cognitive_state()
-                    except (AttributeError, RuntimeError, TypeError, ValueError):
-                        cog = None
-                    safe_session = (
-                        session_state
-                        if isinstance(session_state, TutorSessionState)
-                        else TutorSessionState(session_id="tutor-workspace", module="", topic="")
-                    )
-                    safe_learner = (
-                        learner_profile
-                        if isinstance(learner_profile, TutorLearnerProfileSnapshot)
-                        else TutorLearnerProfileSnapshot(learner_id="local-user", module="")
-                    )
-                    loop_state_obj = PracticeLoopSessionState(
-                        cognitive_state=cog if cog is not None else CognitiveState(),
-                        session_state=safe_session,
-                        learner_profile=safe_learner,
-                        app_snapshot=_build_tutor_loop_app_snapshot(),
-                        current_item=current_item,
-                        current_result=current_result,
-                    )
-                    guidance = self._get_practice_loop_controller().recommend_next_action(
-                        loop_state_obj,
-                        current_item,
-                        current_result,
-                        hints_used=max(0, int(run_state.get("practice_hint_use_count", 0) or 0)),
-                    )
-                    if isinstance(guidance, dict):
-                        fb = TutorDialogRenderer.render_next_action_guidance(
-                            outcome=guidance.get("outcome", "unknown"),
-                            reason=guidance.get("reason", ""),
-                            next_action=guidance.get("next_action", ""),
-                            urgent=bool(guidance.get("urgent", False)),
+                if applied is None:
+                    if error and run_state.practice_plan_token_is_current(plan_token):
+                        logging.getLogger(__name__).warning(
+                            "practice planner result rejected",
+                            extra={"error": error, "topic": str(getattr(app_snapshot, "current_topic", "") or "")},
                         )
-                        summary = fb.render(DisclosureLevel.SUMMARY)
-                        details = fb.render(DisclosureLevel.STANDARD)
-                        action_summary_text = str(summary.get("summary", str(guidance.get("next_action", ""))))
-                        self._set_label_text_if_changed(practice_action_label, action_summary_text)
-                        try:
-                            practice_action_label.set_tooltip_text(action_summary_text or "")
-                        except Exception:
-                            pass
-                        status_text = str(details.get("details", str(guidance.get("reason", ""))))
-                        if status_text:
-                            status_text = f"Reason: {status_text}"
-                        self._set_label_text_if_changed(
-                            practice_action_status_label,
-                            status_text or "Action status: waiting for plan.",
-                        )
-                        try:
-                            practice_action_status_label.set_tooltip_text(
-                                status_text or "Action status: waiting for plan.",
-                            )
-                        except Exception:
-                            pass
-                        run_state.set_practice_next_guidance(guidance)
-            except (AttributeError, RuntimeError, TypeError, ValueError, KeyError) as exc:
-                logging.getLogger(__name__).warning(
-                    "practice next guidance render failed",
-                    extra={"error": str(exc)},
-                )
-                # Non-fatal: leave practice action UI as-is.
-                pass
-            try:
-                mode_used = str(getattr(result, "mode_used", "") or "").strip()
-                phase_after = str(getattr(result, "phase_after_turn", "") or "").strip()
-                queued = len(tuple(getattr(result, "practice_items", ()) or ()))
-                action_candidate = getattr(result, "action_intent", None)
-                action_name = str(getattr(action_candidate, "action", "") or "").strip() if action_candidate is not None else ""
-                action_suffix = f" • action {action_name}" if action_name else ""
-                _set_status(
-                    f"Practice plan ready: {mode_used or 'auto'} -> {phase_after or 'phase'} • {queued} item(s){action_suffix}"
-                )
-            except Exception:
-                _set_status("Practice plan ready.")
+                        _set_status(f"Practice planner error: {error}")
+                    return False
+                _reset_practice_answer_box()
+                _refresh_practice_panel()
+                try:
+                    mode_used = str(getattr(applied, "mode_used", "") or "").strip()
+                    phase_after = str(getattr(applied, "phase_after_turn", "") or "").strip()
+                    queued = len(tuple(getattr(applied, "practice_items", ()) or ()))
+                    action_candidate = getattr(applied, "action_intent", None)
+                    action_name = (
+                        str(getattr(action_candidate, "action", "") or "").strip() if action_candidate is not None else ""
+                    )
+                    action_suffix = f" • action {action_name}" if action_name else ""
+                    _set_status(
+                        f"Practice plan ready: {mode_used or 'auto'} -> {phase_after or 'phase'} • {queued} item(s){action_suffix}"
+                    )
+                except Exception:
+                    _set_status("Practice plan ready.")
+                return False
+
+            def _run_plan_turn() -> None:
+                try:
+                    result_raw = cast(Any, loop_service.run_turn(turn_request))
+                except (AttributeError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+                    logging.getLogger(__name__).warning(
+                        "practice planner run_turn failed",
+                        extra={"error": str(exc), "topic": str(getattr(app_snapshot, "current_topic", "") or "")},
+                    )
+                    GLib.idle_add(_finish_plan, None, str(exc))
+                    return
+                GLib.idle_add(_finish_plan, result_raw, "")
+
+            if self._start_managed_background_thread(_run_plan_turn, name="tutor-practice-plan"):
+                return
+            _run_plan_turn()
 
         def _check_tutor_practice_answer(*_args) -> None:
             item = run_state.practice_item()
@@ -5251,228 +5356,271 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if assessor is None or not hasattr(assessor, "assess"):
                 _set_status("Tutor assessment service unavailable.")
                 return
-            session_state = run_state.practice_session_state()
-            if session_state is None:
-                session_state, learner_profile, _app_snapshot = _get_tutor_loop_session_profile()
-            else:
-                learner_profile = run_state.practice_learner_profile()
-                if learner_profile is None:
-                    _, learner_profile, _app_snapshot = _get_tutor_loop_session_profile()
+            session_state_raw = run_state.practice_session_state()
+            learner_profile_raw = run_state.practice_learner_profile()
+            if session_state_raw is None or learner_profile_raw is None:
+                fallback_session_state, fallback_learner_profile, _app_snapshot = _get_tutor_loop_session_profile()
+                if session_state_raw is None:
+                    session_state_raw = fallback_session_state
+                if learner_profile_raw is None:
+                    learner_profile_raw = fallback_learner_profile
+            session_state = self._snapshot_tutor_session_state(session_state_raw) or session_state_raw
+            learner_profile = self._snapshot_tutor_learner_profile(learner_profile_raw) or learner_profile_raw
+            item_snapshot = self._snapshot_tutor_practice_item(item)
+            if item_snapshot is None:
+                _set_status("Assessment item payload was invalid.")
+                return
             confidence = _selected_practice_confidence()
+            hint_penalty_for_attempt = self._practice_hint_penalty(run_state)
+            assessment_token = run_state.issue_practice_assessment_token()
             try:
                 submission = TutorAssessmentSubmission(
-                    item_id=str(getattr(item, "item_id", "") or ""),
+                    item_id=str(getattr(item_snapshot, "item_id", "") or ""),
                     answer_text=answer,
                     confidence=confidence,
-                )
-                result = cast(
-                    Any,
-                    assessor.assess(
-                        item=item,
-                        submission=submission,
-                        session_state=session_state,
-                        learner_profile=learner_profile,
-                    ),
                 )
             except Exception as exc:
                 _set_status(f"Assessment error: {exc}")
                 return
-            result = run_state.record_practice_result(result)
-            if result is None:
-                _set_status("Assessment result payload was invalid.")
-                return
-            hint_penalty_for_attempt = self._practice_hint_penalty(run_state)
-            if session_state is not None:
+            def _finish_assessment(result_raw: Any = None, error: str = "") -> bool:
+                applied = self._apply_tutor_practice_assessment_result(
+                    run_state=run_state,
+                    assessment_token=assessment_token,
+                    item_raw=item_snapshot,
+                    result_raw=result_raw,
+                    session_state_fallback=session_state if isinstance(session_state, TutorSessionState) else None,
+                    learner_profile_fallback=(
+                        learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else None
+                    ),
+                )
+                if applied is None:
+                    if error and run_state.practice_assessment_token_is_current(assessment_token):
+                        _set_status(f"Assessment error: {error}")
+                    return False
+                item_resolved, result = applied
+                session_state_live = run_state.practice_session_state() or (
+                    session_state if isinstance(session_state, TutorSessionState) else None
+                )
+                learner_profile_live = run_state.practice_learner_profile() or (
+                    learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else None
+                )
+                if session_state_live is not None:
+                    try:
+                        session_ctrl = getattr(self, "_tutor_session_controller", None)
+                        if session_ctrl is not None and hasattr(session_ctrl, "record_assessment_outcome"):
+                            session_state_updated = cast(
+                                Any,
+                                session_ctrl.record_assessment_outcome(
+                                    str(session_state_live.session_id or "tutor-workspace"),
+                                    outcome=str(getattr(result, "outcome", "") or "incorrect"),
+                                    practice_item_id=str(getattr(item_resolved, "item_id", "") or ""),
+                                    increment_streak=True,
+                                ),
+                            )
+                            session_state_live = session_state_updated
+                            run_state.set_practice_session_state(session_state_live)
+                    except Exception:
+                        pass
                 try:
-                    session_ctrl = getattr(self, "_tutor_session_controller", None)
-                    if session_ctrl is not None and hasattr(session_ctrl, "record_assessment_outcome"):
-                        session_state = cast(
+                    if learner_store is not None and hasattr(learner_store, "note_assessment"):
+                        learner_profile_updated = cast(
                             Any,
-                            session_ctrl.record_assessment_outcome(
-                                str(session_state.session_id or "tutor-workspace"),
-                                outcome=str(getattr(result, "outcome", "") or "incorrect"),
-                                practice_item_id=str(getattr(item, "item_id", "") or ""),
-                                increment_streak=True,
+                            learner_store.note_assessment(
+                                str(getattr(learner_profile_live, "learner_id", "") or "local-user"),
+                                str(getattr(learner_profile_live, "module", "") or getattr(self, "module_title", "") or ""),
+                                result,
+                                confidence=confidence,
                             ),
                         )
-                        run_state.set_practice_session_state(session_state)
+                        learner_profile_live = learner_profile_updated
+                        run_state.set_practice_learner_profile(learner_profile_live)
                 except Exception:
                     pass
-            try:
-                if learner_store is not None and hasattr(learner_store, "note_assessment"):
-                    learner_profile = cast(
-                        Any,
-                        learner_store.note_assessment(
-                            str(getattr(learner_profile, "learner_id", "") or "local-user"),
-                            str(getattr(learner_profile, "module", "") or getattr(self, "module_title", "") or ""),
-                            result,
-                            confidence=confidence,
-                        ),
-                    )
-                    run_state.set_practice_learner_profile(learner_profile)
-            except Exception:
-                pass
-            try:
-                policy_service = getattr(self, "_tutor_intervention_policy_service", None)
-                if policy_service is not None and hasattr(policy_service, "choose_intervention"):
-                    policy = cast(
-                        Any,
-                        policy_service.choose_intervention(
-                            item=item,
-                            assessment_result=result,
-                            session_state=session_state,
-                            learner_profile=learner_profile,
-                            app_snapshot=_build_tutor_loop_app_snapshot(),
-                        ),
-                    )
-                    run_state.set_practice_intervention_policy(policy)
-            except Exception:
-                pass
-            transfer_summary: dict[str, Any] | None = None
-            try:
-                structure_obj = self._infer_transfer_structure_for_practice_item(cast(Any, item))
-                structure_id = str(getattr(structure_obj, "structure_id", "") or "").strip()
-            except Exception:
-                structure_obj = None
-                structure_id = ""
-            if structure_id:
                 try:
-                    self._update_cognitive_structure_posterior_from_practice(
-                        structure_id=structure_id,
-                        result_obj=result,
-                        hint_penalty=hint_penalty_for_attempt,
-                    )
+                    policy_service = getattr(self, "_tutor_intervention_policy_service", None)
+                    if policy_service is not None and hasattr(policy_service, "choose_intervention"):
+                        policy = cast(
+                            Any,
+                            policy_service.choose_intervention(
+                                item=item_resolved,
+                                assessment_result=result,
+                                session_state=session_state_live,
+                                learner_profile=learner_profile_live,
+                                app_snapshot=_build_tutor_loop_app_snapshot(),
+                            ),
+                        )
+                        run_state.set_practice_intervention_policy(policy)
                 except Exception:
                     pass
-            try:
-                item_meta_now = dict(getattr(item, "meta", {}) or {})
-            except Exception:
-                item_meta_now = {}
-            if bool(item_meta_now.get("transfer_variant", False)):
+                transfer_summary: dict[str, Any] | None = None
                 try:
-                    transfer_summary = self._record_transfer_attempt_from_practice(
-                        run_state=run_state,
-                        variant_item=cast(TutorPracticeItem, item),
-                        variant_result=result,
-                        variant_hint_penalty=hint_penalty_for_attempt,
-                    )
+                    structure_obj = self._infer_transfer_structure_for_practice_item(cast(Any, item_resolved))
+                    structure_id = str(getattr(structure_obj, "structure_id", "") or "").strip()
                 except Exception:
-                    transfer_summary = None
-            try:
-                policy_map = run_state.practice_intervention_policy()
-                policy_variant_ok = bool(isinstance(policy_map, dict) and policy_map.get("recommended_variant", False))
-                outcome_now = str(getattr(result, "outcome", "") or "").strip().lower()
-                retry_now = bool(getattr(result, "retry_recommended", False))
-                should_prepare_variant = policy_variant_ok or outcome_now in {"partial", "incorrect"} or retry_now
-                practice_service = getattr(self, "_tutor_practice_service", None)
-                if should_prepare_variant and practice_service is not None and hasattr(practice_service, "build_retest_variant"):
-                    variant_item = cast(
-                        Any,
-                        practice_service.build_retest_variant(
-                            item=item,
-                            assessment_result=result,
-                            session_state=session_state,
-                            learner_profile=learner_profile,
-                            app_snapshot=_build_tutor_loop_app_snapshot(),
-                        ),
-                    )
-                    if variant_item is not None:
-                        run_state.set_practice_variant_candidate(variant_item)
-            except Exception:
-                pass
-            try:
-                # Offer a deterministic transfer variant only after a strong, low-hint correct answer.
-                if (
-                    structure_obj is not None
-                    and not bool(item_meta_now.get("transfer_variant", False))
-                    and run_state.practice_variant_candidate() is None
-                ):
-                    outcome_now = str(getattr(result, "outcome", "") or "").strip().lower()
-                    if outcome_now == "correct":
-                        state_obj = self._cognitive_state()
-                        should_offer_transfer = False
-                        if state_obj is not None:
-                            should_offer_transfer = bool(
-                                state_obj.should_offer_transfer_test(
-                                    structure_id=structure_id,
-                                    base_correct=True,
-                                    hint_penalty=hint_penalty_for_attempt,
-                                )
-                            )
-                        if should_offer_transfer:
-                            seed_offset = 0
-                            if state_obj is not None:
-                                try:
-                                    seed_offset = int((state_obj.structure_exposure_counts or {}).get(structure_id, 0) or 0)
-                                except Exception:
-                                    seed_offset = 0
-                            transfer_item = self._build_transfer_variant_practice_item(
-                                base_item=cast(TutorPracticeItem, item),
-                                structure=structure_obj,
-                                seed_offset=seed_offset,
-                            )
-                            if transfer_item is not None:
-                                run_state.set_practice_variant_candidate(transfer_item)
-                                run_state["practice_transfer_base"] = {
-                                    "structure_id": structure_id,
-                                    "base_question_id": str(getattr(item, "item_id", "") or ""),
-                                    "base_result": str(outcome_now or "correct"),
-                                    "base_hint_penalty": float(hint_penalty_for_attempt),
-                                    "base_latency_seconds": 0.0,
-                                }
-            except Exception:
-                pass
-            try:
-                run_state.set_practice_next_guidance(
-                    self._build_practice_next_action_guidance(
-                    session_state=session_state if isinstance(session_state, TutorSessionState) else None,
-                    learner_profile=learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else None,
-                    item=cast(TutorPracticeItem, item),
-                    result_obj=result,
-                    hints_used=max(0, int(run_state.get("practice_hint_use_count", 0) or 0)),
-                    )
-                )
-            except Exception:
-                run_state.set_practice_next_guidance(None)
-            try:
-                run_state.set_practice_session_quality_summary(
-                    self._build_practice_session_quality_summary(
-                    session_state=session_state if isinstance(session_state, TutorSessionState) else None,
-                    learner_profile=learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else None,
-                    item=cast(TutorPracticeItem, item),
-                    result_obj=result,
-                    guidance=run_state.practice_next_guidance(),
-                    )
-                )
-            except Exception:
-                run_state.set_practice_session_quality_summary(None)
-            _refresh_practice_panel()
-            try:
-                out = str(getattr(result, "outcome", "") or "").strip()
-                marks_awarded = float(getattr(result, "marks_awarded", 0.0) or 0.0)
-                marks_max = float(getattr(result, "marks_max", 0.0) or 0.0)
-                if isinstance(transfer_summary, dict) and transfer_summary:
-                    _set_status(self._format_transfer_score_status(transfer_summary))
-                    return
-                candidate_obj = run_state.practice_variant_candidate()
-                if candidate_obj is not None:
+                    structure_obj = None
+                    structure_id = ""
+                if structure_id:
                     try:
-                        cand_meta = dict(getattr(candidate_obj, "meta", {}) or {})
+                        self._update_cognitive_structure_posterior_from_practice(
+                            structure_id=structure_id,
+                            result_obj=result,
+                            hint_penalty=hint_penalty_for_attempt,
+                        )
                     except Exception:
-                        cand_meta = {}
-                    if bool(cand_meta.get("transfer_variant", False)):
-                        _set_status("Transfer variant ready: test the same structure in a new scenario.")
-                        return
-                if marks_max > 0:
-                    _set_status(f"Practice assessed: {out} ({marks_awarded:g}/{marks_max:g})")
-                else:
-                    _set_status(f"Practice assessed: {out}")
-            except Exception:
-                _set_status("Practice assessed.")
-            try:
-                practice_answer_view.grab_focus()
-            except Exception:
-                pass
+                        pass
+                try:
+                    item_meta_now = dict(getattr(item_resolved, "meta", {}) or {})
+                except Exception:
+                    item_meta_now = {}
+                if bool(item_meta_now.get("transfer_variant", False)):
+                    try:
+                        transfer_summary = self._record_transfer_attempt_from_practice(
+                            run_state=run_state,
+                            variant_item=cast(TutorPracticeItem, item_resolved),
+                            variant_result=result,
+                            variant_hint_penalty=hint_penalty_for_attempt,
+                        )
+                    except Exception:
+                        transfer_summary = None
+                try:
+                    policy_map = run_state.practice_intervention_policy()
+                    policy_variant_ok = bool(isinstance(policy_map, dict) and policy_map.get("recommended_variant", False))
+                    outcome_now = str(getattr(result, "outcome", "") or "").strip().lower()
+                    retry_now = bool(getattr(result, "retry_recommended", False))
+                    should_prepare_variant = policy_variant_ok or outcome_now in {"partial", "incorrect"} or retry_now
+                    practice_service = getattr(self, "_tutor_practice_service", None)
+                    if should_prepare_variant and practice_service is not None and hasattr(practice_service, "build_retest_variant"):
+                        variant_item = cast(
+                            Any,
+                            practice_service.build_retest_variant(
+                                item=item_resolved,
+                                assessment_result=result,
+                                session_state=session_state_live,
+                                learner_profile=learner_profile_live,
+                                app_snapshot=_build_tutor_loop_app_snapshot(),
+                            ),
+                        )
+                        if variant_item is not None:
+                            run_state.set_practice_variant_candidate(variant_item)
+                except Exception:
+                    pass
+                try:
+                    if (
+                        structure_obj is not None
+                        and not bool(item_meta_now.get("transfer_variant", False))
+                        and run_state.practice_variant_candidate() is None
+                    ):
+                        outcome_now = str(getattr(result, "outcome", "") or "").strip().lower()
+                        if outcome_now == "correct":
+                            state_obj = self._cognitive_state()
+                            should_offer_transfer = False
+                            if state_obj is not None:
+                                should_offer_transfer = bool(
+                                    state_obj.should_offer_transfer_test(
+                                        structure_id=structure_id,
+                                        base_correct=True,
+                                        hint_penalty=hint_penalty_for_attempt,
+                                    )
+                                )
+                            if should_offer_transfer:
+                                seed_offset = 0
+                                if state_obj is not None:
+                                    try:
+                                        seed_offset = int((state_obj.structure_exposure_counts or {}).get(structure_id, 0) or 0)
+                                    except Exception:
+                                        seed_offset = 0
+                                transfer_item = self._build_transfer_variant_practice_item(
+                                    base_item=cast(TutorPracticeItem, item_resolved),
+                                    structure=structure_obj,
+                                    seed_offset=seed_offset,
+                                )
+                                if transfer_item is not None:
+                                    run_state.set_practice_variant_candidate(transfer_item)
+                                    run_state["practice_transfer_base"] = {
+                                        "structure_id": structure_id,
+                                        "base_question_id": str(getattr(item_resolved, "item_id", "") or ""),
+                                        "base_result": str(outcome_now or "correct"),
+                                        "base_hint_penalty": float(hint_penalty_for_attempt),
+                                        "base_latency_seconds": 0.0,
+                                    }
+                except Exception:
+                    pass
+                try:
+                    run_state.set_practice_next_guidance(
+                        self._build_practice_next_action_guidance(
+                            session_state=session_state_live if isinstance(session_state_live, TutorSessionState) else None,
+                            learner_profile=(
+                                learner_profile_live if isinstance(learner_profile_live, TutorLearnerProfileSnapshot) else None
+                            ),
+                            item=cast(TutorPracticeItem, item_resolved),
+                            result_obj=result,
+                            hints_used=max(0, int(run_state.get("practice_hint_use_count", 0) or 0)),
+                        )
+                    )
+                except Exception:
+                    run_state.set_practice_next_guidance(None)
+                try:
+                    run_state.set_practice_session_quality_summary(
+                        self._build_practice_session_quality_summary(
+                            session_state=session_state_live if isinstance(session_state_live, TutorSessionState) else None,
+                            learner_profile=(
+                                learner_profile_live if isinstance(learner_profile_live, TutorLearnerProfileSnapshot) else None
+                            ),
+                            item=cast(TutorPracticeItem, item_resolved),
+                            result_obj=result,
+                            guidance=run_state.practice_next_guidance(),
+                        )
+                    )
+                except Exception:
+                    run_state.set_practice_session_quality_summary(None)
+                _refresh_practice_panel()
+                try:
+                    out = str(getattr(result, "outcome", "") or "").strip()
+                    marks_awarded = float(getattr(result, "marks_awarded", 0.0) or 0.0)
+                    marks_max = float(getattr(result, "marks_max", 0.0) or 0.0)
+                    if isinstance(transfer_summary, dict) and transfer_summary:
+                        _set_status(self._format_transfer_score_status(transfer_summary))
+                        return False
+                    candidate_obj = run_state.practice_variant_candidate()
+                    if candidate_obj is not None:
+                        try:
+                            cand_meta = dict(getattr(candidate_obj, "meta", {}) or {})
+                        except Exception:
+                            cand_meta = {}
+                        if bool(cand_meta.get("transfer_variant", False)):
+                            _set_status("Transfer variant ready: test the same structure in a new scenario.")
+                            return False
+                    if marks_max > 0:
+                        _set_status(f"Practice assessed: {out} ({marks_awarded:g}/{marks_max:g})")
+                    else:
+                        _set_status(f"Practice assessed: {out}")
+                except Exception:
+                    _set_status("Practice assessed.")
+                try:
+                    practice_answer_view.grab_focus()
+                except Exception:
+                    pass
+                return False
+
+            def _run_assessment() -> None:
+                try:
+                    result_raw = cast(
+                        Any,
+                        assessor.assess(
+                            item=item_snapshot,
+                            submission=submission,
+                            session_state=session_state,
+                            learner_profile=learner_profile,
+                        ),
+                    )
+                except Exception as exc:
+                    GLib.idle_add(_finish_assessment, None, str(exc))
+                    return
+                GLib.idle_add(_finish_assessment, result_raw, "")
+
+            if self._start_managed_background_thread(_run_assessment, name="tutor-practice-assess"):
+                return
+            _run_assessment()
 
         def _hint_tutor_practice_item(*_args) -> None:
             item = run_state.practice_item()
@@ -5986,6 +6134,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             has_latest_answer = bool(_latest_assistant_answer())
             controls = compute_tutor_control_state(
                 running=bool(running),
+                paused_turn=bool(run_state.paused_tutor_turn() is not None),
                 model_ready=bool(_selected_model_name()),
                 llm_ready=bool(self.local_llm_enabled),
                 prompt_ready=bool(_current_prompt_text(strip=True)),
@@ -6020,6 +6169,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
             section_c_btn.set_sensitive(not bool(running))
+            _update_tutor_request_buttons()
             _refresh_help_feedback_buttons()
             _update_follow_button()
             try:
@@ -6283,12 +6433,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             for btn, labels in tutor_action_button_labels.items():
                 full_label, compact_label, tiny_label = labels
                 chosen = tiny_label if very_narrow else (compact_label if narrow else full_label)
-                if btn is follow_btn:
+                if btn in {follow_btn, send_btn, stop_btn}:
                     continue
                 try:
                     btn.set_label(chosen)
                 except Exception:
                     pass
+            _update_tutor_request_buttons()
             _update_follow_button()
             _refresh_status_line()
 
@@ -6377,6 +6528,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             history.clear()
             _persist_history()
             run_state.clear_tutor_trust()
+            try:
+                run_state.clear_paused_tutor_turn()
+            except Exception:
+                pass
             run_state.pop("learning_context_sha256", None)
             run_state.pop("telemetry_learning_context_fp", None)
             run_state.pop("telemetry_learning_context_omitted", None)
@@ -6390,6 +6545,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if bool(run_state.get("active", False)):
                 return
             prompt_buf.set_text("")
+            try:
+                run_state.clear_paused_tutor_turn()
+            except Exception:
+                pass
             _update_prompt_meta()
             _set_running(False)
 
@@ -6561,6 +6720,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not user_prompt:
                 _set_status("Enter a prompt first.")
                 return
+            resume_note = ""
+            auto_resume_mode = ""
+            try:
+                auto_resume_mode = str(run_state.pop("auto_resume_mode", "") or "").strip().lower()
+            except Exception:
+                auto_resume_mode = ""
+            try:
+                paused_turn = run_state.paused_tutor_turn()
+            except Exception:
+                paused_turn = None
+            if auto_resume_mode == "auto" and paused_turn is None:
+                return
+            if paused_turn is not None:
+                resume_note = "Auto-resuming paused tutor turn" if auto_resume_mode == "auto" else "Resuming paused tutor turn"
+                try:
+                    run_state.clear_paused_tutor_turn()
+                except Exception:
+                    pass
             tutor_llm_purpose = infer_tutor_llm_purpose(user_prompt)
             routing_request_id = self._new_llm_routing_request_id()
             auto_model_note = ""
@@ -6856,6 +7033,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not any(str(m or "").strip() for m in model_candidates):
                 _set_status("Choose a model in Preferences → AI Tutor.")
                 return
+            try:
+                run_state["turn_started_at"] = float(turn_requested_at)
+                run_state["turn_user_prompt"] = str(user_prompt or "")
+                run_state["turn_full_prompt"] = str(full_prompt or "")
+                run_state["turn_model_candidates"] = list(model_candidates)
+                run_state["turn_llm_purpose"] = str(tutor_llm_purpose or "")
+            except Exception:
+                pass
             planner_brief = ""
             planner_builder = getattr(self, "_build_ai_tutor_planner_brief", None)
             if callable(planner_builder):
@@ -7099,6 +7284,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 status_parts.append(auto_model_note)
             if failover_note:
                 status_parts.append(failover_note)
+            if resume_note:
+                status_parts.append(resume_note)
             self._ai_tutor_maybe_append_load_notice(status_parts, adaptive_limits)
             _set_status(" • ".join(status_parts))
             _set_running(True)
@@ -7194,6 +7381,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         run_state["cancel_event"] = None
                         run_state["draft_user"] = ""
                         run_state["draft_assistant"] = ""
+                        run_state["turn_started_at"] = 0.0
+                        run_state["turn_user_prompt"] = ""
+                        run_state["turn_full_prompt"] = ""
+                        run_state["turn_model_candidates"] = []
+                        run_state["turn_llm_purpose"] = ""
+                        run_state.pop("auto_resume_mode", None)
                         _set_running(False)
                         final_text = str(text or "").strip() or draft_assistant
                         try:
@@ -7243,6 +7436,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             _log_tutor_runtime_warning("record_autopilot_metrics", exc)
                         credited_model = str(inf_snap[1] or "").strip() or str(model_name or "").strip()
                         if err == "cancelled":
+                            paused_turn = None
+                            try:
+                                paused_turn = run_state.paused_tutor_turn()
+                            except Exception:
+                                paused_turn = None
+                            paused_reason = ""
+                            if isinstance(paused_turn, dict):
+                                paused_reason = str(
+                                    paused_turn.get("reason", "") or paused_turn.get("paused_reason", "") or ""
+                                ).strip().lower()
+                            auto_paused = paused_turn is not None and paused_reason in {"memory_pressure", "runtime_pressure", "auto"}
                             run_state.clear_tutor_trust()
                             telemetry_error = "cancelled"
                             if bool(guard_state.get("timeout_hit", False)):
@@ -7276,7 +7480,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 first_token_ms=int(guard_state.get("first_token_ms", 0) or 0),
                             )
                             suffix = "[Stopped]"
-                            if bool(guard_state.get("timeout_hit", False)):
+                            if auto_paused:
+                                suffix = "[Paused]"
+                            elif bool(guard_state.get("timeout_hit", False)):
                                 suffix = f"[Timed out after {int(turn_timeout_seconds)}s]"
                             elif bool(guard_state.get("truncated", False)):
                                 suffix = f"[Truncated at {int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars]"
@@ -7297,7 +7503,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 except recoverable_tutor_runtime_errors as exc:
                                     _log_tutor_runtime_warning("note_exchange_cancelled", exc)
                                 _persist_history()
-                            _set_status(f"Stopped ({credited_model}).")
+                            if auto_paused:
+                                _set_status(f"Auto-paused ({credited_model}). Waiting to resume.")
+                            else:
+                                _set_status(f"Paused ({credited_model}). Click Send to resume.")
                             _render_transcript(force_scroll=True)
                             _refresh_status_line()
                             try:
@@ -7443,6 +7652,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         run_state["cancel_event"] = None
                         run_state["draft_user"] = ""
                         run_state["draft_assistant"] = ""
+                        run_state["turn_started_at"] = 0.0
+                        run_state["turn_user_prompt"] = ""
+                        run_state["turn_full_prompt"] = ""
+                        run_state["turn_model_candidates"] = []
+                        run_state["turn_llm_purpose"] = ""
+                        run_state.pop("auto_resume_mode", None)
                         run_state.clear_tutor_trust()
                         _set_running(False)
                         _log_tutor_runtime_warning("finish_turn", exc)
@@ -7455,13 +7670,60 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             StudyPlanGUI._start_managed_background_thread(self, _worker)
 
         def _stop_generation(*_args) -> None:
-            if not bool(run_state.get("active", False)):
+            if bool(run_state.get("active", False)):
+                snapshot = self._pause_tutor_workspace_turn(reason="user_pause")
+                if snapshot is not None:
+                    _set_status("Paused tutor turn. Click Send to resume.")
+                else:
+                    _set_status("Stopping…")
                 return
-            cancel_event = run_state.get("cancel_event")
-            if isinstance(cancel_event, threading.Event):
-                cancel_event.set()
-            self._ollama_stop_model(str(run_state.get("model", "") or ""))
-            _set_status("Stopping…")
+            paused_turn = None
+            try:
+                paused_turn = run_state.paused_tutor_turn()
+            except Exception:
+                paused_turn = None
+            if paused_turn is not None:
+                try:
+                    run_state.clear_paused_tutor_turn()
+                except Exception:
+                    pass
+                _set_status("Paused tutor turn discarded.")
+
+        def _auto_manage_tutor_workspace_turn() -> bool:
+            if bool(getattr(self, "_core_runtime_shutdown", False)):
+                return False
+            if bool(getattr(self, "_app_exiting", False)):
+                return False
+            if not isinstance(run_state, TutorWorkspaceState):
+                return True
+            try:
+                if bool(run_state.get("active", False)):
+                    should_pause, pause_reason = self._should_auto_pause_tutor_workspace_turn()
+                    if should_pause:
+                        snapshot = self._pause_tutor_workspace_turn(reason=pause_reason)
+                        if snapshot is not None:
+                            _set_status("Auto-paused tutor turn to protect performance and memory.")
+                            _refresh_status_line()
+                    return True
+                if not self._should_auto_resume_tutor_workspace_turn():
+                    return True
+                paused_turn = run_state.paused_tutor_turn()
+                if paused_turn is None:
+                    return True
+                paused_prompt = str(paused_turn.get("user_prompt", "") or "")
+                current_prompt = _current_prompt_text(strip=True) or ""
+                if not current_prompt:
+                    self._set_tutor_workspace_prompt_text(paused_prompt)
+                    _update_prompt_meta()
+                try:
+                    run_state["auto_resume_mode"] = "auto"
+                except Exception:
+                    pass
+                _set_status("Resuming paused tutor turn automatically.")
+                GLib.idle_add(lambda: (_generate() or False))
+            except Exception:
+                pass
+            return True
 
         def _cancel_gap_generation(*_args) -> None:
             if not bool(run_state.get("gap_generation_active", False)):
@@ -7699,6 +7961,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         _refresh_practice_panel()
         _refresh_tutor_workspace_layout()
         _set_running(False)
+        try:
+            run_state.set_tutor_auto_pause_resume_tick_id(GLib.timeout_add_seconds(2, _auto_manage_tutor_workspace_turn) or 0)
+        except Exception:
+            try:
+                run_state["auto_pause_resume_tick_id"] = 0
+            except Exception:
+                pass
         if not bool(self.local_llm_enabled):
             _set_status("Local AI tutor is disabled in Preferences.")
             send_btn.set_sensitive(False)
@@ -14036,7 +14305,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         try:
             getter = getattr(self, "_get_ai_tutor_rag_ingest_max_chunks", None)
             if callable(getter):
-                max_chunks_cfg = int(getter())
+                max_chunks_cfg = int(cast(Callable[[], Any], getter)())
         except Exception:
             max_chunks_cfg = 1200
         max_chunks_cfg = max(50, min(1200, int(max_chunks_cfg)))
@@ -15349,7 +15618,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             acquired = True
         queue_ms = int(max(0.0, (float(time.monotonic()) - started) * 1000.0))
         if acquired:
-            with self._ollama_runtime_lock:
+            lock = getattr(self, "_ollama_runtime_lock", None)
+            if lock is None:
+                try:
+                    lock = threading.RLock()
+                except Exception:
+                    lock = None
+            if lock is not None:
+                with lock:
+                    self._ollama_active_requests = int(max(0, int(getattr(self, "_ollama_active_requests", 0) or 0)) + 1)
+            else:
                 self._ollama_active_requests = int(max(0, int(getattr(self, "_ollama_active_requests", 0) or 0)) + 1)
         self._set_last_ollama_queue_ms(queue_ms)
         return bool(acquired), int(queue_ms)
@@ -17345,6 +17623,134 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._last_llm_inference_backend = str(backend or "").strip()[:64]
         self._last_llm_inference_model = str(model_id or "").strip()[:256]
 
+    def _tutor_workspace_prompt_text(self) -> str:
+        view = getattr(self, "_tutor_workspace_prompt_view", None)
+        if view is None:
+            return ""
+        try:
+            buffer = view.get_buffer()
+            return str(buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False) or "")
+        except Exception:
+            return ""
+
+    def _set_tutor_workspace_prompt_text(self, text: str) -> None:
+        view = getattr(self, "_tutor_workspace_prompt_view", None)
+        if view is None:
+            return
+        try:
+            buffer = view.get_buffer()
+            buffer.set_text(str(text or ""))
+        except Exception:
+            return
+
+    def _tutor_memory_pressure_level(self) -> str:
+        try:
+            summary = summarize_for_logging()
+        except Exception:
+            return "unknown"
+        return str(summary.get("memory_pressure", "unknown") or "unknown").strip().lower() or "unknown"
+
+    def _should_auto_pause_tutor_workspace_turn(self) -> tuple[bool, str]:
+        state = getattr(self, "_tutor_workspace_state", None)
+        if not isinstance(state, TutorWorkspaceState):
+            return False, ""
+        if not bool(state.get("active", False)):
+            return False, ""
+        if state.paused_tutor_turn() is not None:
+            return False, ""
+        if self._tutor_memory_pressure_level() == "high":
+            return True, "memory_pressure"
+        return False, ""
+
+    def _should_auto_resume_tutor_workspace_turn(self) -> bool:
+        state = getattr(self, "_tutor_workspace_state", None)
+        if not isinstance(state, TutorWorkspaceState):
+            return False
+        if bool(state.get("active", False)):
+            return False
+        paused_turn = state.paused_tutor_turn()
+        if paused_turn is None:
+            return False
+        reason = str(
+            paused_turn.get("reason", "")
+            or state.get("paused_tutor_turn_reason", "")
+            or ""
+        ).strip().lower()
+        if reason not in {"memory_pressure", "runtime_pressure", "auto"}:
+            return False
+        if self._tutor_memory_pressure_level() == "high":
+            return False
+        paused_prompt = str(paused_turn.get("user_prompt", "") or "").strip()
+        current_prompt = str(self._tutor_workspace_prompt_text() or "").strip()
+        if current_prompt and current_prompt != paused_prompt:
+            return False
+        try:
+            paused_mono = float(paused_turn.get("paused_monotonic", 0.0) or 0.0)
+        except Exception:
+            paused_mono = 0.0
+        if paused_mono > 0.0 and (time.monotonic() - paused_mono) < 2.5:
+            return False
+        model_name = str(paused_turn.get("model", "") or "").strip() or str(state.get("model", "") or "").strip()
+        if model_name:
+            cooldown_reader = getattr(self, "_is_local_llm_model_on_cooldown", None)
+            if callable(cooldown_reader):
+                try:
+                    cooling, _remaining, _reason = cast(Any, cooldown_reader)(model_name)
+                except Exception:
+                    cooling = False
+                if cooling:
+                    return False
+        return True
+
+    def _pause_tutor_workspace_turn(self, *, reason: str = "user") -> dict[str, Any] | None:
+        state = getattr(self, "_tutor_workspace_state", None)
+        if not isinstance(state, TutorWorkspaceState):
+            return None
+        try:
+            paused_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        except Exception:
+            paused_at = ""
+        snapshot: dict[str, Any] = {
+            "model": str(state.get("model", "") or "").strip(),
+            "user_prompt": str(state.get("draft_user", "") or "").strip(),
+            "draft_assistant": str(state.get("draft_assistant", "") or "").strip(),
+            "turn_started_at": float(state.get("turn_started_at", 0.0) or 0.0),
+            "full_prompt": str(state.get("turn_full_prompt", "") or ""),
+            "model_candidates": [
+                str(item or "").strip()
+                for item in list(state.get("turn_model_candidates", []) or [])
+                if str(item or "").strip()
+            ],
+            "tutor_llm_purpose": str(state.get("turn_llm_purpose", "") or "").strip(),
+            "reason": str(reason or "").strip(),
+            "paused_at": paused_at,
+            "paused_monotonic": float(time.monotonic()),
+        }
+        state.set_paused_tutor_turn(snapshot, reason=reason, at=paused_at)
+        try:
+            cancel_event = state.get("cancel_event")
+            if isinstance(cancel_event, threading.Event):
+                cancel_event.set()
+        except Exception:
+            pass
+        try:
+            model_name = str(snapshot.get("model", "") or "").strip()
+            if model_name:
+                self._ollama_stop_model(model_name)
+        except Exception:
+            pass
+        return snapshot
+
+    def _resume_tutor_workspace_turn(self) -> dict[str, Any] | None:
+        state = getattr(self, "_tutor_workspace_state", None)
+        if not isinstance(state, TutorWorkspaceState):
+            return None
+        snapshot = state.paused_tutor_turn()
+        if snapshot is None:
+            return None
+        state.clear_paused_tutor_turn()
+        return snapshot
+
     def _resolve_openai_compatible_endpoint(self) -> ResolvedOpenAICompatibleEndpoint | None:
         try:
             from studyplan.config import Config as _Cfg
@@ -17749,14 +18155,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self._note_llm_inference_attribution("brave_search", used_model)
                 return brave_text, None
         if self._cloud_endpoint_is_candidate():
+            model_candidates: list[str] = []
             cloud_model_candidates_fn = getattr(self, "_cloud_model_candidates", None)
             if callable(cloud_model_candidates_fn):
-                model_candidates = cloud_model_candidates_fn(
+                raw_candidates = cloud_model_candidates_fn(
                     inference_purpose=str(inference_purpose or "tutor"),
                     requested_model=str(model or "").strip(),
                 )
+                if isinstance(raw_candidates, (list, tuple, set)):
+                    model_candidates = [
+                        str(item or "").strip()
+                        for item in raw_candidates
+                        if str(item or "").strip()
+                    ]
             else:
-                model_candidates = []
                 try:
                     requested = str(model or "").strip()
                     configured = str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip()
@@ -18357,14 +18769,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self._emit_text_as_chunks(brave_text, on_chunk)
                 return brave_text, None
         if self._cloud_endpoint_is_candidate():
+            model_candidates: list[str] = []
             cloud_model_candidates_fn = getattr(self, "_cloud_model_candidates", None)
             if callable(cloud_model_candidates_fn):
-                model_candidates = cloud_model_candidates_fn(
+                raw_candidates = cloud_model_candidates_fn(
                     inference_purpose=str(inference_purpose or "tutor"),
                     requested_model=str(model or "").strip(),
                 )
+                if isinstance(raw_candidates, (list, tuple, set)):
+                    model_candidates = [
+                        str(item or "").strip()
+                        for item in raw_candidates
+                        if str(item or "").strip()
+                    ]
             else:
-                model_candidates = []
                 try:
                     requested = str(model or "").strip()
                     configured = str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip()
@@ -20797,7 +21215,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         }
         if state is None:
             return result
-        lock = self._cognitive_state_lock_for(state)
+        lock_fn = getattr(self, "_cognitive_state_lock_for", None)
+        if callable(lock_fn):
+            try:
+                lock = lock_fn(state)
+            except Exception:
+                lock = None
+        else:
+            lock = None
+        if lock is None:
+            try:
+                lock = threading.RLock()
+            except Exception:
+                lock = None
+        if lock is None:
+            return result
         with locked_cognitive_state(state, lock):
             if svc is not None:
                 try:
@@ -20929,7 +21361,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if svc is None:
             return
         state = self._cognitive_state()
-        lock = self._cognitive_state_lock_for(state)
+        lock_fn = getattr(self, "_cognitive_state_lock_for", None)
+        if callable(lock_fn):
+            try:
+                lock = lock_fn(state)
+            except Exception:
+                lock = None
+        else:
+            lock = None
+        if lock is None:
+            try:
+                lock = threading.RLock()
+            except Exception:
+                lock = None
+        if lock is None:
+            return
         with locked_cognitive_state(state, lock):
             eng = getattr(self, "engine", None)
             qid: str | None = None
@@ -20982,8 +21428,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if svc is not None:
             try:
                 svc.clear_active_question()
-                except Exception:
-                    pass
+            except Exception:
+                pass
         state = self._cognitive_state()
         if state is not None:
             lock_fn = getattr(self, "_cognitive_state_lock_for", None)
@@ -21101,6 +21547,77 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "must_review_due": int(getattr(app_snapshot, "must_review_due", 0) or 0),
         }
 
+    def _apply_tutor_practice_plan_result(
+        self,
+        *,
+        run_state: TutorWorkspaceState,
+        plan_token: int,
+        result_raw: Any,
+        session_state_fallback: TutorSessionState | None = None,
+        learner_profile_fallback: TutorLearnerProfileSnapshot | None = None,
+    ) -> TutorLoopTurnResult | None:
+        if getattr(self, "_tutor_workspace_state", None) is not run_state:
+            return None
+        if not run_state.practice_plan_token_is_current(plan_token):
+            return None
+        result = self._snapshot_tutor_loop_turn_result(result_raw)
+        if result is None:
+            return None
+        session_state = result.session_state if isinstance(result.session_state, TutorSessionState) else None
+        learner_profile = result.learner_profile if isinstance(result.learner_profile, TutorLearnerProfileSnapshot) else None
+        if session_state is None or not str(session_state.session_id or "").strip():
+            session_state = session_state_fallback
+        if learner_profile is None or not str(learner_profile.learner_id or "").strip():
+            learner_profile = learner_profile_fallback
+        practice_items = tuple(result.practice_items or ())
+        run_state.set_practice_plan(
+            plan_result=result,
+            session_state=session_state,
+            learner_profile=learner_profile,
+            practice_item=practice_items[0] if practice_items else None,
+            action_plan=result.action_intent,
+            plan_token=plan_token,
+        )
+        return result
+
+    def _apply_tutor_practice_assessment_result(
+        self,
+        *,
+        run_state: TutorWorkspaceState,
+        assessment_token: int,
+        item_raw: Any,
+        result_raw: Any,
+        session_state_fallback: TutorSessionState | None = None,
+        learner_profile_fallback: TutorLearnerProfileSnapshot | None = None,
+    ) -> tuple[TutorPracticeItem, TutorAssessmentResult] | None:
+        if getattr(self, "_tutor_workspace_state", None) is not run_state:
+            return None
+        if not run_state.practice_assessment_token_is_current(assessment_token):
+            return None
+        item = self._snapshot_tutor_practice_item(item_raw)
+        if item is None or not str(item.item_id or "").strip():
+            return None
+        current_item = run_state.practice_item()
+        if current_item is None or self._practice_item_identity(current_item) != self._practice_item_identity(item):
+            return None
+        result = self._snapshot_tutor_assessment_result(result_raw)
+        if result is None:
+            return None
+        if not str(result.item_id or "").strip():
+            result = TutorAssessmentResult.from_dict({**result.to_dict(), "item_id": str(item.item_id or "")})
+        elif str(result.item_id or "").strip() != str(item.item_id or "").strip():
+            payload = result.to_dict()
+            payload["item_id"] = str(item.item_id or "")
+            result = TutorAssessmentResult.from_dict(payload)
+        session_state = self._snapshot_tutor_session_state(session_state_fallback)
+        learner_profile = self._snapshot_tutor_learner_profile(learner_profile_fallback)
+        run_state.record_practice_result(result, assessment_token=assessment_token)
+        if session_state is not None:
+            run_state.set_practice_session_state(session_state)
+        if learner_profile is not None:
+            run_state.set_practice_learner_profile(learner_profile)
+        return item, result
+
     def _build_practice_items_ai_prompt(self, context: dict[str, Any], max_items: int = 3) -> str:
         """Build prompt for LLM to generate practice items using app context."""
         payload = {
@@ -21156,8 +21673,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 continue
             itype = str(row.get("item_type", "") or "").strip().lower()
             if itype == "mcq":
-                meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
-                opts = meta.get("options")
+                meta = row.get("meta")
+                opts = meta.get("options") if isinstance(meta, dict) else None
                 opt_list = [str(x or "").strip() for x in opts] if isinstance(opts, list) else []
                 if len(opt_list) != 4 or gap_options_look_like_llm_placeholders(opt_list):
                     continue
@@ -21646,7 +22163,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         state = self._cognitive_state()
         if state is not None:
-            lock = self._cognitive_state_lock_for(state)
+            lock_fn = getattr(self, "_cognitive_state_lock_for", None)
+            if callable(lock_fn):
+                try:
+                    lock = lock_fn(state)
+                except Exception:
+                    lock = None
+            else:
+                lock = None
+            if lock is None:
+                try:
+                    lock = threading.RLock()
+                except Exception:
+                    lock = None
+            if lock is None:
+                return None
             with locked_cognitive_state(state, lock):
                 try:
                     state.record_transfer_exposure(structure_id, attempt_id=str(attempt.attempt_id or ""))
@@ -21835,7 +22366,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             raw = f"{key_payload.get('module','')}|{key_payload.get('topic','')}|{prompt_text}"
         claim_key = hashlib.sha1(str(raw).encode("utf-8", errors="ignore")).hexdigest()
-        lock = self._cognitive_state_lock_for(state)
+        lock_fn = getattr(self, "_cognitive_state_lock_for", None)
+        if callable(lock_fn):
+            try:
+                lock = lock_fn(state)
+            except Exception:
+                lock = None
+        else:
+            lock = None
+        if lock is None:
+            try:
+                lock = threading.RLock()
+            except Exception:
+                lock = None
+        if lock is None:
+            return
         with locked_cognitive_state(state, lock):
             try:
                 claim_map = state.claim_confidence
@@ -24197,6 +24742,164 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cloned = self._clone_jsonish_value(question)
         return cloned if isinstance(cloned, dict) else None
 
+    def _snapshot_app_state(self, app_snapshot: Any) -> AppStateSnapshot | None:
+        """Return an isolated app-state snapshot for practice-loop work."""
+        if isinstance(app_snapshot, AppStateSnapshot):
+            source = app_snapshot
+        elif isinstance(app_snapshot, dict):
+            payload = dict(app_snapshot)
+            weak_raw = payload.get("weak_topics_top3", ())
+            risk_raw = payload.get("risk_snapshot_top3", ())
+            due_raw = payload.get("due_snapshot_top3", ())
+            meta_raw = payload.get("meta", {})
+            return AppStateSnapshot(
+                module=str(payload.get("module", "") or ""),
+                current_topic=str(payload.get("current_topic", "") or ""),
+                coach_pick=str(payload.get("coach_pick", "") or ""),
+                days_to_exam=payload.get("days_to_exam") if payload.get("days_to_exam") is None else int(payload.get("days_to_exam", 0) or 0),
+                must_review_due=max(0, int(payload.get("must_review_due", 0) or 0)),
+                overdue_srs_count=max(0, int(payload.get("overdue_srs_count", 0) or 0)),
+                weak_topics_top3=tuple(str(x).strip() for x in list(weak_raw or []) if str(x).strip()),
+                risk_snapshot_top3=tuple(str(x).strip() for x in list(risk_raw or []) if str(x).strip()),
+                due_snapshot_top3=tuple(str(x).strip() for x in list(due_raw or []) if str(x).strip()),
+                meta=self._clone_jsonish_value(meta_raw) if isinstance(meta_raw, dict) else {},
+            )
+        else:
+            return None
+        return AppStateSnapshot(
+            module=str(source.module or ""),
+            current_topic=str(source.current_topic or ""),
+            coach_pick=str(source.coach_pick or ""),
+            days_to_exam=source.days_to_exam if source.days_to_exam is None else int(source.days_to_exam),
+            must_review_due=max(0, int(source.must_review_due or 0)),
+            overdue_srs_count=max(0, int(source.overdue_srs_count or 0)),
+            weak_topics_top3=tuple(str(x).strip() for x in list(source.weak_topics_top3 or ()) if str(x).strip()),
+            risk_snapshot_top3=tuple(str(x).strip() for x in list(source.risk_snapshot_top3 or ()) if str(x).strip()),
+            due_snapshot_top3=tuple(str(x).strip() for x in list(source.due_snapshot_top3 or ()) if str(x).strip()),
+            meta=self._clone_jsonish_value(source.meta) if isinstance(source.meta, dict) else {},
+        )
+
+    def _snapshot_tutor_session_state(self, session_state: Any) -> TutorSessionState | None:
+        if isinstance(session_state, TutorSessionState):
+            payload = session_state.to_dict()
+        elif isinstance(session_state, dict):
+            payload = self._clone_jsonish_value(session_state)
+        else:
+            return None
+        snap = TutorSessionState.from_dict(payload)
+        return snap if str(snap.session_id or "").strip() else None
+
+    def _snapshot_tutor_learner_profile(self, learner_profile: Any) -> TutorLearnerProfileSnapshot | None:
+        if isinstance(learner_profile, TutorLearnerProfileSnapshot):
+            payload = learner_profile.to_dict()
+        elif isinstance(learner_profile, dict):
+            payload = self._clone_jsonish_value(learner_profile)
+        else:
+            return None
+        snap = TutorLearnerProfileSnapshot.from_dict(payload)
+        return snap if str(snap.learner_id or "").strip() else None
+
+    def _snapshot_tutor_practice_item(self, item: Any) -> TutorPracticeItem | None:
+        if isinstance(item, TutorPracticeItem):
+            payload = item.to_dict()
+        elif isinstance(item, dict):
+            payload = self._clone_jsonish_value(item)
+        else:
+            return None
+        snap = TutorPracticeItem.from_dict(payload)
+        if not str(snap.item_id or "").strip() and not str(snap.prompt or "").strip():
+            return None
+        return snap
+
+    def _snapshot_tutor_assessment_result(self, result: Any) -> TutorAssessmentResult | None:
+        if isinstance(result, TutorAssessmentResult):
+            payload = result.to_dict()
+        elif isinstance(result, dict):
+            payload = self._clone_jsonish_value(result)
+        else:
+            return None
+        snap = TutorAssessmentResult.from_dict(payload)
+        return snap if str(snap.item_id or "").strip() else None
+
+    def _snapshot_tutor_action_intent(self, action_intent: Any) -> TutorActionIntent | None:
+        if isinstance(action_intent, TutorActionIntent):
+            payload = action_intent.to_dict()
+        elif isinstance(action_intent, dict):
+            payload = self._clone_jsonish_value(action_intent)
+        else:
+            return None
+        snap = TutorActionIntent.from_dict(payload)
+        return snap if str(snap.action or "").strip() else None
+
+    def _snapshot_tutor_loop_turn_result(self, result: Any) -> TutorLoopTurnResult | None:
+        if isinstance(result, TutorLoopTurnResult):
+            action_intent_payload: Any = result.action_intent
+            if hasattr(action_intent_payload, "to_dict"):
+                action_intent_payload = cast(Any, action_intent_payload).to_dict()
+            payload = {
+                "response_text": result.response_text,
+                "mode_used": result.mode_used,
+                "phase_after_turn": result.phase_after_turn,
+                "session_state": result.session_state.to_dict() if hasattr(result.session_state, "to_dict") else result.session_state,
+                "learner_profile": result.learner_profile.to_dict() if hasattr(result.learner_profile, "to_dict") else result.learner_profile,
+                "practice_items": [item.to_dict() if hasattr(item, "to_dict") else item for item in list(result.practice_items or ())],
+                "action_intent": action_intent_payload,
+                "telemetry": self._clone_jsonish_value(result.telemetry),
+            }
+        elif isinstance(result, dict):
+            payload = self._clone_jsonish_value(result)
+        else:
+            return None
+        session_state = self._snapshot_tutor_session_state(payload.get("session_state"))
+        learner_profile = self._snapshot_tutor_learner_profile(payload.get("learner_profile"))
+        practice_items = tuple(
+            item
+            for item in (
+                self._snapshot_tutor_practice_item(raw_item)
+                for raw_item in list(payload.get("practice_items", []) or [])
+            )
+            if item is not None
+        )
+        action_intent = self._snapshot_tutor_action_intent(payload.get("action_intent"))
+        telemetry = payload.get("telemetry", {})
+        telemetry_clone = self._clone_jsonish_value(telemetry) if isinstance(telemetry, dict) else {}
+        snap = TutorLoopTurnResult(
+            response_text=str(payload.get("response_text", "") or ""),
+            mode_used=str(payload.get("mode_used", "") or ""),
+            phase_after_turn=str(payload.get("phase_after_turn", "") or ""),
+            session_state=session_state
+            if session_state is not None
+            else TutorSessionState(session_id="", module="", topic=""),
+            learner_profile=learner_profile
+            if learner_profile is not None
+            else TutorLearnerProfileSnapshot(learner_id="", module=""),
+            practice_items=practice_items,
+            action_intent=action_intent,
+            telemetry=telemetry_clone if isinstance(telemetry_clone, dict) else {},
+        )
+        if not str(snap.mode_used or "").strip() and not str(snap.phase_after_turn or "").strip():
+            return None
+        return snap
+
+    def _practice_item_identity(self, item: Any) -> str:
+        if not isinstance(item, dict) and not hasattr(item, "item_id"):
+            return ""
+        if isinstance(item, dict):
+            item_id = str(item.get("item_id", "") or "").strip()
+            topic = str(item.get("topic", "") or "").strip()
+            prompt = str(item.get("prompt", "") or item.get("question", "") or "").strip()
+        else:
+            item_id = str(getattr(item, "item_id", "") or "").strip()
+            topic = str(getattr(item, "topic", "") or "").strip()
+            prompt = str(getattr(item, "prompt", "") or getattr(item, "question", "") or "").strip()
+        if item_id:
+            return f"id:{item_id}"
+        if topic and prompt:
+            return f"topic:{topic.lower()}|prompt:{prompt.lower()}"
+        if prompt:
+            return f"prompt:{prompt.lower()}"
+        return ""
+
     def _question_identity_fingerprint(self, question: Any) -> str:
         """Stable identity string for a question payload across live-bank mutations."""
         if not isinstance(question, dict):
@@ -24837,7 +25540,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             # Treat as invalid AI output and persist a deterministic fallback when possible.
             default_fn = getattr(self, "_default_section_c_question", None)
             if callable(default_fn):
-                fallback = default_fn(chapter_name)
+                fallback_raw = default_fn(chapter_name)
+                fallback = cast(dict[str, Any], fallback_raw) if isinstance(fallback_raw, dict) else {}
                 saved = self._upsert_section_c_question(chapter_name, fallback, persist=True)
                 return (
                     (saved if isinstance(saved, dict) else fallback),
@@ -24845,8 +25549,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             # Backward compatibility: some tests use minimal payloads without this helper.
             # Best-effort persist to avoid crashing and preserve historical behavior (no warn).
-            saved = self._upsert_section_c_question(chapter_name, parsed, persist=True)
-            return (saved if isinstance(saved, dict) else parsed), None
+            parsed_dict = cast(dict[str, Any], parsed)
+            saved = self._upsert_section_c_question(chapter_name, parsed_dict, persist=True)
+            return (saved if isinstance(saved, dict) else parsed_dict), None
 
         parsed["source"] = "ai_generated"
         saved = self._upsert_section_c_question(chapter_name, parsed, persist=True)
@@ -41393,7 +42098,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self._ollama_stop_model(model_name)
         except Exception:
             pass
-        for key in ("stream_watchdog_id", "model_poll_id", "practice_hint_policy_tick_id"):
+        for key in ("stream_watchdog_id", "model_poll_id", "practice_hint_policy_tick_id", "auto_pause_resume_tick_id"):
             try:
                 source_id = int(state.get(key, 0) or 0)
             except Exception:
@@ -41415,6 +42120,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             state["model"] = ""
             state["draft_user"] = ""
             state["draft_assistant"] = ""
+            state["turn_started_at"] = 0.0
+            state["turn_user_prompt"] = ""
+            state["turn_full_prompt"] = ""
+            state["turn_model_candidates"] = []
+            state["turn_llm_purpose"] = ""
+            state.pop("auto_resume_mode", None)
+            if isinstance(state, TutorWorkspaceState):
+                state.clear_paused_tutor_turn()
         except Exception:
             pass
 
