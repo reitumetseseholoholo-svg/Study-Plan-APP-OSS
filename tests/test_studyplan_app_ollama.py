@@ -3130,6 +3130,47 @@ def test_generate_gap_drill_questions_shows_storage_error_when_save_fails():
     assert "could not be saved" in msg or "storage error" in msg.lower()
 
 
+def test_generate_gap_drill_questions_rejects_stale_workflow_token_before_save():
+    saved: list[str] = []
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    valid_json = json.dumps({
+        "chapter": "Topic A",
+        "questions": [
+            {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."},
+        ],
+    })
+    valid_row = {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."}
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        ai_tutor_gap_generation_enabled=True,
+        local_llm_enabled=True,
+        ai_tutor_gap_autosave_strict_gate=True,
+        ai_tutor_gap_autosave_enabled=True,
+        _workflow_tokens={"gap_generation": 2},
+        _build_local_llm_model_failover_sequence=lambda **_kw: (["model-a"], None),
+        _build_gap_generation_prompt=lambda chapter, count, snapshot: "prompt",
+        _ollama_generate_text=lambda model, prompt: (valid_json, None),
+        _parse_generated_gap_questions=lambda text: ("Topic A", [valid_row], None),
+        _validate_generated_gap_questions=lambda ch, q, **kw: ([valid_row], []),
+        _record_ai_tutor_autopilot_metrics=lambda *_args, **_kw: None,
+        _append_gap_question_quarantine=lambda *_args, **_kw: saved.append("quarantine"),
+        _save_generated_gap_questions=lambda *_args, **_kw: (_ for _ in ()).throw(AssertionError("should not save")),
+        _compose_ollama_recovery_status=lambda *args, **kwargs: "recovery",
+        _compose_ollama_guardrail_status=lambda *args, **kwargs: "guardrail",
+    )
+    dummy._workflow_token_is_current = types.MethodType(StudyPlanGUI._workflow_token_is_current, dummy)
+
+    ok, msg = StudyPlanGUI._generate_gap_drill_questions(
+        dummy,
+        "Topic A",
+        snapshot={"current_topic": "Topic A"},
+        workflow_token=1,
+    )
+    assert ok is False
+    assert "cancelled" in str(msg).lower()
+    assert saved == []
+
+
 def test_run_daily_auto_question_generation_if_due_does_not_advance_date_on_failure():
     """When _generate_gap_drill_questions returns False, last_auto_question_generation_date is not updated."""
     today = datetime.date.today().isoformat()
@@ -3253,6 +3294,199 @@ def test_section_c_bank_upsert_and_reload_roundtrip(tmp_path, monkeypatch):
     rows = StudyPlanGUI._get_section_c_questions(dummy, "Topic A")
     assert len(rows) == 1
     assert rows[0]["prompt"].startswith("Evaluate whether changing credit terms")
+
+
+def test_question_snapshot_helpers_clone_and_resolve_live_index_by_fingerprint():
+    original = {
+        "question": "What is NPV?",
+        "options": ["Valuation", "Accounting", "Tax", "Audit"],
+        "correct": "Valuation",
+        "explanation": "NPV is used for valuation.",
+        "nested": {"tags": ["finance"]},
+    }
+    live_rows = [
+        {"question": "Other Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""},
+        {
+            "question": "What is NPV?",
+            "options": ["Valuation", "Accounting", "Tax", "Audit"],
+            "correct": "Valuation",
+            "explanation": "NPV is used for valuation.",
+        },
+    ]
+    dummy = types.SimpleNamespace(
+        engine=types.SimpleNamespace(
+            get_questions=lambda chapter: live_rows,
+            _question_bank_fingerprint=lambda row: json.dumps(
+                [
+                    str((row or {}).get("question", "") or ""),
+                    list((row or {}).get("options", []) or []),
+                    str((row or {}).get("correct", "") or ""),
+                ],
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+            if isinstance(row, dict)
+            else "",
+        )
+    )
+    dummy._clone_jsonish_value = types.MethodType(StudyPlanGUI._clone_jsonish_value, dummy)
+    dummy._snapshot_question_payload = types.MethodType(StudyPlanGUI._snapshot_question_payload, dummy)
+    dummy._question_identity_fingerprint = types.MethodType(StudyPlanGUI._question_identity_fingerprint, dummy)
+    dummy._resolve_live_question_index = types.MethodType(StudyPlanGUI._resolve_live_question_index, dummy)
+
+    snap = StudyPlanGUI._snapshot_question_payload(dummy, original)
+    assert isinstance(snap, dict)
+    original["nested"]["tags"].append("mutated")
+    assert snap["nested"]["tags"] == ["finance"]
+    resolved = StudyPlanGUI._resolve_live_question_index(dummy, "Topic A", snap, fallback_index=0)
+    assert resolved == 1
+
+
+def test_workflow_token_helpers_bump_and_validate():
+    dummy = types.SimpleNamespace(_workflow_tokens={})
+    dummy._issue_workflow_token = types.MethodType(StudyPlanGUI._issue_workflow_token, dummy)
+    dummy._workflow_token_is_current = types.MethodType(StudyPlanGUI._workflow_token_is_current, dummy)
+
+    first = StudyPlanGUI._issue_workflow_token(dummy, "section_c")
+    second = StudyPlanGUI._issue_workflow_token(dummy, "section_c")
+    assert first == 1
+    assert second == 2
+    assert StudyPlanGUI._workflow_token_is_current(dummy, "section_c", second) is True
+    assert StudyPlanGUI._workflow_token_is_current(dummy, "section_c", first) is False
+
+
+def test_start_quiz_session_snapshots_question_bank():
+    live_rows = [
+        {"question": "Q1?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "One."},
+        {"question": "Q2?", "options": ["A", "B", "C", "D"], "correct": "B", "explanation": "Two."},
+    ]
+    engine = types.SimpleNamespace(
+        CHAPTERS=["Topic A"],
+        get_questions=lambda chapter: live_rows,
+        srs_data={"Topic A": [{"last_review": None, "interval": 1}, {"last_review": None, "interval": 1}]},
+        quiz_results={},
+        must_review={},
+        get_retention_probability=lambda *_args, **_kwargs: 1.0,
+        predict_recall_prob=lambda *_args, **_kwargs: 1.0,
+    )
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        current_topic="Topic A",
+        _has_chapters=lambda: True,
+        _set_current_topic=lambda topic: None,
+        _get_quiz_target_for_topic=lambda topic, count: 1,
+        get_quarantined_question_indices=lambda chapter: set(),
+        show_quiz_dialog=lambda: None,
+        _start_quiz_reason_prefetch=lambda *args, **kwargs: None,
+        _quiz_reason_job_token=0,
+        quiz_dialog=None,
+    )
+    dummy._clone_jsonish_value = types.MethodType(StudyPlanGUI._clone_jsonish_value, dummy)
+    dummy._snapshot_question_payload = types.MethodType(StudyPlanGUI._snapshot_question_payload, dummy)
+    dummy._question_identity_fingerprint = types.MethodType(StudyPlanGUI._question_identity_fingerprint, dummy)
+    dummy._resolve_live_question_index = types.MethodType(StudyPlanGUI._resolve_live_question_index, dummy)
+
+    StudyPlanGUI.start_quiz_session(dummy, topic="Topic A", total_override=1, kind="quiz")
+    live_rows[0]["question"] = "mutated live bank"
+    assert dummy.quiz_session["questions"][0]["question"] == "Q1?"
+    assert len(dummy.quiz_session["question_fingerprints"]) == 2
+
+
+def test_on_quiz_confirm_uses_resolved_live_index_for_scoring():
+    live_rows = [
+        {"question": "Other?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""},
+        {"question": "What is NPV?", "options": ["A", "B", "C", "D"], "correct": "B", "explanation": "NPV."},
+    ]
+    question = {
+        "question": "What is NPV?",
+        "options": ["A", "B", "C", "D"],
+        "correct": "B",
+        "explanation": "NPV.",
+    }
+
+    class _Widget:
+        def __getattr__(self, _name):
+            def _noop(*_args, **_kwargs):
+                return None
+
+            return _noop
+
+    recorded: dict[str, list[int]] = {"update_competence": [], "flag_incorrect": [], "record_question_event": []}
+
+    def _record(name, value):
+        recorded.setdefault(name, []).append(int(value))
+
+    engine = types.SimpleNamespace(
+        competence={"Topic A": 10},
+        srs_data={"Topic A": [{"efactor": 2.5}, {"efactor": 2.5}]},
+        get_questions=lambda chapter: live_rows,
+        _question_bank_fingerprint=lambda row: json.dumps(
+            [
+                str((row or {}).get("question", "") or ""),
+                list((row or {}).get("options", []) or []),
+                str((row or {}).get("correct", "") or ""),
+            ],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        if isinstance(row, dict)
+        else "",
+        update_competence=lambda chapter, delta, question_index=None: _record("update_competence", question_index),
+        flag_incorrect=lambda chapter, question_index, days=2: _record("flag_incorrect", question_index),
+        record_difficulty=lambda *args, **kwargs: None,
+        record_question_event=lambda chapter, question_index, is_correct, elapsed_sec=None: _record("record_question_event", question_index),
+        record_outcome_event=lambda *args, **kwargs: None,
+        record_question_outcome=lambda *args, **kwargs: None,
+        update_srs=lambda *args, **kwargs: None,
+        save_data=lambda: None,
+    )
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        current_topic="Topic A",
+        quiz_session={
+            "indices": [0],
+            "position": 0,
+            "correct": 0,
+            "questions": [question],
+            "answers": {},
+            "topic": "Topic A",
+            "kind": "quiz",
+            "route_meta_cache": {},
+            "route_reason_cache": {},
+            "route_reason_pending": set(),
+        },
+        selected_option="B",
+        _quiz_confidence_rating=0,
+        _quiz_question_started_at=None,
+        _cognitive_quiz_record_attempt=lambda **_kwargs: None,
+        _maybe_notify_weak_cleared=lambda *args, **kwargs: None,
+        _track_quiz_confidence=lambda *args, **kwargs: None,
+        _show_quiz_error_diagnosis=lambda *args, **kwargs: None,
+        _increment_quiz_questions_today=lambda *_args, **_kwargs: None,
+        award_xp=lambda *_args, **_kwargs: None,
+        send_notification=lambda *_args, **_kwargs: None,
+        _unlock_achievement=lambda *_args, **_kwargs: None,
+        update_streak=lambda: None,
+        update_streak_display=lambda: None,
+        quiz_option_buttons={opt: _Widget() for opt in ["A", "B", "C", "D"]},
+        quiz_feedback=_Widget(),
+        quiz_confirm_btn=_Widget(),
+        quiz_next_btn=_Widget(),
+        quiz_status_label=_Widget(),
+        quiz_hint_label=_Widget(),
+        quiz_hint_btn=_Widget(),
+        _quiz_confidence_row=_Widget(),
+    )
+    dummy._clone_jsonish_value = types.MethodType(StudyPlanGUI._clone_jsonish_value, dummy)
+    dummy._snapshot_question_payload = types.MethodType(StudyPlanGUI._snapshot_question_payload, dummy)
+    dummy._question_identity_fingerprint = types.MethodType(StudyPlanGUI._question_identity_fingerprint, dummy)
+    dummy._resolve_live_question_index = types.MethodType(StudyPlanGUI._resolve_live_question_index, dummy)
+
+    StudyPlanGUI.on_quiz_confirm(dummy, None, None)
+
+    assert recorded["update_competence"] == [1]
+    assert recorded["record_question_event"] == [1]
+    assert dummy.quiz_session["answers"][0]["is_correct"] is True
 
 
 def test_parse_section_c_evaluation_payload_clamps_scores():

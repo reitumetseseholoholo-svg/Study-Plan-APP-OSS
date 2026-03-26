@@ -7488,6 +7488,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not chapter or chapter_err:
                 _set_status(str(chapter_err or "Select a valid topic before generating gap questions."))
                 return
+            workflow_token = self._issue_workflow_token("gap_generation")
             _set_gap_generation_running(True)
             _set_status(f"Generating gap questions for {chapter}…")
 
@@ -7502,6 +7503,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         snapshot,
                         requested_count=AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS,
                         cancel_check=cancel_check,
+                        workflow_token=workflow_token,
                     )
                 except Exception as exc:
                     ok = False
@@ -7555,6 +7557,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not chapter or chapter_err:
                 _set_status(str(chapter_err or "Select a valid topic before generating classification questions."))
                 return
+            workflow_token = self._issue_workflow_token("gap_generation")
             _set_gap_generation_running(True)
             _set_status(f"Generating classification/presentation questions for {chapter}…")
 
@@ -7572,6 +7575,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         requested_count=AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS,
                         prompt_task_id=TASK_ID_CLASSIFICATION_DRILL,
                         cancel_check=cancel_check,
+                        workflow_token=workflow_token,
                     )
                 except Exception as exc:
                     ok = False
@@ -15285,7 +15289,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _configure_ollama_runtime_limits(self) -> None:
         max_concurrency = self._coerce_ollama_max_concurrent_requests()
         queue_wait = self._coerce_ollama_queue_wait_seconds()
-        with self._ollama_runtime_lock:
+        lock = getattr(self, "_ollama_runtime_lock", None)
+        if lock is None:
+            try:
+                lock = threading.RLock()
+            except Exception:
+                lock = None
+        if lock is None:
+            return
+        with lock:
             self._ollama_max_concurrent_requests = int(max_concurrency)
             self._ollama_queue_wait_seconds = float(queue_wait)
             # Recreate semaphore when limits change; current active workers finish naturally.
@@ -15344,7 +15356,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _release_ollama_request_slot(self) -> None:
         semaphore = getattr(self, "_ollama_request_semaphore", None)
-        with self._ollama_runtime_lock:
+        lock = getattr(self, "_ollama_runtime_lock", None)
+        if lock is None:
+            try:
+                lock = threading.RLock()
+            except Exception:
+                lock = None
+        if lock is not None:
+            with lock:
+                active_now = int(getattr(self, "_ollama_active_requests", 0) or 0)
+                self._ollama_active_requests = max(0, active_now - 1)
+        else:
             active_now = int(getattr(self, "_ollama_active_requests", 0) or 0)
             self._ollama_active_requests = max(0, active_now - 1)
         try:
@@ -15357,7 +15379,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         model = str(model_name or "").strip()
         if not model:
             return False, 0, ""
-        with self._ollama_runtime_lock:
+        lock = getattr(self, "_ollama_runtime_lock", None)
+        if lock is None:
+            try:
+                lock = threading.RLock()
+            except Exception:
+                lock = None
+        if lock is None:
+            return False, 0, ""
+        with lock:
             health = getattr(self, "_llm_model_health", {})
             if not isinstance(health, dict):
                 return False, 0, ""
@@ -15379,7 +15409,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         model = str(model_name or "").strip()
         if not model:
             return
-        with self._ollama_runtime_lock:
+        lock = getattr(self, "_ollama_runtime_lock", None)
+        if lock is None:
+            try:
+                lock = threading.RLock()
+            except Exception:
+                lock = None
+        if lock is None:
+            return
+        with lock:
             now_ts = float(time.monotonic())
             threshold = self._coerce_ai_model_failure_threshold()
             window_seconds = self._coerce_ai_model_failure_window_seconds()
@@ -20659,7 +20697,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         state = self._cognitive_state()
         if not isinstance(state, CognitiveState):
             return "Tutor context: —"
-        lock = self._cognitive_state_lock_for(state)
+        lock_fn = getattr(self, "_cognitive_state_lock_for", None)
+        if callable(lock_fn):
+            try:
+                lock = lock_fn(state)
+            except Exception:
+                lock = None
+        else:
+            lock = None
+        if lock is None:
+            try:
+                lock = threading.RLock()
+            except Exception:
+                lock = None
+        if lock is None:
+            return "Tutor context: —"
         with locked_cognitive_state(state, lock):
             try:
                 fsm = str(getattr(state.working_memory, "socratic_state", None) or "DIAGNOSE").strip() or "DIAGNOSE"
@@ -20824,7 +20876,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if svc is None:
             return
         state = self._cognitive_state()
-        lock = self._cognitive_state_lock_for(state)
+        lock_fn = getattr(self, "_cognitive_state_lock_for", None)
+        if callable(lock_fn):
+            try:
+                lock = lock_fn(state)
+            except Exception:
+                lock = None
+        else:
+            lock = None
+        if lock is None:
+            try:
+                lock = threading.RLock()
+            except Exception:
+                lock = None
+        if lock is None:
+            return
         with locked_cognitive_state(state, lock):
             qid: str | None = None
             eng = getattr(self, "engine", None)
@@ -20916,11 +20982,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if svc is not None:
             try:
                 svc.clear_active_question()
-            except Exception:
-                pass
+                except Exception:
+                    pass
         state = self._cognitive_state()
         if state is not None:
-            lock = self._cognitive_state_lock_for(state)
+            lock_fn = getattr(self, "_cognitive_state_lock_for", None)
+            if callable(lock_fn):
+                try:
+                    lock = lock_fn(state)
+                except Exception:
+                    lock = None
+            else:
+                lock = None
+            if lock is None:
+                try:
+                    lock = threading.RLock()
+                except Exception:
+                    lock = None
+            if lock is None:
+                return
             with locked_cognitive_state(state, lock):
                 try:
                     state.struggle_mode = False
@@ -20938,7 +21018,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         state = self._cognitive_state()
         if not isinstance(state, CognitiveState):
             return {"enabled": False}
-        lock = self._cognitive_state_lock_for(state)
+        lock_fn = getattr(self, "_cognitive_state_lock_for", None)
+        if callable(lock_fn):
+            try:
+                lock = lock_fn(state)
+            except Exception:
+                lock = None
+        else:
+            lock = None
+        if lock is None:
+            try:
+                lock = threading.RLock()
+            except Exception:
+                lock = None
+        if lock is None:
+            return {"enabled": False}
         with locked_cognitive_state(state, lock):
             topic = str(chapter or getattr(self, "current_topic", "") or "").strip()
             if not topic and bool(getattr(state, "quiz_active", False)):
@@ -24086,6 +24180,102 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 save_failed = True
         return int(max(0, added)), save_failed
 
+    def _clone_jsonish_value(self, value: Any) -> Any:
+        """Recursively clone JSON-like payloads so live session state cannot be mutated by shared refs."""
+        if isinstance(value, dict):
+            return {str(key): self._clone_jsonish_value(val) for key, val in value.items()}
+        if isinstance(value, list):
+            return [self._clone_jsonish_value(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._clone_jsonish_value(item) for item in value]
+        return value
+
+    def _snapshot_question_payload(self, question: Any) -> dict[str, Any] | None:
+        """Return an isolated copy of a question-like payload."""
+        if not isinstance(question, dict):
+            return None
+        cloned = self._clone_jsonish_value(question)
+        return cloned if isinstance(cloned, dict) else None
+
+    def _question_identity_fingerprint(self, question: Any) -> str:
+        """Stable identity string for a question payload across live-bank mutations."""
+        if not isinstance(question, dict):
+            return ""
+        eng = getattr(self, "engine", None)
+        fingerprint_fn = getattr(eng, "_question_bank_fingerprint", None)
+        if callable(fingerprint_fn):
+            try:
+                return str(fingerprint_fn(question) or "")
+            except Exception:
+                pass
+        qid = str(question.get("id", "") or "").strip()
+        if qid:
+            return f"id:{qid}"
+        prompt = str(question.get("prompt", question.get("question", "")) or "").strip()
+        if prompt:
+            return f"prompt:{prompt.lower()}"
+        question_text = str(question.get("question", "") or "").strip()
+        if question_text:
+            return f"question:{question_text.lower()}"
+        return ""
+
+    def _resolve_live_question_index(
+        self,
+        chapter: str,
+        question: Any,
+        fallback_index: int | None = None,
+    ) -> int | None:
+        """Resolve a live engine question index from a snapshot payload or fallback index."""
+        eng = getattr(self, "engine", None)
+        if eng is None:
+            return fallback_index if isinstance(fallback_index, int) and fallback_index >= 0 else None
+        try:
+            current = list(getattr(eng, "get_questions", lambda ch: [])(chapter) or [])
+        except Exception:
+            current = []
+        identity = self._question_identity_fingerprint(question)
+        if identity:
+            for idx, row in enumerate(current):
+                if self._question_identity_fingerprint(row) == identity:
+                    return int(idx)
+        if isinstance(fallback_index, int) and 0 <= fallback_index < len(current):
+            try:
+                fallback_row = current[fallback_index]
+            except Exception:
+                fallback_row = None
+            if self._question_identity_fingerprint(fallback_row) == identity and identity:
+                return int(fallback_index)
+        return None
+
+    def _issue_workflow_token(self, scope: str) -> int:
+        """Bump and return a monotonic token for a named workflow scope."""
+        scope_key = str(scope or "").strip()
+        if not scope_key:
+            return 0
+        tokens = getattr(self, "_workflow_tokens", None)
+        if not isinstance(tokens, dict):
+            tokens = {}
+        try:
+            current = int(tokens.get(scope_key, 0) or 0) + 1
+        except Exception:
+            current = 1
+        tokens[scope_key] = current
+        self._workflow_tokens = tokens
+        return current
+
+    def _workflow_token_is_current(self, scope: str, token: int | None) -> bool:
+        """True when a workflow token still matches the latest issued token for that scope."""
+        scope_key = str(scope or "").strip()
+        if not scope_key:
+            return False
+        tokens = getattr(self, "_workflow_tokens", None)
+        if not isinstance(tokens, dict):
+            return False
+        try:
+            return int(tokens.get(scope_key, 0) or 0) == int(token or 0)
+        except Exception:
+            return False
+
     def _section_c_question_bank_path(self) -> str:
         raw = str(os.environ.get("STUDYPLAN_SECTION_C_BANK_PATH", "") or "").strip()
         if raw:
@@ -26365,6 +26555,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "rewrite_baseline_evaluation": None,
             "rewrite_baseline_response": "",
             "section_c_intelligence": None,
+            "workflow_token": self._issue_workflow_token("section_c"),
+            "evaluation_token": 0,
         }
 
         # Cancellation support for non-streaming AI calls (generate/evaluate).
@@ -26404,6 +26596,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         def _cancel_check() -> bool:
             return bool(section_c_cancel_event.is_set())
+
+        def _section_c_is_stale(workflow_token: int | None, evaluation_token: int | None = None) -> bool:
+            current_workflow = int(state.get("workflow_token", 0) or 0)
+            if int(workflow_token or 0) != current_workflow:
+                return True
+            if evaluation_token is None:
+                return False
+            return int(evaluation_token or 0) != int(state.get("evaluation_token", 0) or 0)
+
+        def _section_c_bump_workflow_token() -> int:
+            token = self._issue_workflow_token("section_c")
+            state["workflow_token"] = int(token)
+            return int(token)
+
+        def _section_c_bump_evaluation_token() -> int:
+            try:
+                current = int(state.get("evaluation_token", 0) or 0) + 1
+            except Exception:
+                current = 1
+            state["evaluation_token"] = int(current)
+            return int(current)
 
         def _on_cancel_ai(*_args) -> None:
             if not bool(state.get("busy", False)):
@@ -26514,6 +26727,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             _refresh_rewrite_panel()
 
         def _load_saved_case(chapter_name: str, clear_feedback: bool = True, question_index: int | None = None) -> dict[str, Any]:
+            if bool(state.get("busy", False)):
+                section_c_cancel_event.set()
+                try:
+                    _set_busy(False)
+                except Exception:
+                    pass
+            _section_c_bump_workflow_token()
             rows = self._get_section_c_questions(chapter_name)
             if not rows:
                 fallback = self._default_section_c_question(chapter_name)
@@ -26525,7 +26745,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             else:
                 case = dict(rows[-1]) if rows else self._default_section_c_question(chapter_name)
             state["chapter"] = str(chapter_name)
-            state["question"] = dict(case)
+            state["question"] = self._snapshot_question_payload(case) or dict(case)
             state["last_evaluation"] = None
             state["rewrite_plan"] = None
             state["rewrite_delta"] = None
@@ -26544,6 +26764,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return
             chapter_name = _selected_chapter()
             section_c_cancel_event.clear()
+            workflow_token = _section_c_bump_workflow_token()
             _set_busy(True)
             _set_status(f"Generating new Section C case for {chapter_name}...")
 
@@ -26561,12 +26782,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     err = str(exc)
 
                 def _finish() -> bool:
+                    if _section_c_is_stale(workflow_token):
+                        return False
                     if str(err or "").strip().lower() == "cancelled":
                         _set_status("Generation cancelled.")
                         _set_busy(False)
                         return False
                     state["chapter"] = str(chapter_name)
-                    state["question"] = dict(case)
+                    state["question"] = self._snapshot_question_payload(case) or dict(case)
                     state["last_evaluation"] = None
                     state["rewrite_plan"] = None
                     state["rewrite_delta"] = None
@@ -26598,6 +26821,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 _set_status("Write a response first, then evaluate.")
                 return
             section_c_cancel_event.clear()
+            workflow_token = int(state.get("workflow_token", 0) or 0)
+            evaluation_token = _section_c_bump_evaluation_token()
             _set_busy(True)
             _set_status("Evaluating response...")
             baseline_eval = state.get("rewrite_baseline_evaluation") if isinstance(state.get("rewrite_baseline_evaluation"), dict) else None
@@ -26632,11 +26857,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     warn = f"Evaluation fallback: {exc}"
 
                 def _finish() -> bool:
+                    if _section_c_is_stale(workflow_token, evaluation_token):
+                        return False
                     if str(warn or "").strip().lower() == "cancelled":
                         _set_status("Evaluation cancelled.")
                         _set_busy(False)
                         return False
-                    state["last_evaluation"] = dict(evaluation) if isinstance(evaluation, dict) else None
+                    state["last_evaluation"] = self._clone_jsonish_value(evaluation) if isinstance(evaluation, dict) else None
                     try:
                         section_c_intelligence = state.get("section_c_intelligence")
                         state["rewrite_plan"] = (
@@ -26701,7 +26928,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not current_answer:
                 _set_status("Write and evaluate a response before starting the rewrite loop.")
                 return
-            state["rewrite_baseline_evaluation"] = dict(evaluation)
+            state["rewrite_baseline_evaluation"] = self._clone_jsonish_value(evaluation)
             state["rewrite_baseline_response"] = current_answer
             state["rewrite_delta"] = None
             instruction = str(plan.get("instruction", "") or "").strip()
@@ -26817,7 +27044,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             _load_saved_case(_selected_chapter())
 
         chapter_dropdown.connect("notify::selected", _on_chapter_dropdown_changed)
-        dialog.connect("destroy", _stop_section_c_fr_poll)
+        def _on_dialog_destroy(*_args: object) -> None:
+            try:
+                section_c_cancel_event.set()
+                _section_c_bump_workflow_token()
+                _section_c_bump_evaluation_token()
+            except Exception:
+                pass
+            try:
+                _set_busy(False)
+            except Exception:
+                pass
+            _stop_section_c_fr_poll()
+
+        dialog.connect("destroy", _on_dialog_destroy)
         dialog.connect("response", lambda d, _r: d.destroy())
 
         _sync_format_checklist_visibility()
@@ -27016,6 +27256,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         *,
         prompt_task_id: str | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        workflow_token: int | None = None,
     ) -> tuple[bool, str]:
         if cancel_check and cancel_check():
             return False, "Gap question generation cancelled."
@@ -27108,6 +27349,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 break
         parse_warning = ""
         if not questions:
+            if workflow_token is not None and not self._workflow_token_is_current("gap_generation", workflow_token):
+                return False, "Gap question generation cancelled."
             try:
                 self._append_gap_question_quarantine(chapter, [], [parse_err or last_llm_err or "No valid JSON"], model_candidates[0] if model_candidates else "")
             except Exception:
@@ -27150,6 +27393,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             persist=False,
         )
         if not valid_rows:
+            if workflow_token is not None and not self._workflow_token_is_current("gap_generation", workflow_token):
+                return False, "Gap question generation cancelled."
             try:
                 quarantine_reasons = list(reasons or ["strict_validation_failed"])
                 if parse_warning:
@@ -27175,8 +27420,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if parse_warning:
                 return True, f"{base_msg} Schema recovery applied."
             return True, base_msg
+        if workflow_token is not None and not self._workflow_token_is_current("gap_generation", workflow_token):
+            return False, "Gap question generation cancelled."
         added, save_failed = self._save_generated_gap_questions(final_chapter, valid_rows)
         if added <= 0:
+            if workflow_token is not None and not self._workflow_token_is_current("gap_generation", workflow_token):
+                return False, "Gap question generation cancelled."
             try:
                 self._append_gap_question_quarantine(final_chapter, valid_rows, ["no_questions_added"], model_name)
             except Exception:
@@ -27204,6 +27453,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             success_msg = f"Generated and saved {added} gap question(s) for {final_chapter}."
         if parse_warning:
             success_msg += " Schema recovery applied."
+        if workflow_token is not None and not self._workflow_token_is_current("gap_generation", workflow_token):
+            return False, "Gap question generation cancelled."
         return True, success_msg
 
     def _execute_ai_tutor_action(self, action_plan: dict[str, Any]) -> tuple[bool, str]:
@@ -36403,8 +36654,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._set_current_topic(topic)
         if not self.current_topic:
             return
-        questions = self.engine.get_questions(self.current_topic)
-        if not questions:
+        live_questions = list(self.engine.get_questions(self.current_topic) or [])
+        if not live_questions:
             dialog = self._new_message_dialog(
                 transient_for=self,
                 modal=True,
@@ -36424,6 +36675,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             dialog.connect("response", _on_resp)
             dialog.present()
             return
+        questions = [self._snapshot_question_payload(q) or {} for q in live_questions]
+        question_fingerprints = [self._question_identity_fingerprint(q) for q in questions]
         if indices_override:
             indices_override = [i for i in indices_override if isinstance(i, int) and 0 <= i < len(questions)]
         if indices_override:
@@ -36644,6 +36897,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "position": 0,
             "correct": 0,
             "questions": questions,
+            "question_fingerprints": question_fingerprints,
             "current_streak": 0,
             "best_streak": 0,
             "answers": {},
@@ -36907,7 +37161,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.quiz_option_buttons = {}
 
         idx = self.quiz_session["indices"][self.quiz_session["position"]]
-        question = self.quiz_session["questions"][idx]
+        question = self._snapshot_question_payload(self.quiz_session["questions"][idx]) or dict(self.quiz_session["questions"][idx])
         self._quiz_question_started_at = time.monotonic()
         try:
             self._cognitive_quiz_mark_active_question(
@@ -37028,7 +37282,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.quiz_hint_label.set_visible(True)
         if getattr(self, "quiz_reason_label", None):
             session_topic = str(self.quiz_session.get("topic") or self.current_topic or "").strip()
-            self.quiz_reason_label.set_text(self._get_quiz_pick_reason(session_topic or self.current_topic, idx))
+            self.quiz_reason_label.set_text(self._get_quiz_pick_reason(session_topic or self.current_topic, idx, question))
             self.quiz_reason_label.set_visible(True)
 
         header = Gtk.Label(label=f"Question {pos} of {total}")
@@ -37230,6 +37484,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             raw_indices = list(session.get("indices", []) or [])
         else:
             raw_indices = list(indices)
+        snapshot_questions = list(session.get("questions", []) or [])
         pick_indices = sorted({int(i) for i in raw_indices if isinstance(i, int)})
         if not pick_indices:
             return
@@ -37248,7 +37503,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if token != int(getattr(self, "_quiz_reason_job_token", -1)):
                     break
                 try:
-                    computed[str(qidx)] = self._compute_quiz_pick_reason(chapter, qidx, include_route_meta=True)
+                    question = snapshot_questions[qidx] if 0 <= qidx < len(snapshot_questions) else None
+                    computed[str(qidx)] = self._compute_quiz_pick_reason(
+                        chapter,
+                        qidx,
+                        include_route_meta=True,
+                        question=question if isinstance(question, dict) else None,
+                    )
                 except Exception:
                     computed[str(qidx)] = "Picked for balanced practice."
             GLib.idle_add(self._apply_quiz_reason_prefetch, token, chapter, computed)
@@ -37295,11 +37556,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         return False
 
-    def _get_quiz_pick_reason(self, chapter: str, question_index: int) -> str:
+    def _get_quiz_pick_reason(self, chapter: str, question_index: int, question: dict[str, Any] | None = None) -> str:
         """Fast quiz reason lookup for UI paint; background worker fills semantic detail."""
         session = self.quiz_session if isinstance(getattr(self, "quiz_session", None), dict) else None
         if not session:
-            return self._compute_quiz_pick_reason(chapter, question_index, include_route_meta=False)
+            return self._compute_quiz_pick_reason(chapter, question_index, include_route_meta=False, question=question)
         route_key = str(question_index)
         reason_cache = session.get("route_reason_cache")
         if isinstance(reason_cache, dict):
@@ -37324,29 +37585,37 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         chapter: str,
         question_index: int,
         include_route_meta: bool = True,
+        question: dict[str, Any] | None = None,
     ) -> str:
         """Explain why a question was chosen (overdue, low retention, miss risk, etc.)."""
         reasons: list[str] = []
         today = datetime.date.today()
         route_outcomes: list[str] = []
+        resolved_index = int(question_index)
+        try:
+            live_idx = self._resolve_live_question_index(chapter, question, question_index) if isinstance(question, dict) else None
+            if isinstance(live_idx, int) and live_idx >= 0:
+                resolved_index = int(live_idx)
+        except Exception:
+            resolved_index = int(question_index)
         try:
             must_review = getattr(self.engine, "must_review", {}) or {}
             if isinstance(must_review, dict):
-                due_date = self.engine._parse_date(must_review.get(chapter, {}).get(str(question_index)))
+                due_date = self.engine._parse_date(must_review.get(chapter, {}).get(str(resolved_index)))
                 if due_date and due_date <= today:
                     reasons.append("must‑review due")
         except Exception:
             pass
         try:
             srs_list = getattr(self.engine, "srs_data", {}).get(chapter, [])
-            if isinstance(srs_list, list) and 0 <= question_index < len(srs_list):
-                if self.engine.is_overdue(srs_list[question_index], today):
+            if isinstance(srs_list, list) and 0 <= resolved_index < len(srs_list):
+                if self.engine.is_overdue(srs_list[resolved_index], today):
                     reasons.append("overdue")
         except Exception:
             pass
         try:
             route_meta_cache = self.quiz_session.get("route_meta_cache", {})
-            route_key = str(question_index)
+            route_key = str(resolved_index)
             route_meta = None
             cache_on_main = threading.current_thread() is threading.main_thread()
             if cache_on_main and isinstance(route_meta_cache, dict):
@@ -37356,7 +37625,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 and route_meta is None
                 and bool(getattr(self.engine, "semantic_enabled", True))
             ):
-                route_meta = self.engine.get_question_route_meta(chapter, question_index)
+                route_meta = self.engine.get_question_route_meta(chapter, resolved_index)
                 if cache_on_main and isinstance(route_meta_cache, dict):
                     route_meta_cache[route_key] = route_meta
             if isinstance(route_meta, dict):
@@ -37382,7 +37651,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if str(self.quiz_session.get("kind", "") or "").strip().lower() == "interleave":
                 lanes = self.quiz_session.get("interleave_lanes", {})
                 lane_map = lanes.get("lanes", {}) if isinstance(lanes, dict) else {}
-                lane = str(lane_map.get(str(question_index), "") or "").strip().lower() if isinstance(lane_map, dict) else ""
+                lane = str(lane_map.get(str(resolved_index), "") or "").strip().lower() if isinstance(lane_map, dict) else ""
                 if lane in {"target", "adjacent", "far"}:
                     reasons.append(f"cluster-{lane}")
         except Exception:
@@ -37395,13 +37664,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
         try:
-            retention = float(self.engine.get_retention_probability(chapter, question_index))
+            retention = float(self.engine.get_retention_probability(chapter, resolved_index))
             if retention <= 0.45:
                 reasons.append("low retention")
         except Exception:
             pass
         try:
-            recall_prob = self.engine.predict_recall_prob(chapter, question_index)
+            recall_prob = self.engine.predict_recall_prob(chapter, resolved_index)
             if isinstance(recall_prob, (int, float)) and float(recall_prob) <= 0.55:
                 reasons.append("low recall probability")
         except Exception:
@@ -37409,7 +37678,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         try:
             stats_by_ch = getattr(self.engine, "question_stats", {}).get(chapter, {})
             if isinstance(stats_by_ch, dict):
-                stats = stats_by_ch.get(str(question_index), {})
+                stats = stats_by_ch.get(str(resolved_index), {})
                 if isinstance(stats, dict):
                     attempts = int(stats.get("attempts", 0) or 0)
                     correct = int(stats.get("correct", 0) or 0)
@@ -37449,6 +37718,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
 
         question = self.quiz_session["questions"][idx]
+        question = self._snapshot_question_payload(question) or dict(question)
+        live_question_index = self._resolve_live_question_index(session_topic, question, idx)
+        resolved_index = int(live_question_index) if isinstance(live_question_index, int) and live_question_index >= 0 else None
+        scored_index = resolved_index if resolved_index is not None else idx
 
         is_correct = self.selected_option == question["correct"]
         self.quiz_session.setdefault("answers", {})[idx] = {
@@ -37481,13 +37754,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.award_xp(15, "quiz_sharpshooter")
         else:
             try:
-                if hasattr(self.engine, "flag_incorrect"):
-                    self.engine.flag_incorrect(session_topic, idx, days=2)
+                if resolved_index is not None and hasattr(self.engine, "flag_incorrect"):
+                    self.engine.flag_incorrect(session_topic, resolved_index, days=2)
             except Exception:
                 pass
             try:
-                if hasattr(self.engine, "record_difficulty"):
-                    self.engine.record_difficulty(session_topic, idx)
+                if resolved_index is not None and hasattr(self.engine, "record_difficulty"):
+                    self.engine.record_difficulty(session_topic, resolved_index)
             except Exception:
                 pass
             try:
@@ -37499,7 +37772,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         delta = 10 if is_correct else -5
         before_comp = float(getattr(self.engine, "competence", {}).get(session_topic, 0) or 0)
         try:
-            self.engine.update_competence(session_topic, delta, question_index=idx)
+            self.engine.update_competence(session_topic, delta, question_index=scored_index)
         except Exception:
             pass
         try:
@@ -37507,14 +37780,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             started = getattr(self, "_quiz_question_started_at", None)
             if isinstance(started, (int, float)):
                 elapsed = time.monotonic() - started
-            if hasattr(self.engine, "record_question_event"):
-                self.engine.record_question_event(session_topic, idx, is_correct, elapsed_sec=elapsed)
+            if resolved_index is not None and hasattr(self.engine, "record_question_event"):
+                self.engine.record_question_event(session_topic, resolved_index, is_correct, elapsed_sec=elapsed)
         except Exception:
             pass
         try:
             self._cognitive_quiz_record_attempt(
                 chapter=session_topic,
-                question_index=int(idx),
+                question_index=int(scored_index),
                 question=question if isinstance(question, dict) else {},
                 correct=bool(is_correct),
                 latency_ms=(None if elapsed is None else float(elapsed) * 1000.0),
@@ -37523,20 +37796,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
         try:
-            if hasattr(self.engine, "record_outcome_event"):
-                self.engine.record_outcome_event(session_topic, idx, bool(is_correct))
+            if resolved_index is not None and hasattr(self.engine, "record_outcome_event"):
+                self.engine.record_outcome_event(session_topic, resolved_index, bool(is_correct))
         except Exception:
             pass
         try:
-            if hasattr(self.engine, "record_question_outcome"):
-                self.engine.record_question_outcome(session_topic, idx, bool(is_correct))
+            if resolved_index is not None and hasattr(self.engine, "record_question_outcome"):
+                self.engine.record_question_outcome(session_topic, resolved_index, bool(is_correct))
         except Exception:
             pass
         after_comp = float(getattr(self.engine, "competence", {}).get(session_topic, 0) or 0)
         if before_comp is not None and after_comp is not None:
             self._maybe_notify_weak_cleared(session_topic, float(before_comp), float(after_comp))
         try:
-            self.engine.update_srs(session_topic, idx, is_correct)
+            if resolved_index is not None:
+                self.engine.update_srs(session_topic, resolved_index, is_correct)
         except Exception:
             pass
 

@@ -2833,6 +2833,81 @@ def test_question_quality_meta_memory_cache_is_deep_copied(engine_no_io, tmp_pat
     assert third["Ch1"]["0"]["quarantine"] is True
 
 
+def test_apply_question_quality_quarantine_removes_bad_rows_from_active_bank(tmp_path, monkeypatch, engine_no_io):
+    """Quarantined rows are pruned from the live bank and persisted without shifting the surviving SRS row."""
+    eng = engine_no_io
+    chapter = "FM Function"
+    good = {
+        "question": "What is the main purpose of NPV?",
+        "options": ["Valuation", "Accounting", "Tax", "Audit"],
+        "correct": "Valuation",
+        "explanation": "NPV is used for valuation.",
+    }
+    bad = {
+        "question": "What is the main purpose of NPV?",
+        "options": ["Valuation", "Accounting", "See explanation", "Audit"],
+        "correct": "Valuation",
+        "explanation": "Bad placeholder option.",
+    }
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS_DEFAULT = {chapter: []}
+    eng.QUESTIONS = {chapter: [dict(good), dict(bad)]}
+    eng.QUESTIONS_FILE = str(tmp_path / "questions.json")
+    eng.DATA_FILE = str(tmp_path / "data.json")
+    meta_path = tmp_path / "question_quality_meta.json"
+    monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
+    eng.srs_data = {
+        chapter: [
+            {
+                "last_review": "2026-03-01",
+                "interval": 5,
+                "efactor": 2.5,
+                "question_key": eng._question_bank_fingerprint(good),
+            },
+            {
+                "last_review": "2026-03-02",
+                "interval": 7,
+                "efactor": 2.5,
+                "question_key": eng._question_bank_fingerprint(bad),
+            },
+        ]
+    }
+
+    eng.apply_question_quality_quarantine()
+
+    assert eng.QUESTIONS[chapter] == [good]
+    assert len(eng.srs_data[chapter]) == 1
+    assert eng.srs_data[chapter][0]["question_key"] == eng._question_bank_fingerprint(good)
+    saved = json.loads(Path(eng.QUESTIONS_FILE).read_text(encoding="utf-8"))
+    assert saved[chapter] == [good]
+
+
+def test_sync_srs_with_questions_preserves_keyed_rows_after_removal(engine_no_io):
+    """Key-based SRS sync keeps the surviving question's review state when a bank row is removed."""
+    eng = engine_no_io
+    chapter = "FM Function"
+    q1 = {"question": "Q1?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}
+    q2 = {"question": "Q2?", "options": ["A", "B", "C", "D"], "correct": "B", "explanation": ""}
+    key1 = eng._question_bank_fingerprint(q1)
+    key2 = eng._question_bank_fingerprint(q2)
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS = {chapter: [dict(q1), dict(q2)]}
+    eng.QUESTIONS_DEFAULT = {chapter: []}
+    eng.srs_data = {
+        chapter: [
+            {"last_review": "2026-02-01", "interval": 3, "efactor": 2.2, "question_key": key1},
+            {"last_review": "2026-02-02", "interval": 9, "efactor": 2.1, "question_key": key2},
+        ]
+    }
+
+    eng.QUESTIONS[chapter] = [dict(q2)]
+    eng.sync_srs_with_questions()
+
+    assert len(eng.srs_data[chapter]) == 1
+    assert eng.srs_data[chapter][0]["question_key"] == key2
+    assert eng.srs_data[chapter][0]["interval"] == 9
+
+
 def test_get_outcome_coverage_counts_session_cache(engine_no_io, monkeypatch):
     """Second call with same bank reuses cache (no extra resolve_question_outcomes work)."""
     eng = engine_no_io

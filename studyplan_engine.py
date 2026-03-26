@@ -2709,11 +2709,19 @@ class StudyPlanEngine:
         by_chapter = meta.get(str(chapter or "").strip(), {})
         if not isinstance(by_chapter, dict):
             return set()
+        rows = list((getattr(self, "QUESTIONS", {}) or {}).get(str(chapter or "").strip(), []) or [])
         out: Set[int] = set()
         for key, val in by_chapter.items():
             if not isinstance(val, dict):
                 continue
             if val.get("quarantine"):
+                fingerprint = str(val.get("question_key", "") or "").strip()
+                if fingerprint:
+                    for idx, row in enumerate(rows):
+                        if self._question_bank_fingerprint(row) == fingerprint:
+                            out.add(int(idx))
+                            break
+                    continue
                 try:
                     out.add(int(key))
                 except (TypeError, ValueError):
@@ -2725,7 +2733,7 @@ class StudyPlanEngine:
         Scan the question bank and quarantine poor-quality questions in meta.
         Targets: options containing 'see explanation' (any wording), similar/duplicate questions,
         and MCQs where the correct option is far longer or shorter than distractors (length guessing).
-        Quarantined indices are excluded from quizzes via get_quarantined_question_indices.
+        Quarantined rows are excluded from quizzes and removed from the active bank.
         """
         meta = self._load_question_quality_meta()
         changed = False
@@ -2753,11 +2761,18 @@ class StudyPlanEngine:
                     entry = {"quarantine": False, "error_streak": 0, "last_used_iso": ""}
                 entry["quarantine"] = True
                 entry["quality_reason"] = str(reason)
+                entry["remove"] = True
+                if 0 <= int(idx) < len(items):
+                    entry["question_key"] = self._question_bank_fingerprint(items[int(idx)])
                 by_chapter[key] = entry
                 meta[str(chapter)] = by_chapter
                 changed = True
         if changed:
             self._save_question_quality_meta(meta)
+        try:
+            self._prune_removed_questions_from_bank(persist=True)
+        except Exception:
+            pass
 
     def record_question_outcome(self, chapter: str, question_index: int, correct: bool) -> None:
         """Record a quiz outcome for lazy quality tracking; quarantine after repeated errors."""
@@ -2780,6 +2795,10 @@ class StudyPlanEngine:
             entry["error_streak"] = int(entry.get("error_streak", 0) or 0) + 1
             if int(entry["error_streak"]) >= 3:
                 entry["quarantine"] = True
+                entry["remove"] = True
+                question_rows = self.QUESTIONS.get(chapter_key, []) or []
+                if 0 <= qidx < len(question_rows):
+                    entry["question_key"] = self._question_bank_fingerprint(question_rows[qidx])
         by_chapter[key] = entry
         meta[chapter_key] = by_chapter
         self._save_question_quality_meta(meta)
@@ -3049,10 +3068,7 @@ class StudyPlanEngine:
         # Populate missing chapters safely
         missing_chapters = set(self.CHAPTERS) - set(self.srs_data.keys())
         for chapter in missing_chapters:
-            self.srs_data[chapter] = [
-                {"last_review": None, "interval": 1, "efactor": 2.5}
-                for _ in self.QUESTIONS.get(chapter, [])
-            ]
+            self.srs_data[chapter] = []
 
         # Check for None values (avoid checking vars that can be None intentionally)
         none_allowed = {
@@ -3376,6 +3392,10 @@ class StudyPlanEngine:
                 except Exception:
                     hinted = question_len
                 question_len = max(question_len, hinted)
+            # During early startup, questions may not be loaded yet. Never truncate
+            # persisted SRS rows to zero solely because the question bank isn't
+            # initialized at this point; later sync will reconcile cardinality.
+            question_len = max(question_len, len(raw_list))
             if question_len < 0:
                 question_len = 0
             if len(raw_list) > question_len:
@@ -7501,8 +7521,12 @@ class StudyPlanEngine:
         total_added = sum(len(q) for q in questions_from_json.values())
         print(f"Total questions from JSON: {total_added}")
 
-        # Step 3: Sync SRS data with merged questions
+        # Step 3: Sync SRS data with merged questions, then remove any tombstoned rows.
         self.sync_srs_with_questions()
+        try:
+            self._prune_removed_questions_from_bank(persist=True)
+        except Exception:
+            pass
 
         # Step 4: Quarantine poor-quality questions (see explanation in options, similar questions)
         try:
@@ -7530,21 +7554,40 @@ class StudyPlanEngine:
     def sync_srs_with_questions(self):
         """Ensure SRS data matches current question count."""
         for chapter in self.CHAPTERS:
-            current_question_count = len(self.QUESTIONS.get(chapter, []))
-            old_entries = self.srs_data.get(chapter, [])
-            synced_entries = old_entries[:current_question_count]
+            current_questions = list(self.QUESTIONS.get(chapter, []) or [])
+            old_entries = list(self.srs_data.get(chapter, []) or [])
+            keyed_entries: Dict[str, Dict[str, Any]] = {}
+            fallback_entries: List[Dict[str, Any]] = []
+            for entry in old_entries:
+                if not isinstance(entry, dict):
+                    continue
+                key = str(entry.get("question_key", "") or "").strip()
+                if key and key not in keyed_entries:
+                    keyed_entries[key] = entry
+                else:
+                    fallback_entries.append(entry)
 
-            # Add new entries for newly added questions
-            new_entry_count = current_question_count - len(synced_entries)
-            if new_entry_count > 0:
-                new_entries = [
-                    {'last_review': None, 'interval': 1, 'efactor': 2.5}
-                    for _ in range(new_entry_count)
-                ]
-                synced_entries.extend(new_entries)
+            synced_entries: List[Dict[str, Any]] = []
+            fallback_idx = 0
+            for question in current_questions:
+                fingerprint = self._question_bank_fingerprint(question)
+                entry: Dict[str, Any]
+                if fingerprint and fingerprint in keyed_entries:
+                    entry = dict(keyed_entries.pop(fingerprint))
+                elif fallback_idx < len(fallback_entries):
+                    entry = dict(fallback_entries[fallback_idx])
+                    fallback_idx += 1
+                else:
+                    entry = self._make_srs_entry(question)
 
-            # Trim excess entries
-            self.srs_data[chapter] = synced_entries[:current_question_count]
+                if fingerprint:
+                    entry["question_key"] = fingerprint
+                entry.setdefault("last_review", None)
+                entry.setdefault("interval", 1)
+                entry.setdefault("efactor", 2.5)
+                synced_entries.append(entry)
+
+            self.srs_data[chapter] = synced_entries
 
     def _print_question_summary(self):
         """Print summary of all questions loaded."""
@@ -7618,6 +7661,66 @@ class StudyPlanEngine:
                     print(f"✗ Error removing file: {e}")
         self._cached_total_question_count_valid = False
 
+    def _question_quality_removed_fingerprints(self, chapter: str, meta: Dict[str, Dict[str, Any]] | None = None) -> set[str]:
+        """Return stable fingerprints for quarantined questions that should be removed from the active bank."""
+        source = meta if isinstance(meta, dict) else self._load_question_quality_meta()
+        by_chapter = source.get(str(chapter or "").strip(), {})
+        if not isinstance(by_chapter, dict):
+            return set()
+        removed: set[str] = set()
+        for val in by_chapter.values():
+            if not isinstance(val, dict):
+                continue
+            if not bool(val.get("remove", False)):
+                continue
+            fingerprint = str(val.get("question_key", "") or "").strip()
+            if fingerprint:
+                removed.add(fingerprint)
+        return removed
+
+    def _prune_removed_questions_from_bank(self, *, persist: bool = True) -> dict[str, Any]:
+        """Drop quarantined rows from the live bank and optionally persist the cleaned JSON file."""
+        removed_total = 0
+        removed_by_chapter: dict[str, int] = {}
+        changed = False
+
+        for chapter in list(self.CHAPTERS or []):
+            rows = self.QUESTIONS.get(chapter, [])
+            if not isinstance(rows, list) or not rows:
+                continue
+            removed_keys = self._question_quality_removed_fingerprints(chapter)
+            if not removed_keys:
+                continue
+
+            kept_rows: list[dict[str, Any]] = []
+            removed_count = 0
+            for row in rows:
+                fingerprint = self._question_bank_fingerprint(row)
+                if fingerprint and fingerprint in removed_keys:
+                    removed_count += 1
+                    continue
+                kept_rows.append(row)
+
+            if removed_count > 0:
+                self.QUESTIONS[chapter] = kept_rows
+                removed_by_chapter[str(chapter)] = removed_count
+                removed_total += removed_count
+                changed = True
+
+        if changed:
+            self._cached_total_question_count_valid = False
+            self._invalidate_outcome_coverage_counts_cache()
+            self._semantic_invalidate_chapter_assets(None)
+            self.sync_srs_with_questions()
+            if persist:
+                self.save_questions()
+
+        return {
+            "removed_total": int(removed_total),
+            "removed_by_chapter": removed_by_chapter,
+            "changed": bool(changed),
+        }
+
     def add_question(self, chapter, question_dict):
         """Add a single question to a chapter and save to JSON."""
         if chapter is None or chapter not in self.CHAPTERS:
@@ -7648,11 +7751,7 @@ class StudyPlanEngine:
         self._atomic_write_json(self.QUESTIONS_FILE, questions, indent=2)
 
         # Add corresponding SRS entry
-        self.srs_data.setdefault(chapter, []).append({
-            'last_review': None,
-            'interval': 1,
-            'efactor': 2.5
-        })
+        self.srs_data.setdefault(chapter, []).append(self._make_srs_entry(question_dict))
         self.QUESTIONS.setdefault(chapter, []).append(dict(question_dict))
         self._cached_total_question_count_valid = False
         self._invalidate_outcome_coverage_counts_cache()
@@ -8029,6 +8128,26 @@ class StudyPlanEngine:
         correct = self._normalize_question_text(q.get("correct", ""))
         return (question, options, correct)
 
+    def _question_bank_fingerprint(self, q: Any) -> str:
+        """Stable serialized fingerprint for a question row."""
+        if not isinstance(q, dict):
+            return ""
+        try:
+            question, options, correct = self._question_dedupe_key(q)
+        except Exception:
+            return ""
+        try:
+            return json.dumps([question, list(options), correct], ensure_ascii=True, separators=(",", ":"))
+        except Exception:
+            return ""
+
+    def _make_srs_entry(self, q: Any | None = None) -> Dict[str, Any]:
+        entry: Dict[str, Any] = {"last_review": None, "interval": 1, "efactor": 2.5}
+        fingerprint = self._question_bank_fingerprint(q)
+        if fingerprint:
+            entry["question_key"] = fingerprint
+        return entry
+
     def _deduplicate_questions(self, chapter, new_questions):
         """
         Remove questions that are too similar to existing ones.
@@ -8356,9 +8475,7 @@ class StudyPlanEngine:
         self._cached_total_question_count_valid = False
         self._invalidate_outcome_coverage_counts_cache()
         self.srs_data.setdefault(chapter, [])
-        self.srs_data[chapter].extend(
-            [{"last_review": None, "interval": 1, "efactor": 2.5} for _ in valid]
-        )
+        self.srs_data[chapter].extend([self._make_srs_entry(q) for q in valid])
         self._semantic_invalidate_chapter_assets(chapter)
         return len(valid), semantic_dedup
 
@@ -12404,7 +12521,8 @@ class StudyPlanEngine:
         """
         self.competence = {chapter: 0 for chapter in self.CHAPTERS}
         self.pomodoro_log = {"total_minutes": 0, "by_chapter": {}}
-        self.srs_data = {chapter: [{"last_review": None, "interval": 1, "efactor": 2.5} for _ in self.QUESTIONS.get(chapter, [])] for chapter in self.CHAPTERS}
+        self.srs_data = {chapter: [] for chapter in self.CHAPTERS}
+        self.sync_srs_with_questions()
         self.study_days = set()
         self.exam_date = None
         self.progress_log = []
