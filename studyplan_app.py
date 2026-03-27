@@ -3456,7 +3456,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _refresh_workbench_page(self, page: str) -> None:
         key = str(page or "").strip().lower()
-        refresh_map: dict[str, tuple[str, Callable[[], Any]]] = {
+        refresh_map: dict[str, tuple[str, Callable[..., Any]]] = {
             "tutor": ("tutor_workspace", self._refresh_tutor_workspace_page),
             "coach": ("coach_workspace", self._refresh_coach_workspace_page),
             "insights": ("insights_workspace", self._refresh_insights_workspace_page),
@@ -3468,7 +3468,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             # Some workspace refresh functions accept `force` kwarg; tests expect
             # `_refresh_workbench_page` to always force-refresh for non-tutor pages.
             if str(key) in {"coach", "insights", "settings"}:
-                render_callable: Callable[[], Any] = lambda: refresh_fn(force=True)
+                render_callable: Callable[[], Any] = lambda: cast(Any, refresh_fn)(force=True)
             else:
                 render_callable = lambda: refresh_fn()
             self._safe_render_section(
@@ -17862,6 +17862,42 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             return []
 
+    def _resolve_cloud_candidate_models(
+        self,
+        *,
+        model: str,
+        inference_purpose: str,
+    ) -> list[str]:
+        """Shared cloud model candidate resolution.
+
+        This is used by both streaming and non-streaming generation to keep
+        backend/candidate behavior consistent.
+        """
+        model_candidates: list[str] = []
+        cloud_model_candidates_fn = getattr(self, "_cloud_model_candidates", None)
+        if callable(cloud_model_candidates_fn):
+            raw_candidates = cloud_model_candidates_fn(
+                inference_purpose=str(inference_purpose or "tutor"),
+                requested_model=str(model or "").strip(),
+            )
+            if isinstance(raw_candidates, (list, tuple, set)):
+                model_candidates = [
+                    str(item or "").strip()
+                    for item in raw_candidates
+                    if str(item or "").strip()
+                ]
+        else:
+            try:
+                requested = str(model or "").strip()
+                configured = str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip()
+                if requested:
+                    model_candidates.append(requested)
+                if configured and configured not in model_candidates:
+                    model_candidates.append(configured)
+            except Exception:
+                model_candidates = []
+        return model_candidates
+
     def _cloud_endpoint_is_candidate(self) -> bool:
         """Return True when an OpenAI-compatible cloud endpoint is configured and authenticated."""
         try:
@@ -18310,29 +18346,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self._note_llm_inference_attribution("brave_search", used_model)
                 return brave_text, None
         if self._cloud_endpoint_is_candidate():
-            model_candidates: list[str] = []
-            cloud_model_candidates_fn = getattr(self, "_cloud_model_candidates", None)
-            if callable(cloud_model_candidates_fn):
-                raw_candidates = cloud_model_candidates_fn(
-                    inference_purpose=str(inference_purpose or "tutor"),
-                    requested_model=str(model or "").strip(),
-                )
-                if isinstance(raw_candidates, (list, tuple, set)):
-                    model_candidates = [
-                        str(item or "").strip()
-                        for item in raw_candidates
-                        if str(item or "").strip()
-                    ]
-            else:
-                try:
-                    requested = str(model or "").strip()
-                    configured = str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip()
-                    if requested:
-                        model_candidates.append(requested)
-                    if configured and configured not in model_candidates:
-                        model_candidates.append(configured)
-                except Exception:
-                    model_candidates = []
+            model_candidates = StudyPlanGUI._resolve_cloud_candidate_models(
+                self,
+                model=str(model or ""),
+                inference_purpose=str(inference_purpose or "tutor"),
+            )
             cloud_text, cloud_err = self._generate_via_cloud_llama_cpp_endpoint(
                 prompt_text,
                 candidate_models=model_candidates,
@@ -18924,29 +18942,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self._emit_text_as_chunks(brave_text, on_chunk)
                 return brave_text, None
         if self._cloud_endpoint_is_candidate():
-            model_candidates: list[str] = []
-            cloud_model_candidates_fn = getattr(self, "_cloud_model_candidates", None)
-            if callable(cloud_model_candidates_fn):
-                raw_candidates = cloud_model_candidates_fn(
-                    inference_purpose=str(inference_purpose or "tutor"),
-                    requested_model=str(model or "").strip(),
-                )
-                if isinstance(raw_candidates, (list, tuple, set)):
-                    model_candidates = [
-                        str(item or "").strip()
-                        for item in raw_candidates
-                        if str(item or "").strip()
-                    ]
-            else:
-                try:
-                    requested = str(model or "").strip()
-                    configured = str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip()
-                    if requested:
-                        model_candidates.append(requested)
-                    if configured and configured not in model_candidates:
-                        model_candidates.append(configured)
-                except Exception:
-                    model_candidates = []
+            model_candidates = StudyPlanGUI._resolve_cloud_candidate_models(
+                self,
+                model=str(model or ""),
+                inference_purpose=str(inference_purpose or "tutor"),
+            )
             cloud_text, cloud_err = self._generate_via_cloud_llama_cpp_endpoint(
                 prompt_text,
                 candidate_models=model_candidates,

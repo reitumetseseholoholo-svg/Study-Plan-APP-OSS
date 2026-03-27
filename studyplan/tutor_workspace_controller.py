@@ -86,13 +86,15 @@ class TutorWorkspaceController:
         getter = getattr(state, "paused_tutor_turn", None)
         if not callable(getter):
             return None
-        snapshot = getter()
-        if snapshot is None:
+        snapshot_any = getter()
+        if snapshot_any is None:
+            return None
+        if not isinstance(snapshot_any, dict):
             return None
         clearer = getattr(state, "clear_paused_tutor_turn", None)
         if callable(clearer):
             clearer()
-        return snapshot
+        return snapshot_any
 
     def discard_paused_turn(self) -> bool:
         state = self.run_state
