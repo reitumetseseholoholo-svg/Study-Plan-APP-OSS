@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,7 @@ class TutorTurnRequest:
     history_fingerprint: str
     context_budget_chars: int
     rag_budget_chars: int
+    cancel_check: Callable[[], bool] | None = None
 
 
 @dataclass(frozen=True)

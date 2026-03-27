@@ -49,6 +49,7 @@ from gi.repository import Gtk, GLib, Gdk, Gio, Pango  # type: ignore[reportAttri
 from studyplan_engine import StudyPlanEngine
 from studyplan.coach_fsm import SocraticFSM
 from studyplan.cognitive_state import CognitiveState
+from studyplan.tutor_workspace_controller import TutorWorkspaceController
 from studyplan_file_safety import (
     enforce_file_size_limit,
     secure_path_permissions,
@@ -914,6 +915,7 @@ class TutorWorkspaceState(dict[str, Any]):
         practice_session_id: str = "tutor-workspace",
     ) -> None:
         super().__init__()
+        self._lock = threading.RLock()
         self.update(
             {
                 "active": False,
@@ -957,22 +959,24 @@ class TutorWorkspaceState(dict[str, Any]):
                 "tutor_help_followup_prompt": "",
                 "practice_plan_token": 0,
                 "practice_assessment_token": 0,
+                "turn_backend": "",
             }
         )
         self.clear_practice_plan()
 
     def reset_stream_runtime(self, *, clear_drafts: bool = False) -> None:
-        self["stream_render_pending"] = False
-        self["stream_render_force"] = False
-        self["stream_last_clean_text"] = ""
-        self["stream_label_inserted"] = False
-        self["stream_last_chunk_at"] = 0.0
-        self["stream_last_render_at"] = 0.0
-        self["stream_watchdog_last_force_at"] = 0.0
-        self["stream_watchdog_forced_flushes"] = 0
-        if clear_drafts:
-            self["draft_user"] = ""
-            self["draft_assistant"] = ""
+        with self._lock:
+            self["stream_render_pending"] = False
+            self["stream_render_force"] = False
+            self["stream_last_clean_text"] = ""
+            self["stream_label_inserted"] = False
+            self["stream_last_chunk_at"] = 0.0
+            self["stream_last_render_at"] = 0.0
+            self["stream_watchdog_last_force_at"] = 0.0
+            self["stream_watchdog_forced_flushes"] = 0
+            if clear_drafts:
+                self["draft_user"] = ""
+                self["draft_assistant"] = ""
 
     def clear_practice_plan(self) -> None:
         self.issue_practice_plan_token()
@@ -1165,18 +1169,95 @@ class TutorWorkspaceState(dict[str, Any]):
         self["practice_session_quality_summary"] = dict(summary) if isinstance(summary, dict) else {}
 
     def paused_tutor_turn(self) -> dict[str, Any] | None:
-        candidate = self.get("paused_tutor_turn")
-        return dict(candidate) if isinstance(candidate, dict) else None
+        with self._lock:
+            candidate = self.get("paused_tutor_turn")
+            return dict(candidate) if isinstance(candidate, dict) else None
 
     def set_paused_tutor_turn(self, turn: Any, *, reason: str = "", at: str = "") -> None:
-        self["paused_tutor_turn"] = dict(turn) if isinstance(turn, dict) else None
-        self["paused_tutor_turn_reason"] = str(reason or "").strip()
-        self["paused_tutor_turn_at"] = str(at or "").strip()
+        with self._lock:
+            self["paused_tutor_turn"] = dict(turn) if isinstance(turn, dict) else None
+            self["paused_tutor_turn_reason"] = str(reason or "").strip()
+            self["paused_tutor_turn_at"] = str(at or "").strip()
 
     def clear_paused_tutor_turn(self) -> None:
-        self["paused_tutor_turn"] = None
-        self["paused_tutor_turn_reason"] = ""
-        self["paused_tutor_turn_at"] = ""
+        with self._lock:
+            self["paused_tutor_turn"] = None
+            self["paused_tutor_turn_reason"] = ""
+            self["paused_tutor_turn_at"] = ""
+
+    def begin_turn(self, *, user_prompt: str, model: str, cancel_event: threading.Event) -> int:
+        with self._lock:
+            self["job_id"] = int(self.get("job_id", 0) or 0) + 1
+            job_id = int(self.get("job_id", 0) or 0)
+            self["cancel_event"] = cancel_event
+            self["model"] = str(model or "")
+            self["draft_user"] = str(user_prompt or "")
+            self["draft_assistant"] = ""
+            return job_id
+
+    def append_draft_assistant_chunk(self, *, job_id: int, chunk: str, max_chars: int) -> tuple[bool, bool]:
+        with self._lock:
+            if int(self.get("job_id", 0) or 0) != int(job_id):
+                return False, False
+            if not bool(self.get("active", False)):
+                return False, False
+            draft = str(self.get("draft_assistant", "") or "") + str(chunk or "")
+            truncated = False
+            if len(draft) > int(max_chars):
+                draft = draft[: int(max_chars)]
+                truncated = True
+            self["draft_assistant"] = draft
+            self["stream_last_chunk_at"] = float(time.monotonic())
+            return True, truncated
+
+    def consume_turn_drafts_for_finish(self, *, job_id: int) -> tuple[str, str] | None:
+        with self._lock:
+            if int(self.get("job_id", 0) or 0) != int(job_id):
+                return None
+            draft_user = str(self.get("draft_user", "") or "").strip()
+            draft_assistant = str(self.get("draft_assistant", "") or "").strip()
+            self["cancel_event"] = None
+            self["draft_user"] = ""
+            self["draft_assistant"] = ""
+            self["turn_started_at"] = 0.0
+            self["turn_user_prompt"] = ""
+            self["turn_full_prompt"] = ""
+            self["turn_model_candidates"] = []
+            self["turn_llm_purpose"] = ""
+            self["turn_backend"] = ""
+            self.pop("auto_resume_mode", None)
+            return draft_user, draft_assistant
+
+    def snapshot_active_turn_for_pause(
+        self,
+        *,
+        reason: str,
+        paused_at: str,
+        paused_monotonic: float,
+        backend: str = "",
+    ) -> dict[str, Any]:
+        with self._lock:
+            snapshot: dict[str, Any] = {
+                "model": str(self.get("model", "") or "").strip(),
+                "user_prompt": str(self.get("draft_user", "") or "").strip(),
+                "draft_assistant": str(self.get("draft_assistant", "") or "").strip(),
+                "turn_started_at": float(self.get("turn_started_at", 0.0) or 0.0),
+                "full_prompt": str(self.get("turn_full_prompt", "") or ""),
+                "model_candidates": [
+                    str(item or "").strip()
+                    for item in list(self.get("turn_model_candidates", []) or [])
+                    if str(item or "").strip()
+                ],
+                "tutor_llm_purpose": str(self.get("turn_llm_purpose", "") or "").strip(),
+                "backend": str(backend or self.get("turn_backend", "") or "").strip(),
+                "reason": str(reason or "").strip(),
+                "paused_at": str(paused_at or "").strip(),
+                "paused_monotonic": float(paused_monotonic),
+            }
+            self["paused_tutor_turn"] = dict(snapshot)
+            self["paused_tutor_turn_reason"] = str(reason or "").strip()
+            self["paused_tutor_turn_at"] = str(paused_at or "").strip()
+            return snapshot
 
     def tutor_auto_pause_resume_tick_id(self) -> int:
         try:
@@ -3384,9 +3465,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         target = refresh_map.get(key)
         if target is not None:
             section_id, refresh_fn = target
+            # Some workspace refresh functions accept `force` kwarg; tests expect
+            # `_refresh_workbench_page` to always force-refresh for non-tutor pages.
+            if str(key) in {"coach", "insights", "settings"}:
+                render_callable: Callable[[], Any] = lambda: refresh_fn(force=True)
+            else:
+                render_callable = lambda: refresh_fn()
             self._safe_render_section(
                 section_id,
-                lambda: refresh_fn(),
+                render_callable,
                 fallback_fn=lambda report, page_key=key: self._set_workbench_refresh_fallback(page_key, report),
             )
         self._refresh_workbench_shell_status()
@@ -4143,6 +4230,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             tutor_help_feedback_at=str(memory_snapshot.get("last_help_feedback_at", "") or "").strip(),
             practice_session_id="tutor-workspace",
         )
+        tutor_workspace_controller = TutorWorkspaceController(run_state=run_state)
         self._tutor_workspace_state = run_state
 
         history: list[dict[str, str]] = []
@@ -6727,17 +6815,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 auto_resume_mode = ""
             try:
-                paused_turn = run_state.paused_tutor_turn()
+                paused_turn = tutor_workspace_controller.resume_turn()
             except Exception:
                 paused_turn = None
             if auto_resume_mode == "auto" and paused_turn is None:
                 return
             if paused_turn is not None:
                 resume_note = "Auto-resuming paused tutor turn" if auto_resume_mode == "auto" else "Resuming paused tutor turn"
-                try:
-                    run_state.clear_paused_tutor_turn()
-                except Exception:
-                    pass
             tutor_llm_purpose = infer_tutor_llm_purpose(user_prompt)
             routing_request_id = self._new_llm_routing_request_id()
             auto_model_note = ""
@@ -7240,13 +7324,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     return True
                 return False
 
-            run_state["job_id"] = int(run_state.get("job_id", 0) or 0) + 1
-            job_id = int(run_state.get("job_id", 0) or 0)
-            run_state["cancel_event"] = cancel_event
-            run_state["model"] = model_name
-            run_state["draft_user"] = user_prompt
-            run_state["draft_assistant"] = ""
-            run_state.reset_stream_runtime()
+            job_id = tutor_workspace_controller.start_turn(
+                user_prompt=user_prompt,
+                model=model_name,
+                cancel_event=cancel_event,
+                set_running=_set_running,
+                render_transcript=_render_transcript,
+            )
             run_state["practice_hint_policy_state"] = {}
             run_state.clear_tutor_trust()
             self.local_llm_model = model_name
@@ -7288,11 +7372,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 status_parts.append(resume_note)
             self._ai_tutor_maybe_append_load_notice(status_parts, adaptive_limits)
             _set_status(" • ".join(status_parts))
-            _set_running(True)
-            run_state["follow_live"] = True
-            run_state["follow_manual_override"] = False
-            _render_transcript(force_scroll=True)
-
             def _worker() -> None:
                 nonlocal model_name
 
@@ -7312,14 +7391,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                     max(0.0, (float(time.monotonic()) - started) * 1000.0)
                                 )
                                 guard_state["stream_started_at"] = float(time.monotonic())
-                        draft = str(run_state.get("draft_assistant", "") or "") + str(piece or "")
-                        if len(draft) > int(AI_TUTOR_MAX_RESPONSE_CHARS):
-                            draft = draft[: int(AI_TUTOR_MAX_RESPONSE_CHARS)]
+                        accepted, truncated = run_state.append_draft_assistant_chunk(
+                            job_id=job_id,
+                            chunk=str(piece or ""),
+                            max_chars=int(AI_TUTOR_MAX_RESPONSE_CHARS),
+                        )
+                        if not accepted:
+                            return False
+                        if truncated:
                             guard_state["truncated"] = True
                             cancel_event.set()
                             _request_stream_stop_once()
-                        run_state["draft_assistant"] = draft
-                        run_state["stream_last_chunk_at"] = float(time.monotonic())
                         _schedule_stream_render(force_scroll=False)
                         return False
 
@@ -7376,18 +7458,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if int(run_state.get("job_id", 0) or 0) != job_id:
                         return False
                     try:
-                        draft_user = str(run_state.get("draft_user", "") or "").strip()
-                        draft_assistant = str(run_state.get("draft_assistant", "") or "").strip()
-                        run_state["cancel_event"] = None
-                        run_state["draft_user"] = ""
-                        run_state["draft_assistant"] = ""
-                        run_state["turn_started_at"] = 0.0
-                        run_state["turn_user_prompt"] = ""
-                        run_state["turn_full_prompt"] = ""
-                        run_state["turn_model_candidates"] = []
-                        run_state["turn_llm_purpose"] = ""
-                        run_state.pop("auto_resume_mode", None)
-                        _set_running(False)
+                        drafts = tutor_workspace_controller.finish_turn(job_id=job_id, set_running=_set_running)
+                        if drafts is None:
+                            return False
+                        draft_user, draft_assistant = drafts
                         final_text = str(text or "").strip() or draft_assistant
                         try:
                             final_text = self._cognitive_tutor_postfilter_response(
@@ -7671,22 +7745,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         def _stop_generation(*_args) -> None:
             if bool(run_state.get("active", False)):
-                snapshot = self._pause_tutor_workspace_turn(reason="user_pause")
+                snapshot = tutor_workspace_controller.pause_turn(
+                    reason="user_pause",
+                    pause_fn=self._pause_tutor_workspace_turn,
+                )
                 if snapshot is not None:
                     _set_status("Paused tutor turn. Click Send to resume.")
                 else:
                     _set_status("Stopping…")
                 return
-            paused_turn = None
-            try:
-                paused_turn = run_state.paused_tutor_turn()
-            except Exception:
-                paused_turn = None
-            if paused_turn is not None:
-                try:
-                    run_state.clear_paused_tutor_turn()
-                except Exception:
-                    pass
+            if tutor_workspace_controller.discard_paused_turn():
                 _set_status("Paused tutor turn discarded.")
 
         def _auto_manage_tutor_workspace_turn() -> bool:
@@ -7700,7 +7768,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if bool(run_state.get("active", False)):
                     should_pause, pause_reason = self._should_auto_pause_tutor_workspace_turn()
                     if should_pause:
-                        snapshot = self._pause_tutor_workspace_turn(reason=pause_reason)
+                        snapshot = tutor_workspace_controller.pause_turn(
+                            reason=pause_reason,
+                            pause_fn=self._pause_tutor_workspace_turn,
+                        )
                         if snapshot is not None:
                             _set_status("Auto-paused tutor turn to protect performance and memory.")
                             _refresh_status_line()
@@ -17618,10 +17689,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _clear_llm_inference_attribution(self) -> None:
         self._last_llm_inference_backend = ""
         self._last_llm_inference_model = ""
+        self._active_tutor_turn_backend = ""
+        state = getattr(self, "_tutor_workspace_state", None)
+        if isinstance(state, TutorWorkspaceState):
+            try:
+                state["turn_backend"] = ""
+            except Exception:
+                pass
 
     def _note_llm_inference_attribution(self, backend: str, model_id: str) -> None:
-        self._last_llm_inference_backend = str(backend or "").strip()[:64]
+        normalized_backend = str(backend or "").strip()[:64]
+        self._last_llm_inference_backend = normalized_backend
         self._last_llm_inference_model = str(model_id or "").strip()[:256]
+        self._active_tutor_turn_backend = normalized_backend
+        state = getattr(self, "_tutor_workspace_state", None)
+        if isinstance(state, TutorWorkspaceState):
+            try:
+                state["turn_backend"] = normalized_backend
+            except Exception:
+                pass
 
     def _tutor_workspace_prompt_text(self) -> str:
         view = getattr(self, "_tutor_workspace_prompt_view", None)
@@ -17710,23 +17796,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             paused_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         except Exception:
             paused_at = ""
-        snapshot: dict[str, Any] = {
-            "model": str(state.get("model", "") or "").strip(),
-            "user_prompt": str(state.get("draft_user", "") or "").strip(),
-            "draft_assistant": str(state.get("draft_assistant", "") or "").strip(),
-            "turn_started_at": float(state.get("turn_started_at", 0.0) or 0.0),
-            "full_prompt": str(state.get("turn_full_prompt", "") or ""),
-            "model_candidates": [
-                str(item or "").strip()
-                for item in list(state.get("turn_model_candidates", []) or [])
-                if str(item or "").strip()
-            ],
-            "tutor_llm_purpose": str(state.get("turn_llm_purpose", "") or "").strip(),
-            "reason": str(reason or "").strip(),
-            "paused_at": paused_at,
-            "paused_monotonic": float(time.monotonic()),
-        }
-        state.set_paused_tutor_turn(snapshot, reason=reason, at=paused_at)
+        backend_hint = str(
+            state.get("turn_backend", "")
+            or getattr(self, "_active_tutor_turn_backend", "")
+            or getattr(self, "_last_llm_inference_backend", "")
+            or ""
+        ).strip()
+        snapshot = state.snapshot_active_turn_for_pause(
+            reason=str(reason or "").strip(),
+            paused_at=paused_at,
+            paused_monotonic=float(time.monotonic()),
+            backend=backend_hint,
+        )
         try:
             cancel_event = state.get("cancel_event")
             if isinstance(cancel_event, threading.Event):
@@ -17735,7 +17816,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         try:
             model_name = str(snapshot.get("model", "") or "").strip()
-            if model_name:
+            backend_name = str(snapshot.get("backend", "") or "").strip().lower()
+            should_stop_ollama = backend_name not in {"gateway", "llama_cpp_cloud", "brave_search", "cloud"}
+            if model_name and should_stop_ollama:
                 self._ollama_stop_model(model_name)
         except Exception:
             pass
@@ -17785,6 +17868,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             resolved = self._resolve_openai_compatible_endpoint()
             if resolved is None:
                 return False
+            cooldown_fn = getattr(self, "_cloud_endpoint_on_cooldown", None)
+            if callable(cooldown_fn) and cooldown_fn(resolved):
+                return False
             endpoint = str(resolved.endpoint or "").strip()
             if not endpoint:
                 return False
@@ -17809,9 +17895,59 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             except Exception:
                 auth = None
+            if not (auth is not None and bool(auth.headers)):
+                mark_failure_fn = getattr(self, "_mark_cloud_endpoint_failure", None)
+                if callable(mark_failure_fn):
+                    mark_failure_fn(resolved, "cloud_auth_missing")
             return auth is not None and bool(auth.headers)
         except Exception:
             return False
+
+    def _cloud_endpoint_key(self, resolved: ResolvedOpenAICompatibleEndpoint) -> str:
+        endpoint = str(getattr(resolved, "endpoint", "") or "").strip().lower()
+        source = str(getattr(resolved, "source", "") or "").strip().lower()
+        return f"{source}|{endpoint}"
+
+    def _cloud_endpoint_on_cooldown(self, resolved: ResolvedOpenAICompatibleEndpoint) -> bool:
+        now = float(time.monotonic())
+        key = self._cloud_endpoint_key(resolved)
+        state = getattr(self, "_cloud_endpoint_failures", None)
+        if not isinstance(state, dict):
+            return False
+        row = state.get(key)
+        if not isinstance(row, dict):
+            return False
+        try:
+            until = float(row.get("until", 0.0) or 0.0)
+        except Exception:
+            until = 0.0
+        return until > now
+
+    def _mark_cloud_endpoint_failure(self, resolved: ResolvedOpenAICompatibleEndpoint, error_code: str) -> None:
+        code = str(error_code or "").strip().lower()
+        cooldown_s = 0.0
+        if code in {"cloud_auth_missing", "cloud_auth_failed"}:
+            cooldown_s = 30.0
+        elif code in {"cloud_unreachable", "cloud_http_error", "cloud_error"}:
+            cooldown_s = 20.0
+        elif code in {"cloud_model_error", "cloud_invalid_json"}:
+            cooldown_s = 10.0
+        if cooldown_s <= 0.0:
+            return
+        state = getattr(self, "_cloud_endpoint_failures", None)
+        if not isinstance(state, dict):
+            state = {}
+            setattr(self, "_cloud_endpoint_failures", state)
+        state[self._cloud_endpoint_key(resolved)] = {
+            "error_code": code,
+            "until": float(time.monotonic() + cooldown_s),
+        }
+
+    def _clear_cloud_endpoint_failure(self, resolved: ResolvedOpenAICompatibleEndpoint) -> None:
+        state = getattr(self, "_cloud_endpoint_failures", None)
+        if not isinstance(state, dict):
+            return
+        state.pop(self._cloud_endpoint_key(resolved), None)
 
     def _brave_search_ai_is_candidate(self) -> bool:
         """Return True when Brave Search AI is enabled and configured."""
@@ -17960,6 +18096,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             endpoint = str(resolved_endpoint.endpoint if resolved_endpoint is not None else "").strip()
             if not endpoint:
                 return "", "cloud_endpoint_missing"
+            cooldown_fn = getattr(self, "_cloud_endpoint_on_cooldown", None)
+            if resolved_endpoint is not None and callable(cooldown_fn):
+                if cooldown_fn(resolved_endpoint):
+                    return "", "cloud_cooldown"
             if not candidate_models:
                 candidate_models = self._cloud_model_candidates(
                     inference_purpose=inference_purpose,
@@ -17972,11 +18112,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
 
-            timeout_s = float(getattr(_Cfg, "CLOUD_LLAMACPP_REQUEST_TIMEOUT_SECONDS", 8.0) or 8.0)
+            timeout_s = float(getattr(resolved_endpoint, "request_timeout_seconds", 8.0) or 8.0)
             timeout_s = max(1.0, min(60.0, timeout_s))
 
             headers: dict[str, str] = {"Content-Type": "application/json"}
-            explicit_bearer = str(getattr(_Cfg, "CLOUD_LLAMACPP_AUTH_BEARER", "") or "").strip()
+            explicit_bearer = ""
+            if resolved_endpoint is not None and str(getattr(resolved_endpoint, "auth_mode", "") or "") == "cloud_llamacpp":
+                explicit_bearer = str(getattr(_Cfg, "CLOUD_LLAMACPP_AUTH_BEARER", "") or "").strip()
             if explicit_bearer:
                 headers["Authorization"] = (
                     explicit_bearer
@@ -18034,8 +18176,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         raw = ""
                     if status == 404:
                         continue  # try next model candidate
-                    return "", "cloud_http_error"
+                    err_code = "cloud_auth_failed" if status in {401, 403} else "cloud_http_error"
+                    mark_failure_fn = getattr(self, "_mark_cloud_endpoint_failure", None)
+                    if resolved_endpoint is not None and callable(mark_failure_fn):
+                        mark_failure_fn(resolved_endpoint, err_code)
+                    return "", err_code
                 except Exception:
+                    mark_failure_fn = getattr(self, "_mark_cloud_endpoint_failure", None)
+                    if resolved_endpoint is not None and callable(mark_failure_fn):
+                        mark_failure_fn(resolved_endpoint, "cloud_unreachable")
                     return "", "cloud_unreachable"
 
                 try:
@@ -18067,6 +18216,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                         setattr(self, "_cloud_endpoint_last_model", str(candidate or "").strip())
                                     except Exception:
                                         pass
+                                    clear_failure_fn = getattr(self, "_clear_cloud_endpoint_failure", None)
+                                    if resolved_endpoint is not None and callable(clear_failure_fn):
+                                        clear_failure_fn(resolved_endpoint)
                                     return content.strip(), None
                             text = first.get("text")
                             if isinstance(text, str) and text.strip():
@@ -18074,6 +18226,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                     setattr(self, "_cloud_endpoint_last_model", str(candidate or "").strip())
                                 except Exception:
                                     pass
+                                clear_failure_fn = getattr(self, "_clear_cloud_endpoint_failure", None)
+                                if resolved_endpoint is not None and callable(clear_failure_fn):
+                                    clear_failure_fn(resolved_endpoint)
                                 return text.strip(), None
                 return "", "cloud_empty_output"
 

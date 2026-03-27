@@ -1,5 +1,6 @@
 import json
 import os
+import hashlib
 import threading
 from datetime import datetime, timezone
 from typing import Any
@@ -25,6 +26,10 @@ class PersistenceLayer:
             ),
         )
         self._journal: list[dict[str, Any]] = []
+        self._journal_include_snapshots = (
+            str(os.environ.get("STUDYPLAN_PERSISTENCE_JOURNAL_INCLUDE_SNAPSHOTS", "0")).strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
         self._learner_locks: dict[str, threading.RLock] = {}
         self._learner_locks_lock = threading.RLock()
 
@@ -54,12 +59,17 @@ class PersistenceLayer:
         with locked_cognitive_state(state, state_lock):
             snapshot = snapshot_cognitive_state(state)
         frozen_state = CognitiveState.from_snapshot(snapshot)
+        snapshot_bytes = json.dumps(snapshot, ensure_ascii=True, sort_keys=True).encode("utf-8")
         journal_entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "learner_id": learner_id,
             "operation": "save_state",
-            "state_snapshot": snapshot,
+            "snapshot_size": int(len(snapshot_bytes)),
+            "snapshot_sha1": hashlib.sha1(snapshot_bytes).hexdigest(),
+            "result": "pending",
         }
+        if self._journal_include_snapshots:
+            journal_entry["state_snapshot"] = snapshot
         self._write_journal(journal_entry)
 
         valid, errors = CognitiveStateValidator.validate(frozen_state)
@@ -80,6 +90,7 @@ class PersistenceLayer:
                 state.last_persisted_at = datetime.now(timezone.utc).isoformat()
                 state.last_persist_ok = True
                 state.last_persist_error = None
+            journal_entry["result"] = "ok"
             logger.info("state persisted", extra={"learner_id": learner_id})
             return True
         except (OSError, TypeError, ValueError) as e:
@@ -87,6 +98,8 @@ class PersistenceLayer:
             with locked_cognitive_state(state, state_lock):
                 state.last_persist_ok = False
                 state.last_persist_error = str(e)
+            journal_entry["result"] = "error"
+            journal_entry["error"] = str(e)
             return False
 
     def load_state(self, learner_id: str) -> CognitiveState:
@@ -120,5 +133,4 @@ class PersistenceLayer:
 
     def count_unresolved_journals(self) -> int:
         with self._journal_lock:
-            # in real impl we'd remove on commit; simplified here
-            return len(self._journal)
+            return sum(1 for entry in self._journal if str(entry.get("result", "")).strip().lower() in {"", "pending"})

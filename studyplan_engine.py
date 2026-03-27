@@ -22,6 +22,7 @@ from typing import Callable, Dict, Any, List, Union, Set, Tuple, cast
 from studyplan.config import Config as StudyPlanConfig
 from studyplan.cognitive_state import CognitiveState
 from studyplan.mastery_kernel import MasteryKernel
+from studyplan.persistence_layer import PersistenceLayer
 from studyplan.question_quality import (
     assess_question_quality_extended,
     get_poor_quality_indices,
@@ -12458,55 +12459,61 @@ class StudyPlanEngine:
         except Exception:
             return CognitiveState()
 
-    def _load_or_build_cognitive_state(self) -> CognitiveState:
+    def _resolve_cognitive_persistence_identity(self) -> tuple[str, str]:
         path = str(getattr(self, "COGNITIVE_STATE_FILE", "") or "").strip()
-        if path and os.path.exists(path):
+        base_path = os.path.dirname(path) if path else self.DEFAULT_DATA_DIR
+        stem = os.path.splitext(os.path.basename(path))[0] if path else "cognitive_state"
+        learner_id = str(stem or "").strip() or "cognitive_state"
+        return base_path, learner_id
+
+    def _load_or_build_cognitive_state(self) -> CognitiveState:
+        base_path, learner_id = self._resolve_cognitive_persistence_identity()
+        persistence = getattr(self, "_cognitive_persistence", None)
+        if not isinstance(persistence, PersistenceLayer):
+            persistence = PersistenceLayer(base_path=base_path)
+            self._cognitive_persistence = persistence
+        path = str(getattr(self, "COGNITIVE_STATE_FILE", "") or "").strip()
+        if not path or not os.path.exists(path):
+            state = self._build_legacy_cognitive_state()
+            state.last_persist_ok = None
+            state.last_persist_error = None
+            return state
+        try:
+            state = persistence.load_state(learner_id)
+            state.last_persist_ok = True
+            state.last_persist_error = None
+            return state
+        except Exception as exc:
             try:
-                payload = self._load_json_file_with_limit(
-                    path,
-                    getattr(self, "MAX_DATA_FILE_BYTES", 64 * 1024 * 1024),
-                    "Cognitive state",
-                )
-                state = CognitiveState.from_snapshot(payload)
-                state.last_persist_ok = True
-                state.last_persist_error = None
-                return state
-            except Exception as exc:
-                try:
-                    corrupt_path = f"{path}.corrupt.{int(time.time())}"
-                    os.replace(path, corrupt_path)
-                except Exception:
-                    pass
-                state = self._build_legacy_cognitive_state()
-                state.last_persist_ok = False
-                state.last_persist_error = f"load_recovered:{exc}"
-                return state
-        state = self._build_legacy_cognitive_state()
-        state.last_persist_ok = None
-        state.last_persist_error = None
-        return state
+                corrupt_path = f"{path}.corrupt.{int(time.time())}"
+                os.replace(path, corrupt_path)
+            except Exception:
+                pass
+            state = self._build_legacy_cognitive_state()
+            state.last_persist_ok = False
+            state.last_persist_error = f"load_recovered:{exc}"
+            return state
 
     def persist_cognitive_state(self) -> None:
         state = getattr(self, "cognitive_state", None)
         if not isinstance(state, CognitiveState):
             return
-        path = str(getattr(self, "COGNITIVE_STATE_FILE", "") or "").strip()
-        if not path:
-            return
-        payload = snapshot_cognitive_state(state)
-        self._atomic_write_json(path, payload, indent=2)
-        ts = str(payload.get("timestamp", "") or "").strip() or datetime.datetime.now().isoformat(timespec="seconds")
-        with contextlib.suppress(Exception):
-            lock = getattr(self, "_cognitive_state_lock", None)
-            if lock is not None:
-                with lock:
-                    state.last_persisted_at = ts
-                    state.last_persist_ok = True
-                    state.last_persist_error = None
-            else:
-                state.last_persisted_at = ts
-                state.last_persist_ok = True
-                state.last_persist_error = None
+        base_path, learner_id = self._resolve_cognitive_persistence_identity()
+        persistence = getattr(self, "_cognitive_persistence", None)
+        if not isinstance(persistence, PersistenceLayer):
+            persistence = PersistenceLayer(base_path=base_path)
+            self._cognitive_persistence = persistence
+        ok = bool(persistence.save_state_atomic(learner_id, state))
+        if not ok:
+            with contextlib.suppress(Exception):
+                lock = getattr(self, "_cognitive_state_lock", None)
+                if lock is not None:
+                    with lock:
+                        state.last_persist_ok = False
+                        state.last_persist_error = state.last_persist_error or "persistence_layer_save_failed"
+                else:
+                    state.last_persist_ok = False
+                    state.last_persist_error = state.last_persist_error or "persistence_layer_save_failed"
 
     def reset_data(self):
         """

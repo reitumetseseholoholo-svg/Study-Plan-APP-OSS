@@ -12,6 +12,8 @@ from .model_routing import routed_failover_chain_for_purpose, routed_primary_for
 class ResolvedOpenAICompatibleEndpoint:
     endpoint: str
     source: str
+    request_timeout_seconds: float = 8.0
+    auth_mode: str = "discovery"
 
 
 def resolve_openai_compatible_endpoint(config: Any) -> ResolvedOpenAICompatibleEndpoint | None:
@@ -21,9 +23,17 @@ def resolve_openai_compatible_endpoint(config: Any) -> ResolvedOpenAICompatibleE
     1. explicit gateway endpoint
     2. legacy cloud llama.cpp endpoint when it is intentionally internet-hosted
     """
+    gateway_enabled = bool(getattr(config, "LLM_GATEWAY_ENABLED", False))
     gateway_endpoint = str(getattr(config, "LLM_GATEWAY_ENDPOINT", "") or "").strip()
-    if gateway_endpoint:
-        return ResolvedOpenAICompatibleEndpoint(endpoint=gateway_endpoint, source="gateway")
+    if gateway_enabled and gateway_endpoint:
+        timeout_s = float(getattr(config, "LLM_GATEWAY_REQUEST_TIMEOUT_SECONDS", 8.0) or 8.0)
+        timeout_s = max(1.0, min(60.0, timeout_s))
+        return ResolvedOpenAICompatibleEndpoint(
+            endpoint=gateway_endpoint,
+            source="gateway",
+            request_timeout_seconds=timeout_s,
+            auth_mode="discovery",
+        )
 
     endpoint = str(getattr(config, "LLAMA_CPP_ENDPOINT", "") or "").strip()
     if not endpoint:
@@ -43,7 +53,14 @@ def resolve_openai_compatible_endpoint(config: Any) -> ResolvedOpenAICompatibleE
     except Exception:
         if hostname in {"localhost"} or hostname.endswith(".local") or hostname.endswith(".lan"):
             return None
-    return ResolvedOpenAICompatibleEndpoint(endpoint=endpoint, source="llama_cpp_cloud")
+    timeout_s = float(getattr(config, "CLOUD_LLAMACPP_REQUEST_TIMEOUT_SECONDS", 8.0) or 8.0)
+    timeout_s = max(1.0, min(60.0, timeout_s))
+    return ResolvedOpenAICompatibleEndpoint(
+        endpoint=endpoint,
+        source="llama_cpp_cloud",
+        request_timeout_seconds=timeout_s,
+        auth_mode="cloud_llamacpp",
+    )
 
 
 def resolve_openai_compatible_model_candidates(

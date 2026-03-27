@@ -4748,6 +4748,7 @@ def test_gateway_endpoint_prefers_gateway_models_and_skips_legacy_llama_server(m
     dummy._cloud_endpoint_is_candidate = types.MethodType(StudyPlanGUI._cloud_endpoint_is_candidate, dummy)
 
     monkeypatch.setattr("studyplan.config.Config.LLM_GATEWAY_ENDPOINT", "https://gateway.example.com/v1/chat/completions")
+    monkeypatch.setattr("studyplan.config.Config.LLM_GATEWAY_ENABLED", True)
     monkeypatch.setattr("studyplan.config.Config.LLAMA_CPP_ENDPOINT", "https://legacy.example.com/v1/chat/completions")
     monkeypatch.setattr("studyplan.config.Config.LLM_GATEWAY_MODEL", "openrouter/google/gemini-2.5-flash")
     monkeypatch.setattr(

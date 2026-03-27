@@ -46,7 +46,7 @@ def build_tutor_context_packet(
     weak_areas_top3 = [ch for ch, _ in comp_rows[:3]]
 
     recent_study: list[str] = []
-    activity = list(recent_activity or [])
+    activity = list((recent_activity or [])[-5:])
     today = datetime.date.today()
     three_days_ago = today - datetime.timedelta(days=3)
     for entry in activity:

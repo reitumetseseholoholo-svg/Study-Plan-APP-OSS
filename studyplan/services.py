@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import random
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -24,6 +25,10 @@ from .ai.prompt_design import (
     build_judge_prompt_3es,
 )
 from .ai.llm_auth import discover_llm_auth_headers
+from .ai.llm_gateway import (
+    ResolvedOpenAICompatibleEndpoint,
+    resolve_openai_compatible_model_candidates,
+)
 from .ai.recovery import build_deterministic_fallback_response
 from .config import Config
 from .contracts import (
@@ -208,6 +213,7 @@ class LlamaCppTutorService:
 
     endpoint: str = field(default_factory=lambda: str(getattr(Config, "LLAMA_CPP_ENDPOINT", "") or "").strip())
     model: str = field(default_factory=lambda: str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip())
+    resolved_backend: ResolvedOpenAICompatibleEndpoint | None = field(default=None)
     enabled: bool = field(default_factory=lambda: bool(getattr(Config, "LLAMA_CPP_ENABLED", True)))
     timeout_seconds: float = field(
         default_factory=lambda: float(getattr(Config, "LLAMA_CPP_TIMEOUT_SECONDS", 30.0) or 30.0)
@@ -251,6 +257,15 @@ class LlamaCppTutorService:
     performance_profiler: PerformanceProfiler | None = field(default=None)
     performance_cache: PerformanceCacheService | None = field(default=None)
     performance_middleware: PerformanceMiddleware | None = field(default=None)
+    max_concurrent_requests: int = field(
+        default_factory=lambda: int(getattr(Config, "LLAMA_CPP_MAX_CONCURRENT_REQUESTS", 2) or 2)
+    )
+    queue_wait_seconds: float = field(
+        default_factory=lambda: float(getattr(Config, "LLAMA_CPP_QUEUE_WAIT_SECONDS", 8.0) or 8.0)
+    )
+    _runtime_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    _model_catalog_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    _request_gate: threading.BoundedSemaphore = field(init=False, repr=False)
 
     RETRYABLE_ERROR_CODES: tuple[str, ...] = (
         "timeout",
@@ -262,6 +277,23 @@ class LlamaCppTutorService:
         "empty_output",
         "http_error",
     )
+
+    def __post_init__(self) -> None:
+        try:
+            cap = max(1, int(self.max_concurrent_requests or 1))
+        except Exception:
+            cap = 1
+        self.max_concurrent_requests = cap
+        self._request_gate = threading.BoundedSemaphore(cap)
+        self._apply_resolved_backend()
+
+    def _apply_resolved_backend(self) -> None:
+        resolved = self.resolved_backend
+        if resolved is None:
+            return
+        endpoint = self._coerce_text(getattr(resolved, "endpoint", ""))
+        if endpoint:
+            self.endpoint = endpoint
 
     @staticmethod
     def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -417,28 +449,52 @@ class LlamaCppTutorService:
         return deduped
 
     def _discover_model_catalog(self) -> tuple[list[str], dict[str, str], bool]:
-        ttl = self._clamp_float(self.model_discovery_ttl_seconds, 120.0, 5.0, 3600.0)
-        now = time.monotonic()
-        if self._model_catalog_cached and (now - float(self._model_catalog_cached_at or 0.0)) <= ttl:
-            return (
-                list(self._model_catalog_cached),
-                dict(self._model_catalog_sources),
-                True,
-            )
-        source_map: dict[str, str] = {}
-        for model_name in self._discover_ollama_models():
-            source_map.setdefault(model_name, "ollama")
-        for model_name in self._discover_gpt4all_models():
-            source_map.setdefault(model_name, "gpt4all")
-        models_sorted = self._sort_model_candidates(list(source_map.keys()))
-        self._model_catalog_cached = tuple(models_sorted)
-        self._model_catalog_sources = dict(source_map)
-        self._model_catalog_cached_at = now
-        return models_sorted, source_map, False
+        with self._model_catalog_lock:
+            ttl = self._clamp_float(self.model_discovery_ttl_seconds, 120.0, 5.0, 3600.0)
+            now = time.monotonic()
+            if self._model_catalog_cached and (now - float(self._model_catalog_cached_at or 0.0)) <= ttl:
+                return (
+                    list(self._model_catalog_cached),
+                    dict(self._model_catalog_sources),
+                    True,
+                )
+            source_map: dict[str, str] = {}
+            for model_name in self._discover_ollama_models():
+                source_map.setdefault(model_name, "ollama")
+            for model_name in self._discover_gpt4all_models():
+                source_map.setdefault(model_name, "gpt4all")
+            models_sorted = self._sort_model_candidates(list(source_map.keys()))
+            self._model_catalog_cached = tuple(models_sorted)
+            self._model_catalog_sources = dict(source_map)
+            self._model_catalog_cached_at = now
+            return models_sorted, source_map, False
 
     def _resolve_model_candidates(self, request_model: str) -> tuple[list[str], dict[str, str], dict[str, Any]]:
         requested = self._coerce_text(request_model, "")
         configured = self._coerce_text(self.model, "")
+        backend_source = self._coerce_text(getattr(self.resolved_backend, "source", ""), "")
+
+        if backend_source in {"gateway", "llama_cpp_cloud"}:
+            if backend_source == "gateway":
+                gateway_model = self._coerce_text(getattr(Config, "LLM_GATEWAY_MODEL", ""), configured)
+                gateway_fallbacks = self._coerce_text(getattr(Config, "LLM_GATEWAY_MODEL_FALLBACKS", ""), "")
+                models = resolve_openai_compatible_model_candidates(
+                    purpose="tutor",
+                    requested_model=requested,
+                    configured_model=gateway_model,
+                    fallback_models=gateway_fallbacks,
+                )
+                source_map = {
+                    m: ("request" if m == requested and requested else "gateway")
+                    for m in models
+                }
+                return models, source_map, {"mode": "gateway_configured", "cache_hit": False}
+            if requested:
+                return [requested], {requested: "request"}, {"mode": "remote_request_model", "cache_hit": False}
+            if configured:
+                return [configured], {configured: "configured"}, {"mode": "remote_configured", "cache_hit": False}
+            return [], {}, {"mode": "remote_configured", "cache_hit": False}
+
         if requested:
             return [requested], {requested: "request"}, {"mode": "request_model", "cache_hit": False}
 
@@ -677,51 +733,64 @@ class LlamaCppTutorService:
 
     def generate(self, request: TutorTurnRequest) -> TutorTurnResult:
         started = time.perf_counter()
-        
-        # Profile the operation if profiler is available
-        if self.performance_profiler:
-            return self.performance_profiler.profile_operation(
-                "llama_cpp_generate",
-                self._generate_with_profiling,
-                request,
-                started
+        self._apply_resolved_backend()
+        queue_wait = self._clamp_float(self.queue_wait_seconds, 8.0, 0.1, 120.0)
+        acquired = self._request_gate.acquire(timeout=queue_wait)
+        if not acquired:
+            latency_ms = int(max(0.0, (time.perf_counter() - started) * 1000.0))
+            return TutorTurnResult(
+                text="",
+                model=self._coerce_text(getattr(request, "model", ""), self.model) or "unknown",
+                latency_ms=latency_ms,
+                error_code="queue_timeout",
+                telemetry={"provider": "llama.cpp", "error_code": "queue_timeout", "queue_wait_seconds": queue_wait},
             )
-        
-        return self._generate_with_profiling(request, started)
+        try:
+            if self.performance_profiler:
+                return self.performance_profiler.profile_operation(
+                    "llama_cpp_generate",
+                    self._generate_with_profiling,
+                    request,
+                    started,
+                )
+            return self._generate_with_profiling(request, started)
+        finally:
+            self._request_gate.release()
     
     def _ensure_runtime(self, purpose: str = "general") -> None:
         """Lazily initialize managed runtime and update endpoint/model."""
-        rt = self.managed_runtime
-        if rt is None:
-            return
-        endpoint_ok = self._coerce_text(self.endpoint)
-        if self._runtime_init_done and endpoint_ok:
-            server = getattr(rt, "server", None)
-            managed_ep = ""
-            if server is not None:
-                managed_ep = self._coerce_text(getattr(server, "endpoint", ""))
-            if managed_ep and endpoint_ok.rstrip("/") == managed_ep.rstrip("/"):
-                if not bool(getattr(server, "is_running", False)):
-                    self._runtime_init_done = False
-            else:
+        with self._runtime_lock:
+            rt = self.managed_runtime
+            if rt is None:
                 return
-        if self._runtime_init_done and endpoint_ok:
-            return
-        try:
-            pref = str(getattr(self, "preferred_managed_gguf", "") or "").strip()
-            status = rt.ensure_ready(purpose, preferred_gguf_name=pref)
-        except TypeError:
+            endpoint_ok = self._coerce_text(self.endpoint)
+            if self._runtime_init_done and endpoint_ok:
+                server = getattr(rt, "server", None)
+                managed_ep = ""
+                if server is not None:
+                    managed_ep = self._coerce_text(getattr(server, "endpoint", ""))
+                if managed_ep and endpoint_ok.rstrip("/") == managed_ep.rstrip("/"):
+                    if not bool(getattr(server, "is_running", False)):
+                        self._runtime_init_done = False
+                else:
+                    return
+            if self._runtime_init_done and endpoint_ok:
+                return
             try:
-                status = rt.ensure_ready(purpose)
+                pref = str(getattr(self, "preferred_managed_gguf", "") or "").strip()
+                status = rt.ensure_ready(purpose, preferred_gguf_name=pref)
+            except TypeError:
+                try:
+                    status = rt.ensure_ready(purpose)
+                except Exception:
+                    return
             except Exception:
                 return
-        except Exception:
-            return
-        if status.healthy and status.endpoint:
-            self.endpoint = status.endpoint
-            if status.model_name:
-                self.model = status.model_name
-            self._runtime_init_done = True
+            if status.healthy and status.endpoint:
+                self.endpoint = status.endpoint
+                if status.model_name:
+                    self.model = status.model_name
+                self._runtime_init_done = True
 
     def _generate_with_profiling(self, request: TutorTurnRequest, started: float) -> TutorTurnResult:
         self._ensure_runtime()
@@ -832,6 +901,22 @@ class LlamaCppTutorService:
             telemetry["model"] = candidate
             telemetry["model_source"] = self._coerce_text(candidate_sources.get(candidate), "unknown")
             for attempt_idx in range(attempts):
+                cancel_check = getattr(request, "cancel_check", None)
+                if callable(cancel_check):
+                    try:
+                        if bool(cancel_check()):
+                            latency_ms = int(max(0.0, (time.perf_counter() - started) * 1000.0))
+                            telemetry["latency_ms"] = latency_ms
+                            telemetry["error_code"] = "cancelled"
+                            return TutorTurnResult(
+                                text="",
+                                model=candidate or primary_model or "unknown",
+                                latency_ms=latency_ms,
+                                error_code="cancelled",
+                                telemetry=telemetry,
+                            )
+                    except Exception:
+                        pass
                 ok, text, error_code, meta = self._invoke_once(normalized)
                 if self.managed_runtime is not None:
                     try:
@@ -2489,6 +2574,7 @@ class InMemoryTutorSessionController:
     """Phase 1 session-state store/controller used by the Tutor learning loop."""
 
     _sessions: dict[str, TutorSessionState] = field(default_factory=dict)
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
     def _now_ts(self) -> str:
         try:
@@ -2503,47 +2589,50 @@ class InMemoryTutorSessionController:
         module: str,
         topic: str,
     ) -> TutorSessionState:
-        key = str(session_id or "").strip()
-        if not key:
-            key = "default"
-        existing = self._sessions.get(key)
-        if isinstance(existing, TutorSessionState):
-            new_topic = str(topic or "").strip()
-            new_module = str(module or "").strip()
-            updated = existing
-            changed = False
-            if new_topic and new_topic != str(existing.topic or "").strip():
-                updated = replace(updated, topic=new_topic, updated_at_ts=self._now_ts())
-                changed = True
-            if new_module and new_module != str(existing.module or "").strip():
-                updated = replace(updated, module=new_module, updated_at_ts=self._now_ts())
-                changed = True
-            if changed:
-                self._sessions[key] = updated
-                return updated
-            return existing
-        state = TutorSessionState(
-            session_id=key,
-            module=str(module or "").strip(),
-            topic=str(topic or "").strip(),
-            mode="auto",
-            loop_phase="observe",
-            updated_at_ts=self._now_ts(),
-        )
-        self._sessions[key] = state
-        return state
+        with self._lock:
+            key = str(session_id or "").strip()
+            if not key:
+                key = "default"
+            existing = self._sessions.get(key)
+            if isinstance(existing, TutorSessionState):
+                new_topic = str(topic or "").strip()
+                new_module = str(module or "").strip()
+                updated = existing
+                changed = False
+                if new_topic and new_topic != str(existing.topic or "").strip():
+                    updated = replace(updated, topic=new_topic, updated_at_ts=self._now_ts())
+                    changed = True
+                if new_module and new_module != str(existing.module or "").strip():
+                    updated = replace(updated, module=new_module, updated_at_ts=self._now_ts())
+                    changed = True
+                if changed:
+                    self._sessions[key] = updated
+                    return updated
+                return existing
+            state = TutorSessionState(
+                session_id=key,
+                module=str(module or "").strip(),
+                topic=str(topic or "").strip(),
+                mode="auto",
+                loop_phase="observe",
+                updated_at_ts=self._now_ts(),
+            )
+            self._sessions[key] = state
+            return state
 
     def save_session(self, state: TutorSessionState) -> TutorSessionState:
-        session_id = str(getattr(state, "session_id", "") or "").strip() or "default"
-        updated = replace(state, session_id=session_id, updated_at_ts=self._now_ts())
-        self._sessions[session_id] = updated
-        return updated
+        with self._lock:
+            session_id = str(getattr(state, "session_id", "") or "").strip() or "default"
+            updated = replace(state, session_id=session_id, updated_at_ts=self._now_ts())
+            self._sessions[session_id] = updated
+            return updated
 
     def reset_session(self, session_id: str) -> None:
-        key = str(session_id or "").strip()
-        if not key:
-            key = "default"
-        self._sessions.pop(key, None)
+        with self._lock:
+            key = str(session_id or "").strip()
+            if not key:
+                key = "default"
+            self._sessions.pop(key, None)
 
     def start_or_resume_session(
         self,
@@ -2556,32 +2645,34 @@ class InMemoryTutorSessionController:
         success_criteria: str = "",
         target_concepts: tuple[str, ...] = (),
     ) -> TutorSessionState:
-        state = self.get_or_create_session(session_id=session_id, module=module, topic=topic)
-        normalized_targets = tuple(str(x or "").strip() for x in target_concepts if str(x or "").strip())
-        updated = replace(
-            state,
-            module=str(module or state.module or "").strip(),
-            topic=str(topic or state.topic or "").strip(),
-            mode=str(mode or state.mode or "auto"),
-            loop_phase="observe" if not bool(state.active) else str(state.loop_phase or "observe"),
-            session_objective=str(session_objective or state.session_objective or ""),
-            success_criteria=str(success_criteria or state.success_criteria or ""),
-            target_concepts=normalized_targets or state.target_concepts,
-            active=True,
-            updated_at_ts=self._now_ts(),
-        )
-        self._sessions[updated.session_id] = updated
-        return updated
+        with self._lock:
+            state = self.get_or_create_session(session_id=session_id, module=module, topic=topic)
+            normalized_targets = tuple(str(x or "").strip() for x in target_concepts if str(x or "").strip())
+            updated = replace(
+                state,
+                module=str(module or state.module or "").strip(),
+                topic=str(topic or state.topic or "").strip(),
+                mode=str(mode or state.mode or "auto"),
+                loop_phase="observe" if not bool(state.active) else str(state.loop_phase or "observe"),
+                session_objective=str(session_objective or state.session_objective or ""),
+                success_criteria=str(success_criteria or state.success_criteria or ""),
+                target_concepts=normalized_targets or state.target_concepts,
+                active=True,
+                updated_at_ts=self._now_ts(),
+            )
+            self._sessions[updated.session_id] = updated
+            return updated
 
     def advance_phase(self, session_id: str, phase: str) -> TutorSessionState:
-        state = self.get_or_create_session(session_id=session_id, module="", topic="")
-        updated = replace(
-            state,
-            loop_phase=str(phase or state.loop_phase or "observe"),
-            updated_at_ts=self._now_ts(),
-        )
-        self._sessions[updated.session_id] = updated
-        return updated
+        with self._lock:
+            state = self.get_or_create_session(session_id=session_id, module="", topic="")
+            updated = replace(
+                state,
+                loop_phase=str(phase or state.loop_phase or "observe"),
+                updated_at_ts=self._now_ts(),
+            )
+            self._sessions[updated.session_id] = updated
+            return updated
 
     def record_assessment_outcome(
         self,
@@ -2591,28 +2682,29 @@ class InMemoryTutorSessionController:
         practice_item_id: str = "",
         increment_streak: bool = False,
     ) -> TutorSessionState:
-        state = self.get_or_create_session(session_id=session_id, module="", topic="")
-        outcome_text = str(outcome or "").strip().lower()
-        is_success = outcome_text in {"correct", "partial"} if increment_streak else False
-        new_streak = int(state.practice_streak or 0)
-        if increment_streak:
-            new_streak = max(0, new_streak + 1) if is_success else 0
-        recent_failures = int(state.recent_failures or 0)
-        if outcome_text == "incorrect":
-            recent_failures = min(10_000, recent_failures + 1)
-        elif outcome_text in {"correct", "partial"}:
-            recent_failures = max(0, recent_failures - 1)
-        updated = replace(
-            state,
-            loop_phase="reinforce" if outcome_text in {"correct", "partial"} else "teach",
-            active_practice_item_id=str(practice_item_id or state.active_practice_item_id or ""),
-            practice_streak=new_streak,
-            recent_failures=recent_failures,
-            last_assessment_outcome=outcome_text,
-            updated_at_ts=self._now_ts(),
-        )
-        self._sessions[updated.session_id] = updated
-        return updated
+        with self._lock:
+            state = self.get_or_create_session(session_id=session_id, module="", topic="")
+            outcome_text = str(outcome or "").strip().lower()
+            is_success = outcome_text in {"correct", "partial"} if increment_streak else False
+            new_streak = int(state.practice_streak or 0)
+            if increment_streak:
+                new_streak = max(0, new_streak + 1) if is_success else 0
+            recent_failures = int(state.recent_failures or 0)
+            if outcome_text == "incorrect":
+                recent_failures = min(10_000, recent_failures + 1)
+            elif outcome_text in {"correct", "partial"}:
+                recent_failures = max(0, recent_failures - 1)
+            updated = replace(
+                state,
+                loop_phase="reinforce" if outcome_text in {"correct", "partial"} else "teach",
+                active_practice_item_id=str(practice_item_id or state.active_practice_item_id or ""),
+                practice_streak=new_streak,
+                recent_failures=recent_failures,
+                last_assessment_outcome=outcome_text,
+                updated_at_ts=self._now_ts(),
+            )
+            self._sessions[updated.session_id] = updated
+            return updated
 
 
 @dataclass
@@ -2621,6 +2713,7 @@ class InMemoryTutorLearnerModelStore:
 
     _profiles: dict[tuple[str, str], TutorLearnerProfileSnapshot] = field(default_factory=dict)
     max_tags: int = 8
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
     def _now_ts(self) -> str:
         try:
@@ -2632,23 +2725,25 @@ class InMemoryTutorLearnerModelStore:
         return (str(learner_id or "").strip() or "default", str(module or "").strip())
 
     def get_or_create_profile(self, learner_id: str, module: str) -> TutorLearnerProfileSnapshot:
-        key = self._key(learner_id, module)
-        existing = self._profiles.get(key)
-        if isinstance(existing, TutorLearnerProfileSnapshot):
-            return existing
-        profile = TutorLearnerProfileSnapshot(
-            learner_id=key[0],
-            module=key[1],
-            last_updated_ts=self._now_ts(),
-        )
-        self._profiles[key] = profile
-        return profile
+        with self._lock:
+            key = self._key(learner_id, module)
+            existing = self._profiles.get(key)
+            if isinstance(existing, TutorLearnerProfileSnapshot):
+                return existing
+            profile = TutorLearnerProfileSnapshot(
+                learner_id=key[0],
+                module=key[1],
+                last_updated_ts=self._now_ts(),
+            )
+            self._profiles[key] = profile
+            return profile
 
     def save_profile(self, profile: TutorLearnerProfileSnapshot) -> TutorLearnerProfileSnapshot:
-        key = self._key(profile.learner_id, profile.module)
-        updated = replace(profile, learner_id=key[0], module=key[1], last_updated_ts=self._now_ts())
-        self._profiles[key] = updated
-        return updated
+        with self._lock:
+            key = self._key(profile.learner_id, profile.module)
+            updated = replace(profile, learner_id=key[0], module=key[1], last_updated_ts=self._now_ts())
+            self._profiles[key] = updated
+            return updated
 
     def note_assessment(
         self,
@@ -2658,49 +2753,50 @@ class InMemoryTutorLearnerModelStore:
         *,
         confidence: int | None = None,
     ) -> TutorLearnerProfileSnapshot:
-        profile = self.get_or_create_profile(learner_id, module)
-        prior_mis_tags = tuple(getattr(profile, "misconception_tags_top", ()) or ())
-        misconception_tags = self._merge_tags(profile.misconception_tags_top, assessment.misconception_tags)
-        weak_caps = self._merge_tags(profile.weak_capabilities_top, assessment.error_tags)
-        outcome = str(getattr(assessment, "outcome", "") or "").strip().lower()
-        marks_awarded = float(getattr(assessment, "marks_awarded", 0.0) or 0.0)
-        marks_max = max(0.0, float(getattr(assessment, "marks_max", 0.0) or 0.0))
-        score_ratio = (marks_awarded / marks_max) if marks_max > 0 else (1.0 if outcome == "correct" else 0.0)
+        with self._lock:
+            profile = self.get_or_create_profile(learner_id, module)
+            prior_mis_tags = tuple(getattr(profile, "misconception_tags_top", ()) or ())
+            misconception_tags = self._merge_tags(profile.misconception_tags_top, assessment.misconception_tags)
+            weak_caps = self._merge_tags(profile.weak_capabilities_top, assessment.error_tags)
+            outcome = str(getattr(assessment, "outcome", "") or "").strip().lower()
+            marks_awarded = float(getattr(assessment, "marks_awarded", 0.0) or 0.0)
+            marks_max = max(0.0, float(getattr(assessment, "marks_max", 0.0) or 0.0))
+            score_ratio = (marks_awarded / marks_max) if marks_max > 0 else (1.0 if outcome == "correct" else 0.0)
 
-        prior_transfer = float(getattr(profile, "chat_to_quiz_transfer_score", 0.0) or 0.0)
-        blended_transfer = (0.8 * prior_transfer) + (0.2 * ((score_ratio * 2.0) - 1.0))
-        blended_transfer = max(-1.0, min(1.0, blended_transfer))
+            prior_transfer = float(getattr(profile, "chat_to_quiz_transfer_score", 0.0) or 0.0)
+            blended_transfer = (0.8 * prior_transfer) + (0.2 * ((score_ratio * 2.0) - 1.0))
+            blended_transfer = max(-1.0, min(1.0, blended_transfer))
 
-        bias = float(getattr(profile, "confidence_calibration_bias", 0.0) or 0.0)
-        if confidence is not None:
-            conf_scaled = max(1, min(5, int(confidence))) / 5.0
-            correctness_scaled = max(0.0, min(1.0, score_ratio))
-            bias = max(-5.0, min(5.0, (0.8 * bias) + (0.2 * ((conf_scaled - correctness_scaled) * 5.0))))
+            bias = float(getattr(profile, "confidence_calibration_bias", 0.0) or 0.0)
+            if confidence is not None:
+                conf_scaled = max(1, min(5, int(confidence))) / 5.0
+                correctness_scaled = max(0.0, min(1.0, score_ratio))
+                bias = max(-5.0, min(5.0, (0.8 * bias) + (0.2 * ((conf_scaled - correctness_scaled) * 5.0))))
 
-        speed_tier = str(getattr(profile, "response_speed_tier", "unknown") or "unknown")
-        loop_metrics = self._update_learning_loop_metrics(
-            profile=profile,
-            assessment=assessment,
-            score_ratio=score_ratio,
-            outcome=outcome,
-            confidence=confidence,
-            prior_misconception_tags=prior_mis_tags,
-        )
-        profile_meta = dict(getattr(profile, "meta", {}) or {})
-        profile_meta["learning_loop_metrics"] = loop_metrics
-        updated = replace(
-            profile,
-            misconception_tags_top=misconception_tags,
-            weak_capabilities_top=weak_caps,
-            confidence_calibration_bias=bias,
-            chat_to_quiz_transfer_score=blended_transfer,
-            last_practice_outcome=outcome,
-            response_speed_tier=speed_tier,
-            last_updated_ts=self._now_ts(),
-            meta=profile_meta,
-        )
-        self._profiles[self._key(learner_id, module)] = updated
-        return updated
+            speed_tier = str(getattr(profile, "response_speed_tier", "unknown") or "unknown")
+            loop_metrics = self._update_learning_loop_metrics(
+                profile=profile,
+                assessment=assessment,
+                score_ratio=score_ratio,
+                outcome=outcome,
+                confidence=confidence,
+                prior_misconception_tags=prior_mis_tags,
+            )
+            profile_meta = dict(getattr(profile, "meta", {}) or {})
+            profile_meta["learning_loop_metrics"] = loop_metrics
+            updated = replace(
+                profile,
+                misconception_tags_top=misconception_tags,
+                weak_capabilities_top=weak_caps,
+                confidence_calibration_bias=bias,
+                chat_to_quiz_transfer_score=blended_transfer,
+                last_practice_outcome=outcome,
+                response_speed_tier=speed_tier,
+                last_updated_ts=self._now_ts(),
+                meta=profile_meta,
+            )
+            self._profiles[self._key(learner_id, module)] = updated
+            return updated
 
     def _learning_loop_metrics_from_meta(self, meta: dict[str, Any]) -> dict[str, Any]:
         raw = meta.get("learning_loop_metrics", {}) if isinstance(meta, dict) else {}
