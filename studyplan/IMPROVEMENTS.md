@@ -71,6 +71,46 @@ Verification:
 
 ---
 
+## Patch: Safer auth discovery for gateways/cloud endpoints (v1.1.x)
+
+Problem: for **generic** OpenAI-compatible endpoints (custom gateways, self-hosted proxies), a broad fallback scan of common provider env keys can attach the **wrong** credential header in multi-key environments.
+
+Change:
+
+- `studyplan.ai.llm_auth.discover_llm_auth_headers(...)` now supports `allow_generic_fallback=False` to prevent the generic "try everything" env scan.
+- Cloud/gateway request paths use strict mode so they only accept:
+  - explicit StudyPlan/gateway overrides (for example `STUDYPLAN_LLM_GATEWAY_API_KEY`)
+  - provider-specific keys when the endpoint host is recognized
+
+This reduces accidental key leakage/misbinding when multiple provider keys are present.
+
+---
+
+## Patch: Managed `llama-server` stderr drain (v1.1.x)
+
+Problem: the managed `llama-server` subprocess was started with `stderr=PIPE`. If `llama-server` writes enough to stderr during normal runtime, the OS pipe buffer can fill and the process can block (hang).
+
+Change:
+
+- The manager now drains stderr continuously in a background thread and stores a small tail buffer for diagnostics.
+- When startup health fails, we log the buffered stderr tail (instead of doing a blocking read on the pipe).
+
+This prevents “stderr pipe full” hangs while keeping useful failure context.
+
+---
+
+## Patch: SQLite AI cache serialization (v1.1.x)
+
+Problem: the AI runtime cache uses a shared `sqlite3.Connection` created with `check_same_thread=False`. Even with that flag, concurrent use of the same connection/cursors across threads can cause intermittent failures or undefined behavior.
+
+Change:
+
+- All cache database operations (reads and writes) are now serialized under the same lock.
+
+This preserves correctness and stability under concurrent tutor/RAG work.
+
+---
+
 ## Patch: Question Generation Reliability (v1.1.1)
 
 `PracticeLoopController.auto_generate_questions` is now hardened for production edge-cases:

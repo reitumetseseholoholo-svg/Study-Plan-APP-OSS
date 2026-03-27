@@ -236,6 +236,144 @@ from typing import Optional, Any, Callable, cast
 log = logging.getLogger(__name__)
 
 
+def _build_question_stats_export_rows(engine: Any) -> list[list[Any]]:
+    """Build rows for question stats export (CSV)."""
+    stats = getattr(engine, "question_stats", {}) or {}
+    questions = getattr(engine, "QUESTIONS", {}) or {}
+
+    rows: list[list[Any]] = [[
+        "Chapter",
+        "Question Index",
+        "Question",
+        "Attempts",
+        "Correct",
+        "Miss Rate",
+        "Streak",
+        "Avg Time (sec)",
+        "Last Time (sec)",
+        "Last Seen",
+        "Outcome IDs (direct)",
+        "Outcome IDs (manual linked)",
+        "Manual Link Source",
+        "Manual Link At",
+        "Outcome IDs (resolved)",
+        "Quality Score",
+        "Quality Issues",
+        "Difficulty Guess",
+        "Max Distractor Similarity",
+    ]]
+
+    qid_fn = getattr(engine, "_question_qid", None)
+    resolve_fn = getattr(engine, "resolve_question_outcomes", None)
+    for chapter, chapter_stats in stats.items():
+        if not isinstance(chapter_stats, dict):
+            continue
+        q_list = questions.get(chapter, []) if isinstance(questions, dict) else []
+        qid_to_idx: dict[str, int] = {}
+        if isinstance(q_list, list):
+            for idx in range(len(q_list)):
+                qid = ""
+                if callable(qid_fn):
+                    try:
+                        qid = str(qid_fn(chapter, idx) or "").strip()
+                    except Exception:
+                        qid = ""
+                if not qid:
+                    qid = str(idx)
+                qid_to_idx[qid] = idx
+
+        for key, entry in chapter_stats.items():
+            if not isinstance(entry, dict):
+                continue
+            idx: int | None = None
+            try:
+                idx_int = int(str(key))
+                idx = idx_int
+            except Exception:
+                idx = qid_to_idx.get(str(key))
+            q_text = ""
+            direct_outcome_ids_str = ""
+            quality: dict[str, Any] = {}
+            if idx is not None and isinstance(q_list, list) and 0 <= idx < len(q_list):
+                try:
+                    q_obj = q_list[idx]
+                    if isinstance(q_obj, dict):
+                        q_text = str(q_obj.get("question", "") or "")
+                        direct = q_obj.get("outcome_ids")
+                        if isinstance(direct, list) and direct:
+                            direct_outcome_ids_str = "|".join(str(x) for x in direct if str(x).strip())
+                        quality = assess_question_quality_extended(q_obj)
+                except Exception:
+                    q_text = ""
+                    quality = {}
+
+            linked = entry.get("linked_outcome_ids")
+            manual_outcome_ids_str = ""
+            if isinstance(linked, list) and linked:
+                manual_outcome_ids_str = "|".join(str(x).strip() for x in linked if str(x).strip())
+            manual_source = str(entry.get("linked_outcome_source", "") or "")
+            manual_at = str(entry.get("linked_outcome_at", "") or "")
+
+            resolved_outcome_ids_str = ""
+            if idx is not None and callable(resolve_fn):
+                try:
+                    route = resolve_fn(chapter, idx)
+                except Exception:
+                    route = None
+                if isinstance(route, dict):
+                    oids = route.get("outcome_ids")
+                    if isinstance(oids, list) and oids:
+                        resolved_outcome_ids_str = "|".join(str(x).strip() for x in oids if str(x).strip())
+
+            try:
+                attempts = int(entry.get("attempts", 0) or 0)
+            except Exception:
+                attempts = 0
+            try:
+                correct = int(entry.get("correct", 0) or 0)
+            except Exception:
+                correct = 0
+            miss_rate = 0.0 if attempts <= 0 else 1.0 - (correct / max(1, attempts))
+            try:
+                streak = int(entry.get("streak", 0) or 0)
+            except Exception:
+                streak = 0
+            try:
+                avg_time = float(entry.get("avg_time_sec", 0) or 0.0)
+            except Exception:
+                avg_time = 0.0
+            try:
+                last_time = float(entry.get("last_time_sec", 0) or 0.0)
+            except Exception:
+                last_time = 0.0
+            last_seen = entry.get("last_seen") or ""
+
+            rows.append(
+                [
+                    chapter,
+                    (idx if idx is not None else str(key)),
+                    q_text,
+                    attempts,
+                    correct,
+                    f"{miss_rate:.2f}",
+                    streak,
+                    f"{avg_time:.1f}",
+                    f"{last_time:.1f}",
+                    last_seen,
+                    direct_outcome_ids_str,
+                    manual_outcome_ids_str,
+                    manual_source,
+                    manual_at,
+                    resolved_outcome_ids_str,
+                    f"{float(quality.get('score', 0.0) or 0.0):.2f}",
+                    "|".join(str(x) for x in (quality.get("issues") or [])),
+                    str(quality.get("difficulty_guess", "") or ""),
+                    f"{float(quality.get('max_distractor_similarity', 0.0) or 0.0):.2f}",
+                ]
+            )
+    return rows
+
+
 def _capture_loky_diagnostics(label: str) -> dict[str, Any]:
     """Best-effort loky/joblib semaphore diagnostics for smoke debugging."""
     import glob
@@ -904,6 +1042,210 @@ def configure_font_rendering() -> None:
         settings.props.gtk_xft_hintstyle = "hintslight"
 
 
+class _TutorTurnState:
+    """Typed view over `TutorWorkspaceState` turn-related fields."""
+
+    __slots__ = ("_s",)
+
+    def __init__(self, state: "TutorWorkspaceState") -> None:
+        self._s = state
+
+    @property
+    def active(self) -> bool:
+        with self._s._lock:
+            return bool(self._s.get("active", False))
+
+    @active.setter
+    def active(self, value: bool) -> None:
+        with self._s._lock:
+            self._s["active"] = bool(value)
+
+    @property
+    def job_id(self) -> int:
+        with self._s._lock:
+            try:
+                return int(self._s.get("job_id", 0) or 0)
+            except Exception:
+                return 0
+
+    @property
+    def cancel_event(self) -> threading.Event | None:
+        with self._s._lock:
+            ev = self._s.get("cancel_event")
+            return ev if isinstance(ev, threading.Event) else None
+
+    @property
+    def model(self) -> str:
+        with self._s._lock:
+            return str(self._s.get("model", "") or "").strip()
+
+    @model.setter
+    def model(self, value: str) -> None:
+        with self._s._lock:
+            self._s["model"] = str(value or "").strip()
+
+    @property
+    def draft_user(self) -> str:
+        with self._s._lock:
+            return str(self._s.get("draft_user", "") or "")
+
+    @property
+    def draft_assistant(self) -> str:
+        with self._s._lock:
+            return str(self._s.get("draft_assistant", "") or "")
+
+
+class _TutorStreamState:
+    """Typed view over `TutorWorkspaceState` streaming-related fields."""
+
+    __slots__ = ("_s",)
+
+    def __init__(self, state: "TutorWorkspaceState") -> None:
+        self._s = state
+
+    @property
+    def follow_live(self) -> bool:
+        with self._s._lock:
+            return bool(self._s.get("follow_live", True))
+
+    @follow_live.setter
+    def follow_live(self, value: bool) -> None:
+        with self._s._lock:
+            self._s["follow_live"] = bool(value)
+
+    @property
+    def follow_manual_override(self) -> bool:
+        with self._s._lock:
+            return bool(self._s.get("follow_manual_override", False))
+
+    @follow_manual_override.setter
+    def follow_manual_override(self, value: bool) -> None:
+        with self._s._lock:
+            self._s["follow_manual_override"] = bool(value)
+
+    @property
+    def ignore_scroll_event(self) -> bool:
+        with self._s._lock:
+            return bool(self._s.get("ignore_scroll_event", False))
+
+    @ignore_scroll_event.setter
+    def ignore_scroll_event(self, value: bool) -> None:
+        with self._s._lock:
+            self._s["ignore_scroll_event"] = bool(value)
+
+    @property
+    def render_pending(self) -> bool:
+        with self._s._lock:
+            return bool(self._s.get("stream_render_pending", False))
+
+    @render_pending.setter
+    def render_pending(self, value: bool) -> None:
+        with self._s._lock:
+            self._s["stream_render_pending"] = bool(value)
+
+    @property
+    def render_force(self) -> bool:
+        with self._s._lock:
+            return bool(self._s.get("stream_render_force", False))
+
+    @render_force.setter
+    def render_force(self, value: bool) -> None:
+        with self._s._lock:
+            self._s["stream_render_force"] = bool(value)
+
+    @property
+    def last_clean_text(self) -> str:
+        with self._s._lock:
+            return str(self._s.get("stream_last_clean_text", "") or "")
+
+    @last_clean_text.setter
+    def last_clean_text(self, value: str) -> None:
+        with self._s._lock:
+            self._s["stream_last_clean_text"] = str(value or "")
+
+    @property
+    def label_inserted(self) -> bool:
+        with self._s._lock:
+            return bool(self._s.get("stream_label_inserted", False))
+
+    @label_inserted.setter
+    def label_inserted(self, value: bool) -> None:
+        with self._s._lock:
+            self._s["stream_label_inserted"] = bool(value)
+
+    @property
+    def last_chunk_at(self) -> float:
+        with self._s._lock:
+            try:
+                return float(self._s.get("stream_last_chunk_at", 0.0) or 0.0)
+            except Exception:
+                return 0.0
+
+    @property
+    def last_render_at(self) -> float:
+        with self._s._lock:
+            try:
+                return float(self._s.get("stream_last_render_at", 0.0) or 0.0)
+            except Exception:
+                return 0.0
+
+    @last_render_at.setter
+    def last_render_at(self, value: float) -> None:
+        with self._s._lock:
+            try:
+                self._s["stream_last_render_at"] = float(value or 0.0)
+            except Exception:
+                self._s["stream_last_render_at"] = 0.0
+
+    @property
+    def watchdog_last_force_at(self) -> float:
+        with self._s._lock:
+            try:
+                return float(self._s.get("stream_watchdog_last_force_at", 0.0) or 0.0)
+            except Exception:
+                return 0.0
+
+    @watchdog_last_force_at.setter
+    def watchdog_last_force_at(self, value: float) -> None:
+        with self._s._lock:
+            try:
+                self._s["stream_watchdog_last_force_at"] = float(value or 0.0)
+            except Exception:
+                self._s["stream_watchdog_last_force_at"] = 0.0
+
+    @property
+    def watchdog_forced_flushes(self) -> int:
+        with self._s._lock:
+            try:
+                return int(self._s.get("stream_watchdog_forced_flushes", 0) or 0)
+            except Exception:
+                return 0
+
+    @watchdog_forced_flushes.setter
+    def watchdog_forced_flushes(self, value: int) -> None:
+        with self._s._lock:
+            try:
+                self._s["stream_watchdog_forced_flushes"] = int(value or 0)
+            except Exception:
+                self._s["stream_watchdog_forced_flushes"] = 0
+
+    @property
+    def watchdog_id(self) -> int:
+        with self._s._lock:
+            try:
+                return int(self._s.get("stream_watchdog_id", 0) or 0)
+            except Exception:
+                return 0
+
+    @watchdog_id.setter
+    def watchdog_id(self, value: int) -> None:
+        with self._s._lock:
+            try:
+                self._s["stream_watchdog_id"] = int(value or 0)
+            except Exception:
+                self._s["stream_watchdog_id"] = 0
+
+
 class TutorWorkspaceState(dict[str, Any]):
     """Structured tutor workspace runtime state with centralized defaults."""
 
@@ -964,6 +1306,12 @@ class TutorWorkspaceState(dict[str, Any]):
         )
         self.clear_practice_plan()
 
+    def turn(self) -> _TutorTurnState:
+        return _TutorTurnState(self)
+
+    def stream(self) -> _TutorStreamState:
+        return _TutorStreamState(self)
+
     def reset_stream_runtime(self, *, clear_drafts: bool = False) -> None:
         with self._lock:
             self["stream_render_pending"] = False
@@ -977,6 +1325,63 @@ class TutorWorkspaceState(dict[str, Any]):
             if clear_drafts:
                 self["draft_user"] = ""
                 self["draft_assistant"] = ""
+
+    def gap_generation_active(self) -> bool:
+        with self._lock:
+            return bool(self.get("gap_generation_active", False))
+
+    def set_gap_generation_active(self, value: bool) -> None:
+        with self._lock:
+            self["gap_generation_active"] = bool(value)
+
+    def gap_cancel_event(self) -> threading.Event | None:
+        with self._lock:
+            ev = self.get("gap_cancel_event")
+            return ev if isinstance(ev, threading.Event) else None
+
+    def set_gap_cancel_event(self, ev: threading.Event | None) -> None:
+        with self._lock:
+            self["gap_cancel_event"] = ev
+
+    def tutor_models(self) -> list[str]:
+        with self._lock:
+            raw = self.get("models", [])
+            if not isinstance(raw, list):
+                return []
+            return [str(x).strip() for x in raw if str(x).strip()]
+
+    def set_tutor_models(self, models: list[str]) -> None:
+        cleaned = [str(x).strip() for x in list(models or []) if str(x).strip()]
+        with self._lock:
+            self["models"] = cleaned
+
+    def model_poll_errors(self) -> int:
+        with self._lock:
+            try:
+                return int(self.get("model_poll_errors", 0) or 0)
+            except Exception:
+                return 0
+
+    def set_model_poll_errors(self, value: int) -> None:
+        with self._lock:
+            try:
+                self["model_poll_errors"] = int(value or 0)
+            except Exception:
+                self["model_poll_errors"] = 0
+
+    def increment_model_poll_errors(self, delta: int = 1) -> int:
+        with self._lock:
+            try:
+                current = int(self.get("model_poll_errors", 0) or 0)
+            except Exception:
+                current = 0
+            try:
+                next_val = int(current + int(delta or 0))
+            except Exception:
+                next_val = int(current + 1)
+            next_val = 0 if next_val < 0 else next_val
+            self["model_poll_errors"] = next_val
+            return int(next_val)
 
     def clear_practice_plan(self) -> None:
         self.issue_practice_plan_token()
@@ -1195,6 +1600,22 @@ class TutorWorkspaceState(dict[str, Any]):
             self["draft_assistant"] = ""
             return job_id
 
+    def set_turn_request_metadata(
+        self,
+        *,
+        started_at: float,
+        user_prompt: str,
+        full_prompt: str,
+        model_candidates: list[str],
+        llm_purpose: str,
+    ) -> None:
+        with self._lock:
+            self["turn_started_at"] = float(started_at or 0.0)
+            self["turn_user_prompt"] = str(user_prompt or "")
+            self["turn_full_prompt"] = str(full_prompt or "")
+            self["turn_model_candidates"] = list(model_candidates or [])
+            self["turn_llm_purpose"] = str(llm_purpose or "")
+
     def append_draft_assistant_chunk(self, *, job_id: int, chunk: str, max_chars: int) -> tuple[bool, bool]:
         with self._lock:
             if int(self.get("job_id", 0) or 0) != int(job_id):
@@ -1270,6 +1691,34 @@ class TutorWorkspaceState(dict[str, Any]):
             self["auto_pause_resume_tick_id"] = max(0, int(source_id or 0))
         except Exception:
             self["auto_pause_resume_tick_id"] = 0
+
+    def tutor_model_poll_id(self) -> int:
+        with self._lock:
+            try:
+                return max(0, int(self.get("model_poll_id", 0) or 0))
+            except Exception:
+                return 0
+
+    def set_tutor_model_poll_id(self, source_id: Any) -> None:
+        with self._lock:
+            try:
+                self["model_poll_id"] = max(0, int(source_id or 0))
+            except Exception:
+                self["model_poll_id"] = 0
+
+    def tutor_practice_hint_policy_tick_id(self) -> int:
+        with self._lock:
+            try:
+                return max(0, int(self.get("practice_hint_policy_tick_id", 0) or 0))
+            except Exception:
+                return 0
+
+    def set_tutor_practice_hint_policy_tick_id(self, source_id: Any) -> None:
+        with self._lock:
+            try:
+                self["practice_hint_policy_tick_id"] = max(0, int(source_id or 0))
+            except Exception:
+                self["practice_hint_policy_tick_id"] = 0
 
     def tutor_help_feedback(self) -> str:
         return str(self.get("tutor_help_feedback", "") or "").strip()
@@ -4279,12 +4728,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         def _build_tutor_status_prefix() -> tuple[str, str]:
             _width, narrow, very_narrow = _tutor_ui_width_flags()
+            turn = run_state.turn()
             state_token = "idle"
-            if bool(run_state.get("active", False)):
+            if bool(turn.active):
                 state_token = "streaming"
             elif isinstance(run_state, TutorWorkspaceState) and run_state.paused_tutor_turn() is not None:
                 state_token = "paused"
-            elif bool(run_state.get("gap_generation_active", False)):
+            elif isinstance(run_state, TutorWorkspaceState) and bool(run_state.gap_generation_active()):
                 state_token = "gaps"
             cog_chip_display = ""
             cog_chip_full = ""
@@ -4368,7 +4818,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         except Exception:
                             post_sd_full = 0.0
                         cog_chip_full += f" • posterior={post_mean:.3f}±{post_sd_full:.3f}"
-            model_token = str(run_state.get("model", "") or self.local_llm_model or "").strip()
+            model_token = str(turn.model or self.local_llm_model or "").strip()
             model_short = self._compact_ui_token(model_token, 16 if very_narrow else (22 if narrow else 30), model_token) if model_token else "—"
             mode_token = str(self._effective_ai_tutor_autonomy_mode() or "assist")
             full_parts = ["Tutor", state_token, mode_token]
@@ -4405,9 +4855,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
 
         def _update_follow_button() -> None:
-            has_text = bool(history) or bool(run_state.get("active", False))
-            follow_live = bool(run_state.get("follow_live", True))
-            manual_override = bool(run_state.get("follow_manual_override", False))
+            turn = run_state.turn()
+            has_text = bool(history) or bool(turn.active)
+            stream = run_state.stream()
+            follow_live = bool(stream.follow_live)
+            manual_override = bool(stream.follow_manual_override)
             _width, narrow, very_narrow = _tutor_ui_width_flags()
             follow_btn.set_sensitive(has_text)
             if follow_live:
@@ -4431,7 +4883,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         def _update_tutor_request_buttons() -> None:
             paused_turn = run_state.paused_tutor_turn() if isinstance(run_state, TutorWorkspaceState) else None
-            active_now = bool(run_state.get("active", False))
+            turn = run_state.turn()
+            active_now = bool(turn.active)
             if active_now:
                 send_label = "Send"
                 stop_label = "Pause"
@@ -4474,25 +4927,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return _response_tail_gap() <= max(0.0, float(padding))
 
         def _on_response_adjustment_changed(*_args) -> None:
-            if bool(run_state.get("ignore_scroll_event", False)):
+            stream = run_state.stream()
+            if bool(stream.ignore_scroll_event):
                 return
             gap = _response_tail_gap()
-            if gap > 72.0 and bool(run_state.get("follow_live", True)):
-                run_state["follow_live"] = False
-                run_state["follow_manual_override"] = False
+            if gap > 72.0 and bool(stream.follow_live):
+                stream.follow_live = False
+                stream.follow_manual_override = False
                 _update_follow_button()
             elif (
                 gap <= 24.0
-                and not bool(run_state.get("follow_live", True))
-                and not bool(run_state.get("follow_manual_override", False))
+                and not bool(stream.follow_live)
+                and not bool(stream.follow_manual_override)
             ):
-                run_state["follow_live"] = True
+                stream.follow_live = True
                 _update_follow_button()
 
         def _scroll_response_end_deferred() -> None:
             def _apply_scroll() -> bool:
+                stream = run_state.stream()
                 try:
-                    run_state["ignore_scroll_event"] = True
+                    stream.ignore_scroll_event = True
                     end_iter = response_buf.get_end_iter()
                     if response_view.scroll_to_iter(end_iter, 0.0, True, 0.0, 1.0):
                         pass
@@ -4512,7 +4967,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     except Exception:
                         pass
                 finally:
-                    run_state["ignore_scroll_event"] = False
+                    stream.ignore_scroll_event = False
                 return False
 
             GLib.idle_add(_apply_scroll, priority=GLib.PRIORITY_HIGH)
@@ -4654,42 +5109,51 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return True
 
         def _stop_practice_hint_policy_tick() -> None:
-            try:
-                source_id = int(run_state.get("practice_hint_policy_tick_id", 0) or 0)
-            except Exception:
-                source_id = 0
+            source_id = run_state.tutor_practice_hint_policy_tick_id() if isinstance(run_state, TutorWorkspaceState) else int(run_state.get("practice_hint_policy_tick_id", 0) or 0)
             if source_id > 0:
                 self._force_remove_glib_source(source_id)
-            run_state["practice_hint_policy_tick_id"] = 0
+            if isinstance(run_state, TutorWorkspaceState):
+                run_state.set_tutor_practice_hint_policy_tick_id(0)
+            else:
+                run_state["practice_hint_policy_tick_id"] = 0
 
         def _ensure_practice_hint_policy_tick(active: bool) -> None:
             run_state["practice_hint_policy_cooldown_active"] = bool(active)
             if (not bool(active)) or (not _is_tutor_workbench_page_visible()):
                 _stop_practice_hint_policy_tick()
                 return
-            try:
-                existing = int(run_state.get("practice_hint_policy_tick_id", 0) or 0)
-            except Exception:
-                existing = 0
+            existing = run_state.tutor_practice_hint_policy_tick_id() if isinstance(run_state, TutorWorkspaceState) else int(run_state.get("practice_hint_policy_tick_id", 0) or 0)
             if existing > 0:
                 return
 
             def _tick() -> bool:
                 if getattr(self, "_tutor_workspace_state", None) is not run_state:
-                    run_state["practice_hint_policy_tick_id"] = 0
+                    if isinstance(run_state, TutorWorkspaceState):
+                        run_state.set_tutor_practice_hint_policy_tick_id(0)
+                    else:
+                        run_state["practice_hint_policy_tick_id"] = 0
                     return False
                 if not _is_tutor_workbench_page_visible():
-                    run_state["practice_hint_policy_tick_id"] = 0
+                    if isinstance(run_state, TutorWorkspaceState):
+                        run_state.set_tutor_practice_hint_policy_tick_id(0)
+                    else:
+                        run_state["practice_hint_policy_tick_id"] = 0
                     return False
                 refresh_fn = run_state.get("refresh_practice")
                 if callable(refresh_fn):
                     try:
                         refresh_fn()
                     except Exception:
-                        run_state["practice_hint_policy_tick_id"] = 0
+                        if isinstance(run_state, TutorWorkspaceState):
+                            run_state.set_tutor_practice_hint_policy_tick_id(0)
+                        else:
+                            run_state["practice_hint_policy_tick_id"] = 0
                         return False
                 if not bool(run_state.get("practice_hint_policy_cooldown_active", False)):
-                    run_state["practice_hint_policy_tick_id"] = 0
+                    if isinstance(run_state, TutorWorkspaceState):
+                        run_state.set_tutor_practice_hint_policy_tick_id(0)
+                    else:
+                        run_state["practice_hint_policy_tick_id"] = 0
                     return False
                 return True
 
@@ -4697,7 +5161,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 source_id = int(GLib.timeout_add(500, _tick) or 0)
             except Exception:
                 source_id = 0
-            run_state["practice_hint_policy_tick_id"] = int(source_id)
+            if isinstance(run_state, TutorWorkspaceState):
+                run_state.set_tutor_practice_hint_policy_tick_id(int(source_id))
+            else:
+                run_state["practice_hint_policy_tick_id"] = int(source_id)
 
         def _refresh_practice_panel() -> None:
             item = run_state.practice_item()
@@ -5859,7 +6326,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 merged = (current.rstrip() + "\n\n" if current.strip() else "") + prefix + prompt
                 prompt_buf.set_text(merged.strip())
                 _update_prompt_meta()
-                _set_running(bool(run_state.get("active", False)))
+                turn = run_state.turn()
+                _set_running(bool(turn.active))
                 _set_status("Practice prompt inserted into Tutor prompt box.")
                 try:
                     prompt_view.grab_focus()
@@ -5935,8 +6403,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             _set_status(run_state["practice_action_status"])
 
         def _latest_assistant_answer() -> str:
-            if bool(run_state.get("active", False)):
-                draft_live = str(run_state.get("draft_assistant", "") or "").strip()
+            turn = run_state.turn()
+            if bool(turn.active):
+                draft_live = str(turn.draft_assistant or "").strip()
                 if draft_live:
                     return clean_ai_tutor_text(draft_live)
             for item in reversed(list(history)):
@@ -5948,7 +6417,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 text = str(item.get("content", "") or "").strip()
                 if text:
                     return clean_ai_tutor_text(text)
-            draft_assistant = str(run_state.get("draft_assistant", "") or "").strip()
+            draft_assistant = str(turn.draft_assistant or "").strip()
             if draft_assistant:
                 return clean_ai_tutor_text(draft_assistant)
             return ""
@@ -5972,7 +6441,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         def _refresh_help_feedback_buttons() -> None:
             has_answer = bool(_latest_assistant_answer())
-            is_active = bool(run_state.get("active", False))
+            turn = run_state.turn()
+            is_active = bool(turn.active)
             selected = self._normalize_ai_tutor_help_feedback(run_state.tutor_help_feedback())
             enabled = has_answer and (not is_active)
             mapping = (
@@ -5991,7 +6461,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     pass
 
         def _set_help_feedback(signal: str) -> None:
-            if bool(run_state.get("active", False)):
+            turn = run_state.turn()
+            if bool(turn.active):
                 _set_status("Wait for the current turn to finish before rating.")
                 return
             if not bool(_latest_assistant_answer()):
@@ -6042,9 +6513,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         def _transcript_text_for_clipboard() -> str:
             entries: list[dict[str, Any]] = list(history)
-            if bool(run_state.get("active", False)):
-                draft_user = str(run_state.get("draft_user", "") or "").strip()
-                draft_assistant = str(run_state.get("draft_assistant", "") or "")
+            turn = run_state.turn()
+            if bool(turn.active):
+                draft_user = str(turn.draft_user or "").strip()
+                draft_assistant = str(turn.draft_assistant or "")
                 if draft_user:
                     entries.append({"role": "user", "content": draft_user})
                 if draft_assistant.strip():
@@ -6052,22 +6524,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         build_ai_tutor_assistant_history_row(
                             self,
                             draft_assistant,
-                            str(run_state.get("model", "") or "").strip(),
+                            str(turn.model or "").strip(),
                         )
                     )
             return format_ai_tutor_transcript(entries)
 
         def _render_transcript(force_scroll: bool = False) -> None:
+            turn = run_state.turn()
+            stream = run_state.stream()
             should_keep_bottom = should_keep_response_bottom(
-                auto_scroll_enabled=bool(run_state.get("follow_live", True)),
+                auto_scroll_enabled=bool(stream.follow_live),
                 force_scroll=bool(force_scroll),
-                near_bottom=_response_is_near_bottom(56.0 if bool(run_state.get("active", False)) else 28.0),
+                near_bottom=_response_is_near_bottom(56.0 if bool(turn.active) else 28.0),
             )
             text = _transcript_text_for_clipboard()
             response_buf.set_text(text if text else "No conversation yet.")
-            run_state["stream_last_clean_text"] = clean_ai_tutor_text(str(run_state.get("draft_assistant", "") or ""))
-            run_state["stream_label_inserted"] = bool(run_state["stream_last_clean_text"])
-            run_state["stream_last_render_at"] = float(time.monotonic())
+            stream.last_clean_text = clean_ai_tutor_text(str(turn.draft_assistant or ""))
+            stream.label_inserted = bool(stream.last_clean_text)
+            stream.last_render_at = float(time.monotonic())
             if should_keep_bottom and text:
                 _scroll_response_end_deferred()
             _update_follow_button()
@@ -6090,31 +6564,32 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return ""
 
         def _append_stream_delta(force_scroll: bool = False) -> None:
-            if not bool(run_state.get("active", False)):
+            turn = run_state.turn()
+            stream = run_state.stream()
+            if not bool(turn.active):
                 _render_transcript(force_scroll=force_scroll)
                 return
-            follow_live = bool(run_state.get("follow_live", True))
+            follow_live = bool(stream.follow_live)
             should_keep_bottom = should_keep_response_bottom(
                 auto_scroll_enabled=follow_live,
                 force_scroll=bool(force_scroll),
                 near_bottom=_response_is_near_bottom(56.0),
             )
-            draft_assistant = str(run_state.get("draft_assistant", "") or "")
-            cleaned_full = clean_ai_tutor_text(draft_assistant)
-            prev_clean = str(run_state.get("stream_last_clean_text", "") or "")
+            cleaned_full = clean_ai_tutor_text(str(turn.draft_assistant or ""))
+            prev_clean = str(stream.last_clean_text or "")
             if not cleaned_full:
-                run_state["stream_last_clean_text"] = ""
-                run_state["stream_label_inserted"] = False
+                stream.last_clean_text = ""
+                stream.label_inserted = False
                 if follow_live or should_keep_bottom:
                     _scroll_response_end_deferred()
                 return
-            if not bool(run_state.get("stream_label_inserted", False)):
+            if not bool(stream.label_inserted):
                 existing_text = _response_buffer_text()
                 if not existing_text or existing_text.strip() == "No conversation yet.":
                     response_buf.set_text("Tutor:\n")
                 else:
                     _append_response_text("\n\nTutor:\n")
-                run_state["stream_label_inserted"] = True
+                stream.label_inserted = True
                 prev_clean = ""
             if cleaned_full.startswith(prev_clean):
                 delta = cleaned_full[len(prev_clean):]
@@ -6122,23 +6597,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     _append_response_text(delta)
             else:
                 _render_transcript(force_scroll=False)
-            run_state["stream_last_clean_text"] = cleaned_full
-            run_state["stream_last_render_at"] = float(time.monotonic())
+            stream.last_clean_text = cleaned_full
+            stream.last_render_at = float(time.monotonic())
             if follow_live or should_keep_bottom:
                 _scroll_response_end_deferred()
             _update_follow_button()
 
         def _schedule_stream_render(force_scroll: bool = False) -> None:
-            run_state["stream_render_force"] = bool(run_state.get("stream_render_force", False)) or bool(force_scroll)
-            if bool(run_state.get("stream_render_pending", False)):
+            turn = run_state.turn()
+            stream = run_state.stream()
+            stream.render_force = bool(stream.render_force) or bool(force_scroll)
+            if bool(stream.render_pending):
                 return
-            run_state["stream_render_pending"] = True
+            stream.render_pending = True
 
             def _apply_stream_render() -> bool:
-                run_state["stream_render_pending"] = False
-                force_flag = bool(run_state.get("stream_render_force", False))
-                run_state["stream_render_force"] = False
-                if bool(run_state.get("active", False)):
+                stream.render_pending = False
+                force_flag = bool(stream.render_force)
+                stream.render_force = False
+                if bool(turn.active):
                     _append_stream_delta(force_scroll=force_flag)
                 else:
                     _render_transcript(force_scroll=force_flag)
@@ -6147,41 +6624,41 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             GLib.idle_add(_apply_stream_render, priority=GLib.PRIORITY_DEFAULT_IDLE)
 
         def _ensure_stream_watchdog() -> None:
-            existing_id = int(run_state.get("stream_watchdog_id", 0) or 0)
+            turn = run_state.turn()
+            stream = run_state.stream()
+            existing_id = int(stream.watchdog_id or 0)
             if existing_id > 0:
                 return
 
             def _watch_stream() -> bool:
-                if not bool(run_state.get("active", False)):
-                    run_state["stream_watchdog_id"] = 0
+                if not bool(turn.active):
+                    stream.watchdog_id = 0
                     return False
                 now_ts = float(time.monotonic())
                 if should_force_stream_flush(
-                    last_chunk_monotonic=float(run_state.get("stream_last_chunk_at", 0.0) or 0.0),
-                    last_render_monotonic=float(run_state.get("stream_last_render_at", 0.0) or 0.0),
+                    last_chunk_monotonic=float(stream.last_chunk_at),
+                    last_render_monotonic=float(stream.last_render_at),
                     now_monotonic=now_ts,
                     stall_ms=AI_TUTOR_STREAM_STALL_MS,
                 ):
-                    last_force = float(run_state.get("stream_watchdog_last_force_at", 0.0) or 0.0)
+                    last_force = float(stream.watchdog_last_force_at)
                     if (now_ts - last_force) >= 0.25:
-                        run_state["stream_watchdog_last_force_at"] = now_ts
-                        run_state["stream_watchdog_forced_flushes"] = int(
-                            run_state.get("stream_watchdog_forced_flushes", 0) or 0
-                        ) + 1
-                        run_state["stream_render_pending"] = False
-                        run_state["stream_render_force"] = False
+                        stream.watchdog_last_force_at = now_ts
+                        stream.watchdog_forced_flushes = int(stream.watchdog_forced_flushes) + 1
+                        stream.render_pending = False
+                        stream.render_force = False
                         try:
                             _append_stream_delta(force_scroll=False)
                         except Exception:
                             _render_transcript(force_scroll=False)
-                        run_state["stream_last_render_at"] = float(time.monotonic())
+                        stream.last_render_at = float(time.monotonic())
                 return True
 
             try:
                 watchdog_ms = max(120, min(2000, int(AI_TUTOR_STREAM_WATCHDOG_INTERVAL_MS)))
             except Exception:
                 watchdog_ms = 240
-            run_state["stream_watchdog_id"] = int(GLib.timeout_add(watchdog_ms, _watch_stream) or 0)
+            stream.watchdog_id = int(GLib.timeout_add(watchdog_ms, _watch_stream) or 0)
 
         def _selected_model_name() -> str:
             try:
@@ -6207,16 +6684,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return text_val
 
         def _set_running(running: bool) -> None:
-            run_state["active"] = bool(running)
+            turn = run_state.turn()
+            stream = run_state.stream()
+            turn.active = bool(running)
             if not running:
                 run_state.reset_stream_runtime()
-                stream_watchdog_id = int(run_state.get("stream_watchdog_id", 0) or 0)
+                stream_watchdog_id = int(stream.watchdog_id or 0)
                 if stream_watchdog_id > 0:
                     try:
                         GLib.source_remove(stream_watchdog_id)
                     except Exception:
                         pass
-                run_state["stream_watchdog_id"] = 0
+                stream.watchdog_id = 0
             else:
                 _ensure_stream_watchdog()
             has_latest_answer = bool(_latest_assistant_answer())
@@ -6228,7 +6707,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 prompt_ready=bool(_current_prompt_text(strip=True)),
                 has_history=bool(history),
                 has_latest_answer=has_latest_answer,
-                has_active_or_history=bool(history) or bool(run_state.get("active", False)),
+                has_active_or_history=bool(history) or bool(turn.active),
             )
             send_btn.set_sensitive(bool(controls.get("send_enabled", False)))
             stop_btn.set_sensitive(bool(controls.get("stop_enabled", False)))
@@ -6243,7 +6722,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             copy_btn.set_sensitive(bool(controls.get("copy_transcript_enabled", False)))
             copy_last_btn.set_sensitive(bool(controls.get("copy_last_enabled", False)))
             jump_btn.set_sensitive(bool(controls.get("jump_latest_enabled", False)))
-            gap_busy = bool(run_state.get("gap_generation_active", False))
+            gap_busy = bool(run_state.gap_generation_active()) if isinstance(run_state, TutorWorkspaceState) else bool(run_state.get("gap_generation_active", False))
             gap_enabled = (
                 (not bool(running))
                 and (not gap_busy)
@@ -6268,7 +6747,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
 
         def _set_gap_generation_running(active: bool) -> None:
-            run_state["gap_generation_active"] = bool(active)
+            if isinstance(run_state, TutorWorkspaceState):
+                run_state.set_gap_generation_active(bool(active))
+            else:
+                run_state["gap_generation_active"] = bool(active)
             gap_enabled = (
                 (not bool(run_state.get("active", False)))
                 and (not bool(active))
@@ -6541,11 +7023,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 model_dropdown.set_selected(cleaned.index(preferred))
             else:
                 model_dropdown.set_selected(0)
-            run_state["models"] = cleaned
-            _set_running(bool(run_state.get("active", False)))
+            if isinstance(run_state, TutorWorkspaceState):
+                run_state.set_tutor_models(cleaned)
+            else:
+                run_state["models"] = cleaned
+            turn = run_state.turn()
+            _set_running(bool(turn.active))
 
         def _refresh_models(*_args) -> None:
-            if bool(run_state.get("active", False)):
+            turn = run_state.turn()
+            if bool(turn.active):
                 return
             _set_status("Loading models from Ollama…")
             refresh_btn.set_sensitive(False)
@@ -6561,7 +7048,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         _set_dropdown_models([])
                         _set_status(friendly)
                         return False
-                    run_state["model_poll_errors"] = 0
+                    if isinstance(run_state, TutorWorkspaceState):
+                        run_state.set_model_poll_errors(0)
+                    else:
+                        run_state["model_poll_errors"] = 0
                     _set_dropdown_models(models)
                     if models:
                         _set_status(f"Loaded {len(models)} model(s).")
@@ -6574,7 +7064,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             StudyPlanGUI._start_managed_background_thread(self, _worker)
 
         def _auto_poll_models() -> bool:
-            if bool(run_state.get("active", False)):
+            turn = run_state.turn()
+            if bool(turn.active):
                 return True
 
             def _worker() -> None:
@@ -6582,16 +7073,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
                 def _finish() -> bool:
                     if err:
-                        run_state["model_poll_errors"] = int(run_state.get("model_poll_errors", 0) or 0) + 1
+                        if isinstance(run_state, TutorWorkspaceState):
+                            errors = run_state.increment_model_poll_errors(1)
+                        else:
+                            run_state["model_poll_errors"] = int(run_state.get("model_poll_errors", 0) or 0) + 1
+                            errors = int(run_state.get("model_poll_errors", 0) or 0)
                         _code, friendly = classify_ollama_error(err, host=self._normalize_ollama_host())
-                        if int(run_state.get("model_poll_errors", 0) or 0) >= 3:
+                        if int(errors or 0) >= 3:
                             _set_status("Model refresh paused after repeated errors; use Refresh.")
                             return False
                         _set_status(friendly)
                         return True
-                    run_state["model_poll_errors"] = 0
+                    if isinstance(run_state, TutorWorkspaceState):
+                        run_state.set_model_poll_errors(0)
+                    else:
+                        run_state["model_poll_errors"] = 0
                     cleaned = [str(m).strip() for m in models if str(m).strip()]
-                    if cleaned and cleaned != list(run_state.get("models", []) or []):
+                    existing_models = run_state.tutor_models() if isinstance(run_state, TutorWorkspaceState) else [str(x).strip() for x in list(run_state.get("models", []) or []) if str(x).strip()]
+                    if cleaned and cleaned != list(existing_models or []):
                         _set_dropdown_models(cleaned)
                         _set_status(f"Models updated ({len(cleaned)}).")
                     return True
@@ -6602,7 +7101,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return True
 
         def _on_model_change(*_args) -> None:
-            if bool(run_state.get("active", False)):
+            turn = run_state.turn()
+            if bool(turn.active):
                 return
             model_name = _selected_model_name()
             if model_name:
@@ -6611,7 +7111,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             _set_running(False)
 
         def _new_chat(*_args) -> None:
-            if bool(run_state.get("active", False)):
+            turn = run_state.turn()
+            if bool(turn.active):
                 return
             history.clear()
             _persist_history()
@@ -6624,13 +7125,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             run_state.pop("telemetry_learning_context_fp", None)
             run_state.pop("telemetry_learning_context_omitted", None)
             _set_status("New chat started.")
-            run_state["follow_live"] = True
-            run_state["follow_manual_override"] = False
+            stream = run_state.stream()
+            stream.follow_live = True
+            stream.follow_manual_override = False
             _render_transcript(force_scroll=True)
             _set_running(False)
 
         def _clear_prompt(*_args) -> None:
-            if bool(run_state.get("active", False)):
+            turn = run_state.turn()
+            if bool(turn.active):
                 return
             prompt_buf.set_text("")
             try:
@@ -6641,7 +7144,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             _set_running(False)
 
         def _insert_quick_prompt(template: str, action_type: str | None = None) -> None:
-            if bool(run_state.get("active", False)):
+            turn = run_state.turn()
+            if bool(turn.active):
                 return
             topic = str(self._effective_tutor_topic() or "").strip() or "the current topic"
             module = str(getattr(self, "module_title", "") or "").strip() or "selected module"
@@ -6673,24 +7177,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
 
         def _jump_latest(*_args) -> None:
-            run_state["follow_live"] = True
-            run_state["follow_manual_override"] = False
+            stream = run_state.stream()
+            stream.follow_live = True
+            stream.follow_manual_override = False
             _update_follow_button()
             _scroll_response_end_deferred()
 
         def _follow_live_toggle(*_args) -> None:
-            follow_live = bool(run_state.get("follow_live", True))
-            run_state["follow_live"] = not follow_live
-            if bool(run_state.get("follow_live", True)):
-                run_state["follow_manual_override"] = False
+            stream = run_state.stream()
+            stream.follow_live = not bool(stream.follow_live)
+            if bool(stream.follow_live):
+                stream.follow_manual_override = False
                 _scroll_response_end_deferred()
             else:
-                run_state["follow_manual_override"] = True
+                stream.follow_manual_override = True
             _update_follow_button()
 
         def _on_prompt_changed(*_args) -> None:
             _update_prompt_meta()
-            _set_running(bool(run_state.get("active", False)))
+            turn = run_state.turn()
+            _set_running(bool(turn.active))
 
         def _record_turn_telemetry(
             *,
@@ -6798,7 +7304,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not bool(self.local_llm_enabled):
                 _set_status("Local AI tutor is disabled in Preferences.")
                 return
-            if bool(run_state.get("active", False)):
+            turn = run_state.turn()
+            if bool(turn.active):
                 _set_status("Generation already running.")
                 return
             raw_prompt = _current_prompt_text(strip=True) or ""
@@ -7118,11 +7625,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 _set_status("Choose a model in Preferences → AI Tutor.")
                 return
             try:
-                run_state["turn_started_at"] = float(turn_requested_at)
-                run_state["turn_user_prompt"] = str(user_prompt or "")
-                run_state["turn_full_prompt"] = str(full_prompt or "")
-                run_state["turn_model_candidates"] = list(model_candidates)
-                run_state["turn_llm_purpose"] = str(tutor_llm_purpose or "")
+                run_state.set_turn_request_metadata(
+                    started_at=float(turn_requested_at),
+                    user_prompt=str(user_prompt or ""),
+                    full_prompt=str(full_prompt or ""),
+                    model_candidates=list(model_candidates),
+                    llm_purpose=str(tutor_llm_purpose or ""),
+                )
             except Exception:
                 pass
             planner_brief = ""
@@ -7331,6 +7840,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 set_running=_set_running,
                 render_transcript=_render_transcript,
             )
+            if paused_turn is not None:
+                try:
+                    tutor_workspace_controller.commit_resumed_turn()
+                except Exception:
+                    pass
             run_state["practice_hint_policy_state"] = {}
             run_state.clear_tutor_trust()
             self.local_llm_model = model_name
@@ -7376,10 +7890,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 nonlocal model_name
 
                 def _on_chunk(piece: str) -> None:
+                    turn = run_state.turn()
+
                     def _apply_chunk() -> bool:
-                        if int(run_state.get("job_id", 0) or 0) != job_id:
+                        if int(turn.job_id) != job_id:
                             return False
-                        if not bool(run_state.get("active", False)):
+                        if not bool(turn.active):
                             return False
                         if int(guard_state.get("first_token_ms", 0) or 0) <= 0:
                             try:
@@ -7410,12 +7926,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 text = ""
                 err: str | None = None
                 try:
+                    turn = run_state.turn()
                     for idx, candidate_model in enumerate(model_candidates):
                         candidate_name = str(candidate_model or "").strip()
                         if not candidate_name:
                             continue
                         model_name = candidate_name
-                        run_state["model"] = candidate_name
+                        turn.model = candidate_name
                         guard_state["generation_started_at"] = float(time.monotonic())
                         guard_state["stream_started_at"] = 0.0
                         guard_state["first_token_ms"] = 0
@@ -7433,7 +7950,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         if not err or err == "cancelled":
                             break
                         partial_text = str(text or "").strip()
-                        draft_text = str(run_state.get("draft_assistant", "") or "").strip()
+                        draft_text = str(turn.draft_assistant or "").strip()
                         if partial_text or draft_text:
                             break
                         if idx >= (len(model_candidates) - 1):
@@ -7455,7 +7972,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
 
                 def _finish(inf_snap: tuple[str, str]) -> bool:
-                    if int(run_state.get("job_id", 0) or 0) != job_id:
+                    if int(run_state.turn().job_id) != job_id:
                         return False
                     try:
                         drafts = tutor_workspace_controller.finish_turn(job_id=job_id, set_running=_set_running)
@@ -7723,17 +8240,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             pass
                         return False
                     except recoverable_tutor_runtime_errors as exc:
-                        run_state["cancel_event"] = None
-                        run_state["draft_user"] = ""
-                        run_state["draft_assistant"] = ""
-                        run_state["turn_started_at"] = 0.0
-                        run_state["turn_user_prompt"] = ""
-                        run_state["turn_full_prompt"] = ""
-                        run_state["turn_model_candidates"] = []
-                        run_state["turn_llm_purpose"] = ""
-                        run_state.pop("auto_resume_mode", None)
+                        try:
+                            _ = tutor_workspace_controller.finish_turn(job_id=job_id, set_running=_set_running)
+                        except Exception:
+                            pass
                         run_state.clear_tutor_trust()
-                        _set_running(False)
                         _log_tutor_runtime_warning("finish_turn", exc)
                         _set_status("Tutor turn failed. Please retry.")
                         _refresh_status_line()
@@ -7744,7 +8255,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             StudyPlanGUI._start_managed_background_thread(self, _worker)
 
         def _stop_generation(*_args) -> None:
-            if bool(run_state.get("active", False)):
+            if bool(run_state.turn().active):
                 snapshot = tutor_workspace_controller.pause_turn(
                     reason="user_pause",
                     pause_fn=self._pause_tutor_workspace_turn,
@@ -7765,7 +8276,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not isinstance(run_state, TutorWorkspaceState):
                 return True
             try:
-                if bool(run_state.get("active", False)):
+                turn = run_state.turn()
+                if bool(turn.active):
                     should_pause, pause_reason = self._should_auto_pause_tutor_workspace_turn()
                     if should_pause:
                         snapshot = tutor_workspace_controller.pause_turn(
@@ -7797,18 +8309,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return True
 
         def _cancel_gap_generation(*_args) -> None:
-            if not bool(run_state.get("gap_generation_active", False)):
-                return
-            cancel_event = run_state.get("gap_cancel_event")
+            if isinstance(run_state, TutorWorkspaceState):
+                if not bool(run_state.gap_generation_active()):
+                    return
+                cancel_event = run_state.gap_cancel_event()
+            else:
+                if not bool(run_state.get("gap_generation_active", False)):
+                    return
+                cancel_event = run_state.get("gap_cancel_event")
             if isinstance(cancel_event, threading.Event):
                 cancel_event.set()
             _set_status("Cancelling gap generation…")
 
         def _generate_gap_questions(*_args) -> None:
-            if bool(run_state.get("active", False)):
+            turn = run_state.turn()
+            if bool(turn.active):
                 _set_status("Wait for current tutor turn to finish before generating gap questions.")
                 return
-            if bool(run_state.get("gap_generation_active", False)):
+            if isinstance(run_state, TutorWorkspaceState):
+                if bool(run_state.gap_generation_active()):
+                    _set_status("Gap-question generation is already running.")
+                    return
+            elif bool(run_state.get("gap_generation_active", False)):
                 _set_status("Gap-question generation is already running.")
                 return
             if not bool(getattr(self, "ai_tutor_gap_generation_enabled", True)):
@@ -7828,7 +8350,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             def _worker() -> None:
                 try:
                     cancel_event = threading.Event()
-                    run_state["gap_cancel_event"] = cancel_event
+                    if isinstance(run_state, TutorWorkspaceState):
+                        run_state.set_gap_cancel_event(cancel_event)
+                    else:
+                        run_state["gap_cancel_event"] = cancel_event
                     cancel_check = lambda: bool(cancel_event.is_set())
                     snapshot = self._build_ai_tutor_autopilot_snapshot()
                     ok, msg = self._generate_gap_drill_questions(
@@ -7842,13 +8367,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     ok = False
                     msg = self._compose_ollama_recovery_status(
                         str(exc),
-                        model=str(run_state.get("model", "") or ""),
-                        attempted_models=[str(run_state.get("model", "") or "")] if str(run_state.get("model", "") or "").strip() else None,
+                        model=str(turn.model or ""),
+                        attempted_models=[str(turn.model or "")] if str(turn.model or "").strip() else None,
                     )
 
                 def _finish() -> bool:
                     _set_gap_generation_running(False)
-                    run_state["gap_cancel_event"] = None
+                    if isinstance(run_state, TutorWorkspaceState):
+                        run_state.set_gap_cancel_event(None)
+                    else:
+                        run_state["gap_cancel_event"] = None
                     _set_status(str(msg or "Gap-question generation finished."))
                     _refresh_status_line()
                     if ok:
@@ -7871,10 +8399,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             StudyPlanGUI._start_managed_background_thread(self, _worker)
 
         def _generate_classification_gap_questions(*_args) -> None:
-            if bool(run_state.get("active", False)):
+            turn = run_state.turn()
+            if bool(turn.active):
                 _set_status("Wait for current tutor turn to finish before generating classification questions.")
                 return
-            if bool(run_state.get("gap_generation_active", False)):
+            if isinstance(run_state, TutorWorkspaceState):
+                if bool(run_state.gap_generation_active()):
+                    _set_status("Gap-style generation is already running.")
+                    return
+            elif bool(run_state.get("gap_generation_active", False)):
                 _set_status("Gap-style generation is already running.")
                 return
             if not bool(getattr(self, "ai_tutor_gap_generation_enabled", True)):
@@ -7899,7 +8432,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
                 try:
                     cancel_event = threading.Event()
-                    run_state["gap_cancel_event"] = cancel_event
+                    if isinstance(run_state, TutorWorkspaceState):
+                        run_state.set_gap_cancel_event(cancel_event)
+                    else:
+                        run_state["gap_cancel_event"] = cancel_event
                     cancel_check = lambda: bool(cancel_event.is_set())
                     snapshot = self._build_ai_tutor_autopilot_snapshot()
                     ok, msg = self._generate_gap_drill_questions(
@@ -7914,13 +8450,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     ok = False
                     msg = self._compose_ollama_recovery_status(
                         str(exc),
-                        model=str(run_state.get("model", "") or ""),
-                        attempted_models=[str(run_state.get("model", "") or "")] if str(run_state.get("model", "") or "").strip() else None,
+                        model=str(turn.model or ""),
+                        attempted_models=[str(turn.model or "")] if str(turn.model or "").strip() else None,
                     )
 
                 def _finish() -> bool:
                     _set_gap_generation_running(False)
-                    run_state["gap_cancel_event"] = None
+                    if isinstance(run_state, TutorWorkspaceState):
+                        run_state.set_gap_cancel_event(None)
+                    else:
+                        run_state["gap_cancel_event"] = None
                     _set_status(str(msg or "Classification drill generation finished."))
                     _refresh_status_line()
                     if ok:
@@ -8045,7 +8584,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         else:
             _set_status("Ready. Press Ctrl+Enter to send.")
         _refresh_models()
-        run_state["model_poll_id"] = int(GLib.timeout_add_seconds(45, _auto_poll_models) or 0)
+        run_state.set_tutor_model_poll_id(GLib.timeout_add_seconds(45, _auto_poll_models) or 0)
         return page_scroll
 
     def _refresh_tutor_workspace_page(self) -> None:
@@ -9226,8 +9765,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         self._show_text_dialog("Refresh syllabus intelligence", f"Could not create save path: {e}", Gtk.MessageType.ERROR)
                         return
                 try:
-                    with open(save_path, "w", encoding="utf-8") as f:
-                        json.dump(config_to_save, f, ensure_ascii=True, indent=2)
+                    self._atomic_write_text_file(
+                        save_path,
+                        json.dumps(config_to_save, ensure_ascii=True, indent=2),
+                        mode=0o600,
+                    )
                 except Exception as e:
                     self._show_text_dialog("Refresh syllabus intelligence", f"Save failed: {e}", Gtk.MessageType.ERROR)
                     return
@@ -10201,21 +10743,37 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             total_q = int(counts.get("total_questions", 0) or 0)
             with_res = int(counts.get("questions_with_resolved_outcome", 0) or 0)
             with_explicit = int(counts.get("questions_with_explicit_outcome_ids", 0) or 0)
+            with_explicit_direct = int(counts.get("questions_with_explicit_outcome_ids_direct", 0) or 0)
+            with_explicit_manual = int(counts.get("questions_with_explicit_outcome_ids_manual", 0) or 0)
+            with_explicit_both = int(counts.get("questions_with_explicit_outcome_ids_both", 0) or 0)
             lines.append("")
             lines.append("Outcome coverage (question–outcome linking)")
             syllabus_k = int(counts.get("syllabus_outcome_count", 0) or 0)
             linked_l = int(counts.get("outcomes_with_linked_question", 0) or 0)
+            linked_direct = int(counts.get("outcomes_with_linked_question_direct", 0) or 0)
+            linked_manual = int(counts.get("outcomes_with_linked_question_manual", 0) or 0)
+            linked_both = int(counts.get("outcomes_with_linked_question_both", 0) or 0)
             lines.append(f"  Syllabus outcomes: {syllabus_k}")
             lines.append(f"  Outcomes with ≥1 linked question: {linked_l} / {syllabus_k}" + (f" ({100 * linked_l // max(1, syllabus_k)}%)" if syllabus_k else ""))
+            lines.append(f"    - linked via direct outcome_ids: {linked_direct}")
+            lines.append(f"    - linked via manual question_stats tags: {linked_manual}")
+            lines.append(f"    - linked by both direct and manual: {linked_both}")
             lines.append(f"  Questions with resolved outcome: {with_res} / {total_q}" + (f" ({100 * with_res // max(1, total_q)}%)" if total_q else ""))
             lines.append(f"  Questions with explicit outcome_ids: {with_explicit} / {total_q}")
+            lines.append(f"    - direct on question rows: {with_explicit_direct}")
+            lines.append(f"    - manual linked in question stats: {with_explicit_manual}")
+            lines.append(f"    - both direct and manual: {with_explicit_both}")
             by_ch = counts.get("by_chapter") or {}
             if by_ch and len(by_ch) <= 12:
                 for ch, c in list(by_ch.items())[:10]:
                     t = int(c.get("total", 0) or 0)
                     r = int(c.get("with_resolved", 0) or 0)
+                    lo = int(c.get("outcomes_with_linked_question", 0) or 0)
+                    lo_direct = int(c.get("outcomes_with_linked_question_direct", 0) or 0)
+                    lo_manual = int(c.get("outcomes_with_linked_question_manual", 0) or 0)
+                    lo_both = int(c.get("outcomes_with_linked_question_both", 0) or 0)
                     if t > 0:
-                        lines.append(f"    {ch}: {r}/{t} linked")
+                        lines.append(f"    {ch}: questions linked {r}/{t}; outcomes linked {lo} (direct {lo_direct}, manual {lo_manual}, both {lo_both})")
                 if len(by_ch) > 10:
                     lines.append(f"    … and {len(by_ch) - 10} more chapters")
             # Actionable hints (syllabus ingest Phase 6)
@@ -11200,8 +11758,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 try:
                     os.makedirs(folder, exist_ok=True)
                     path = os.path.join(folder, f"{module_id}.json")
-                    with open(path, "w", encoding="utf-8") as f:
-                        json.dump(config, f, ensure_ascii=True, indent=2)
+                    self._atomic_write_text_file(
+                        path,
+                        json.dumps(config, ensure_ascii=True, indent=2),
+                        mode=0o600,
+                    )
                 except Exception as exc:
                     self.send_notification("Module Editor", f"Save failed: {exc}")
                     return
@@ -14060,6 +14621,50 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
+    def _ai_cache_log_db_error(self, event: str, exc: BaseException | None = None, sql: str = "") -> None:
+        """Log AI cache DB failures with simple throttling."""
+        try:
+            now_mono = time.monotonic()
+        except Exception:
+            now_mono = 0.0
+        try:
+            last_mono = float(getattr(self, "_ai_cache_last_error_log_mono", 0.0) or 0.0)
+        except Exception:
+            last_mono = 0.0
+        try:
+            suppressed = int(getattr(self, "_ai_cache_suppressed_error_count", 0) or 0)
+        except Exception:
+            suppressed = 0
+        if now_mono > 0.0 and last_mono > 0.0 and (now_mono - last_mono) < 30.0:
+            try:
+                self._ai_cache_suppressed_error_count = int(suppressed) + 1
+            except Exception:
+                pass
+            return
+        try:
+            self._ai_cache_last_error_log_mono = float(now_mono)
+        except Exception:
+            pass
+        try:
+            self._ai_cache_suppressed_error_count = 0
+        except Exception:
+            pass
+        sql_hint = str(sql or "").strip().splitlines()[0][:120]
+        suffix = f" (suppressed={suppressed})" if suppressed > 0 else ""
+        if exc is None:
+            log.warning("AI cache DB error [%s]%s sql=%r", str(event or "unknown"), suffix, sql_hint)
+            return
+        try:
+            log.warning(
+                "AI cache DB error [%s]%s sql=%r",
+                str(event or "unknown"),
+                suffix,
+                sql_hint,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+        except Exception:
+            pass
+
     def _ai_cache_open(self) -> sqlite3.Connection | None:
         if not self._ai_cache_enabled():
             return None
@@ -14091,6 +14696,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self._ai_cache_disabled = False
                 return conn
             except Exception:
+                self._ai_cache_log_db_error("open_primary", sql="PRAGMA/open")
                 try:
                     if conn is not None:
                         conn.close()
@@ -14111,6 +14717,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self._ai_cache_disabled = False
                     return conn
                 except Exception:
+                    self._ai_cache_log_db_error("open_recovery", sql="PRAGMA/open-recovery")
                     self._ai_cache_conn = None
                     self._ai_cache_ready = False
                     self._ai_cache_disabled = True
@@ -14224,16 +14831,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         *,
         write: bool = False,
     ) -> sqlite3.Cursor | None:
-        conn = self._ai_cache_open()
-        if conn is None:
-            return None
-        try:
-            if write:
-                with self._ai_cache_lock:
-                    return conn.execute(sql, tuple(params))
-            return conn.execute(sql, tuple(params))
-        except Exception:
-            return None
+        # Serialize ALL SQLite operations. The connection is opened with
+        # check_same_thread=False, but sqlite connections/cursors are still
+        # unsafe under concurrent use.
+        with self._ai_cache_lock:
+            conn = self._ai_cache_open()
+            if conn is None:
+                return None
+            try:
+                return conn.execute(sql, tuple(params))
+            except Exception as exc:
+                self._ai_cache_log_db_error(
+                    "execute_write" if bool(write) else "execute_read",
+                    exc,
+                    sql=sql,
+                )
+                return None
 
     def _ai_cache_fetchone(
         self,
@@ -17740,7 +18353,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         state = getattr(self, "_tutor_workspace_state", None)
         if not isinstance(state, TutorWorkspaceState):
             return False, ""
-        if not bool(state.get("active", False)):
+        try:
+            active = bool(state.turn().active)
+        except Exception:
+            active = bool(state.get("active", False))
+        if not active:
             return False, ""
         if state.paused_tutor_turn() is not None:
             return False, ""
@@ -17752,7 +18369,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         state = getattr(self, "_tutor_workspace_state", None)
         if not isinstance(state, TutorWorkspaceState):
             return False
-        if bool(state.get("active", False)):
+        try:
+            active = bool(state.turn().active)
+        except Exception:
+            active = bool(state.get("active", False))
+        if active:
             return False
         paused_turn = state.paused_tutor_turn()
         if paused_turn is None:
@@ -17776,7 +18397,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             paused_mono = 0.0
         if paused_mono > 0.0 and (time.monotonic() - paused_mono) < 2.5:
             return False
-        model_name = str(paused_turn.get("model", "") or "").strip() or str(state.get("model", "") or "").strip()
+        model_name = str(paused_turn.get("model", "") or "").strip() or str(state.turn().model or "").strip()
         if model_name:
             cooldown_reader = getattr(self, "_is_local_llm_model_on_cooldown", None)
             if callable(cooldown_reader):
@@ -17809,7 +18430,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             backend=backend_hint,
         )
         try:
-            cancel_event = state.get("cancel_event")
+            cancel_event = state.turn().cancel_event
             if isinstance(cancel_event, threading.Event):
                 cancel_event.set()
         except Exception:
@@ -17831,8 +18452,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         snapshot = state.paused_tutor_turn()
         if snapshot is None:
             return None
-        state.clear_paused_tutor_turn()
         return snapshot
+
+    def _commit_resumed_tutor_workspace_turn(self) -> None:
+        state = getattr(self, "_tutor_workspace_state", None)
+        if not isinstance(state, TutorWorkspaceState):
+            return
+        state.clear_paused_tutor_turn()
 
     def _resolve_openai_compatible_endpoint(self) -> ResolvedOpenAICompatibleEndpoint | None:
         try:
@@ -17928,13 +18554,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         str(getattr(_Cfg, "CONFIG_HOME", "") or ""),
                         os.getcwd(),
                     ],
+                    allow_generic_fallback=False,
                 )
             except Exception:
                 auth = None
-            if not (auth is not None and bool(auth.headers)):
-                mark_failure_fn = getattr(self, "_mark_cloud_endpoint_failure", None)
-                if callable(mark_failure_fn):
-                    mark_failure_fn(resolved, "cloud_auth_missing")
             return auth is not None and bool(auth.headers)
         except Exception:
             return False
@@ -18010,6 +18633,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         str(getattr(_Cfg, "CONFIG_HOME", "") or ""),
                         os.getcwd(),
                     ],
+                    allow_generic_fallback=False,
                 )
             except Exception:
                 auth = None
@@ -18046,6 +18670,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         str(getattr(_Cfg, "CONFIG_HOME", "") or ""),
                         os.getcwd(),
                     ],
+                    allow_generic_fallback=False,
                 )
             except Exception:
                 resolved_auth = None
@@ -18169,6 +18794,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             str(getattr(_Cfg, "CONFIG_HOME", "") or ""),
                             os.getcwd(),
                         ],
+                        allow_generic_fallback=False,
                     )
                 except Exception:
                     resolved_auth = None
@@ -18286,7 +18912,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         while idx < len(s):
             nxt = min(len(s), idx + chunk_chars)
             piece = s[idx:nxt]
-            piece = piece.strip()
             if piece:
                 on_chunk(piece)
             idx = nxt
@@ -30995,6 +31620,100 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _window_allowed(self, info: dict) -> bool:
         return self._match_allowlist_token(info) is not None
 
+    def _log_optional_subprocess_failure(
+        self,
+        key: str,
+        exc: BaseException | None = None,
+        *,
+        details: str = "",
+    ) -> None:
+        """Log optional subprocess failures with per-key throttling."""
+        k = str(key or "").strip() or "subprocess"
+        try:
+            now_mono = time.monotonic()
+        except Exception:
+            now_mono = 0.0
+        logs = getattr(self, "_optional_subprocess_error_logs", None)
+        if not isinstance(logs, dict):
+            logs = {}
+            try:
+                setattr(self, "_optional_subprocess_error_logs", logs)
+            except Exception:
+                pass
+        entry = logs.get(k, {}) if isinstance(logs, dict) else {}
+        try:
+            last = float(entry.get("last", 0.0) or 0.0)
+        except Exception:
+            last = 0.0
+        try:
+            suppressed = int(entry.get("suppressed", 0) or 0)
+        except Exception:
+            suppressed = 0
+        if now_mono > 0.0 and last > 0.0 and (now_mono - last) < 30.0:
+            if isinstance(logs, dict):
+                logs[k] = {"last": last, "suppressed": int(suppressed) + 1}
+            return
+        if isinstance(logs, dict):
+            logs[k] = {"last": now_mono, "suppressed": 0}
+        suffix = f" suppressed={suppressed}" if suppressed > 0 else ""
+        if exc is None:
+            log.warning("Optional subprocess failure [%s]%s details=%r", k, suffix, str(details or "")[:160])
+            return
+        log.warning(
+            "Optional subprocess failure [%s]%s details=%r",
+            k,
+            suffix,
+            str(details or "")[:160],
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
+    def _log_optional_io_failure(
+        self,
+        key: str,
+        exc: BaseException | None = None,
+        *,
+        path: str = "",
+    ) -> None:
+        """Log optional IO failures with per-key throttling."""
+        k = str(key or "").strip() or "io"
+        try:
+            now_mono = time.monotonic()
+        except Exception:
+            now_mono = 0.0
+        logs = getattr(self, "_optional_io_error_logs", None)
+        if not isinstance(logs, dict):
+            logs = {}
+            try:
+                setattr(self, "_optional_io_error_logs", logs)
+            except Exception:
+                pass
+        entry = logs.get(k, {}) if isinstance(logs, dict) else {}
+        try:
+            last = float(entry.get("last", 0.0) or 0.0)
+        except Exception:
+            last = 0.0
+        try:
+            suppressed = int(entry.get("suppressed", 0) or 0)
+        except Exception:
+            suppressed = 0
+        if now_mono > 0.0 and last > 0.0 and (now_mono - last) < 30.0:
+            if isinstance(logs, dict):
+                logs[k] = {"last": last, "suppressed": int(suppressed) + 1}
+            return
+        if isinstance(logs, dict):
+            logs[k] = {"last": now_mono, "suppressed": 0}
+        suffix = f" suppressed={suppressed}" if suppressed > 0 else ""
+        if exc is None:
+            log.warning("Optional IO failure [%s]%s path=%r", k, suffix, str(path or "")[:200])
+            return
+        log.warning(
+            "Optional IO failure [%s]%s path=%r",
+            k,
+            suffix,
+            str(path or "")[:200],
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
     def _match_allowlist_token(self, info: dict) -> str | None:
         if not info:
             return None
@@ -31022,7 +31741,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             app = data.get("class") or data.get("initialClass") or data.get("app") or ""
             title = data.get("title") or ""
             return {"app": str(app), "title": str(title)}
-        except Exception:
+        except Exception as exc:
+            self._log_optional_subprocess_failure("hyprctl.activewindow", exc)
             return None
 
     def _get_idle_seconds_hypridle(self) -> float | None:
@@ -31057,31 +31777,37 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if active:
             try:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write("active\n")
+                self._atomic_write_text_file(path, "active\n", mode=0o600)
                 if self._hypridle_state_path:
                     try:
                         os.makedirs(os.path.dirname(self._hypridle_state_path), exist_ok=True)
-                        with open(self._hypridle_state_path, "w", encoding="utf-8") as f:
-                            f.write("active\n")
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                        self._atomic_write_text_file(self._hypridle_state_path, "active\n", mode=0o600)
+                    except Exception as exc:
+                        self._log_optional_io_failure(
+                            "hypridle_state_write",
+                            exc,
+                            path=self._hypridle_state_path,
+                        )
+            except Exception as exc:
+                self._log_optional_io_failure("pomodoro_state_write", exc, path=path)
             return
         try:
             os.remove(path)
         except FileNotFoundError:
             pass
-        except Exception:
-            pass
+        except Exception as exc:
+            self._log_optional_io_failure("pomodoro_state_remove", exc, path=path)
         try:
             if self._hypridle_state_path:
                 os.remove(self._hypridle_state_path)
         except FileNotFoundError:
             pass
-        except Exception:
-            pass
+        except Exception as exc:
+            self._log_optional_io_failure(
+                "hypridle_state_remove",
+                exc,
+                path=self._hypridle_state_path,
+            )
 
     def _get_idle_seconds_logind(self) -> float | None:
         def _parse_idle(output: str) -> tuple[bool | None, int | None, int | None]:
@@ -31143,8 +31869,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if idle is not None:
                         self._last_idle_source = "logind-session"
                         return idle
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log_optional_subprocess_failure("loginctl.show-session", exc, details=str(session_id))
 
         try:
             result = subprocess.run(
@@ -31169,8 +31895,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if idle is not None:
                     self._last_idle_source = "logind-user"
                     return idle
-        except Exception:
-            pass
+        except Exception as exc:
+            self._log_optional_subprocess_failure("loginctl.show-user", exc, details=os.environ.get("USER", ""))
         return None
 
     def _get_idle_seconds(self) -> float | None:
@@ -35538,8 +36264,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception as e:
                 return False, f"Could not create save path: {e}"
         try:
-            with open(save_path, "w", encoding="utf-8") as f:
-                json.dump(merged, f, ensure_ascii=True, indent=2)
+            self._atomic_write_text_file(
+                save_path,
+                json.dumps(merged, ensure_ascii=True, indent=2),
+                mode=0o600,
+            )
         except Exception as e:
             return False, f"Save failed: {e}"
         engine._apply_module_config(merged)
@@ -39419,8 +40148,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if ok:
                     save_path = os.path.join(folder, f"{module_id}.json")
                     try:
-                        with open(save_path, "w", encoding="utf-8") as f:
-                            json.dump(config, f, indent=2, ensure_ascii=False)
+                        self._atomic_write_text_file(
+                            save_path,
+                            json.dumps(config, indent=2, ensure_ascii=False),
+                            mode=0o600,
+                        )
                         self.send_notification("Syllabus", f"Config saved to {os.path.basename(save_path)}")
                     except Exception:
                         pass
@@ -40638,92 +41370,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 default_extension=".csv",
                 allowed_extensions=(".csv",),
             )
-            stats = getattr(self.engine, "question_stats", {}) or {}
-            questions = getattr(self.engine, "QUESTIONS", {}) or {}
-            rows: list[list[Any]] = [[
-                "Chapter",
-                "Question Index",
-                "Question",
-                "Attempts",
-                "Correct",
-                "Miss Rate",
-                "Streak",
-                "Avg Time (sec)",
-                "Last Time (sec)",
-                "Last Seen",
-                "Outcome IDs",
-                "Quality Score",
-                "Quality Issues",
-                "Difficulty Guess",
-                "Max Distractor Similarity",
-            ]]
-            for chapter, chapter_stats in stats.items():
-                if not isinstance(chapter_stats, dict):
-                    continue
-                q_list = questions.get(chapter, []) if isinstance(questions, dict) else []
-                for key, entry in chapter_stats.items():
-                    if not isinstance(entry, dict):
-                        continue
-                    try:
-                        idx = int(key)
-                    except Exception:
-                        continue
-                    q_text = ""
-                    outcome_ids_str = ""
-                    if isinstance(q_list, list) and 0 <= idx < len(q_list):
-                        try:
-                            q_obj = q_list[idx]
-                            q_text = str(q_obj.get("question", ""))
-                            oids = q_obj.get("outcome_ids")
-                            if isinstance(oids, list) and oids:
-                                outcome_ids_str = "|".join(str(x) for x in oids)
-                            quality = assess_question_quality_extended(q_obj)
-                        except Exception:
-                            q_text = ""
-                            quality = {}
-                    else:
-                        quality = {}
-                    try:
-                        attempts = int(entry.get("attempts", 0) or 0)
-                    except Exception:
-                        attempts = 0
-                    try:
-                        correct = int(entry.get("correct", 0) or 0)
-                    except Exception:
-                        correct = 0
-                    miss_rate = 0.0 if attempts <= 0 else 1.0 - (correct / max(1, attempts))
-                    try:
-                        streak = int(entry.get("streak", 0) or 0)
-                    except Exception:
-                        streak = 0
-                    try:
-                        avg_time = float(entry.get("avg_time_sec", 0) or 0.0)
-                    except Exception:
-                        avg_time = 0.0
-                    try:
-                        last_time = float(entry.get("last_time_sec", 0) or 0.0)
-                    except Exception:
-                        last_time = 0.0
-                    last_seen = entry.get("last_seen") or ""
-                    rows.append(
-                        [
-                            chapter,
-                            idx,
-                            q_text,
-                            attempts,
-                            correct,
-                            f"{miss_rate:.2f}",
-                            streak,
-                            f"{avg_time:.1f}",
-                            f"{last_time:.1f}",
-                            last_seen,
-                            outcome_ids_str,
-                            f"{float(quality.get('score', 0.0) or 0.0):.2f}",
-                            "|".join(str(x) for x in (quality.get("issues") or [])),
-                            str(quality.get("difficulty_guess", "") or ""),
-                            f"{float(quality.get('max_distractor_similarity', 0.0) or 0.0):.2f}",
-                        ]
-                    )
+            rows = _build_question_stats_export_rows(self.engine)
             self._atomic_write_csv_rows(file_path, rows)
             success_dialog = self._new_message_dialog(
                 transient_for=self,
@@ -41466,8 +42113,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         path = SMOKE_REPORT_PATH
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(self._smoke_report, f, ensure_ascii=True, indent=2)
+            self._atomic_write_text_file(path, json.dumps(self._smoke_report, ensure_ascii=True, indent=2), mode=0o600)
         except Exception as exc:
             self._log_error("write_smoke_report", exc)
 
@@ -42168,8 +42814,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         path = SOAK_REPORT_PATH
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(self._soak_report, f, ensure_ascii=True, indent=2)
+            self._atomic_write_text_file(path, json.dumps(self._soak_report, ensure_ascii=True, indent=2), mode=0o600)
         except Exception as exc:
             self._log_error("write_soak_report", exc)
 
@@ -42236,34 +42881,64 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         state = getattr(self, "_tutor_workspace_state", None)
         if not isinstance(state, (TutorWorkspaceState, dict)):
             return
-        try:
-            state["active"] = False
-            state["job_id"] = int(state.get("job_id", 0) or 0) + 1
-        except Exception:
-            pass
-        try:
-            cancel_event = state.get("cancel_event")
-            if isinstance(cancel_event, threading.Event):
-                cancel_event.set()
-        except Exception:
-            pass
-        try:
-            model_name = str(state.get("model", "") or "").strip()
-            if model_name:
-                self._ollama_stop_model(model_name)
-        except Exception:
-            pass
-        for key in ("stream_watchdog_id", "model_poll_id", "practice_hint_policy_tick_id", "auto_pause_resume_tick_id"):
+        if isinstance(state, TutorWorkspaceState):
             try:
-                source_id = int(state.get(key, 0) or 0)
+                turn = state.turn()
+                # ensure any in-flight background work sees a changed job id
+                with state._lock:
+                    state["job_id"] = int(state.get("job_id", 0) or 0) + 1
+                turn.active = False
+                cancel_event = turn.cancel_event
+                if isinstance(cancel_event, threading.Event):
+                    cancel_event.set()
+                model_name = str(turn.model or "").strip()
+                if model_name:
+                    self._ollama_stop_model(model_name)
             except Exception:
-                source_id = 0
-            if source_id > 0:
-                self._force_remove_glib_source(source_id)
+                pass
+        else:
+            try:
+                state["active"] = False
+                state["job_id"] = int(state.get("job_id", 0) or 0) + 1
+            except Exception:
+                pass
+            try:
+                cancel_event = state.get("cancel_event")
+                if isinstance(cancel_event, threading.Event):
+                    cancel_event.set()
+            except Exception:
+                pass
+            try:
+                model_name = str(state.get("model", "") or "").strip()
+                if model_name:
+                    self._ollama_stop_model(model_name)
+            except Exception:
+                pass
+        if isinstance(state, TutorWorkspaceState):
+            for source_id, clear_fn in (
+                (int(state.stream().watchdog_id or 0), lambda: setattr(state.stream(), "watchdog_id", 0)),
+                (int(state.tutor_model_poll_id() or 0), lambda: state.set_tutor_model_poll_id(0)),
+                (int(state.tutor_practice_hint_policy_tick_id() or 0), lambda: state.set_tutor_practice_hint_policy_tick_id(0)),
+                (int(state.tutor_auto_pause_resume_tick_id() or 0), lambda: state.set_tutor_auto_pause_resume_tick_id(0)),
+            ):
+                if source_id > 0:
+                    self._force_remove_glib_source(source_id)
                 try:
-                    state[key] = 0
+                    clear_fn()
                 except Exception:
                     pass
+        else:
+            for key in ("stream_watchdog_id", "model_poll_id", "practice_hint_policy_tick_id", "auto_pause_resume_tick_id"):
+                try:
+                    source_id = int(state.get(key, 0) or 0)
+                except Exception:
+                    source_id = 0
+                if source_id > 0:
+                    self._force_remove_glib_source(source_id)
+                    try:
+                        state[key] = 0
+                    except Exception:
+                        pass
         try:
             set_running = state.get("set_running")
             if callable(set_running):
@@ -45881,12 +46556,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         streak_file = os.path.join(Config.CONFIG_HOME, "streak.json")
         try:
             os.makedirs(os.path.dirname(streak_file), exist_ok=True)
-            with open(streak_file, "w") as f:
-                data = {
-                    "last_study_date": self.last_study_date.isoformat() if self.last_study_date is not None else None,
-                    "study_streak": self.study_streak if self.study_streak is not None else 0
-                }
-                json.dump(data, f)
+            data = {
+                "last_study_date": self.last_study_date.isoformat() if self.last_study_date is not None else None,
+                "study_streak": self.study_streak if self.study_streak is not None else 0,
+            }
+            self._atomic_write_text_file(
+                streak_file,
+                json.dumps(data, ensure_ascii=True, indent=2),
+                mode=0o600,
+            )
         except (TypeError, OSError) as e:
             print(f"Error saving streak data: {e}")
         except Exception as e:

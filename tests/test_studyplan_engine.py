@@ -167,8 +167,11 @@ def test_engine_initializes_cognitive_runtime_wrapper(engine_no_io):
 
 
 def test_save_data_persists_cognitive_state_snapshot(engine_no_io, monkeypatch):
+    from studyplan.persistence_layer import PersistenceLayer
+
     eng = engine_no_io
     writes: list[tuple[str, dict]] = []
+    cognitive_saves: list[tuple[str, dict]] = []
 
     def _capture_atomic(path, payload, indent=2):
         writes.append((str(path), dict(payload)))
@@ -177,12 +180,18 @@ def test_save_data_persists_cognitive_state_snapshot(engine_no_io, monkeypatch):
     monkeypatch.setattr(eng, "_append_health_log", lambda: None, raising=True)
     monkeypatch.setattr(eng, "_atomic_write_json", _capture_atomic, raising=True)
 
+    def _capture_cognitive_save(self, learner_id, state):
+        snapshot = state.to_json_snapshot() if hasattr(state, "to_json_snapshot") else {}
+        cognitive_saves.append((str(learner_id), dict(snapshot)))
+        return True
+
+    monkeypatch.setattr(PersistenceLayer, "save_state_atomic", _capture_cognitive_save, raising=True)
+
     eng.save_data()
 
     assert any(path == eng.DATA_FILE for path, _payload in writes)
-    cog_writes = [payload for path, payload in writes if path == eng.COGNITIVE_STATE_FILE]
-    assert cog_writes, "expected cognitive_state.json snapshot write"
-    assert int(cog_writes[-1].get("schema_version", 0) or 0) >= 1
+    assert cognitive_saves, "expected cognitive state persistence call"
+    assert int(cognitive_saves[-1][1].get("schema_version", 0) or 0) >= 1
 
 
 def test_cleanup_joblib_loky_runtime_is_idempotent(monkeypatch):
@@ -492,6 +501,81 @@ def test_get_total_question_count_cache_invalidated_after_add_question(engine_no
     count_after = eng.get_total_question_count()
     assert count_after == count_before + 1
 
+
+def test_save_questions_does_not_persist_mutated_default_questions(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "Ch1"
+    q_default = {
+        "question": "Default question?",
+        "options": ["A", "B", "C", "D"],
+        "correct": "A",
+        "explanation": "E",
+    }
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS_DEFAULT = {chapter: [dict(q_default)]}
+    eng.QUESTIONS = {chapter: [dict(q_default)]}
+
+    # Simulate outcome-linking/metadata tagging mutating the in-memory row.
+    eng.QUESTIONS[chapter][0]["outcome_ids"] = ["o1"]
+    eng.QUESTIONS[chapter][0]["semantic_match_method"] = "tfidf"
+
+    writes: list[dict] = []
+
+    def _capture(path: str, payload: dict, indent: int = 2):
+        writes.append(dict(payload))
+
+    monkeypatch.setattr(eng, "_atomic_write_json", _capture, raising=True)
+    monkeypatch.setattr("os.path.exists", lambda _p: False, raising=True)
+
+    eng.save_questions()
+
+    assert writes == []
+
+
+def test_update_question_outcome_ids_persists_via_question_stats(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "Ch1"
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS_DEFAULT = {
+        chapter: [
+            {
+                "question": "Q?",
+                "options": ["A", "B", "C", "D"],
+                "correct": "A",
+                "explanation": "E",
+            }
+        ]
+    }
+    eng.QUESTIONS = {chapter: [dict(eng.QUESTIONS_DEFAULT[chapter][0])]}
+    eng.syllabus_structure = {
+        chapter: {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "o1", "text": "Outcome 1", "level": 2},
+                {"id": "o2", "text": "Outcome 2", "level": 2},
+            ],
+            "outcome_count": 2,
+        }
+    }
+    eng.question_stats = {}
+
+    monkeypatch.setattr(eng, "save_questions", lambda: None, raising=True)
+    monkeypatch.setattr(eng, "save_data", lambda: None, raising=True)
+
+    eng.update_question_outcome_ids(chapter, 0, ["o2"])
+
+    # Simulate reload where default questions are present but not persisted with outcome_ids.
+    eng.QUESTIONS[chapter][0].pop("outcome_ids", None)
+
+    route = eng.resolve_question_outcomes(chapter, 0)
+    assert route.get("outcome_ids") == ["o2"]
+    assert str(route.get("reason", "")).startswith("manual linked outcomes")
+
+    counts = eng.get_outcome_coverage_counts()
+    assert int(counts.get("total_questions", 0) or 0) == 1
+    assert int(counts.get("questions_with_explicit_outcome_ids", 0) or 0) == 1
+    assert int(counts.get("questions_with_explicit_outcome_ids_manual", 0) or 0) == 1
+    assert int(counts.get("questions_with_explicit_outcome_ids_direct", 0) or 0) == 0
 
 def test_match_chapter_low_confidence_logging_is_deduplicated(engine_no_io, monkeypatch):
     eng = engine_no_io
@@ -2793,10 +2877,17 @@ def test_get_outcome_coverage_counts_returns_shape(engine_no_io):
     assert "total_questions" in counts
     assert "questions_with_resolved_outcome" in counts
     assert "questions_with_explicit_outcome_ids" in counts
+    assert "outcomes_with_linked_question_direct" in counts
+    assert "outcomes_with_linked_question_manual" in counts
+    assert "outcomes_with_linked_question_both" in counts
     assert "by_chapter" in counts
     assert isinstance(counts["by_chapter"], dict)
     for ch, c in counts["by_chapter"].items():
         assert "total" in c and "with_resolved" in c and "with_explicit" in c
+        assert "outcomes_with_linked_question" in c
+        assert "outcomes_with_linked_question_direct" in c
+        assert "outcomes_with_linked_question_manual" in c
+        assert "outcomes_with_linked_question_both" in c
 
 
 def test_get_outcome_coverage_counts_mix_explicit_and_resolved(engine_no_io, monkeypatch):
@@ -2814,6 +2905,12 @@ def test_get_outcome_coverage_counts_mix_explicit_and_resolved(engine_no_io, mon
     counts = eng.get_outcome_coverage_counts()
     assert counts["total_questions"] >= 2
     assert counts["questions_with_explicit_outcome_ids"] >= 1
+    assert "questions_with_explicit_outcome_ids_direct" in counts
+    assert "questions_with_explicit_outcome_ids_manual" in counts
+    assert "questions_with_explicit_outcome_ids_both" in counts
+    assert "outcomes_with_linked_question_direct" in counts
+    assert "outcomes_with_linked_question_manual" in counts
+    assert "outcomes_with_linked_question_both" in counts
     assert counts["questions_with_resolved_outcome"] >= 2
 
 
@@ -2931,6 +3028,141 @@ def test_get_outcome_coverage_counts_session_cache(engine_no_io, monkeypatch):
     eng._invalidate_outcome_coverage_counts_cache()
     eng.get_outcome_coverage_counts()
     assert calls["n"] > n1
+
+
+def test_get_outcome_coverage_counts_cache_invalidates_when_manual_links_change(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS = {
+        chapter: [{"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}]
+    }
+    eng.syllabus_structure = {
+        chapter: {"learning_outcomes": [{"id": "o1", "text": "Outcome 1", "level": 1}]},
+    }
+    calls = {"n": 0}
+
+    def _track(ch, idx):
+        calls["n"] += 1
+        return {"outcome_ids": ["o1"]}
+
+    monkeypatch.setattr(eng, "resolve_question_outcomes", _track)
+    eng.get_outcome_coverage_counts()
+    n1 = calls["n"]
+    assert n1 >= 1
+    eng.get_outcome_coverage_counts()
+    assert calls["n"] == n1
+
+    qid = eng._question_qid(chapter, 0) or "0"
+    eng.question_stats = {chapter: {qid: {"linked_outcome_ids": ["o1"]}}}
+    eng.get_outcome_coverage_counts()
+    assert calls["n"] > n1
+
+
+def test_count_questions_with_invalid_outcome_ids_includes_manual_links(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.QUESTIONS = {chapter: [{"question": "Q1?", "options": ["A", "B", "C", "D"], "correct": "A"}]}
+    eng.syllabus_structure = {chapter: {"learning_outcomes": [{"id": "ok", "text": "OK", "level": 1}]}}
+    qid = eng._question_qid(chapter, 0) or "0"
+    eng.question_stats = {chapter: {qid: {"linked_outcome_ids": ["bad"]}}}
+    assert eng._count_questions_with_invalid_outcome_ids() == 1
+
+
+def test_resolve_question_outcomes_manual_links_work_without_outcome_lookup(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS = {
+        chapter: [{"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}]
+    }
+    eng.syllabus_structure = {}
+    qid = eng._question_qid(chapter, 0) or "0"
+    eng.question_stats = {chapter: {qid: {"linked_outcome_ids": ["manual.only"]}}}
+
+    route = eng.resolve_question_outcomes(chapter, 0)
+    assert route.get("outcome_ids") == ["manual.only"]
+    assert str(route.get("reason", "")).startswith("manual linked outcomes")
+
+
+def test_get_outcome_coverage_counts_outcome_link_split_direct_vs_manual(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS = {
+        chapter: [
+            {"question": "Q1?", "options": ["A", "B", "C", "D"], "correct": "A", "outcome_ids": ["o1"]},
+            {"question": "Q2?", "options": ["A", "B", "C", "D"], "correct": "A"},
+        ]
+    }
+    eng.syllabus_structure = {
+        chapter: {
+            "learning_outcomes": [
+                {"id": "o1", "text": "Outcome 1", "level": 1},
+                {"id": "o2", "text": "Outcome 2", "level": 1},
+            ]
+        }
+    }
+    qid = eng._question_qid(chapter, 1) or "1"
+    eng.question_stats = {chapter: {qid: {"linked_outcome_ids": ["o2"], "linked_outcome_source": "manual"}}}
+
+    counts = eng.get_outcome_coverage_counts()
+    assert int(counts.get("outcomes_with_linked_question_direct", 0) or 0) == 1
+    assert int(counts.get("outcomes_with_linked_question_manual", 0) or 0) == 1
+    assert int(counts.get("outcomes_with_linked_question_both", 0) or 0) == 0
+    by_ch = counts.get("by_chapter", {}).get(chapter, {})
+    assert int(by_ch.get("outcomes_with_linked_question", 0) or 0) == 2
+    assert int(by_ch.get("outcomes_with_linked_question_direct", 0) or 0) == 1
+    assert int(by_ch.get("outcomes_with_linked_question_manual", 0) or 0) == 1
+    assert int(by_ch.get("outcomes_with_linked_question_both", 0) or 0) == 0
+
+
+def test_get_outcome_coverage_counts_overlap_counts(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS = {
+        chapter: [
+            {"question": "Q1?", "options": ["A", "B", "C", "D"], "correct": "A", "outcome_ids": ["o1"]},
+        ]
+    }
+    eng.syllabus_structure = {
+        chapter: {"learning_outcomes": [{"id": "o1", "text": "Outcome 1", "level": 1}]}
+    }
+    qid = eng._question_qid(chapter, 0) or "0"
+    eng.question_stats = {chapter: {qid: {"linked_outcome_ids": ["o1"], "linked_outcome_source": "manual"}}}
+
+    counts = eng.get_outcome_coverage_counts()
+    assert int(counts.get("questions_with_explicit_outcome_ids_both", 0) or 0) == 1
+    assert int(counts.get("outcomes_with_linked_question_both", 0) or 0) == 1
+    by_ch = counts.get("by_chapter", {}).get(chapter, {})
+    assert int(by_ch.get("with_explicit_both", 0) or 0) == 1
+    assert int(by_ch.get("outcomes_with_linked_question_both", 0) or 0) == 1
+
+
+def test_get_outcome_coverage_counts_direct_outcomes_field_contributes_outcome_links(engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS = {
+        chapter: [
+            {
+                "question": "Q1?",
+                "options": ["A", "B", "C", "D"],
+                "correct": "A",
+                "outcomes": [{"id": "o_legacy", "text": "Legacy outcome linkage"}],
+            }
+        ]
+    }
+    eng.syllabus_structure = {
+        chapter: {"learning_outcomes": [{"id": "o_legacy", "text": "Legacy outcome linkage", "level": 1}]}
+    }
+
+    counts = eng.get_outcome_coverage_counts()
+    assert int(counts.get("questions_with_explicit_outcome_ids_direct", 0) or 0) == 1
+    assert int(counts.get("outcomes_with_linked_question_direct", 0) or 0) == 1
+    by_ch = counts.get("by_chapter", {}).get(chapter, {})
+    assert int(by_ch.get("outcomes_with_linked_question_direct", 0) or 0) == 1
 
 
 def test_import_syllabus_meta_from_json_only_syllabus_meta(engine_no_io):

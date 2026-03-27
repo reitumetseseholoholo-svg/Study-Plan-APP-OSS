@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from collections import deque
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -66,6 +67,8 @@ class LlamaServerManager:
     _startup_latency_ms: int = field(default=0, init=False, repr=False)
     _last_activity_mono: float = field(default=0.0, init=False, repr=False)
     _idle_watcher_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _stderr_lines: deque[str] = field(default_factory=lambda: deque(maxlen=200), init=False, repr=False)
+    _stderr_thread: threading.Thread | None = field(default=None, init=False, repr=False)
 
     @property
     def endpoint(self) -> str:
@@ -203,6 +206,7 @@ class LlamaServerManager:
             log.error("Failed to start llama-server: %s", exc)
             self._process = None
             return False
+        self._start_stderr_drain_unlocked()
 
         self._current_model_path = model_path
         self._current_model_name = model_name
@@ -306,6 +310,11 @@ class LlamaServerManager:
                 proc.wait(timeout=3.0)
             except subprocess.TimeoutExpired:
                 pass
+        try:
+            if proc.stderr is not None:
+                proc.stderr.close()
+        except Exception:
+            pass
 
     def _wait_for_healthy(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
@@ -333,12 +342,46 @@ class LlamaServerManager:
             return False
 
     def _dump_stderr(self) -> None:
+        try:
+            lines = list(self._stderr_lines)
+        except Exception:
+            lines = []
+        if not lines:
+            return
+        snippet = "\n".join(lines[-50:])
+        log.error("llama-server stderr (tail):\n%s", snippet[:4000])
+
+    def _start_stderr_drain_unlocked(self) -> None:
         proc = self._process
         if proc is None or proc.stderr is None:
             return
-        try:
-            stderr = proc.stderr.read(4096)
-            if stderr:
-                log.error("llama-server stderr: %s", stderr.decode("utf-8", errors="replace")[:500])
-        except Exception:
-            pass
+        if self._stderr_thread is not None and self._stderr_thread.is_alive():
+            return
+
+        def _drain() -> None:
+            stream = proc.stderr
+            if stream is None:
+                return
+            buf = b""
+            try:
+                while True:
+                    chunk = stream.read(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        text = line.decode("utf-8", errors="replace").rstrip("\r")
+                        self._stderr_lines.append(text)
+                    if len(buf) > 65536:
+                        text = buf[-65536:].decode("utf-8", errors="replace")
+                        for part in text.splitlines()[-5:]:
+                            if part:
+                                self._stderr_lines.append(part)
+                        buf = b""
+            except Exception:
+                return
+
+        t = threading.Thread(target=_drain, name="studyplan-llama-stderr", daemon=True)
+        self._stderr_thread = t
+        t.start()

@@ -487,6 +487,7 @@ class StudyPlanEngine:
         chs = tuple(getattr(self, "CHAPTERS", []) or [])
         h.update(repr(chs).encode("utf-8", errors="replace"))
         qd = getattr(self, "QUESTIONS", {}) or {}
+        qs = getattr(self, "question_stats", {}) or {}
         for ch in chs:
             rows = qd.get(ch)
             h.update(str(ch).encode("utf-8", errors="replace"))
@@ -512,6 +513,35 @@ class StudyPlanEngine:
                     )
                     h.update(snippet.encode("utf-8", errors="replace"))
                 h.update(b"|")
+            stats_by_ch = qs.get(ch) if isinstance(qs, dict) else None
+            if isinstance(stats_by_ch, dict):
+                try:
+                    keys = sorted(str(k) for k in stats_by_ch.keys())
+                except Exception:
+                    keys = []
+                h.update(b"stats:")
+                for key in keys:
+                    raw = stats_by_ch.get(key)
+                    if not isinstance(raw, dict):
+                        continue
+                    linked = raw.get("linked_outcome_ids")
+                    normalized: List[str] = []
+                    if isinstance(linked, list):
+                        for value in linked:
+                            candidate = str(value or "").strip()
+                            if candidate:
+                                normalized.append(candidate)
+                    payload = json.dumps(
+                        {
+                            "qid": key,
+                            "linked_outcome_ids": sorted(set(normalized)),
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    h.update(payload.encode("utf-8", errors="replace"))
+                    h.update(b";")
         struct = getattr(self, "syllabus_structure", {}) or {}
         if isinstance(struct, dict):
             syn: List[Any] = []
@@ -5808,14 +5838,41 @@ class StudyPlanEngine:
         question = questions[idx]
         if not isinstance(question, dict):
             return result
+        resolved: List[str] = []
+        semantic_enabled = bool(getattr(self, "semantic_enabled", True))
+
+        # Manual overrides (e.g. UI tagging) are persisted in question_stats so they survive
+        # even when questions.json only stores "added" questions.
+        try:
+            stats = self._get_question_stats(chapter, idx)
+        except Exception:
+            stats = None
+        if isinstance(stats, dict):
+            override_ids = stats.get("linked_outcome_ids")
+            if isinstance(override_ids, list):
+                for value in override_ids:
+                    candidate = str(value or "").strip()
+                    if candidate and candidate not in resolved:
+                        resolved.append(candidate)
+            if resolved:
+                outcome_lookup_manual = self._chapter_outcome_lookup(chapter)
+                if outcome_lookup_manual:
+                    known_ids_manual = set(outcome_lookup_manual.keys())
+                    resolved = [oid for oid in resolved if oid in known_ids_manual]
+                if not resolved:
+                    return result
+                result["outcome_ids"] = resolved
+                result["semantic_match_confidence"] = 1.0
+                result["semantic_match_method"] = "fallback"
+                result["reason"] = "manual linked outcomes (question_stats)"
+                return result
+
         outcome_lookup = self._chapter_outcome_lookup(chapter)
         if not outcome_lookup:
             return result
 
         known_ids = set(outcome_lookup.keys())
         text_to_id = {str(v.get("text", "")).strip().lower(): k for k, v in outcome_lookup.items()}
-        resolved: List[str] = []
-        semantic_enabled = bool(getattr(self, "semantic_enabled", True))
 
         def _set_semantic(match: Dict[str, Any], default_reason: str) -> None:
             try:
@@ -5960,8 +6017,13 @@ class StudyPlanEngine:
         total = 0
         with_resolved = 0
         with_explicit = 0
+        with_explicit_direct = 0
+        with_explicit_manual = 0
+        with_explicit_both = 0
         by_chapter: Dict[str, Dict[str, int]] = {}
         outcome_ids_with_linked_question: Set[str] = set()
+        outcome_ids_with_linked_question_direct: Set[str] = set()
+        outcome_ids_with_linked_question_manual: Set[str] = set()
         chapters = getattr(self, "CHAPTERS", []) or []
         structure = getattr(self, "syllabus_structure", {}) or {}
         syllabus_outcome_count = 0
@@ -5977,28 +6039,103 @@ class StudyPlanEngine:
             ch_total = len(questions)
             ch_resolved = 0
             ch_explicit = 0
+            ch_explicit_direct = 0
+            ch_explicit_manual = 0
+            ch_explicit_both = 0
+            ch_outcome_ids_with_linked_question: Set[str] = set()
+            ch_outcome_ids_with_linked_question_direct: Set[str] = set()
+            ch_outcome_ids_with_linked_question_manual: Set[str] = set()
             for idx in range(ch_total):
                 route = self.resolve_question_outcomes(ch, idx)
                 oids = route.get("outcome_ids", []) if isinstance(route, dict) else []
                 if isinstance(oids, list):
                     for oid in oids:
-                        if str(oid).strip():
-                            outcome_ids_with_linked_question.add(str(oid).strip())
+                        normalized_oid = str(oid).strip()
+                        if normalized_oid:
+                            outcome_ids_with_linked_question.add(normalized_oid)
+                            ch_outcome_ids_with_linked_question.add(normalized_oid)
                     if len(oids) > 0:
                         ch_resolved += 1
                 q = questions[idx] if isinstance(questions[idx], dict) else {}
-                if q.get("outcome_ids") or (isinstance(q.get("outcomes"), list) and q.get("outcomes")):
+                stats = self._get_question_stats(ch, idx)
+                manual_linked = (
+                    isinstance(stats, dict)
+                    and isinstance(stats.get("linked_outcome_ids"), list)
+                    and any(str(v).strip() for v in list(stats.get("linked_outcome_ids") or []))
+                )
+                direct_linked = bool(q.get("outcome_ids") or (isinstance(q.get("outcomes"), list) and q.get("outcomes")))
+                if manual_linked:
+                    linked = stats.get("linked_outcome_ids") if isinstance(stats, dict) else []
+                    if isinstance(linked, list):
+                        for value in linked:
+                            normalized_oid = str(value).strip()
+                            if normalized_oid:
+                                outcome_ids_with_linked_question_manual.add(normalized_oid)
+                                ch_outcome_ids_with_linked_question_manual.add(normalized_oid)
+                if direct_linked:
+                    direct_values: list[str] = []
+                    raw_outcome_ids = q.get("outcome_ids")
+                    if isinstance(raw_outcome_ids, list):
+                        for value in raw_outcome_ids:
+                            normalized_oid = str(value).strip()
+                            if normalized_oid:
+                                direct_values.append(normalized_oid)
+                    raw_outcomes = q.get("outcomes")
+                    if isinstance(raw_outcomes, list):
+                        for item in raw_outcomes:
+                            if isinstance(item, dict):
+                                normalized_oid = str(item.get("id", "")).strip()
+                            else:
+                                normalized_oid = str(item).strip()
+                            if normalized_oid:
+                                direct_values.append(normalized_oid)
+                    for normalized_oid in direct_values:
+                        outcome_ids_with_linked_question_direct.add(normalized_oid)
+                        ch_outcome_ids_with_linked_question_direct.add(normalized_oid)
+                if manual_linked or direct_linked:
                     ch_explicit += 1
+                if direct_linked:
+                    ch_explicit_direct += 1
+                if manual_linked:
+                    ch_explicit_manual += 1
+                if direct_linked and manual_linked:
+                    ch_explicit_both += 1
             total += ch_total
             with_resolved += ch_resolved
             with_explicit += ch_explicit
-            by_chapter[ch] = {"total": ch_total, "with_resolved": ch_resolved, "with_explicit": ch_explicit}
+            with_explicit_direct += ch_explicit_direct
+            with_explicit_manual += ch_explicit_manual
+            with_explicit_both += ch_explicit_both
+            ch_outcome_ids_with_linked_question_both = (
+                ch_outcome_ids_with_linked_question_direct & ch_outcome_ids_with_linked_question_manual
+            )
+            by_chapter[ch] = {
+                "total": ch_total,
+                "with_resolved": ch_resolved,
+                "with_explicit": ch_explicit,
+                "with_explicit_direct": ch_explicit_direct,
+                "with_explicit_manual": ch_explicit_manual,
+                "with_explicit_both": ch_explicit_both,
+                "outcomes_with_linked_question": len(ch_outcome_ids_with_linked_question),
+                "outcomes_with_linked_question_direct": len(ch_outcome_ids_with_linked_question_direct),
+                "outcomes_with_linked_question_manual": len(ch_outcome_ids_with_linked_question_manual),
+                "outcomes_with_linked_question_both": len(ch_outcome_ids_with_linked_question_both),
+            }
+        outcome_ids_with_linked_question_both = (
+            outcome_ids_with_linked_question_direct & outcome_ids_with_linked_question_manual
+        )
         out = {
             "total_questions": total,
             "questions_with_resolved_outcome": with_resolved,
             "questions_with_explicit_outcome_ids": with_explicit,
+            "questions_with_explicit_outcome_ids_direct": with_explicit_direct,
+            "questions_with_explicit_outcome_ids_manual": with_explicit_manual,
+            "questions_with_explicit_outcome_ids_both": with_explicit_both,
             "syllabus_outcome_count": syllabus_outcome_count,
             "outcomes_with_linked_question": len(outcome_ids_with_linked_question),
+            "outcomes_with_linked_question_direct": len(outcome_ids_with_linked_question_direct),
+            "outcomes_with_linked_question_manual": len(outcome_ids_with_linked_question_manual),
+            "outcomes_with_linked_question_both": len(outcome_ids_with_linked_question_both),
             "by_chapter": by_chapter,
         }
         self._outcome_coverage_counts_cache = copy.deepcopy(out)
@@ -7638,11 +7775,26 @@ class StudyPlanEngine:
         for chapter in self.CHAPTERS:
             current_questions = self.QUESTIONS.get(chapter, [])
             default_questions = self.QUESTIONS_DEFAULT.get(chapter, [])
+            default_fingerprints: set[str] = set()
+            for q in list(default_questions or []):
+                fp = self._question_bank_fingerprint(q)
+                if fp:
+                    default_fingerprints.add(fp)
 
-            added_questions = [
-                q for q in current_questions
-                if q is not None and q not in default_questions
-            ]
+            added_questions: list[dict[str, Any]] = []
+            for q in list(current_questions or []):
+                if q is None or not isinstance(q, dict):
+                    continue
+                fp = self._question_bank_fingerprint(q)
+                if fp:
+                    if fp in default_fingerprints:
+                        continue
+                    added_questions.append(q)
+                    continue
+                # Fallback: if fingerprint cannot be computed, avoid persisting defaults.
+                if q in list(default_questions or []):
+                    continue
+                added_questions.append(q)
 
             if added_questions:  # Check for empty list
                 json_only_questions[chapter] = added_questions
@@ -7782,10 +7934,31 @@ class StudyPlanEngine:
         q = qs[question_index]
         if not isinstance(q, dict):
             return
-        q["outcome_ids"] = [str(x).strip() for x in outcome_ids if str(x).strip()]
+        cleaned = [str(x).strip() for x in outcome_ids if str(x).strip()]
+        q["outcome_ids"] = cleaned
+        # Persist manual tags even for built-in questions via question_stats (qid-based).
+        try:
+            qid = self._question_qid(chapter, question_index) or str(question_index)
+            stats_by_ch = self.question_stats.get(chapter)
+            if not isinstance(stats_by_ch, dict):
+                stats_by_ch = {}
+                self.question_stats[chapter] = stats_by_ch
+            entry = stats_by_ch.get(qid)
+            if not isinstance(entry, dict):
+                entry = {}
+                stats_by_ch[qid] = entry
+            entry["linked_outcome_ids"] = list(cleaned)
+            entry["linked_outcome_source"] = "manual"
+            entry["linked_outcome_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        except Exception:
+            pass
         self._invalidate_outcome_coverage_counts_cache()
         self.save_questions()
         self._semantic_invalidate_chapter_assets(chapter)
+        try:
+            self.save_data()
+        except Exception:
+            pass
 
 
 
@@ -12808,14 +12981,24 @@ class StudyPlanEngine:
         for ch, qlist in (getattr(self, "QUESTIONS", {}) or {}).items():
             if not isinstance(qlist, list):
                 continue
-            for q in qlist:
+            for idx, q in enumerate(qlist):
                 if not isinstance(q, dict):
                     continue
-                oids = q.get("outcome_ids")
-                if not isinstance(oids, list):
+                linked: List[str] = []
+                try:
+                    stats = self._get_question_stats(ch, idx)
+                except Exception:
+                    stats = None
+                if isinstance(stats, dict) and isinstance(stats.get("linked_outcome_ids"), list):
+                    linked = [str(v).strip() for v in list(stats.get("linked_outcome_ids") or []) if str(v).strip()]
+
+                direct = q.get("outcome_ids")
+                direct_ids = [str(v).strip() for v in (direct or [])] if isinstance(direct, list) else []
+                oids = [v for v in (direct_ids + linked) if v]
+                if not oids:
                     continue
                 for oid in oids:
-                    if str(oid).strip() and str(oid).strip() not in valid_ids:
+                    if oid and oid not in valid_ids:
                         invalid_count += 1
                         break
         return invalid_count

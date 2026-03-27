@@ -612,6 +612,14 @@ class LlamaCppTutorService:
         payload = self._build_payload(normalized)
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
         headers = {"Content-Type": "application/json"}
+        allow_generic_fallback = True
+        try:
+            backend = getattr(self, "resolved_backend", None)
+            source = str(getattr(backend, "source", "") or "").strip().lower()
+            if source in {"gateway", "llama_cpp_cloud"}:
+                allow_generic_fallback = False
+        except Exception:
+            allow_generic_fallback = True
         try:
             resolved_auth = discover_llm_auth_headers(
                 self.endpoint,
@@ -619,6 +627,7 @@ class LlamaCppTutorService:
                     str(getattr(Config, "CONFIG_HOME", "") or ""),
                     os.getcwd(),
                 ],
+                allow_generic_fallback=allow_generic_fallback,
             )
         except Exception:
             resolved_auth = None

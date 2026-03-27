@@ -32,8 +32,18 @@ class TutorWorkspaceController:
             state["draft_assistant"] = ""
         if hasattr(state, "reset_stream_runtime"):
             state.reset_stream_runtime()
-        state["follow_live"] = True
-        state["follow_manual_override"] = False
+        stream = getattr(state, "stream", None)
+        if callable(stream):
+            try:
+                s = stream()
+                setattr(s, "follow_live", True)
+                setattr(s, "follow_manual_override", False)
+            except Exception:
+                state["follow_live"] = True
+                state["follow_manual_override"] = False
+        else:
+            state["follow_live"] = True
+            state["follow_manual_override"] = False
         if callable(set_running):
             set_running(True)
         if callable(render_transcript):
@@ -82,6 +92,7 @@ class TutorWorkspaceController:
         return pause_fn(reason=reason)
 
     def resume_turn(self) -> dict[str, Any] | None:
+        """Peek paused turn snapshot without clearing it."""
         state = self.run_state
         getter = getattr(state, "paused_tutor_turn", None)
         if not callable(getter):
@@ -91,10 +102,14 @@ class TutorWorkspaceController:
             return None
         if not isinstance(snapshot_any, dict):
             return None
+        return snapshot_any
+
+    def commit_resumed_turn(self) -> None:
+        """Clear paused turn after resume has been successfully committed."""
+        state = self.run_state
         clearer = getattr(state, "clear_paused_tutor_turn", None)
         if callable(clearer):
             clearer()
-        return snapshot_any
 
     def discard_paused_turn(self) -> bool:
         state = self.run_state

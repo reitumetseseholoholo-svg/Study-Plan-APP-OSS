@@ -307,9 +307,13 @@ run_sudo_cmd rsync -a --delete \
 if [[ "${SKIP_WRAPPER}" -eq 0 ]]; then
   WRAPPER_CONTENT='#!/usr/bin/env bash
 APP_DIR="'"${DEST_DIR}"'"
-VENV_PY="$APP_DIR/.venv/bin/python"
-if [[ -x "$VENV_PY" ]]; then
-  exec "$VENV_PY" "$APP_DIR/studyplan_app.py" "$@"
+# Default to system Python so distro-packaged deps (e.g. sentence-transformers) are used.
+# Set STUDYPLAN_USE_VENV=1 to opt back into .venv if needed.
+if [[ "${STUDYPLAN_USE_VENV:-0}" == "1" ]]; then
+  VENV_PY="$APP_DIR/.venv/bin/python"
+  if [[ -x "$VENV_PY" ]]; then
+    exec "$VENV_PY" "$APP_DIR/studyplan_app.py" "$@"
+  fi
 fi
 exec python3 "$APP_DIR/studyplan_app.py" "$@"'
   if [[ "${DRY_RUN}" -eq 1 ]]; then

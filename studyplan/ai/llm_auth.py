@@ -24,6 +24,7 @@ def discover_llm_auth_headers(
     *,
     env: Mapping[str, str] | None = None,
     search_paths: Sequence[str | os.PathLike[str]] | None = None,
+    allow_generic_fallback: bool = True,
 ) -> DiscoveredLLMAuth | None:
     """Discover an API credential for an OpenAI-compatible cloud endpoint.
 
@@ -60,7 +61,7 @@ def discover_llm_auth_headers(
         candidates.extend(provider_rules)
 
     # Generic fallbacks when the endpoint host is not a known provider.
-    if provider == "generic" and not localish:
+    if provider == "generic" and not localish and bool(allow_generic_fallback):
         candidates.extend(_common_fallback_rules())
 
     file_values = _load_discovery_files(search_paths)

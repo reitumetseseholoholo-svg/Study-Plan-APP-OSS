@@ -142,6 +142,7 @@ hyprctl keyword decoration:blur:enabled false
 - `OLLAMA_MODELS` – if your models live outside `~/.ollama/models`.
 - `STUDYPLAN_OLLAMA_RAM_BUDGET_MB` – cap model auto-pick RAM (see `llama_runtime._get_ollama_ram_budget_bytes`).
 - `STUDYPLAN_LLAMA_AUTO_HW_EXTRAS=0` – disable auto `--no-mmap` for `llama-server` if a given build misbehaves.
+- `STUDYPLAN_USE_VENV=1` – when using the deployed wrapper, opt into `.venv` instead of system `python3`.
 
 - RAM-pressure overrides (the app auto-tunes these defaults; set env vars to force a value):
   - `STUDYPLAN_LLAMA_SERVER_IDLE_SHUTDOWN_SECONDS` – stop managed `llama-server` sooner to free weights/KV under pressure.

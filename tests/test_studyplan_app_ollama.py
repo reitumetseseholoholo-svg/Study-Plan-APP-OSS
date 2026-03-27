@@ -4823,6 +4823,8 @@ def test_pause_and_resume_tutor_workspace_turn_snapshot() -> None:
     resumed = StudyPlanGUI._resume_tutor_workspace_turn(dummy)
     assert resumed is not None
     assert resumed["user_prompt"] == "Explain working capital"
+    assert state.paused_tutor_turn() is not None
+    StudyPlanGUI._commit_resumed_tutor_workspace_turn(dummy)
     assert state.paused_tutor_turn() is None
 
 
@@ -5597,6 +5599,64 @@ def test_cleanup_quiz_dialog_runtime_stale_token_skips_ui_reconciliation():
 
     assert calls == {"stop": 0, "timer_label": 0, "dashboard": 0}
     assert dummy.quiz_dialog is active_dialog
+
+
+def test_ai_cache_log_db_error_throttles_repeated_logs(monkeypatch):
+    import studyplan_app as appmod
+
+    events: list[str] = []
+
+    def _warn(msg, *args, **kwargs):
+        events.append(str(msg))
+
+    monkeypatch.setattr(appmod.log, "warning", _warn)
+    dummy = types.SimpleNamespace(
+        _ai_cache_last_error_log_mono=0.0,
+        _ai_cache_suppressed_error_count=0,
+    )
+
+    StudyPlanGUI._ai_cache_log_db_error(dummy, "execute_read", RuntimeError("boom"), "SELECT 1")
+    StudyPlanGUI._ai_cache_log_db_error(dummy, "execute_read", RuntimeError("boom"), "SELECT 1")
+    assert len(events) == 1
+    assert int(getattr(dummy, "_ai_cache_suppressed_error_count", 0) or 0) >= 1
+
+
+def test_log_optional_subprocess_failure_throttles_by_key(monkeypatch):
+    import studyplan_app as appmod
+
+    events: list[str] = []
+
+    def _warn(msg, *args, **kwargs):
+        events.append(str(msg))
+
+    monkeypatch.setattr(appmod.log, "warning", _warn)
+    dummy = types.SimpleNamespace(_optional_subprocess_error_logs={})
+
+    StudyPlanGUI._log_optional_subprocess_failure(dummy, "loginctl.show-user", RuntimeError("boom"), details="alice")
+    StudyPlanGUI._log_optional_subprocess_failure(dummy, "loginctl.show-user", RuntimeError("boom"), details="alice")
+    StudyPlanGUI._log_optional_subprocess_failure(dummy, "hyprctl.activewindow", RuntimeError("boom"))
+    assert len(events) == 2
+    entry = getattr(dummy, "_optional_subprocess_error_logs", {}).get("loginctl.show-user", {})
+    assert int(entry.get("suppressed", 0) or 0) >= 1
+
+
+def test_log_optional_io_failure_throttles_by_key(monkeypatch):
+    import studyplan_app as appmod
+
+    events: list[str] = []
+
+    def _warn(msg, *args, **kwargs):
+        events.append(str(msg))
+
+    monkeypatch.setattr(appmod.log, "warning", _warn)
+    dummy = types.SimpleNamespace(_optional_io_error_logs={})
+
+    StudyPlanGUI._log_optional_io_failure(dummy, "pomodoro_state_write", RuntimeError("boom"), path="/tmp/pomo")
+    StudyPlanGUI._log_optional_io_failure(dummy, "pomodoro_state_write", RuntimeError("boom"), path="/tmp/pomo")
+    StudyPlanGUI._log_optional_io_failure(dummy, "hypridle_state_write", RuntimeError("boom"), path="/tmp/hypr")
+    assert len(events) == 2
+    entry = getattr(dummy, "_optional_io_error_logs", {}).get("pomodoro_state_write", {})
+    assert int(entry.get("suppressed", 0) or 0) >= 1
 
 
 def test_on_close_request_uses_runtime_shutdown_and_non_blocking_recap_notification():
