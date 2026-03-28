@@ -1177,6 +1177,33 @@ def test_add_questions_semantic_dedup_fallback_when_model_unavailable(engine_no_
     assert bool(dedup.get("enabled", False)) is False
 
 
+def test_rollback_last_question_bank_append_restores_questions_and_srs(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    before_q = len(eng.QUESTIONS.get(chapter, []) or [])
+    before_srs = len(eng.srs_data.get(chapter, []) or [])
+    incoming = [
+        {
+            "question": "What is rollback test concept one?",
+            "options": [
+                "Weighted average of capital components",
+                "Inventory turnover only",
+                "Payback period rule",
+                "Fixed asset depreciation method",
+            ],
+            "correct": "Weighted average of capital components",
+            "explanation": "Rollback test row must pass sanitizer.",
+        }
+    ]
+    added, _stats = eng._add_questions_with_stats(chapter, incoming)
+    assert added == 1
+    assert len(eng.QUESTIONS.get(chapter, [])) == before_q + 1
+    assert len(eng.srs_data.get(chapter, [])) == before_srs + 1
+    eng._rollback_last_question_bank_append(chapter, added)
+    assert len(eng.QUESTIONS.get(chapter, [])) == before_q
+    assert len(eng.srs_data.get(chapter, [])) == before_srs
+
+
 def test_add_questions_sanitizer_rejects_placeholder_only_options(engine_no_io, monkeypatch):
     eng = engine_no_io
     chapter = "FM Function"

@@ -5659,6 +5659,27 @@ def test_log_optional_io_failure_throttles_by_key(monkeypatch):
     assert int(entry.get("suppressed", 0) or 0) >= 1
 
 
+def test_log_optional_failure_maps_are_pruned_when_large(monkeypatch):
+    import studyplan_app as appmod
+
+    monkeypatch.setattr(appmod.log, "warning", lambda *args, **kwargs: None)
+    old_entries = {f"k{i}": {"last": float(i), "suppressed": 0} for i in range(80)}
+    dummy = types.SimpleNamespace(
+        _optional_subprocess_error_logs=dict(old_entries),
+        _optional_io_error_logs=dict(old_entries),
+    )
+
+    StudyPlanGUI._log_optional_subprocess_failure(dummy, "new-subprocess-key", RuntimeError("boom"))
+    StudyPlanGUI._log_optional_io_failure(dummy, "new-io-key", RuntimeError("boom"), path="/tmp/x")
+
+    sub_map = getattr(dummy, "_optional_subprocess_error_logs", {})
+    io_map = getattr(dummy, "_optional_io_error_logs", {})
+    assert isinstance(sub_map, dict) and len(sub_map) <= 33
+    assert isinstance(io_map, dict) and len(io_map) <= 33
+    assert "new-subprocess-key" in sub_map
+    assert "new-io-key" in io_map
+
+
 def test_on_close_request_uses_runtime_shutdown_and_non_blocking_recap_notification():
     calls: dict[str, int] = {"shutdown": 0, "notify": 0, "save_data": 0, "save_status": 0}
     dummy = types.SimpleNamespace(

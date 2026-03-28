@@ -8657,6 +8657,26 @@ class StudyPlanEngine:
         self._semantic_invalidate_chapter_assets(chapter)
         return len(valid), semantic_dedup
 
+    def _rollback_last_question_bank_append(self, chapter: str, added: int) -> None:
+        """Drop the last *added* questions and matching SRS rows after a failed persist.
+
+        Mirrors the in-memory mutations performed by `_add_questions_with_stats` so the
+        session does not retain gap-generated rows when `save_questions` / `save_data`
+        fails after append.
+        """
+        n = int(max(0, added))
+        if n <= 0:
+            return
+        qlist = self.QUESTIONS.get(chapter)
+        if isinstance(qlist, list) and qlist:
+            del qlist[-min(n, len(qlist)):]
+        srs_list = self.srs_data.get(chapter)
+        if isinstance(srs_list, list) and srs_list:
+            del srs_list[-min(n, len(srs_list)):]
+        self._cached_total_question_count_valid = False
+        self._invalidate_outcome_coverage_counts_cache()
+        self._semantic_invalidate_chapter_assets(chapter)
+
     def _add_questions(self, chapter: str, questions: list[dict]) -> int:
         """Backwards-compatible wrapper returning added count only."""
         added, _stats = self._add_questions_with_stats(chapter, questions)

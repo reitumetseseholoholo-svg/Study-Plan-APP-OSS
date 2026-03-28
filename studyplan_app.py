@@ -18969,6 +18969,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 except Exception:
                     used_model = "brave"
                 self._note_llm_inference_attribution("brave_search", used_model)
+                _release_ollama_runtime_slot_if_held()
                 return brave_text, None
         if self._cloud_endpoint_is_candidate():
             model_candidates = StudyPlanGUI._resolve_cloud_candidate_models(
@@ -18985,6 +18986,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if cloud_err is None and str(cloud_text or "").strip():
                 used_model = str(getattr(self, "_cloud_endpoint_last_model", "") or "").strip() or str(model or "").strip()
                 self._note_llm_inference_attribution("llama.cpp", used_model)
+                _release_ollama_runtime_slot_if_held()
                 return cloud_text, None
         try:
             text, err = self._generate_via_llama_server(
@@ -19039,6 +19041,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         record_outcome(model_name, success=False, err="model_exceeds_ram_budget")
                     except Exception:
                         pass
+                _release_ollama_runtime_slot_if_held()
                 return "", "Selected local model exceeds the configured RAM budget."
         cache_allowed_fn = getattr(self, "_can_use_response_cache", None)
         can_cache = bool(
@@ -19116,6 +19119,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if isinstance(cache_debug, dict):
                     cache_debug["response_cache_hit"] = int(cache_debug.get("response_cache_hit", 0) or 0) + 1
                 self._note_llm_inference_attribution("ollama", model_name)
+                _release_ollama_runtime_slot_if_held()
                 return cached_text, None
         opt_payload: dict[str, Any] = {
             "num_ctx": int(ctx_value),
@@ -19213,12 +19217,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     pass
             return "", (last_err or "Ollama request failed")
         finally:
-            release_slot = getattr(self, "_release_ollama_request_slot", None)
-            if callable(release_slot):
-                try:
-                    release_slot()
-                except Exception:
-                    pass
+            _release_ollama_runtime_slot_if_held()
 
     def _ollama_generate_text(
         self,
@@ -42859,7 +42858,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ctx = GLib.main_context_default()
             if hasattr(ctx, "find_source_by_id"):
                 src = ctx.find_source_by_id(sid)
-                if src is None:
+                if src is None:ee
                     sources = getattr(self, "_glib_sources", None)
                     if isinstance(sources, set):
                         sources.discard(sid)
