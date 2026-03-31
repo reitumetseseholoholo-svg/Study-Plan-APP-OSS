@@ -14,6 +14,7 @@ from .cognitive_dashboard import CognitiveDashboard
 from .hint_system import HintSystemWidget
 from .confidence_calibrator import ConfidenceCalibratorWidget
 from .transfer_analyzer import TransferAnalyzerWidget
+from .user_profile import UserProfileWidget
 from studyplan.performance_monitor import PerformanceMonitor
 
 
@@ -31,6 +32,7 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
     hints_button = Gtk.Template.Child()
     confidence_button = Gtk.Template.Child()
     transfer_button = Gtk.Template.Child()
+    profile_button = Gtk.Template.Child()
     
     def __init__(self, application):
         super().__init__(application=application)
@@ -50,6 +52,7 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
         self.hint_system = HintSystemWidget(self)
         self.confidence_calibrator = ConfidenceCalibratorWidget(self)
         self.transfer_analyzer = TransferAnalyzerWidget(self)
+        self.user_profile = UserProfileWidget(self)
 
         # Register stack pages so navigation actually works.
         self.stack.add_named(self.practice_session, "practice_session")
@@ -57,6 +60,7 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
         self.stack.add_named(self.hint_system, "hint_system")
         self.stack.add_named(self.confidence_calibrator, "confidence_calibrator")
         self.stack.add_named(self.transfer_analyzer, "transfer_analyzer")
+        self.stack.add_named(self.user_profile, "user_profile")
         self.stack.set_visible_child(self.practice_session)
         
         # Connect signals
@@ -73,6 +77,7 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
         self.hints_button.connect("clicked", self._on_hints_clicked)
         self.confidence_button.connect("clicked", self._on_confidence_clicked)
         self.transfer_button.connect("clicked", self._on_transfer_clicked)
+        self.profile_button.connect("clicked", self._on_profile_clicked)
         
         # Window signals
         self.connect("close-request", self._on_close_request)
@@ -107,6 +112,12 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
         self._update_active_button(self.transfer_button)
         self.transfer_analyzer.update_display()
         
+    def _on_profile_clicked(self, button):
+        """Switch to user profile view."""
+        self.stack.set_visible_child(self.user_profile)
+        self._update_active_button(self.profile_button)
+        self.user_profile.update_display()
+        
     def _on_close_request(self, window):
         """Handle window close request."""
         # Save state before closing
@@ -117,7 +128,8 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
         """Update which navigation button appears active."""
         buttons = [
             self.practice_button, self.dashboard_button, 
-            self.hints_button, self.confidence_button, self.transfer_button
+            self.hints_button, self.confidence_button,
+            self.transfer_button, self.profile_button,
         ]
         for button in buttons:
             if button == active_button:
