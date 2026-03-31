@@ -22,14 +22,17 @@ def test_memory_pressure_tiers():
 
 
 def test_auto_llama_extras_only_under_high_pressure():
-    assert suggested_auto_llama_extra_args(
-        MemSnapshot(
-            mem_total_kb=64 * 1024 * 1024,
-            mem_available_kb=40 * 1024 * 1024,
-            swap_total_kb=0,
-            swap_free_kb=0,
+    assert (
+        suggested_auto_llama_extra_args(
+            MemSnapshot(
+                mem_total_kb=64 * 1024 * 1024,
+                mem_available_kb=40 * 1024 * 1024,
+                swap_total_kb=0,
+                swap_free_kb=0,
+            )
         )
-    ) == []
+        == []
+    )
     extras = suggested_auto_llama_extra_args(
         MemSnapshot(
             mem_total_kb=6 * 1024 * 1024,
@@ -88,13 +91,13 @@ def test_ollama_app_concurrency_defaults_track_pressure(monkeypatch):
     )
     monkeypatch.setattr(hip, "mem_snapshot", lambda: hi)
     assert hip.default_ollama_app_max_concurrent_requests() == 1
-    assert hip.default_ollama_app_queue_wait_seconds() == 4.0
+    assert hip.default_ollama_app_queue_wait_seconds() == 20.0
     monkeypatch.setattr(hip, "mem_snapshot", lambda: mod)
     assert hip.default_ollama_app_max_concurrent_requests() == 2
-    assert hip.default_ollama_app_queue_wait_seconds() == 2.5
+    assert hip.default_ollama_app_queue_wait_seconds() == 12.0
     monkeypatch.setattr(hip, "mem_snapshot", lambda: lo)
     assert hip.default_ollama_app_max_concurrent_requests() == 3
-    assert hip.default_ollama_app_queue_wait_seconds() == 1.5
+    assert hip.default_ollama_app_queue_wait_seconds() == 4.0
 
 
 def test_oom_tuning_defaults_track_pressure(monkeypatch):

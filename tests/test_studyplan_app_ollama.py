@@ -3,13 +3,14 @@
 import datetime
 import json
 import os
-import time
 import threading
+import time
 import types
 import urllib.error
 import urllib.request
 
 import pytest
+
 from studyplan.cognitive_state import CognitiveState, CompetencyPosterior
 from studyplan.contracts import (
     AppStateSnapshot,
@@ -21,15 +22,15 @@ from studyplan.contracts import (
 )
 from studyplan_ai_tutor import (
     AI_TUTOR_RAG_USAGE_HINT,
-    assess_tutor_coverage,
     assemble_ai_tutor_turn_prompt,
+    assess_tutor_coverage,
     build_ai_tutor_assistant_history_row,
     build_ai_tutor_context_prompt_details,
-    build_tutor_coverage_checklist_note,
-    build_targeted_rag_queries,
     build_rag_context_block,
-    classify_ollama_error,
+    build_targeted_rag_queries,
+    build_tutor_coverage_checklist_note,
     chunk_text_for_rag,
+    classify_ollama_error,
     compute_tutor_control_state,
     extract_tutor_coverage_targets,
     lexical_rank_rag_chunks,
@@ -122,9 +123,10 @@ def _make_local_context_dummy():
             },
         },
         get_chapter_recall_risk=lambda chapter: {"Topic A": 0.62, "Topic B": 0.41, "Topic C": 0.15}.get(chapter, 0.0),
-        is_overdue=lambda item, _today: item.get("last_review") is not None and str(item.get("last_review")) <= (
-            today - datetime.timedelta(days=2)
-        ).isoformat(),
+        is_overdue=lambda item, _today: (
+            item.get("last_review") is not None
+            and str(item.get("last_review")) <= (today - datetime.timedelta(days=2)).isoformat()
+        ),
     )
     dummy = types.SimpleNamespace(
         engine=engine,
@@ -141,17 +143,17 @@ def _make_local_context_dummy():
                 "kind": "pomodoro_focus",
                 "topic": "Topic B",
                 "seconds": 1500,
-                "timestamp": datetime.datetime.combine(today - datetime.timedelta(days=1), datetime.time(13, 0)).isoformat(
-                    timespec="seconds"
-                ),
+                "timestamp": datetime.datetime.combine(
+                    today - datetime.timedelta(days=1), datetime.time(13, 0)
+                ).isoformat(timespec="seconds"),
             },
             {
                 "kind": "review",
                 "topic": "Topic A",
                 "seconds": 480,
-                "timestamp": datetime.datetime.combine(today - datetime.timedelta(days=2), datetime.time(14, 0)).isoformat(
-                    timespec="seconds"
-                ),
+                "timestamp": datetime.datetime.combine(
+                    today - datetime.timedelta(days=2), datetime.time(14, 0)
+                ).isoformat(timespec="seconds"),
             },
         ],
         focus_integrity_log=[
@@ -227,18 +229,9 @@ def test_is_sidebar_effectively_visible_respects_auto_hidden():
 
 def test_should_auto_hide_sidebar_on_stack_or_tight_window():
     dummy = types.SimpleNamespace()
-    assert (
-        StudyPlanGUI._should_auto_hide_sidebar(dummy, 1400, 900, stack_layout=True, tile_mode=False)
-        is True
-    )
-    assert (
-        StudyPlanGUI._should_auto_hide_sidebar(dummy, 1320, 860, stack_layout=False, tile_mode=True)
-        is True
-    )
-    assert (
-        StudyPlanGUI._should_auto_hide_sidebar(dummy, 1500, 940, stack_layout=False, tile_mode=False)
-        is False
-    )
+    assert StudyPlanGUI._should_auto_hide_sidebar(dummy, 1400, 900, stack_layout=True, tile_mode=False) is True
+    assert StudyPlanGUI._should_auto_hide_sidebar(dummy, 1320, 860, stack_layout=False, tile_mode=True) is True
+    assert StudyPlanGUI._should_auto_hide_sidebar(dummy, 1500, 940, stack_layout=False, tile_mode=False) is False
 
 
 def test_compute_layout_mode_extends_thresholds_for_tiling_hint():
@@ -285,9 +278,7 @@ def test_gpt4all_auto_import_enabled_toggle(monkeypatch):
 
 def test_normalize_gpt4all_filename_to_ollama_model():
     dummy = _make_dummy()
-    name = StudyPlanGUI._normalize_gpt4all_filename_to_ollama_model(
-        dummy, "Llama-3.2-3B-Instruct-Q4_0.gguf"
-    )
+    name = StudyPlanGUI._normalize_gpt4all_filename_to_ollama_model(dummy, "Llama-3.2-3B-Instruct-Q4_0.gguf")
     assert name == "gpt4all-llama-3-2-3b-instruct-q4-0:latest"
 
 
@@ -788,7 +779,10 @@ def test_request_ai_tutor_action_plan_fails_over_to_next_model():
         calls["count"] += 1
         if model == "broken-3b:latest":
             return "", "HTTP 503: service unavailable"
-        return '{"action":"focus_start","topic":"Topic A","duration_minutes":25,"reason":"ok","confidence":0.91,"requires_confirmation":false}', None
+        return (
+            '{"action":"focus_start","topic":"Topic A","duration_minutes":25,"reason":"ok","confidence":0.91,"requires_confirmation":false}',
+            None,
+        )
 
     dummy._ollama_generate_text = _fake_generate
     dummy._extract_first_json_object = lambda text: text
@@ -803,9 +797,7 @@ def test_request_ai_tutor_action_plan_fails_over_to_next_model():
         },
         None,
     )
-    dummy._build_ai_tutor_fallback_action = types.MethodType(
-        StudyPlanGUI._build_ai_tutor_fallback_action, dummy
-    )
+    dummy._build_ai_tutor_fallback_action = types.MethodType(StudyPlanGUI._build_ai_tutor_fallback_action, dummy)
     dummy._normalize_ollama_host = lambda: "http://127.0.0.1:11434"
 
     plan, err = StudyPlanGUI._request_ai_tutor_action_plan(
@@ -1132,7 +1124,9 @@ def test_load_ai_tutor_rag_doc_handles_bytes_from_extraction(tmp_path, monkeypat
     pdf_path.write_bytes(b"%PDF-1.4 minimal")
     # Path validation requires the file under home or CONFIG_HOME; treat tmp_path as home for this test.
     _orig_expanduser = os.path.expanduser
-    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if (p == "~" or p == "~/" or not p) else _orig_expanduser(p))
+    monkeypatch.setattr(
+        os.path, "expanduser", lambda p: str(tmp_path) if (p == "~" or p == "~/" or not p) else _orig_expanduser(p)
+    )
     dummy = types.SimpleNamespace(
         _perf_cache=None,
         _ai_cache_get_rag_doc=lambda k: None,
@@ -1164,7 +1158,9 @@ def test_load_ai_tutor_rag_doc_respects_ingest_max_chunks_env(tmp_path, monkeypa
 
     # Path validation requires the file under home or CONFIG_HOME; treat tmp_path as home for this test.
     _orig_expanduser = os.path.expanduser
-    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if (p == "~" or p == "~/" or not p) else _orig_expanduser(p))
+    monkeypatch.setattr(
+        os.path, "expanduser", lambda p: str(tmp_path) if (p == "~" or p == "~/" or not p) else _orig_expanduser(p)
+    )
 
     recorded: dict[str, int] = {}
 
@@ -1184,7 +1180,10 @@ def test_load_ai_tutor_rag_doc_respects_ingest_max_chunks_env(tmp_path, monkeypa
         StudyPlanGUI._get_ai_tutor_rag_ingest_max_chunks, dummy
     )
     dummy._classify_ai_tutor_rag_source_tier = lambda _path, _name: "syllabus"
-    dummy._extract_pdf_text_for_syllabus = lambda p: (b"Chapter 1: Introduction. Learning outcome 1.1 explain the framework.", {})
+    dummy._extract_pdf_text_for_syllabus = lambda p: (
+        b"Chapter 1: Introduction. Learning outcome 1.1 explain the framework.",
+        {},
+    )
 
     doc, err = StudyPlanGUI._load_ai_tutor_rag_doc(dummy, str(pdf_path))
     assert err is None
@@ -1205,7 +1204,9 @@ def test_load_ai_tutor_rag_doc_meta_mode_does_not_cache_chunks_in_memory(tmp_pat
 
     # Path validation requires the file under home or CONFIG_HOME; treat tmp_path as home for this test.
     _orig_expanduser = os.path.expanduser
-    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if (p == "~" or p == "~/" or not p) else _orig_expanduser(p))
+    monkeypatch.setattr(
+        os.path, "expanduser", lambda p: str(tmp_path) if (p == "~" or p == "~/" or not p) else _orig_expanduser(p)
+    )
 
     perf_cache = PerformanceCacheService({"cache_max_size": 100, "default_ttl_seconds": 300, "cache_ttl": {}})
     disk_payload = {"chunks": [{"chunk_index": 0, "text": "hello world", "chunk_hash": "x"}]}
@@ -1758,9 +1759,7 @@ def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
         _ai_tutor_telemetry_max=3,
         save_preferences=lambda: save_calls.__setitem__("count", save_calls["count"] + 1),
     )
-    dummy._sanitize_ai_tutor_telemetry_event = types.MethodType(
-        StudyPlanGUI._sanitize_ai_tutor_telemetry_event, dummy
-    )
+    dummy._sanitize_ai_tutor_telemetry_event = types.MethodType(StudyPlanGUI._sanitize_ai_tutor_telemetry_event, dummy)
     dummy._record_ai_tutor_telemetry = types.MethodType(StudyPlanGUI._record_ai_tutor_telemetry, dummy)
 
     cleaned = StudyPlanGUI._record_ai_tutor_telemetry(
@@ -2122,7 +2121,12 @@ def test_build_debug_info_message_includes_rag_embedding_insights_lines():
         graph_status={},
         drift={},
         perf={},
-        tutor_summary={"rag_target_count": 2, "rag_target_hit_count": 1, "rag_insufficient_flag": 0, "rag_source_mix": "syllabus:1|notes:1"},
+        tutor_summary={
+            "rag_target_count": 2,
+            "rag_target_hit_count": 1,
+            "rag_insufficient_flag": 0,
+            "rag_source_mix": "syllabus:1|notes:1",
+        },
     )
     assert "RAG PDFs active/configured: 2/6" in msg
     assert "RAG PDF tiers: syllabus:1 | notes:1" in msg
@@ -2193,6 +2197,7 @@ def test_get_rag_embedding_insights_includes_per_pdf_details_and_tiers(tmp_path)
     pdf1.write_bytes(b"x" * 1024)
     pdf2.write_bytes(b"y" * 2048)
     from studyplan.components.performance.caching import PerformanceCacheService
+
     dummy = types.SimpleNamespace(
         engine=types.SimpleNamespace(SEMANTIC_MODEL_NAME="all-minilm"),
         _perf_cache=PerformanceCacheService({"cache_max_size": 100, "default_ttl_seconds": 300, "cache_ttl": {}}),
@@ -2400,9 +2405,15 @@ def test_refresh_workbench_page_routes_through_safe_render_section():
     dummy = types.SimpleNamespace(
         _safe_render_section=_safe,
         _refresh_tutor_workspace_page=lambda: calls.append(("refresh", "tutor")),
-        _refresh_coach_workspace_page=lambda *args, **kwargs: calls.append(("refresh", f"coach:{kwargs.get('force', False)}")),
-        _refresh_insights_workspace_page=lambda *args, **kwargs: calls.append(("refresh", f"insights:{kwargs.get('force', False)}")),
-        _refresh_settings_workspace_page=lambda *args, **kwargs: calls.append(("refresh", f"settings:{kwargs.get('force', False)}")),
+        _refresh_coach_workspace_page=lambda *args, **kwargs: calls.append(
+            ("refresh", f"coach:{kwargs.get('force', False)}")
+        ),
+        _refresh_insights_workspace_page=lambda *args, **kwargs: calls.append(
+            ("refresh", f"insights:{kwargs.get('force', False)}")
+        ),
+        _refresh_settings_workspace_page=lambda *args, **kwargs: calls.append(
+            ("refresh", f"settings:{kwargs.get('force', False)}")
+        ),
         _refresh_workbench_shell_status=lambda: calls.append(("refresh", "shell")),
         _set_workbench_refresh_fallback=lambda _page, _report: calls.append(("fallback", "workbench")),
     )
@@ -2618,7 +2629,9 @@ def test_extract_tutor_coverage_targets_and_queries_for_multi_concept_prompt():
 
 
 def test_extract_tutor_coverage_targets_uses_acronyms_for_long_single_clause_prompt():
-    prompt = "In one integrated explanation discuss CAPM WACC NPV and how they interact in project decisions under risk."
+    prompt = (
+        "In one integrated explanation discuss CAPM WACC NPV and how they interact in project decisions under risk."
+    )
     targets = extract_tutor_coverage_targets(prompt, max_targets=6)
     joined = " | ".join(targets).lower()
     assert "capm" in joined
@@ -2703,26 +2716,20 @@ def test_should_request_global_ai_tutor_decision_only_on_change_or_refresh():
         "due_snapshot_top3": [],
         "runtime_scope": "app_wide",
     }
-    should1, reason1, sig1 = StudyPlanGUI._should_request_global_ai_tutor_decision(
-        dummy, snapshot, now_ts=100.0
-    )
+    should1, reason1, sig1 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, snapshot, now_ts=100.0)
     assert should1 is True
     assert reason1 == "first_run"
     assert sig1
     dummy._ai_tutor_global_last_event_sig = sig1
     dummy._ai_tutor_global_last_decision_at = 100.0
 
-    should2, reason2, _sig2 = StudyPlanGUI._should_request_global_ai_tutor_decision(
-        dummy, snapshot, now_ts=160.0
-    )
+    should2, reason2, _sig2 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, snapshot, now_ts=160.0)
     assert should2 is False
     assert reason2 == "no_material_change"
 
     changed = dict(snapshot)
     changed["must_review_due"] = 5
-    should3, reason3, _sig3 = StudyPlanGUI._should_request_global_ai_tutor_decision(
-        dummy, changed, now_ts=170.0
-    )
+    should3, reason3, _sig3 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, changed, now_ts=170.0)
     assert should3 is True
     assert reason3 == "state_changed"
 
@@ -2755,13 +2762,9 @@ def test_should_request_global_ai_tutor_decision_respects_quiet_window():
         "due_snapshot_top3": [],
         "runtime_scope": "app_wide",
     }
-    _first, _reason_first, sig = StudyPlanGUI._should_request_global_ai_tutor_decision(
-        dummy, snapshot, now_ts=100.0
-    )
+    _first, _reason_first, sig = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, snapshot, now_ts=100.0)
     dummy._ai_tutor_global_last_event_sig = sig
-    should2, reason2, _sig2 = StudyPlanGUI._should_request_global_ai_tutor_decision(
-        dummy, snapshot, now_ts=200.0
-    )
+    should2, reason2, _sig2 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, snapshot, now_ts=200.0)
     assert should2 is False
     assert reason2 == "quiet_window"
 
@@ -2829,9 +2832,7 @@ def test_normalize_ai_tutor_action_plan_adds_evidence_when_missing():
     engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"])
     dummy = types.SimpleNamespace(engine=engine)
     dummy._coerce_ai_coach_duration = types.MethodType(StudyPlanGUI._coerce_ai_coach_duration, dummy)
-    dummy._derive_ai_tutor_action_evidence = types.MethodType(
-        StudyPlanGUI._derive_ai_tutor_action_evidence, dummy
-    )
+    dummy._derive_ai_tutor_action_evidence = types.MethodType(StudyPlanGUI._derive_ai_tutor_action_evidence, dummy)
     snapshot = {
         "current_topic": "Topic A",
         "coach_pick": "Topic A",
@@ -3087,17 +3088,19 @@ def test_generate_gap_drill_questions_uses_guardrail_status_for_parse_reject():
 def test_generate_gap_drill_questions_failover_uses_second_model():
     """When first model returns LLM error, second model is tried and success uses its response."""
     engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
-    valid_json = json.dumps({
-        "chapter": "Topic A",
-        "questions": [
-            {
-                "question": "What is the primary objective of financial reporting?",
-                "options": ["A", "B", "C", "D"],
-                "correct": "A",
-                "explanation": "Because.",
-            },
-        ],
-    })
+    valid_json = json.dumps(
+        {
+            "chapter": "Topic A",
+            "questions": [
+                {
+                    "question": "What is the primary objective of financial reporting?",
+                    "options": ["A", "B", "C", "D"],
+                    "correct": "A",
+                    "explanation": "Because.",
+                },
+            ],
+        }
+    )
     calls = []
 
     def _ollama(model, prompt):
@@ -3147,12 +3150,14 @@ def test_generate_gap_drill_questions_failover_uses_second_model():
 def test_generate_gap_drill_questions_shows_storage_error_when_save_fails():
     """When _save_generated_gap_questions returns (0, True), user sees storage error message."""
     engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
-    valid_json = json.dumps({
-        "chapter": "Topic A",
-        "questions": [
-            {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."},
-        ],
-    })
+    valid_json = json.dumps(
+        {
+            "chapter": "Topic A",
+            "questions": [
+                {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."},
+            ],
+        }
+    )
     valid_row = {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."}
     dummy = types.SimpleNamespace(
         engine=engine,
@@ -3178,12 +3183,14 @@ def test_generate_gap_drill_questions_shows_storage_error_when_save_fails():
 def test_generate_gap_drill_questions_rejects_stale_workflow_token_before_save():
     saved: list[str] = []
     engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
-    valid_json = json.dumps({
-        "chapter": "Topic A",
-        "questions": [
-            {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."},
-        ],
-    })
+    valid_json = json.dumps(
+        {
+            "chapter": "Topic A",
+            "questions": [
+                {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."},
+            ],
+        }
+    )
     valid_row = {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."}
     dummy = types.SimpleNamespace(
         engine=engine,
@@ -3361,17 +3368,19 @@ def test_question_snapshot_helpers_clone_and_resolve_live_index_by_fingerprint()
     dummy = types.SimpleNamespace(
         engine=types.SimpleNamespace(
             get_questions=lambda chapter: live_rows,
-            _question_bank_fingerprint=lambda row: json.dumps(
-                [
-                    str((row or {}).get("question", "") or ""),
-                    list((row or {}).get("options", []) or []),
-                    str((row or {}).get("correct", "") or ""),
-                ],
-                ensure_ascii=True,
-                separators=(",", ":"),
-            )
-            if isinstance(row, dict)
-            else "",
+            _question_bank_fingerprint=lambda row: (
+                json.dumps(
+                    [
+                        str((row or {}).get("question", "") or ""),
+                        list((row or {}).get("options", []) or []),
+                        str((row or {}).get("correct", "") or ""),
+                    ],
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+                if isinstance(row, dict)
+                else ""
+            ),
         )
     )
     dummy._clone_jsonish_value = types.MethodType(StudyPlanGUI._clone_jsonish_value, dummy)
@@ -3535,9 +3544,7 @@ def test_apply_tutor_practice_plan_result_rejects_stale_token():
         phase_after_turn="practice",
         session_state=TutorSessionState(session_id="session-2", module="FM", topic="Topic B"),
         learner_profile=TutorLearnerProfileSnapshot(learner_id="learner-2", module="FM"),
-        practice_items=(
-            TutorPracticeItem(item_id="practice-old", item_type="mcq", prompt="Old?", topic="Topic B"),
-        ),
+        practice_items=(TutorPracticeItem(item_id="practice-old", item_type="mcq", prompt="Old?", topic="Topic B"),),
         action_intent=None,
         telemetry={"nested": {"count": 1}},
     )
@@ -3713,21 +3720,25 @@ def test_on_quiz_confirm_uses_resolved_live_index_for_scoring():
         competence={"Topic A": 10},
         srs_data={"Topic A": [{"efactor": 2.5}, {"efactor": 2.5}]},
         get_questions=lambda chapter: live_rows,
-        _question_bank_fingerprint=lambda row: json.dumps(
-            [
-                str((row or {}).get("question", "") or ""),
-                list((row or {}).get("options", []) or []),
-                str((row or {}).get("correct", "") or ""),
-            ],
-            ensure_ascii=True,
-            separators=(",", ":"),
-        )
-        if isinstance(row, dict)
-        else "",
+        _question_bank_fingerprint=lambda row: (
+            json.dumps(
+                [
+                    str((row or {}).get("question", "") or ""),
+                    list((row or {}).get("options", []) or []),
+                    str((row or {}).get("correct", "") or ""),
+                ],
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+            if isinstance(row, dict)
+            else ""
+        ),
         update_competence=lambda chapter, delta, question_index=None: _record("update_competence", question_index),
         flag_incorrect=lambda chapter, question_index, days=2: _record("flag_incorrect", question_index),
         record_difficulty=lambda *args, **kwargs: None,
-        record_question_event=lambda chapter, question_index, is_correct, elapsed_sec=None: _record("record_question_event", question_index),
+        record_question_event=lambda chapter, question_index, is_correct, elapsed_sec=None: _record(
+            "record_question_event", question_index
+        ),
         record_outcome_event=lambda *args, **kwargs: None,
         record_question_outcome=lambda *args, **kwargs: None,
         update_srs=lambda *args, **kwargs: None,
@@ -3829,7 +3840,12 @@ def test_parse_section_c_evaluation_payload_backfills_missing_rubric_rows():
         {
             "total_mark": 7,
             "criterion_scores": [
-                {"criterion": "Technical application to case facts", "score": 7, "max_mark": 8, "feedback": "Good case linkage."}
+                {
+                    "criterion": "Technical application to case facts",
+                    "score": 7,
+                    "max_mark": 8,
+                    "feedback": "Good case linkage.",
+                }
             ],
             "strengths": ["Applied to case"],
             "improvements": ["Add recommendation"],
@@ -4021,9 +4037,7 @@ def test_evaluate_section_c_uses_evaluation_purpose_and_optional_judgment_pass(m
     dummy._evaluate_section_c_response_deterministic = types.MethodType(
         StudyPlanGUI._evaluate_section_c_response_deterministic, dummy
     )
-    dummy._build_section_c_evaluation_prompt = types.MethodType(
-        StudyPlanGUI._build_section_c_evaluation_prompt, dummy
-    )
+    dummy._build_section_c_evaluation_prompt = types.MethodType(StudyPlanGUI._build_section_c_evaluation_prompt, dummy)
     dummy._new_llm_routing_request_id = lambda: "test-rid"
     dummy._build_local_llm_model_failover_sequence = types.MethodType(_failover, dummy)
     dummy._ollama_generate_text_with_options = types.MethodType(_ollama, dummy)
@@ -4085,9 +4099,7 @@ def test_evaluate_section_c_rewrite_uses_loop_diff_purpose(monkeypatch):
     dummy._evaluate_section_c_response_deterministic = types.MethodType(
         StudyPlanGUI._evaluate_section_c_response_deterministic, dummy
     )
-    dummy._build_section_c_evaluation_prompt = types.MethodType(
-        StudyPlanGUI._build_section_c_evaluation_prompt, dummy
-    )
+    dummy._build_section_c_evaluation_prompt = types.MethodType(StudyPlanGUI._build_section_c_evaluation_prompt, dummy)
     dummy._new_llm_routing_request_id = lambda: "test-rid"
     dummy._build_local_llm_model_failover_sequence = types.MethodType(_failover, dummy)
     dummy._ollama_generate_text_with_options = types.MethodType(_ollama, dummy)
@@ -4194,7 +4206,9 @@ def test_build_section_c_intelligence_snapshot_uses_existing_intelligence_signal
         "weakest_criterion_top": "Method, workings, and assumptions",
         "weakest_criterion_recurrence": 3,
     }
-    dummy._build_section_c_intelligence_snapshot = types.MethodType(StudyPlanGUI._build_section_c_intelligence_snapshot, dummy)
+    dummy._build_section_c_intelligence_snapshot = types.MethodType(
+        StudyPlanGUI._build_section_c_intelligence_snapshot, dummy
+    )
 
     intel = StudyPlanGUI._build_section_c_intelligence_snapshot(dummy, "Topic A", snapshot={"must_review_due": 2})
     assert intel["target_difficulty"] == "supportive"
@@ -4220,8 +4234,8 @@ def test_build_section_c_generation_prompt_includes_intelligence_payload():
         snapshot={"weak_topics_top3": [{"chapter": "Topic A"}], "must_review_due": 2},
     )
     assert "section_c_intelligence" in prompt
-    assert "\"target_difficulty\":\"stretch\"" in prompt
-    assert "\"rubric_emphasis\":\"Evaluation and recommendation\"" in prompt
+    assert '"target_difficulty":"stretch"' in prompt
+    assert '"rubric_emphasis":"Evaluation and recommendation"' in prompt
     assert "Use payload.section_c_intelligence.target_difficulty" in prompt
     assert "exhibits" in prompt.lower()
 
@@ -4449,7 +4463,7 @@ def test_clean_ai_tutor_text_removes_markdown_and_latex_noise():
     raw = (
         "### Practice Questions\n\n"
         "**Q1:** Cost = \\\\frac{2}{98} \\\\times \\\\frac{365}{20} = 37.2\\\\%.\n"
-        "```json\n{\"ignore\": true}\n```\n"
+        '```json\n{"ignore": true}\n```\n'
     )
     cleaned = StudyPlanGUI._clean_ai_tutor_text(dummy, raw)
     assert "Practice Questions" in cleaned
@@ -4635,8 +4649,8 @@ def test_ollama_generate_text_returns_busy_when_runtime_slot_unavailable():
     calls: list[tuple[str, bool, str]] = []
     dummy._is_local_llm_model_on_cooldown = lambda _model: (False, 0, "")
     dummy._acquire_ollama_request_slot = lambda wait_seconds=None: (False, 180)
-    dummy._record_local_llm_model_outcome = (
-        lambda model_name, success=False, err="": calls.append((str(model_name), bool(success), str(err)))
+    dummy._record_local_llm_model_outcome = lambda model_name, success=False, err="": calls.append(
+        (str(model_name), bool(success), str(err))
     )
     text, err = StudyPlanGUI._ollama_generate_text_with_options(
         dummy,
@@ -4743,11 +4757,15 @@ def test_cloud_endpoint_auto_discovers_provider_key(monkeypatch) -> None:
 
 def test_gateway_endpoint_prefers_gateway_models_and_skips_legacy_llama_server(monkeypatch) -> None:
     dummy = _make_dummy()
-    dummy._resolve_openai_compatible_endpoint = types.MethodType(StudyPlanGUI._resolve_openai_compatible_endpoint, dummy)
+    dummy._resolve_openai_compatible_endpoint = types.MethodType(
+        StudyPlanGUI._resolve_openai_compatible_endpoint, dummy
+    )
     dummy._cloud_model_candidates = types.MethodType(StudyPlanGUI._cloud_model_candidates, dummy)
     dummy._cloud_endpoint_is_candidate = types.MethodType(StudyPlanGUI._cloud_endpoint_is_candidate, dummy)
 
-    monkeypatch.setattr("studyplan.config.Config.LLM_GATEWAY_ENDPOINT", "https://gateway.example.com/v1/chat/completions")
+    monkeypatch.setattr(
+        "studyplan.config.Config.LLM_GATEWAY_ENDPOINT", "https://gateway.example.com/v1/chat/completions"
+    )
     monkeypatch.setattr("studyplan.config.Config.LLM_GATEWAY_ENABLED", True)
     monkeypatch.setattr("studyplan.config.Config.LLAMA_CPP_ENDPOINT", "https://legacy.example.com/v1/chat/completions")
     monkeypatch.setattr("studyplan.config.Config.LLM_GATEWAY_MODEL", "openrouter/google/gemini-2.5-flash")
@@ -4828,8 +4846,11 @@ def test_pause_and_resume_tutor_workspace_turn_snapshot() -> None:
     assert state.paused_tutor_turn() is None
 
 
-def test_auto_pause_policy_triggers_on_high_memory_pressure(monkeypatch) -> None:
-    monkeypatch.setattr("studyplan_app.summarize_for_logging", lambda: {"memory_pressure": "high"})
+def test_auto_pause_policy_triggers_on_critical_memory_only(monkeypatch) -> None:
+    """Auto-pause fires when available RAM is genuinely critical, NOT just because
+    the pressure tier is 'high' (which is permanent on 6 GB iGPU-carve-out laptops)."""
+    # Case 1: critical RAM (< 450 MB available) → should pause
+    monkeypatch.setattr("studyplan_app.memory_auto_pause_eligible", lambda: True)
     dummy = types.SimpleNamespace(_tutor_workspace_state=TutorWorkspaceState())
     dummy._tutor_workspace_state["active"] = True
     dummy._tutor_memory_pressure_level = types.MethodType(StudyPlanGUI._tutor_memory_pressure_level, dummy)
@@ -4838,6 +4859,22 @@ def test_auto_pause_policy_triggers_on_high_memory_pressure(monkeypatch) -> None
 
     assert should_pause is True
     assert reason == "memory_pressure"
+
+
+def test_auto_pause_policy_does_not_trigger_on_high_pressure_with_sufficient_ram(monkeypatch) -> None:
+    """High memory pressure tier alone (e.g. 6 GB laptop) must NOT auto-pause tutor
+    turns when available RAM is still above the critical threshold (~450 MB)."""
+    # Simulate a 6 GB iGPU laptop: pressure tier = "high", but 2 GB available → not critical
+    monkeypatch.setattr("studyplan_app.memory_auto_pause_eligible", lambda: False)
+    monkeypatch.setattr("studyplan_app.summarize_for_logging", lambda: {"memory_pressure": "high"})
+    dummy = types.SimpleNamespace(_tutor_workspace_state=TutorWorkspaceState())
+    dummy._tutor_workspace_state["active"] = True
+    dummy._tutor_memory_pressure_level = types.MethodType(StudyPlanGUI._tutor_memory_pressure_level, dummy)
+
+    should_pause, reason = StudyPlanGUI._should_auto_pause_tutor_workspace_turn(dummy)
+
+    assert should_pause is False
+    assert reason == ""
 
 
 def test_auto_resume_policy_requires_matching_prompt_and_low_pressure(monkeypatch) -> None:
@@ -4939,8 +4976,8 @@ def test_ollama_generate_text_stream_recovers_with_compact_non_stream_fallback(m
     dummy._is_local_llm_model_on_cooldown = lambda _model: (False, 0, "")
     dummy._acquire_ollama_request_slot = lambda wait_seconds=None: (True, 0)
     dummy._release_ollama_request_slot = lambda: released.__setitem__("count", int(released["count"]) + 1)
-    dummy._record_local_llm_model_outcome = (
-        lambda model_name, success=False, err="": outcomes.append((str(model_name), bool(success), str(err)))
+    dummy._record_local_llm_model_outcome = lambda model_name, success=False, err="": outcomes.append(
+        (str(model_name), bool(success), str(err))
     )
     dummy._get_ollama_retry_limit = lambda: 0
     dummy._should_compact_recovery_retry = lambda _err: True
@@ -4972,9 +5009,9 @@ def test_ollama_generate_text_stream_recovers_with_compact_non_stream_fallback(m
 
 def test_extract_first_json_object_handles_markdown_wrappers():
     dummy = _make_dummy()
-    wrapped = "```json\n{\"action\":\"quiz\",\"topic\":\"Topic A\"}\n```"
+    wrapped = '```json\n{"action":"quiz","topic":"Topic A"}\n```'
     got = StudyPlanGUI._extract_first_json_object(dummy, wrapped)
-    assert got == "{\"action\":\"quiz\",\"topic\":\"Topic A\"}"
+    assert got == '{"action":"quiz","topic":"Topic A"}'
 
 
 def test_normalize_ai_coach_recommendation_uses_action_topic_fallback_and_clamps_duration():
@@ -5271,6 +5308,7 @@ def test_append_ai_tutor_rag_pdf_path_adds_and_clears_runtime_cache(tmp_path):
     second_pdf.write_bytes(b"%PDF-1.4\nsecond")
 
     from studyplan.components.performance.caching import PerformanceCacheService
+
     perf_cache = PerformanceCacheService({"cache_max_size": 100, "default_ttl_seconds": 300, "cache_ttl": {}})
     perf_cache.set("rag_doc:stale", {"chunks": []})
 
@@ -5302,6 +5340,7 @@ def test_append_ai_tutor_rag_pdf_path_rejects_duplicate(tmp_path):
     first_pdf.write_bytes(b"%PDF-1.4\nfirst")
 
     from studyplan.components.performance.caching import PerformanceCacheService
+
     calls = {"saved": 0}
     dummy = types.SimpleNamespace(
         ai_tutor_rag_pdfs=str(first_pdf),
@@ -5368,9 +5407,15 @@ def test_shutdown_core_runtime_is_idempotent_and_calls_blocking_engine_shutdown(
     action_finalize: list[bool] = []
     dummy = types.SimpleNamespace(
         _core_runtime_shutdown=False,
-        _set_pomodoro_active_state=lambda active: calls.__setitem__("pomodoro_state", calls["pomodoro_state"] + (0 if active else 1)),
-        _ui_refresh_scheduler=types.SimpleNamespace(cancel_all=lambda: calls.__setitem__("scheduler_cancel", calls["scheduler_cancel"] + 1)),
-        _ui_dialog_lifecycle=types.SimpleNamespace(close_all=lambda: calls.__setitem__("lifecycle_close", calls["lifecycle_close"] + 1)),
+        _set_pomodoro_active_state=lambda active: calls.__setitem__(
+            "pomodoro_state", calls["pomodoro_state"] + (0 if active else 1)
+        ),
+        _ui_refresh_scheduler=types.SimpleNamespace(
+            cancel_all=lambda: calls.__setitem__("scheduler_cancel", calls["scheduler_cancel"] + 1)
+        ),
+        _ui_dialog_lifecycle=types.SimpleNamespace(
+            close_all=lambda: calls.__setitem__("lifecycle_close", calls["lifecycle_close"] + 1)
+        ),
         _ai_tutor_global_autopilot_id=31,
         _ai_tutor_global_autopilot_busy=True,
         _stop_tutor_workspace_runtime=lambda: calls.__setitem__("stop_workspace", calls["stop_workspace"] + 1),
@@ -5498,6 +5543,7 @@ def test_start_core_housekeeping_timers_skips_semantic_and_auto_train_in_smoke_m
 
 def test_single_instance_lock_acquire_release_with_existing_lock(tmp_path):
     import fcntl
+
     import studyplan_app as appmod
 
     lock_path = str(tmp_path / "app_instance.lock")
@@ -5686,10 +5732,7 @@ def test_on_close_request_uses_runtime_shutdown_and_non_blocking_recap_notificat
         _closing_from_recap=False,
         _shutdown_core_runtime=lambda finalize_timers=True: calls.__setitem__("shutdown", calls["shutdown"] + 1),
         _build_daily_recap_text=lambda: (
-            "Daily Recap • 2026-03-06\n"
-            "Pomodoros: 3\n"
-            "Quiz questions: 18  •  Quiz sessions: 2\n"
-            "Daily plan: 2/3 completed"
+            "Daily Recap • 2026-03-06\nPomodoros: 3\nQuiz questions: 18  •  Quiz sessions: 2\nDaily plan: 2/3 completed"
         ),
         send_notification=lambda _title, _body: calls.__setitem__("notify", calls["notify"] + 1),
         engine=types.SimpleNamespace(save_data=lambda: calls.__setitem__("save_data", calls["save_data"] + 1)),

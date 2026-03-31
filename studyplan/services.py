@@ -5,8 +5,8 @@ import hashlib
 import json
 import logging
 import os
-import re
 import random
+import re
 import threading
 import time
 import urllib.error
@@ -17,17 +17,17 @@ from typing import Any, Callable, Protocol, Sequence
 
 logger = logging.getLogger(__name__)
 
+from .ai.llm_auth import discover_llm_auth_headers
+from .ai.llm_gateway import (
+    ResolvedOpenAICompatibleEndpoint,
+    resolve_openai_compatible_model_candidates,
+)
 from .ai.prompt_design import (
     ASSESSMENT_JUDGE_ROLE_BASE,
     ASSESSMENT_JUDGE_RULES,
     ASSESSMENT_JUDGE_SCHEMA_ONE_LINE,
     JUDGE_JSON_ONLY,
     build_judge_prompt_3es,
-)
-from .ai.llm_auth import discover_llm_auth_headers
-from .ai.llm_gateway import (
-    ResolvedOpenAICompatibleEndpoint,
-    resolve_openai_compatible_model_candidates,
 )
 from .ai.recovery import build_deterministic_fallback_response
 from .config import Config
@@ -40,10 +40,10 @@ from .contracts import (
     JudgmentRubricTemplate,
     MisconceptionPattern,
     ModuleDescriptor,
-    RagQueryRequest,
-    RagSourceHint,
-    RagQueryResult,
     ProblemStructure,
+    RagQueryRequest,
+    RagQueryResult,
+    RagSourceHint,
     StructureType,
     SurfaceVariant,
     TransferAttempt,
@@ -221,9 +221,7 @@ class LlamaCppTutorService:
     max_retries: int = field(default_factory=lambda: int(getattr(Config, "LLAMA_CPP_MAX_RETRIES", 2) or 2))
     temperature: float = field(default_factory=lambda: float(getattr(Config, "LLAMA_CPP_TEMPERATURE", 0.2) or 0.2))
     top_p: float = field(default_factory=lambda: float(getattr(Config, "LLAMA_CPP_TOP_P", 0.95) or 0.95))
-    context_window: int = field(
-        default_factory=lambda: int(getattr(Config, "LLAMA_CPP_CONTEXT_WINDOW", 8192) or 8192)
-    )
+    context_window: int = field(default_factory=lambda: int(getattr(Config, "LLAMA_CPP_CONTEXT_WINDOW", 8192) or 8192))
     auto_model_discovery: bool = field(
         default_factory=lambda: bool(getattr(Config, "LLAMA_CPP_AUTO_MODEL_DISCOVERY", True))
     )
@@ -238,7 +236,9 @@ class LlamaCppTutorService:
         default_factory=lambda: str(getattr(Config, "LLAMA_CPP_GPT4ALL_MODELS_DIR", "") or "").strip()
     )
     model_preference: str = field(
-        default_factory=lambda: str(getattr(Config, "LLAMA_CPP_MODEL_PREFERENCE", "fast_cpp") or "fast_cpp").strip().lower()
+        default_factory=lambda: (
+            str(getattr(Config, "LLAMA_CPP_MODEL_PREFERENCE", "fast_cpp") or "fast_cpp").strip().lower()
+        )
     )
     model_discovery_ttl_seconds: float = field(
         default_factory=lambda: float(getattr(Config, "LLAMA_CPP_MODEL_DISCOVERY_TTL_SECONDS", 120.0) or 120.0)
@@ -363,7 +363,9 @@ class LlamaCppTutorService:
             return []
         url = f"{host}/api/tags"
         try:
-            with urllib.request.urlopen(url, timeout=self._clamp_float(self.timeout_seconds, 8.0, 2.0, 30.0)) as response:
+            with urllib.request.urlopen(
+                url, timeout=self._clamp_float(self.timeout_seconds, 8.0, 2.0, 30.0)
+            ) as response:
                 raw = response.read()
         except Exception:
             return []
@@ -484,10 +486,7 @@ class LlamaCppTutorService:
                     configured_model=gateway_model,
                     fallback_models=gateway_fallbacks,
                 )
-                source_map = {
-                    m: ("request" if m == requested and requested else "gateway")
-                    for m in models
-                }
+                source_map = {m: ("request" if m == requested and requested else "gateway") for m in models}
                 return models, source_map, {"mode": "gateway_configured", "cache_hit": False}
             if requested:
                 return [requested], {requested: "request"}, {"mode": "remote_request_model", "cache_hit": False}
@@ -640,7 +639,9 @@ class LlamaCppTutorService:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._clamp_float(self.timeout_seconds, 30.0, 1.0, 300.0)) as response:
+            with urllib.request.urlopen(
+                request, timeout=self._clamp_float(self.timeout_seconds, 30.0, 1.0, 600.0)
+            ) as response:
                 status = int(getattr(response, "status", 200) or 200)
                 raw = response.read()
         except urllib.error.HTTPError as exc:
@@ -765,7 +766,7 @@ class LlamaCppTutorService:
             return self._generate_with_profiling(request, started)
         finally:
             self._request_gate.release()
-    
+
     def _ensure_runtime(self, purpose: str = "general") -> None:
         """Lazily initialize managed runtime and update endpoint/model."""
         with self._runtime_lock:
@@ -815,9 +816,7 @@ class LlamaCppTutorService:
         runtime_backend = ""
         if self.managed_runtime is not None:
             try:
-                runtime_backend = getattr(
-                    getattr(self.managed_runtime, "server", None), "current_model", ""
-                ) or ""
+                runtime_backend = getattr(getattr(self.managed_runtime, "server", None), "current_model", "") or ""
                 if runtime_backend:
                     runtime_backend = "llama_server"
             except Exception:
@@ -948,7 +947,9 @@ class LlamaCppTutorService:
                         telemetry=telemetry,
                     )
                 final_error = self._coerce_text(error_code, "unknown_error")
-                final_message = self._coerce_text(meta.get("error_message") if isinstance(meta, dict) else "", "request failed")
+                final_message = self._coerce_text(
+                    meta.get("error_message") if isinstance(meta, dict) else "", "request failed"
+                )
                 retries_used += 1
                 # Move to next discovered model quickly when provider reports missing model.
                 if final_error == "model_missing":
@@ -1175,9 +1176,15 @@ class FMModuleAdapter:
 
     def competency_nodes(self) -> Sequence[CompetencyNode]:
         return (
-            CompetencyNode(id="fm.wacc", topic_id="Cost of Capital", label="WACC", kind="formula", tags=("discount_rate",)),
-            CompetencyNode(id="fm.capm", topic_id="Risk Management", label="CAPM", kind="formula", tags=("cost_of_equity",)),
-            CompetencyNode(id="fm.working_capital_policy", topic_id="Working Capital Management", label="Working capital policy"),
+            CompetencyNode(
+                id="fm.wacc", topic_id="Cost of Capital", label="WACC", kind="formula", tags=("discount_rate",)
+            ),
+            CompetencyNode(
+                id="fm.capm", topic_id="Risk Management", label="CAPM", kind="formula", tags=("cost_of_equity",)
+            ),
+            CompetencyNode(
+                id="fm.working_capital_policy", topic_id="Working Capital Management", label="Working capital policy"
+            ),
             CompetencyNode(id="fm.cash_cycle", topic_id="Working Capital Management", label="Cash operating cycle"),
         )
 
@@ -1201,7 +1208,9 @@ class FMModuleAdapter:
 
     def default_tutor_mode_for_topic(self, topic_id: str) -> str:
         topic = str(topic_id or "").strip().lower()
-        if any(token in topic for token in ("wacc", "capm", "working capital", "cash management", "investment appraisal")):
+        if any(
+            token in topic for token in ("wacc", "capm", "working capital", "cash management", "investment appraisal")
+        ):
             return "guided_practice"
         if "risk" in topic:
             return "retrieval_drill"
@@ -1237,7 +1246,9 @@ class FMModuleAdapter:
         out: list[str] = []
         if ("working capital" in topic or "cash" in topic) and any(t in tags for t in ("missing_risk", "risk_omitted")):
             out.append("wc_policy_risk_ignored")
-        if ("capm" in topic or "risk" in topic) and any(t in tags for t in ("formula_direction", "missing_rf", "beta_confusion")):
+        if ("capm" in topic or "risk" in topic) and any(
+            t in tags for t in ("formula_direction", "missing_rf", "beta_confusion")
+        ):
             out.append("capm_component_confusion")
         return tuple(out[:3])
 
@@ -1351,8 +1362,7 @@ class FRModuleAdapter:
     def default_tutor_mode_for_topic(self, topic_id: str) -> str:
         topic = str(topic_id or "").strip().lower()
         if any(
-            token in topic
-            for token in ("consolidat", "ifrs", "ias ", "group", "associate", "goodwill", "cash flow")
+            token in topic for token in ("consolidat", "ifrs", "ias ", "group", "associate", "goodwill", "cash flow")
         ):
             return "guided_practice"
         return "teach"
@@ -1479,10 +1489,7 @@ class AAModuleAdapter:
 
     def default_tutor_mode_for_topic(self, topic_id: str) -> str:
         topic = str(topic_id or "").strip().lower()
-        if any(
-            token in topic
-            for token in ("risk", "internal control", "evidence", "reporting", "materiality")
-        ):
+        if any(token in topic for token in ("risk", "internal control", "evidence", "reporting", "materiality")):
             return "guided_practice"
         return "teach"
 
@@ -1608,10 +1615,7 @@ class TXModuleAdapter:
 
     def default_tutor_mode_for_topic(self, topic_id: str) -> str:
         topic = str(topic_id or "").strip().lower()
-        if any(
-            token in topic
-            for token in ("computation", "tax", "vat", "allowance", "relief", "corporation")
-        ):
+        if any(token in topic for token in ("computation", "tax", "vat", "allowance", "relief", "corporation")):
             return "guided_practice"
         return "teach"
 
@@ -2002,7 +2006,9 @@ class TransferAttemptLogService:
                 variant_latency_seconds=float(payload.get("variant_latency_seconds", 0.0) or 0.0),
                 base_hint_penalty=float(payload.get("base_hint_penalty", 1.0) or 1.0),
                 variant_hint_penalty=float(payload.get("variant_hint_penalty", 1.0) or 1.0),
-                created_at=created_at_dt if isinstance(created_at_dt, datetime.datetime) else datetime.datetime.now(datetime.timezone.utc),
+                created_at=created_at_dt
+                if isinstance(created_at_dt, datetime.datetime)
+                else datetime.datetime.now(datetime.timezone.utc),
             )
         except Exception:
             return None
@@ -2152,7 +2158,9 @@ class RuleBasedRagEvidencePolicyService:
         source_mix = str(meta.get("rag_source_mix", "") or "").strip()
         if not source_mix:
             try:
-                source_rows = [str(item or "").strip() for item in list(meta.get("sources", []) or []) if str(item or "").strip()]
+                source_rows = [
+                    str(item or "").strip() for item in list(meta.get("sources", []) or []) if str(item or "").strip()
+                ]
             except Exception:
                 source_rows = []
             source_mix = ", ".join(sorted(set(source_rows))) if source_rows else "none"
@@ -2181,8 +2189,7 @@ class RuleBasedRagEvidencePolicyService:
         confidence = max(0.0, min(1.0, confidence))
 
         insufficient = bool(
-            (method not in {"disabled"} and snippet_count <= 0)
-            or (target_query_count > 0 and target_hit_snippets <= 0)
+            (method not in {"disabled"} and snippet_count <= 0) or (target_query_count > 0 and target_hit_snippets <= 0)
         )
         if method == "disabled":
             policy_mode = "disabled"
@@ -2201,22 +2208,18 @@ class RuleBasedRagEvidencePolicyService:
         )
 
         if policy_mode == "strong_grounding":
-            planner_line = "- RAG evidence strong: use snippets for precise rules/formulas, then explain in exam-focused terms."
+            planner_line = (
+                "- RAG evidence strong: use snippets for precise rules/formulas, then explain in exam-focused terms."
+            )
             certainty_style = "grounded"
         elif policy_mode == "mixed_grounding":
-            planner_line = (
-                "- RAG evidence mixed: anchor key claims to snippets when relevant; fill gaps with model knowledge and state assumptions."
-            )
+            planner_line = "- RAG evidence mixed: anchor key claims to snippets when relevant; fill gaps with model knowledge and state assumptions."
             certainty_style = "balanced"
         elif policy_mode == "disabled":
-            planner_line = (
-                "- RAG evidence unavailable: answer with model knowledge and clearly state assumptions for syllabus-specific claims."
-            )
+            planner_line = "- RAG evidence unavailable: answer with model knowledge and clearly state assumptions for syllabus-specific claims."
             certainty_style = "assumption_first"
         else:
-            planner_line = (
-                "- RAG evidence weak: avoid overclaiming; answer with model knowledge, flag assumptions, and prioritize robust principles."
-            )
+            planner_line = "- RAG evidence weak: avoid overclaiming; answer with model knowledge, flag assumptions, and prioritize robust principles."
             certainty_style = "hedged"
         if standard_sensitive and policy_mode in {"weak_grounding", "disabled"}:
             planner_line += " Note uncertainty for standard-specific details."
@@ -2587,7 +2590,9 @@ class InMemoryTutorSessionController:
 
     def _now_ts(self) -> str:
         try:
-            return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            return (
+                datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            )
         except Exception:
             return ""
 
@@ -2726,7 +2731,9 @@ class InMemoryTutorLearnerModelStore:
 
     def _now_ts(self) -> str:
         try:
-            return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            return (
+                datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            )
         except Exception:
             return ""
 
@@ -2826,14 +2833,10 @@ class InMemoryTutorLearnerModelStore:
             return max(float(minv), min(float(maxv), val))
 
         recent_outcomes = tuple(
-            str(x or "").strip().lower()
-            for x in list(data.get("recent_outcomes", []) or [])
-            if str(x or "").strip()
+            str(x or "").strip().lower() for x in list(data.get("recent_outcomes", []) or []) if str(x or "").strip()
         )[:8]
         recent_mis = tuple(
-            str(x or "").strip()
-            for x in list(data.get("recent_misconceptions", []) or [])
-            if str(x or "").strip()
+            str(x or "").strip() for x in list(data.get("recent_misconceptions", []) or []) if str(x or "").strip()
         )[:8]
         return {
             "schema_version": 1,
@@ -2884,12 +2887,14 @@ class InMemoryTutorLearnerModelStore:
             score_ema = (0.8 * prev_ema) + (0.2 * max(0.0, min(1.0, float(score_ratio))))
         metrics["avg_score_ratio_ema"] = round(max(0.0, min(1.0, score_ema)), 4)
 
-        current_mis = tuple(str(x or "").strip() for x in tuple(getattr(assessment, "misconception_tags", ()) or ()) if str(x or "").strip())
+        current_mis = tuple(
+            str(x or "").strip()
+            for x in tuple(getattr(assessment, "misconception_tags", ()) or ())
+            if str(x or "").strip()
+        )
         prior_set = {str(x or "").strip().lower() for x in prior_misconception_tags if str(x or "").strip()}
         recent_mis = [
-            str(x or "").strip()
-            for x in list(metrics.get("recent_misconceptions", []) or [])
-            if str(x or "").strip()
+            str(x or "").strip() for x in list(metrics.get("recent_misconceptions", []) or []) if str(x or "").strip()
         ]
         recurrence_hit = False
         for tag in current_mis:
@@ -2903,9 +2908,7 @@ class InMemoryTutorLearnerModelStore:
         metrics["recent_misconceptions"] = recent_mis[-8:]
 
         recent_outcomes = [
-            str(x or "").strip().lower()
-            for x in list(metrics.get("recent_outcomes", []) or [])
-            if str(x or "").strip()
+            str(x or "").strip().lower() for x in list(metrics.get("recent_outcomes", []) or []) if str(x or "").strip()
         ]
         if outcome:
             recent_outcomes.append(outcome)
@@ -2947,6 +2950,7 @@ class InMemoryTutorLearnerModelStore:
 
 
 from functools import lru_cache
+
 from .components.performance.caching import PerformanceCacheService, create_performance_cache_service
 from .components.performance.optimization import PerformanceMiddleware
 from .components.performance.profiler import PerformanceProfiler
@@ -2963,6 +2967,7 @@ def _normalize_free_text(value: Any) -> str:
 def _normalized_cached(value: str) -> str:
     # value expected to be str already
     return _normalize_free_text(value)
+
 
 @lru_cache(maxsize=4096)
 def _tokenize_words(value: Any) -> tuple[str, ...]:
@@ -3008,7 +3013,10 @@ class DeterministicTutorPracticeService:
             return ()
 
         mode = str(getattr(session_state, "mode", "auto") or "auto").strip().lower()
-        topic = str(getattr(session_state, "topic", "") or getattr(app_snapshot, "current_topic", "") or "").strip() or "current topic"
+        topic = (
+            str(getattr(session_state, "topic", "") or getattr(app_snapshot, "current_topic", "") or "").strip()
+            or "current topic"
+        )
         topic_tokens = [t for t in _tokenize_words(topic) if len(t) >= 3]
         core_keywords = tuple(topic_tokens[:3]) or ("concept", "application")
         misconceptions = tuple(getattr(learner_profile, "misconception_tags_top", ()) or ())
@@ -3153,8 +3161,14 @@ class DeterministicTutorPracticeService:
         except Exception:
             prior_round = 0
         variant_round = max(1, prior_round + 1)
-        difficulty_map = {"easier": "easy", "same": str(getattr(item, "difficulty", "medium") or "medium"), "harder": "hard"}
-        difficulty = str(difficulty_map.get(next_diff, str(getattr(item, "difficulty", "medium") or "medium")) or "medium")
+        difficulty_map = {
+            "easier": "easy",
+            "same": str(getattr(item, "difficulty", "medium") or "medium"),
+            "harder": "hard",
+        }
+        difficulty = str(
+            difficulty_map.get(next_diff, str(getattr(item, "difficulty", "medium") or "medium")) or "medium"
+        )
 
         base_meta: dict[str, Any] = dict(source_meta)
         base_meta["variant_of"] = variant_of
@@ -3179,10 +3193,14 @@ class DeterministicTutorPracticeService:
                     "then add one common mistake to avoid."
                 )
                 expected_format = "2-4 short lines"
-                hints = tuple(dict.fromkeys(tuple(getattr(item, "rubric_hints", ()) or ()) + ("fresh wording", "common mistake")))
+                hints = tuple(
+                    dict.fromkeys(tuple(getattr(item, "rubric_hints", ()) or ()) + ("fresh wording", "common mistake"))
+                )
                 variant_kind = "paraphrase_plus_pitfall"
                 transfer_level = "near"
-                optional_keywords = list(dict.fromkeys(list(source_meta.get("optional_keywords") or []) + ["mistake", "avoid"]))
+                optional_keywords = list(
+                    dict.fromkeys(list(source_meta.get("optional_keywords") or []) + ["mistake", "avoid"])
+                )
             else:
                 prompt = (
                     f"Variant re-test ({variant_round}): answer the same concept in a new scenario/example for {topic}. "
@@ -3279,7 +3297,9 @@ class DeterministicTutorPracticeService:
             difficulty=difficulty,
             source="tutor_micro_variant",
             capability_tags=tuple(getattr(item, "capability_tags", ()) or ()),
-            rubric_hints=tuple(dict.fromkeys(tuple(getattr(item, "rubric_hints", ()) or ()) + ("method", "application"))),
+            rubric_hints=tuple(
+                dict.fromkeys(tuple(getattr(item, "rubric_hints", ()) or ()) + ("method", "application"))
+            ),
             meta=base_meta,
         )
 
@@ -3325,7 +3345,9 @@ class DeterministicTutorAssessmentService:
         picked_match = re.search(r"[A-Da-d]", str(answer_text or ""))
         picked = picked_match.group(0).upper() if picked_match else _normalize_free_text(answer_text).upper()
         marks_max = float(meta.get("marks_max", 1.0) or 1.0)
-        error_tags_by_option = meta.get("error_tags_by_option", {}) if isinstance(meta.get("error_tags_by_option"), dict) else {}
+        error_tags_by_option = (
+            meta.get("error_tags_by_option", {}) if isinstance(meta.get("error_tags_by_option"), dict) else {}
+        )
         if expected and picked == expected:
             return TutorAssessmentResult(
                 item_id=item.item_id,
@@ -3434,7 +3456,9 @@ class DeterministicTutorAssessmentService:
         text_norm = _normalize_free_text(answer_text)
         answer_tokens = set(_tokenize_words(answer_text))
         required_keywords = self._collect_keywords(item, meta)
-        optional_keywords = tuple(str(x).strip().lower() for x in (meta.get("optional_keywords") or []) if str(x).strip())
+        optional_keywords = tuple(
+            str(x).strip().lower() for x in (meta.get("optional_keywords") or []) if str(x).strip()
+        )
         if not text_norm:
             return TutorAssessmentResult(
                 item_id=item.item_id,
@@ -3877,6 +3901,7 @@ class DeterministicTutorInterventionPolicyService:
     Chooses a correction style using outcome/error/misconception signals. This remains
     advisory and explainable (no direct state mutation).
     """
+
     module_adapter: ModuleAdapter | None = None
 
     def choose_intervention(
@@ -3890,9 +3915,7 @@ class DeterministicTutorInterventionPolicyService:
     ) -> dict[str, object]:
         outcome = str(getattr(assessment_result, "outcome", "") or "").strip().lower() or "incorrect"
         error_tags = tuple(
-            str(x).strip().lower()
-            for x in tuple(getattr(assessment_result, "error_tags", ()) or ())
-            if str(x).strip()
+            str(x).strip().lower() for x in tuple(getattr(assessment_result, "error_tags", ()) or ()) if str(x).strip()
         )
         mis_tags = tuple(
             str(x).strip().lower()
@@ -3929,14 +3952,21 @@ class DeterministicTutorInterventionPolicyService:
         recommended_variant = bool(retry_recommended)
         severity = "info"
 
-        if any(tag in error_tags for tag in ("no_numeric_answer", "numeric_mismatch", "numeric_precision")) or item_type == "calculation_step":
+        if (
+            any(tag in error_tags for tag in ("no_numeric_answer", "numeric_mismatch", "numeric_precision"))
+            or item_type == "calculation_step"
+        ):
             intervention_type = "step_drill"
-            rationale = "Numeric/procedural error detected. Rebuild the method step-by-step before checking the final value."
+            rationale = (
+                "Numeric/procedural error detected. Rebuild the method step-by-step before checking the final value."
+            )
             hint_strategy = "show_method_steps"
             severity = "warning" if outcome != "correct" else "info"
         elif mis_tags or recurrence_count >= 2:
             intervention_type = "worked_example_then_retest"
-            rationale = "Recurring misconception signal detected. Correct with a worked example, then re-test on a new variant."
+            rationale = (
+                "Recurring misconception signal detected. Correct with a worked example, then re-test on a new variant."
+            )
             hint_strategy = "worked_example"
             recommended_variant = True
             severity = "intervention" if recurrence_count >= 2 or streak_incorrect >= 2 else "warning"
@@ -4042,7 +4072,9 @@ class RuleBasedTutorLearningLoopService:
             if "posterior_mean" in cognitive_meta:
                 session_meta["cognitive_posterior_mean"] = float(cognitive_meta.get("posterior_mean", 0.0) or 0.0)
             if "posterior_variance" in cognitive_meta:
-                session_meta["cognitive_posterior_variance"] = float(cognitive_meta.get("posterior_variance", 0.0) or 0.0)
+                session_meta["cognitive_posterior_variance"] = float(
+                    cognitive_meta.get("posterior_variance", 0.0) or 0.0
+                )
             session_meta["cognitive_struggle_mode"] = bool(cognitive_meta.get("struggle_mode", False))
 
         session_state = self.session_controller.save_session(
@@ -4336,7 +4368,9 @@ class RuleBasedTutorLearningLoopService:
         if not mode or mode == "auto":
             return None
         try:
-            supported = {str(x or "").strip().lower() for x in (adapter.supported_tutor_modes() or ()) if str(x or "").strip()}
+            supported = {
+                str(x or "").strip().lower() for x in (adapter.supported_tutor_modes() or ()) if str(x or "").strip()
+            }
         except Exception:
             supported = set()
         if supported and mode not in supported:
@@ -4385,7 +4419,9 @@ class RuleBasedTutorLearningLoopService:
         phase_after_turn: str,
     ) -> TutorActionIntent | None:
         autonomy_mode = str(getattr(request, "autonomy_mode", "assist") or "assist").strip().lower()
-        current_topic = str(getattr(app_snapshot, "current_topic", "") or getattr(session_state, "topic", "") or "").strip()
+        current_topic = str(
+            getattr(app_snapshot, "current_topic", "") or getattr(session_state, "topic", "") or ""
+        ).strip()
         weak_topics = tuple(getattr(app_snapshot, "weak_topics_top3", ()) or ())
         must_review_due = int(getattr(app_snapshot, "must_review_due", 0) or 0)
         overdue = int(getattr(app_snapshot, "overdue_srs_count", 0) or 0)
@@ -4565,7 +4601,11 @@ class RuleBasedTutorLearningLoopService:
         cached = self._last_tuned_thresholds
         if isinstance(cached, TutorLoopPolicyThresholds):
             return cached.clamped()
-        base = self.policy_thresholds if isinstance(self.policy_thresholds, TutorLoopPolicyThresholds) else TutorLoopPolicyThresholds()
+        base = (
+            self.policy_thresholds
+            if isinstance(self.policy_thresholds, TutorLoopPolicyThresholds)
+            else TutorLoopPolicyThresholds()
+        )
         return base.clamped()
 
     def _refresh_tuned_thresholds(
@@ -4574,7 +4614,11 @@ class RuleBasedTutorLearningLoopService:
         learner_profile: TutorLearnerProfileSnapshot,
         app_snapshot: AppStateSnapshot,
     ) -> TutorLoopPolicyThresholds:
-        base = self.policy_thresholds if isinstance(self.policy_thresholds, TutorLoopPolicyThresholds) else TutorLoopPolicyThresholds()
+        base = (
+            self.policy_thresholds
+            if isinstance(self.policy_thresholds, TutorLoopPolicyThresholds)
+            else TutorLoopPolicyThresholds()
+        )
         base = base.clamped()
         metrics = self._learner_loop_metrics(learner_profile)
         tuner = self.policy_tuning_service
@@ -4613,7 +4657,9 @@ class RuleBasedTutorLearningLoopService:
         practice_items: tuple[TutorPracticeItem, ...],
         action_intent: TutorActionIntent | None,
     ) -> str:
-        topic = str(getattr(session_state, "topic", "") or getattr(request.app_snapshot, "current_topic", "") or "current topic")
+        topic = str(
+            getattr(session_state, "topic", "") or getattr(request.app_snapshot, "current_topic", "") or "current topic"
+        )
         lines = [
             f"Planner mode: {mode_used}",
             f"Loop phase: {phase_after_turn}",

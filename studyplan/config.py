@@ -163,7 +163,7 @@ class Config:
         "STUDYPLAN_LLAMA_CPP_TIMEOUT_SECONDS",
         30.0,
         min_value=1.0,
-        max_value=300.0,
+        max_value=600.0,
     )
     LLAMA_CPP_MAX_RETRIES = _parse_int(
         "STUDYPLAN_LLAMA_CPP_MAX_RETRIES",
@@ -260,7 +260,10 @@ class Config:
     LLAMA_CPP_MANAGED_SERVER = _parse_bool("STUDYPLAN_LLAMA_CPP_MANAGED_SERVER", default=True)
     LLAMA_CPP_SERVER_BIN = _env_text("STUDYPLAN_LLAMA_SERVER_BIN", "")
     LLAMA_CPP_SERVER_PORT = _parse_int(
-        "STUDYPLAN_LLAMA_SERVER_PORT", 8090, min_value=1024, max_value=65535,
+        "STUDYPLAN_LLAMA_SERVER_PORT",
+        8090,
+        min_value=1024,
+        max_value=65535,
     )
     LLAMA_CPP_SERVER_THREADS = _parse_int(
         "STUDYPLAN_LLAMA_SERVER_THREADS",
@@ -289,7 +292,10 @@ class Config:
     )
     LLAMA_CPP_SERVER_EXTRA_ARGS = _resolved_llama_server_extra_args()
     LLAMA_CPP_SERVER_STARTUP_TIMEOUT = _parse_float(
-        "STUDYPLAN_LLAMA_SERVER_STARTUP_TIMEOUT", 60.0, min_value=10.0, max_value=180.0,
+        "STUDYPLAN_LLAMA_SERVER_STARTUP_TIMEOUT",
+        60.0,
+        min_value=10.0,
+        max_value=180.0,
     )
     LLAMA_CPP_SERVER_IDLE_SHUTDOWN_SECONDS = _parse_float(
         "STUDYPLAN_LLAMA_SERVER_IDLE_SHUTDOWN_SECONDS",
@@ -314,10 +320,14 @@ class Config:
     )
     LLAMA_CPP_EXTRA_GGUF_DIR = _env_text("STUDYPLAN_LLAMA_CPP_EXTRA_GGUF_DIR", "")
     LLAMA_CPP_OLLAMA_FALLBACK = _parse_bool(
-        "STUDYPLAN_LLAMA_CPP_OLLAMA_FALLBACK", default=True,
+        "STUDYPLAN_LLAMA_CPP_OLLAMA_FALLBACK",
+        default=True,
     )
     LLAMA_CPP_RAM_BUDGET_MB = _parse_int(
-        "STUDYPLAN_LLAMA_CPP_RAM_BUDGET_MB", 0, min_value=0, max_value=65536,
+        "STUDYPLAN_LLAMA_CPP_RAM_BUDGET_MB",
+        0,
+        min_value=0,
+        max_value=65536,
     )
 
     # In-app question generation: daily auto-generation runs until this cap (cards/questions) is reached; after that, generation is on user demand or when the tutor deems it necessary (e.g. topic has very few questions).
@@ -337,23 +347,33 @@ class Config:
         min_value=100,
         max_value=10000,
     )
-    PERFORMANCE_CACHE_DEFAULT_TTL_SECONDS = _parse_int("STUDYPLAN_PERFORMANCE_CACHE_DEFAULT_TTL_SECONDS", 300, min_value=60, max_value=3600)
+    PERFORMANCE_CACHE_DEFAULT_TTL_SECONDS = _parse_int(
+        "STUDYPLAN_PERFORMANCE_CACHE_DEFAULT_TTL_SECONDS", 300, min_value=60, max_value=3600
+    )
     PERFORMANCE_CACHE_TTL_CONFIG = {
-        "cognitive_state": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_COGNITIVE_STATE", 300, min_value=60, max_value=1800),
-        "hint_strategy": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_HINT_STRATEGY", 600, min_value=120, max_value=3600),
+        "cognitive_state": _parse_int(
+            "STUDYPLAN_PERFORMANCE_CACHE_TTL_COGNITIVE_STATE", 300, min_value=60, max_value=1800
+        ),
+        "hint_strategy": _parse_int(
+            "STUDYPLAN_PERFORMANCE_CACHE_TTL_HINT_STRATEGY", 600, min_value=120, max_value=3600
+        ),
         "ui_render": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_UI_RENDER", 30, min_value=5, max_value=300),
         "pdf_text": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_PDF_TEXT", 3600, min_value=300, max_value=7200),
         "rag_doc": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_RAG_DOC", 1800, min_value=300, max_value=7200),
         "ollama": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_OLLAMA", 120, min_value=10, max_value=1800),
         "coach_pick": _parse_int("STUDYPLAN_PERFORMANCE_CACHE_TTL_COACH_PICK", 300, min_value=30, max_value=600),
     }
-    PERFORMANCE_CACHE_RAG_DOC_STORE_MODE = str(
-        _env_text(
-            "STUDYPLAN_PERFORMANCE_CACHE_RAG_DOC_STORE_MODE",
-            str(default_performance_cache_rag_doc_store_mode()),
+    PERFORMANCE_CACHE_RAG_DOC_STORE_MODE = (
+        str(
+            _env_text(
+                "STUDYPLAN_PERFORMANCE_CACHE_RAG_DOC_STORE_MODE",
+                str(default_performance_cache_rag_doc_store_mode()),
+            )
+            or str(default_performance_cache_rag_doc_store_mode())
         )
-        or str(default_performance_cache_rag_doc_store_mode())
-    ).strip().lower()
+        .strip()
+        .lower()
+    )
 
 
 CONFIG_HOME = Config.CONFIG_HOME

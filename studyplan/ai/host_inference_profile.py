@@ -238,28 +238,60 @@ def default_ai_tutor_rag_ingest_max_chunks() -> int:
 
 
 def default_ollama_app_queue_wait_seconds() -> float:
-    """Max wait to acquire an Ollama slot; longer when memory is tight."""
+    """Max wait to acquire an Ollama slot.
+
+    Under high pressure we wait *longer* before giving up, not shorter.
+    The semaphore guards the single concurrent slot; if another background job
+    (gap-question generation, quiz generation) is running we should wait it out
+    rather than immediately returning a spurious "busy" error to the user.
+    Callers cap this value themselves; returning a large value here lets the
+    caller choose its own ceiling.
+    """
     p = _memory_pressure(mem_snapshot())
     if p == "high":
-        return 4.0
+        return 20.0
     if p == "moderate":
-        return 2.5
+        return 12.0
     if p == "unknown":
-        return 2.0
-    return 1.5
+        return 8.0
+    return 4.0
 
 
 def default_ollama_keep_alive_seconds() -> int:
     """How long Ollama should keep weights loaded after a request.
 
-    Lower values reduce peak RAM when Ollama and managed llama.cpp can both be active.
+    Setting keep_alive=0 causes Ollama to unload the model immediately after every
+    request.  On a 6 GB iGPU-carve-out laptop the model takes 20–30 s to cold-load,
+    which eats almost the entire 90 s turn timeout *before* any tokens are generated.
+    We keep the model warm between turns even under "high" pressure – the RAM it
+    occupies is already committed while the user is actively in a tutor session.
+    Only drop to 0 when both managed llama-server and Ollama are active at the same
+    time (caller can override via STUDYPLAN_OLLAMA_KEEP_ALIVE_SECONDS).
     """
     p = _memory_pressure(mem_snapshot())
     if p in {"unknown", "high"}:
-        return 0
+        return 60  # was 0 – cold-loads on every turn caused near-certain timeout
     if p == "moderate":
-        return 30
-    return 120
+        return 90
+    return 180
+
+
+def memory_auto_pause_eligible() -> bool:
+    """True **only** when available RAM is critically low and inference should halt.
+
+    This is intentionally separate from ``_memory_pressure()`` which returns
+    ``"high"`` on any machine with less than 7.5 GB total RAM (e.g. a 6 GB
+    iGPU-carve-out laptop).  That tier is correct for choosing conservative model
+    sizes, context windows, and thread counts – but it must NOT be used to
+    auto-pause tutor turns, because those machines *can* run inference (they just
+    need the right model).
+
+    Auto-pause should only fire when we are genuinely in danger of the OOM killer:
+    less than ~450 MB of free+reclaimable RAM.  At that point inference will swap-
+    thrash or be killed anyway, so pausing is the right call.
+    """
+    m = mem_snapshot()
+    return m.mem_available_mb < 450.0
 
 
 def suggested_auto_llama_extra_args(mem: MemSnapshot | None = None) -> list[str]:
@@ -298,9 +330,12 @@ def summarize_for_logging() -> dict[str, Any]:
         "llama_ctx_hint": default_llama_server_ctx_size(),
         "llama_idle_shutdown_s_hint": default_llama_server_idle_shutdown_seconds(),
         "perf_cache_max_hint": default_performance_cache_max_size(),
-        "perf_cache_rag_doc_mode_hint": str(default_performance_cache_rag_doc_store_mode()),
+        "perf_cache_rag_doc_mode_hint": str(
+            default_performance_cache_rag_doc_store_mode()
+        ),
         "tutor_rag_sources_hint": default_ai_tutor_rag_max_sources(),
         "tutor_rag_ingest_max_chunks_hint": default_ai_tutor_rag_ingest_max_chunks(),
         "tutor_max_response_chars_hint": default_ai_tutor_max_response_chars(),
         "ollama_keep_alive_s_hint": int(default_ollama_keep_alive_seconds()),
+        "memory_auto_pause_eligible": memory_auto_pause_eligible(),
     }
