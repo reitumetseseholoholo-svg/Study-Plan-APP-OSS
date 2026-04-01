@@ -1,0 +1,20 @@
+# With amd_pstate=disabled, acpi-cpufreq often exposes ondemand/userspace/performance
+# only (no schedutil). "performance" pins high clocks and worsens thermals on 3700U-class
+# laptops. ondemand ramps for LLM bursts and idles cooler.
+#
+# Install:
+#   sudo cp contrib/garuda-low-ram-llm/systemd/system/set-cpufreq-ondemand.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now set-cpufreq-ondemand.service
+
+[Unit]
+Description=Set CPU frequency governor to ondemand (acpi-cpufreq)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do [ -w "$$f" ] && echo ondemand > "$$f"; done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

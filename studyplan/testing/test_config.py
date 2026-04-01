@@ -1,4 +1,6 @@
 import importlib
+import os
+import tempfile
 
 import studyplan.config as config_module
 
@@ -21,6 +23,21 @@ _ENV_KEYS = [
     "STUDYPLAN_LLAMA_CPP_GPT4ALL_MODELS_DIR",
     "STUDYPLAN_LLAMA_CPP_MODEL_PREFERENCE",
     "STUDYPLAN_LLAMA_CPP_MODEL_DISCOVERY_TTL_SECONDS",
+    "STUDYPLAN_LLM_GATEWAY_ENABLED",
+    "STUDYPLAN_LLM_GATEWAY_ENDPOINT",
+    "STUDYPLAN_LLM_GATEWAY_MODEL",
+    "STUDYPLAN_LLM_GATEWAY_MODEL_FALLBACKS",
+    "STUDYPLAN_LLM_GATEWAY_REQUEST_TIMEOUT_SECONDS",
+    "STUDYPLAN_CLOUD_LLAMACPP_PREFER_EXTERNAL",
+    "STUDYPLAN_CLOUD_LLAMACPP_REQUEST_TIMEOUT_SECONDS",
+    "STUDYPLAN_CLOUD_LLAMACPP_AUTH_BEARER",
+    "STUDYPLAN_OLLAMA_MODELS_DIR",
+    "OLLAMA_MODELS",
+    "STUDYPLAN_LLAMA_SERVER_THREADS",
+    "STUDYPLAN_LLAMA_SERVER_CTX_SIZE",
+    "STUDYPLAN_LLAMA_SERVER_BATCH_SIZE",
+    "STUDYPLAN_LLAMA_SERVER_EXTRA_ARGS",
+    "STUDYPLAN_LLAMA_AUTO_HW_EXTRAS",
 ]
 
 
@@ -60,6 +77,11 @@ def test_config_llama_cpp_parsing_and_clamps(monkeypatch):
         STUDYPLAN_LLAMA_CPP_GPT4ALL_MODELS_DIR=" /tmp/gpt4all ",
         STUDYPLAN_LLAMA_CPP_MODEL_PREFERENCE=" configured_first ",
         STUDYPLAN_LLAMA_CPP_MODEL_DISCOVERY_TTL_SECONDS="999999",
+        STUDYPLAN_LLM_GATEWAY_ENABLED="true",
+        STUDYPLAN_LLM_GATEWAY_ENDPOINT=" https://gateway.example.com/v1/chat/completions ",
+        STUDYPLAN_LLM_GATEWAY_MODEL=" openrouter/google/gemini-2.5-flash ",
+        STUDYPLAN_LLM_GATEWAY_MODEL_FALLBACKS=" openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet ",
+        STUDYPLAN_LLM_GATEWAY_REQUEST_TIMEOUT_SECONDS="999999",
     )
     assert mod.Config.ENV == mod.Environment.PROD
     assert mod.Config.LOG_LEVEL == "INFO"
@@ -78,6 +100,11 @@ def test_config_llama_cpp_parsing_and_clamps(monkeypatch):
     assert mod.Config.LLAMA_CPP_GPT4ALL_MODELS_DIR == "/tmp/gpt4all"
     assert mod.Config.LLAMA_CPP_MODEL_PREFERENCE == "configured_first"
     assert mod.Config.LLAMA_CPP_MODEL_DISCOVERY_TTL_SECONDS == 3600.0
+    assert mod.Config.LLM_GATEWAY_ENABLED is True
+    assert mod.Config.LLM_GATEWAY_ENDPOINT == "https://gateway.example.com/v1/chat/completions"
+    assert mod.Config.LLM_GATEWAY_MODEL == "openrouter/google/gemini-2.5-flash"
+    assert mod.Config.LLM_GATEWAY_MODEL_FALLBACKS == "openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet"
+    assert mod.Config.LLM_GATEWAY_REQUEST_TIMEOUT_SECONDS == 60.0
 
 
 def test_config_llama_cpp_invalid_values_use_defaults(monkeypatch):
@@ -104,3 +131,19 @@ def test_config_llama_cpp_invalid_values_use_defaults(monkeypatch):
     assert mod.Config.LLAMA_CPP_OLLAMA_DISCOVERY_ENABLED is True
     assert mod.Config.LLAMA_CPP_GPT4ALL_DISCOVERY_ENABLED is True
     assert mod.Config.LLAMA_CPP_MODEL_DISCOVERY_TTL_SECONDS == 5.0
+
+
+def test_config_ollama_models_dir_prefers_studyplan_over_ollama_models(monkeypatch):
+    with tempfile.TemporaryDirectory() as t1, tempfile.TemporaryDirectory() as t2:
+        mod = _reload_config(
+            monkeypatch,
+            STUDYPLAN_OLLAMA_MODELS_DIR=t1,
+            OLLAMA_MODELS=t2,
+        )
+        assert os.path.samefile(mod.Config.OLLAMA_MODELS_DIR, t1)
+
+
+def test_config_ollama_models_dir_falls_back_to_ollama_models_env(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        mod = _reload_config(monkeypatch, OLLAMA_MODELS=tmp)
+        assert os.path.samefile(mod.Config.OLLAMA_MODELS_DIR, tmp)

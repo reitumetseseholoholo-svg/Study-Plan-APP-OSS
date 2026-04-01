@@ -16,8 +16,14 @@ DEFAULT_UI_ACTION_BINDINGS: tuple[ActionBinding, ...] = (
     ActionBinding("import_pdf", "on_menu_import_pdf"),
     ActionBinding("add_tutor_rag_pdf", "on_menu_add_tutor_rag_pdf"),
     ActionBinding("import_syllabus_pdf", "on_menu_import_syllabus_pdf"),
+    ActionBinding("import_syllabus_json", "on_menu_import_syllabus_json"),
+    ActionBinding("reconfigure_from_rag", "on_menu_reconfigure_from_rag"),
+    ActionBinding("refresh_syllabus_intelligence", "on_menu_refresh_syllabus_intelligence"),
+    ActionBinding("refresh_syllabus_and_link_outcomes", "on_menu_refresh_syllabus_and_link_outcomes"),
+    ActionBinding("link_questions_to_outcomes", "on_menu_link_questions_to_outcomes"),
     ActionBinding("import_ai", "on_menu_import_ai"),
     ActionBinding("import_snapshot", "on_menu_import_snapshot"),
+    ActionBinding("backup_now", "on_menu_backup_now"),
     ActionBinding("recover_snapshot", "on_menu_recover_snapshot"),
     ActionBinding("restore_latest_snapshot", "on_menu_restore_latest_snapshot"),
     ActionBinding("export_csv", "on_menu_export_csv"),
@@ -34,10 +40,15 @@ DEFAULT_UI_ACTION_BINDINGS: tuple[ActionBinding, ...] = (
     ActionBinding("close_transient_dialogs", "on_close_transient_dialogs_action"),
     ActionBinding("view_syllabus_cache_stats", "on_menu_view_syllabus_cache_stats"),
     ActionBinding("clear_syllabus_cache", "on_menu_clear_syllabus_cache"),
+    ActionBinding("view_performance_stats", "on_menu_view_performance_stats"),
+    ActionBinding("clear_performance_cache", "on_menu_clear_performance_cache"),
+    ActionBinding("view_module_metadata", "on_menu_view_module_metadata"),
+    ActionBinding("reload_module_config", "on_menu_reload_module_config"),
     ActionBinding("view_reflections", "on_view_reflections"),
     ActionBinding("open_ai_tutor", "on_open_ai_tutor"),
     ActionBinding("open_ai_coach", "on_open_ai_coach"),
     ActionBinding("section_c_practice", "on_menu_section_c_practice"),
+    ActionBinding("section_c_browse", "on_menu_section_c_browse"),
     ActionBinding("train_ml_models", "on_train_ml_models"),
     ActionBinding("toggle_sidebar", "on_toggle_sidebar_action"),
     ActionBinding("toggle_menu", "on_toggle_menu_action"),
@@ -57,6 +68,7 @@ DEFAULT_UI_ACTION_BINDINGS: tuple[ActionBinding, ...] = (
 
 
 def iter_default_ui_action_bindings() -> tuple[ActionBinding, ...]:
+    """Return the default sequence of UI action bindings (name, handler_name)."""
     return DEFAULT_UI_ACTION_BINDINGS
 
 
@@ -64,6 +76,7 @@ def resolve_ui_action_bindings(
     owner: Any,
     bindings: tuple[ActionBinding, ...] | None = None,
 ) -> tuple[list[tuple[str, Callable[..., Any]]], list[str]]:
+    """Resolve bindings to (name, callable) for the given owner; return (resolved, missing handler names)."""
     rows = bindings if bindings is not None else DEFAULT_UI_ACTION_BINDINGS
     resolved: list[tuple[str, Callable[..., Any]]] = []
     missing: list[str] = []

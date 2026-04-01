@@ -2,6 +2,7 @@ import json
 import urllib.error
 
 import studyplan.services as services_mod
+from studyplan.ai.llm_gateway import ResolvedOpenAICompatibleEndpoint
 from studyplan.contracts import TutorTurnRequest
 from studyplan.services import LlamaCppTutorService
 
@@ -213,3 +214,46 @@ def test_llama_cpp_service_fails_over_to_gpt4all_discovered_model(monkeypatch):
     assert int(result.telemetry.get("retry_count", 0)) >= 1
     assert result.telemetry.get("model_source") == "gpt4all"
     _assert_llama_stability_telemetry(result.telemetry)
+
+
+def test_llama_cpp_service_gateway_backend_skips_local_discovery(monkeypatch):
+    calls = {"tags": 0, "chat": 0}
+
+    def fake_urlopen(request, timeout):
+        url = str(getattr(request, "full_url", request))
+        if url.endswith("/api/tags"):
+            calls["tags"] += 1
+            return _DummyResponse(json.dumps({"models": []}), status=200)
+        calls["chat"] += 1
+        body = b""
+        if hasattr(request, "data"):
+            body = bytes(getattr(request, "data") or b"")
+        parsed = json.loads(body.decode("utf-8"))
+        assert str(parsed.get("model", "") or "") == "gateway-primary"
+        return _DummyResponse(json.dumps({"choices": [{"message": {"content": "Gateway route."}}]}), status=200)
+
+    monkeypatch.setattr(services_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(services_mod.Config, "LLM_GATEWAY_MODEL", "gateway-primary", raising=False)
+    monkeypatch.setattr(services_mod.Config, "LLM_GATEWAY_MODEL_FALLBACKS", "gateway-backup", raising=False)
+    svc = LlamaCppTutorService(
+        endpoint="http://localhost:8080/v1/chat/completions",
+        model="local-should-not-be-discovered",
+        resolved_backend=ResolvedOpenAICompatibleEndpoint(
+            endpoint="https://api.example.com/v1/chat/completions",
+            source="gateway",
+        ),
+        enabled=True,
+        max_retries=0,
+        auto_model_discovery=True,
+        ollama_discovery_enabled=True,
+        gpt4all_discovery_enabled=True,
+        ollama_host="http://127.0.0.1:11434",
+        gpt4all_models_dir="/tmp/gpt4all-models",
+    )
+    result = svc.generate(_req())
+    assert result.error_code == ""
+    assert result.model == "gateway-primary"
+    assert result.telemetry.get("model_selection_mode") == "gateway_configured"
+    assert result.telemetry.get("model_source") == "gateway"
+    assert calls["tags"] == 0
+    assert calls["chat"] >= 1

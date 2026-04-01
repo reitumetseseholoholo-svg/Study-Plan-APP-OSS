@@ -1,3 +1,11 @@
+"""Practice-loop FSM (quiz lifecycle states and transitions).
+
+`PracticeLoopFSM` and `PracticeLoopFsmState` model an explicit item→submission→assess table.
+They are covered by unit tests and are **not** wired into the GTK app path today: the live UI
+uses `PracticeLoopController` with `SocraticFSM` plus `PracticeLoopSessionState` for in-memory
+session bags. Keep both models in mind when changing tutor/practice flow.
+"""
+
 from enum import Enum
 from dataclasses import dataclass
 from typing import Any
@@ -24,8 +32,8 @@ class PracticeLoopEvent(str, Enum):
     TIMEOUT = "timeout"
 
 
-class PracticeLoopState(str, Enum):
-    """Explicit states for practice loop FSM."""
+class PracticeLoopFsmState(str, Enum):
+    """Explicit FSM states for the table-driven practice loop (see module docstring)."""
     IDLE = "idle"
     PRESENTING = "presenting"
     AWAITING_SUBMISSION = "awaiting_submission"
@@ -39,9 +47,9 @@ class PracticeLoopState(str, Enum):
 
 @dataclass
 class StateTransition:
-    from_state: PracticeLoopState
+    from_state: PracticeLoopFsmState
     event: PracticeLoopEvent
-    to_state: PracticeLoopState
+    to_state: PracticeLoopFsmState
     action: str = ""  # e.g., "update_posterior", "generate_hint"
 
 
@@ -133,20 +141,20 @@ def recommend_action_policy(
 
 # Explicit transition table (deterministic, no hidden side-effects)
 PRACTICE_LOOP_TRANSITIONS = [
-    StateTransition(PracticeLoopState.IDLE, PracticeLoopEvent.QUIZ_START, PracticeLoopState.PRESENTING),
-    StateTransition(PracticeLoopState.PRESENTING, PracticeLoopEvent.ITEM_PRESENTED, PracticeLoopState.AWAITING_SUBMISSION),
-    StateTransition(PracticeLoopState.AWAITING_SUBMISSION, PracticeLoopEvent.SUBMISSION_RECEIVED, PracticeLoopState.ASSESSING),
-    StateTransition(PracticeLoopState.ASSESSING, PracticeLoopEvent.ASSESSMENT_CORRECT, PracticeLoopState.SCORED, action="update_posterior_alpha"),
-    StateTransition(PracticeLoopState.ASSESSING, PracticeLoopEvent.ASSESSMENT_INCORRECT, PracticeLoopState.SCORED, action="update_posterior_beta"),
-    StateTransition(PracticeLoopState.ASSESSING, PracticeLoopEvent.ASSESSMENT_PARTIAL, PracticeLoopState.SCORED, action="update_posterior_partial"),
-    StateTransition(PracticeLoopState.SCORED, PracticeLoopEvent.REFLECTION_REQUESTED, PracticeLoopState.REFLECTING),
-    StateTransition(PracticeLoopState.SCORED, PracticeLoopEvent.TRANSFER_TEST_START, PracticeLoopState.TRANSFER_TESTING),
-    StateTransition(PracticeLoopState.REFLECTING, PracticeLoopEvent.QUIZ_END, PracticeLoopState.IDLE),
-    StateTransition(PracticeLoopState.TRANSFER_TESTING, PracticeLoopEvent.TRANSFER_TEST_RESULT, PracticeLoopState.SCORED),
-    StateTransition(PracticeLoopState.SCORED, PracticeLoopEvent.TOPIC_MASTERED, PracticeLoopState.MASTERED),
-    StateTransition(PracticeLoopState.AWAITING_SUBMISSION, PracticeLoopEvent.HINT_REQUESTED, PracticeLoopState.AWAITING_SUBMISSION, action="deliver_hint"),
-    StateTransition(PracticeLoopState.AWAITING_SUBMISSION, PracticeLoopEvent.TIMEOUT, PracticeLoopState.ERROR),
-    StateTransition(PracticeLoopState.ERROR, PracticeLoopEvent.QUIZ_START, PracticeLoopState.PRESENTING),
+    StateTransition(PracticeLoopFsmState.IDLE, PracticeLoopEvent.QUIZ_START, PracticeLoopFsmState.PRESENTING),
+    StateTransition(PracticeLoopFsmState.PRESENTING, PracticeLoopEvent.ITEM_PRESENTED, PracticeLoopFsmState.AWAITING_SUBMISSION),
+    StateTransition(PracticeLoopFsmState.AWAITING_SUBMISSION, PracticeLoopEvent.SUBMISSION_RECEIVED, PracticeLoopFsmState.ASSESSING),
+    StateTransition(PracticeLoopFsmState.ASSESSING, PracticeLoopEvent.ASSESSMENT_CORRECT, PracticeLoopFsmState.SCORED, action="update_posterior_alpha"),
+    StateTransition(PracticeLoopFsmState.ASSESSING, PracticeLoopEvent.ASSESSMENT_INCORRECT, PracticeLoopFsmState.SCORED, action="update_posterior_beta"),
+    StateTransition(PracticeLoopFsmState.ASSESSING, PracticeLoopEvent.ASSESSMENT_PARTIAL, PracticeLoopFsmState.SCORED, action="update_posterior_partial"),
+    StateTransition(PracticeLoopFsmState.SCORED, PracticeLoopEvent.REFLECTION_REQUESTED, PracticeLoopFsmState.REFLECTING),
+    StateTransition(PracticeLoopFsmState.SCORED, PracticeLoopEvent.TRANSFER_TEST_START, PracticeLoopFsmState.TRANSFER_TESTING),
+    StateTransition(PracticeLoopFsmState.REFLECTING, PracticeLoopEvent.QUIZ_END, PracticeLoopFsmState.IDLE),
+    StateTransition(PracticeLoopFsmState.TRANSFER_TESTING, PracticeLoopEvent.TRANSFER_TEST_RESULT, PracticeLoopFsmState.SCORED),
+    StateTransition(PracticeLoopFsmState.SCORED, PracticeLoopEvent.TOPIC_MASTERED, PracticeLoopFsmState.MASTERED),
+    StateTransition(PracticeLoopFsmState.AWAITING_SUBMISSION, PracticeLoopEvent.HINT_REQUESTED, PracticeLoopFsmState.AWAITING_SUBMISSION, action="deliver_hint"),
+    StateTransition(PracticeLoopFsmState.AWAITING_SUBMISSION, PracticeLoopEvent.TIMEOUT, PracticeLoopFsmState.ERROR),
+    StateTransition(PracticeLoopFsmState.ERROR, PracticeLoopEvent.QUIZ_START, PracticeLoopFsmState.PRESENTING),
 ]
 
 
@@ -158,17 +166,17 @@ class PracticeLoopFSM:
         for t in PRACTICE_LOOP_TRANSITIONS:
             key = (t.from_state, t.event)
             self._transition_map[key] = t
-        self._current_state = PracticeLoopState.IDLE
+        self._current_state = PracticeLoopFsmState.IDLE
 
     @property
-    def current_state(self) -> PracticeLoopState:
+    def current_state(self) -> PracticeLoopFsmState:
         return self._current_state
 
     def can_transition(self, event: PracticeLoopEvent) -> bool:
         key = (self._current_state, event)
         return key in self._transition_map
 
-    def transition(self, event: PracticeLoopEvent) -> tuple[PracticeLoopState, str]:
+    def transition(self, event: PracticeLoopEvent) -> tuple[PracticeLoopFsmState, str]:
         """Transition and return next state + action."""
         key = (self._current_state, event)
         if key not in self._transition_map:

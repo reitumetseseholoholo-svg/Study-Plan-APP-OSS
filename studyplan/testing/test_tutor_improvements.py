@@ -15,7 +15,7 @@ from studyplan.confidence_tracking import (
     ConfidenceCalibrator,
     ConfidenceCalibration,
 )
-from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopState
+from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopSessionState
 from studyplan.cognitive_state import CognitiveState
 from studyplan.contracts import (
     TutorPracticeItem,
@@ -272,7 +272,7 @@ def test_hint_integration_with_errors():
 
 def _build_controller_loop_item(topic: str = "npv"):
     controller = PracticeLoopController()
-    loop = PracticeLoopState(
+    loop = PracticeLoopSessionState(
         cognitive_state=CognitiveState(),
         session_state=TutorSessionState(session_id="reg1", module="m", topic=topic),
         learner_profile=TutorLearnerProfileSnapshot(learner_id="u-reg", module="m"),
@@ -620,6 +620,89 @@ def test_acceptance_learner_flow_feedback_tap_adapts_next_answer_and_session_sum
     assert "\n" not in summary["progress"]
     assert "\n" not in summary["weak_spots"]
     assert "\n" not in summary["next_best_step"]
+
+
+class TestGenerateSessionReflection:
+    """Tests for generate_session_reflection confidence calibration and latency."""
+
+    def test_calibration_used_when_enough_samples_overconfident(self):
+        """When confidence_tracker has >= 3 samples and is overconfident, reflection mentions it."""
+        controller = PracticeLoopController()
+        loop = PracticeLoopSessionState(
+            cognitive_state=CognitiveState(),
+            session_state=TutorSessionState(session_id="ref1", module="m", topic="T1"),
+            learner_profile=TutorLearnerProfileSnapshot(learner_id="u1", module="m"),
+            app_snapshot=AppStateSnapshot(
+                module="m",
+                current_topic="T1",
+                coach_pick="",
+                days_to_exam=None,
+                must_review_due=0,
+                overdue_srs_count=0,
+            ),
+        )
+        # Overconfident: high predicted (5/5), all wrong
+        for _ in range(4):
+            loop.confidence_tracker.add_attempt(predicted_confidence=5, was_correct=False, topic="T1")
+        feedback = controller.generate_session_reflection(
+            loop_state=loop,
+            session_duration_minutes=30,
+            attempts_history=[("T1", False), ("T1", False), ("T1", False)],
+        )
+        assert "Session Summary" in feedback or "90%" in feedback or "0%" in feedback
+        assert "humble" in feedback or "more confident than your performance" in feedback
+
+    def test_calibration_zero_when_few_samples(self):
+        """When confidence_tracker has < 3 samples, reflection still runs and uses neutral/fallback calibration."""
+        controller = PracticeLoopController()
+        loop = PracticeLoopSessionState(
+            cognitive_state=CognitiveState(),
+            session_state=TutorSessionState(session_id="ref2", module="m", topic="T1"),
+            learner_profile=TutorLearnerProfileSnapshot(learner_id="u2", module="m"),
+            app_snapshot=AppStateSnapshot(
+                module="m",
+                current_topic="T1",
+                coach_pick="",
+                days_to_exam=None,
+                must_review_due=0,
+                overdue_srs_count=0,
+            ),
+        )
+        # Only 1 attempt -> sample_size < 3
+        loop.confidence_tracker.add_attempt(predicted_confidence=3, was_correct=True, topic="T1")
+        feedback = controller.generate_session_reflection(
+            loop_state=loop,
+            session_duration_minutes=15,
+            attempts_history=[("T1", True)],
+        )
+        assert "Session Summary" in feedback or "100%" in feedback
+        # With few samples we use learner_profile bias (0 here); message is "confidence matches performance"
+        assert "self-awareness" in feedback or "matches your performance" in feedback
+
+    def test_avg_latency_from_history(self):
+        """When latencies_ms is provided, reflection uses mean latency (no crash)."""
+        controller = PracticeLoopController()
+        loop = PracticeLoopSessionState(
+            cognitive_state=CognitiveState(),
+            session_state=TutorSessionState(session_id="ref3", module="m", topic="T1"),
+            learner_profile=TutorLearnerProfileSnapshot(learner_id="u3", module="m"),
+            app_snapshot=AppStateSnapshot(
+                module="m",
+                current_topic="T1",
+                coach_pick="",
+                days_to_exam=None,
+                must_review_due=0,
+                overdue_srs_count=0,
+            ),
+        )
+        feedback = controller.generate_session_reflection(
+            loop_state=loop,
+            session_duration_minutes=20,
+            attempts_history=[("T1", True), ("T1", False)],
+            latencies_ms=[10_000.0, 20_000.0],
+        )
+        assert "Session Summary" in feedback
+        assert "50%" in feedback  # 1/2 correct
 
 
 if __name__ == "__main__":

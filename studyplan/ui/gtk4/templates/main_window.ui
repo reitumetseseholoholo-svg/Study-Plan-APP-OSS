@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <requires lib="gtk" version="4.0"/>
+  
+  <template class="StudyPlanMainWindow" parent="GtkApplicationWindow">
+    <property name="title">ACCA Study Plan</property>
+    <property name="default-width">1200</property>
+    <property name="default-height">800</property>
+    <property name="resizable">True</property>
+    
+    <child type="titlebar">
+      <object class="GtkHeaderBar" id="header_bar">
+        <property name="show-title-buttons">True</property>
+        <property name="title-widget">
+          <object class="GtkLabel">
+            <property name="label">ACCA Study Plan - General</property>
+            <property name="css-classes">title</property>
+          </object>
+        </property>
+        
+        <packing>
+          <property name="pack-type">start</property>
+        </packing>
+      </object>
+    </child>
+    
+    <child>
+      <object class="GtkBox" orientation="vertical">
+        <property name="spacing">0</property>
+        
+        <!-- Navigation Bar -->
+        <child>
+          <object class="GtkBox" orientation="horizontal">
+            <property name="spacing">0</property>
+            <property name="css-classes">navigation-bar</property>
+            
+            <child>
+              <object class="GtkButton" id="practice_button">
+                <property name="label">Practice Session</property>
+                <property name="css-classes">nav-button</property>
+                <property name="tooltip-text">Start a practice session with intelligent tutoring</property>
+              </object>
+            </child>
+            
+            <child>
+              <object class="GtkButton" id="dashboard_button">
+                <property name="label">Cognitive Dashboard</property>
+                <property name="css-classes">nav-button</property>
+                <property name="tooltip-text">View your learning progress and cognitive state</property>
+              </object>
+            </child>
+            
+            <child>
+              <object class="GtkButton" id="hints_button">
+                <property name="label">Hint System</property>
+                <property name="css-classes">nav-button</property>
+                <property name="tooltip-text">Manage progressive hint system and ZPD</property>
+              </object>
+            </child>
+            
+            <child>
+              <object class="GtkButton" id="confidence_button">
+                <property name="label">Confidence Calibrator</property>
+                <property name="css-classes">nav-button</property>
+                <property name="tooltip-text">Train metacognitive awareness and calibration</property>
+              </object>
+            </child>
+            
+            <child>
+              <object class="GtkButton" id="transfer_button">
+                <property name="label">Transfer Analyzer</property>
+                <property name="css-classes">nav-button</property>
+                <property name="tooltip-text">Analyze transfer learning and brittleness</property>
+              </object>
+            </child>
+            
+            <child>
+              <object class="GtkButton" id="profile_button">
+                <property name="label">User Profile</property>
+                <property name="css-classes">nav-button</property>
+                <property name="tooltip-text">View your learner profile, preferences, and analytics</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        
+        <!-- Content Area -->
+        <child>
+          <object class="GtkStack" id="stack">
+            <property name="transition-type">slide-left-right</property>
+            <property name="transition-duration">200</property>
+            <property name="vexpand">True</property>
+            <property name="hexpand">True</property>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+  
+  <style>
+    .navigation-bar {
+      background-color: #2c3e50;
+      color: white;
+      min-height: 48px;
+    }
+    
+    .nav-button {
+      background: none;
+      border: none;
+      color: #bdc3c7;
+      font-weight: 600;
+      padding: 12px 24px;
+      transition: all 0.3s ease;
+    }
+    
+    .nav-button:hover {
+      background-color: #34495e;
+      color: white;
+    }
+    
+    .nav-button.active {
+      background-color: #3498db;
+      color: white;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    
+    .title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #2c3e50;
+    }
+  </style>
+</interface>

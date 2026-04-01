@@ -148,6 +148,10 @@ class CognitiveState:
             "transfer_attempt_ids": [str(v) for v in self.transfer_attempt_ids if str(v or "").strip()],
             "quiz_active": bool(self.quiz_active),
             "struggle_mode": bool(self.struggle_mode),
+            "mode": str(getattr(self.mode, "value", self.mode) or self.Mode.NORMAL.value),
+            "recovery_hints": {
+                str(k): str(v) for k, v in dict(self.recovery_hints or {}).items() if str(k).strip()
+            },
             "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
         }
         return payload
@@ -220,6 +224,16 @@ class CognitiveState:
             state.transfer_attempt_ids = [str(v).strip() for v in transfer_attempt_ids if str(v).strip()][:200]
         state.quiz_active = bool(payload.get("quiz_active", False))
         state.struggle_mode = bool(payload.get("struggle_mode", False))
+        raw_mode = str(payload.get("mode", cls.Mode.NORMAL.value) or cls.Mode.NORMAL.value).strip().lower()
+        try:
+            state.mode = cls.Mode(raw_mode)
+        except Exception:
+            state.mode = cls.Mode.NORMAL
+        recovery_hints = payload.get("recovery_hints")
+        if isinstance(recovery_hints, dict):
+            state.recovery_hints = {
+                str(k): str(v) for k, v in recovery_hints.items() if str(k).strip()
+            }
         return state
 
     @classmethod

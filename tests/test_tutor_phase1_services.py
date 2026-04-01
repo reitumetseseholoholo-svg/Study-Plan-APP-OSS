@@ -122,6 +122,17 @@ def test_in_memory_tutor_session_controller_lifecycle():
     assert recreated.practice_streak == 0
 
 
+def test_in_memory_tutor_session_controller_syncs_topic_on_reopen():
+    store = InMemoryTutorSessionController()
+    first = store.get_or_create_session(session_id="sync-1", module="FM", topic="Working Capital Management")
+    assert first.topic == "Working Capital Management"
+    second = store.get_or_create_session(session_id="sync-1", module="FM", topic="Cost of Capital")
+    assert second.topic == "Cost of Capital"
+    # Empty topic on reopen must not wipe the stored topic (advance_phase uses this pattern).
+    third = store.get_or_create_session(session_id="sync-1", module="", topic="")
+    assert third.topic == "Cost of Capital"
+
+
 def test_in_memory_tutor_learner_model_store_updates_tags_and_calibration():
     store = InMemoryTutorLearnerModelStore(max_tags=4)
     base = store.get_or_create_profile("u1", "FM")
@@ -451,9 +462,9 @@ def test_phase3_assessment_service_marks_mcq_and_keyword_short_answer():
         session_state=TutorSessionState(session_id="s", module="FM", topic="Working Capital Management"),
         learner_profile=TutorLearnerProfileSnapshot(learner_id="u", module="FM"),
     )
-    assert short_partial.outcome in {"partial", "correct"}
-    if short_partial.outcome != "correct":
-        assert "wc_policy_risk_ignored" in short_partial.misconception_tags
+    # Open-ended items use AI judge only; deterministic returns fallback (no keyword matching).
+    assert short_partial.outcome == "partial"
+    assert "ai_judge_required" in short_partial.error_tags
 
 
 def test_phase3_assessment_service_marks_calculation_with_tolerance():

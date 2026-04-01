@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "description": "Copy to $STUDYPLAN_CONFIG_HOME/llm_model_routing.json or set STUDYPLAN_LLM_MODEL_ROUTING_PATH. Only names that exist in Ollama are used.",
+  "purposes": {
+    "tutor": {
+      "primary": null,
+      "failover": []
+    },
+    "coach": {
+      "primary": null,
+      "failover": []
+    },
+    "autopilot": {
+      "primary": null,
+      "failover": []
+    },
+    "gap_generation": {
+      "primary": null,
+      "failover": []
+    },
+    "section_c_generation": {
+      "primary": null,
+      "failover": []
+    },
+    "general": {
+      "primary": null,
+      "failover": []
+    }
+  }
+}

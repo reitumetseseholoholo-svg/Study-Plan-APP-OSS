@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,7 @@ class TutorTurnRequest:
     history_fingerprint: str
     context_budget_chars: int
     rag_budget_chars: int
+    cancel_check: Callable[[], bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -281,6 +282,7 @@ class TutorAssessmentResult:
     misconception_tags: tuple[str, ...] = ()
     retry_recommended: bool = False
     next_difficulty: str = "same"
+    suggested_next_step: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -294,6 +296,7 @@ class TutorAssessmentResult:
             "misconception_tags": list(self.misconception_tags),
             "retry_recommended": bool(self.retry_recommended),
             "next_difficulty": str(self.next_difficulty or "same"),
+            "suggested_next_step": str(self.suggested_next_step or ""),
             "meta": dict(self.meta or {}),
         }
 
@@ -312,6 +315,7 @@ class TutorAssessmentResult:
             misconception_tags=_tuple_str(data.get("misconception_tags")),
             retry_recommended=bool(data.get("retry_recommended", False)),
             next_difficulty=str(data.get("next_difficulty", "same") or "same"),
+            suggested_next_step=str(data.get("suggested_next_step", "") or ""),
             meta=_dict_str_any(data.get("meta")),
         )
 

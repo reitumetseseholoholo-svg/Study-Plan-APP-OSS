@@ -1,0 +1,36 @@
+{
+  "ts_utc": "2026-03-08T00:00:00Z",
+  "mode": "reference",
+  "status": "pass",
+  "reason": "",
+  "matrix_file": "tests/tutor_quality/matrix_v1.json",
+  "expected_file": "tests/tutor_quality/expected_scores_v1.json",
+  "gate_profile_file": "tests/tutor_quality/gates_v1.json",
+  "gates": {
+    "threshold": 0.75,
+    "min_pass_rate": 0.85,
+    "min_avg_score": 0.8,
+    "max_disallow_violations": 0
+  },
+  "require_all_models_pass": false,
+  "pass_models": 1,
+  "model_count": 1,
+  "best_model": "reference_baseline",
+  "models": [
+    {
+      "model": "reference_baseline",
+      "mode": "reference",
+      "error_count": 0,
+      "errors": [],
+      "summary": {
+        "total": 16,
+        "pass_count": 16,
+        "pass_rate": 1.0,
+        "avg_score": 1.0,
+        "disallow_violations": 0
+      },
+      "gate_status": "pass",
+      "gate_reasons": []
+    }
+  ]
+}

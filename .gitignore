@@ -1,4 +1,35 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Test / lint / type-check
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+pyrightconfig.json
+
+# Project-specific
 ai_questions_acccafm_core50.json
+ai_questions_fm_syllabus_priority_top50.json
+ai_questions_fm_syllabus_priority_top100.json
+
+# Generated tutor quality reports (output of tools/run_tutor_quality_*.py)
+tutor_quality_report.json
+tutor_quality_compare_report.json
+tutor_quality_trend_report.json
+tutor_quality_validate_report.json
+tutor_quality_pipeline_report.json
+
+# Syllabus PDFs (use Module → Import Syllabus PDF; keep sources outside repo or in docs if needed)
+/*.pdf
+
+# Internal planning / strategy docs (not shipped)
+docs/

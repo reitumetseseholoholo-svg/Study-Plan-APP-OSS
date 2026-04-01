@@ -1,6 +1,7 @@
 import types
 
 from studyplan.cognitive_state import CognitiveState
+from studyplan.mastery_kernel import MasteryKernel
 from studyplan.coach_fsm import SocraticFSM
 from studyplan.working_memory_service import WorkingMemoryService
 
@@ -42,6 +43,17 @@ def test_working_memory_service_captures_attempts_and_quiz_state():
     svc.clear_active_question()
     assert state.quiz_active is False
     assert state.working_memory.active_question_id is None
+
+
+def test_tutor_helpers_share_the_same_state_lock():
+    state = CognitiveState()
+
+    svc = WorkingMemoryService(state)
+    fsm = SocraticFSM(state)
+    kernel = MasteryKernel(types.SimpleNamespace(CHAPTER_FLOW={}), state)
+
+    assert svc._state_lock is fsm._state_lock
+    assert kernel._state_lock is svc._state_lock
 
 
 def test_socratic_fsm_enforces_quiz_guard_and_mastery_progression():

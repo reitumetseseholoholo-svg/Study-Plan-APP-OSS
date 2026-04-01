@@ -18,7 +18,8 @@ def make_short_answer_item():
     )
 
 
-def test_keyword_assessment_correct():
+def test_short_answer_requires_ai_judge():
+    """Open-ended items use AI judge only; deterministic returns fallback (no keyword matching)."""
     item = make_short_answer_item()
     service = DeterministicTutorAssessmentService()
     submission = TutorAssessmentSubmission(item_id="i1", answer_text="x explain")
@@ -28,10 +29,12 @@ def test_keyword_assessment_correct():
         session_state=TutorSessionState(session_id="s1", module="m", topic="topic"),
         learner_profile=TutorLearnerProfileSnapshot(learner_id="u1", module="m"),
     )
-    assert result.outcome == "correct"
+    assert result.outcome == "partial"
+    assert "AI judge" in result.feedback or "ai_judge" in str(result.error_tags)
 
 
-def test_keyword_assessment_incorrect_no_keywords():
+def test_short_answer_fallback_no_keywords():
+    """Deterministic never uses keywords; open-ended always gets same fallback."""
     item = make_short_answer_item()
     service = DeterministicTutorAssessmentService()
     submission = TutorAssessmentSubmission(item_id="i1", answer_text="nothing relevant")
@@ -41,4 +44,5 @@ def test_keyword_assessment_incorrect_no_keywords():
         session_state=TutorSessionState(session_id="s2", module="m", topic="topic"),
         learner_profile=TutorLearnerProfileSnapshot(learner_id="u2", module="m"),
     )
-    assert result.outcome == "incorrect"
+    assert result.outcome == "partial"
+    assert "ai_judge_required" in result.error_tags

@@ -3,7 +3,7 @@ import pytest
 from studyplan.practice_loop_fsm import (
     PracticeLoopFSM,
     PracticeLoopEvent,
-    PracticeLoopState,
+    PracticeLoopFsmState,
     normalize_assessment_outcome,
     recommend_action_policy,
 )
@@ -11,15 +11,15 @@ from studyplan.practice_loop_fsm import (
 
 def test_fsm_initial_state():
     fsm = PracticeLoopFSM()
-    assert fsm.current_state == PracticeLoopState.IDLE
+    assert fsm.current_state == PracticeLoopFsmState.IDLE
 
 
 def test_fsm_valid_transition():
     fsm = PracticeLoopFSM()
     assert fsm.can_transition(PracticeLoopEvent.QUIZ_START)
     next_state, action = fsm.transition(PracticeLoopEvent.QUIZ_START)
-    assert next_state == PracticeLoopState.PRESENTING
-    assert fsm.current_state == PracticeLoopState.PRESENTING
+    assert next_state == PracticeLoopFsmState.PRESENTING
+    assert fsm.current_state == PracticeLoopFsmState.PRESENTING
 
 
 def test_fsm_invalid_transition():
@@ -39,11 +39,11 @@ def test_fsm_allowed_events():
 def test_fsm_full_sequence():
     fsm = PracticeLoopFSM()
     fsm.transition(PracticeLoopEvent.QUIZ_START)
-    assert fsm.current_state == PracticeLoopState.PRESENTING
+    assert fsm.current_state == PracticeLoopFsmState.PRESENTING
     fsm.transition(PracticeLoopEvent.ITEM_PRESENTED)
-    assert fsm.current_state == PracticeLoopState.AWAITING_SUBMISSION
+    assert fsm.current_state == PracticeLoopFsmState.AWAITING_SUBMISSION
     fsm.transition(PracticeLoopEvent.SUBMISSION_RECEIVED)
-    assert fsm.current_state == PracticeLoopState.ASSESSING
+    assert fsm.current_state == PracticeLoopFsmState.ASSESSING
     next_s, action = fsm.transition(PracticeLoopEvent.ASSESSMENT_CORRECT)
     assert action == "update_posterior_alpha"
 

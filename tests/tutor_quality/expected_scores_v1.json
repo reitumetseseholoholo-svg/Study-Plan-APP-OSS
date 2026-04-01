@@ -1,0 +1,83 @@
+{
+  "version": "0.1.0",
+  "scorer_version": "0.1.0",
+  "matrix_file": "matrix_v1.json",
+  "threshold": 0.75,
+  "per_case": {
+    "f9_explain_wacc": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f9_apply_npv": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f9_exam_technique_risk": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f9_drill_capm": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f7_explain_ifrs15": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f7_apply_consolidation": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f7_exam_technique_ratios": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f7_drill_ias16": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f8_explain_materiality": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f8_apply_control_test": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f8_exam_technique_report": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f8_drill_sampling": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f6_explain_cgt": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f6_apply_income_tax": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f6_exam_technique_vat": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f6_drill_corporation_tax": {
+      "score": 1.0,
+      "passed": true
+    },
+    "f9_quality_rag_citation": {
+      "score": 1.0,
+      "passed": true
+    }
+  },
+  "summary": {
+    "total": 17,
+    "pass_count": 17,
+    "pass_rate": 1.0,
+    "avg_score": 1.0,
+    "disallow_violations": 0
+  }
+}

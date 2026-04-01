@@ -87,3 +87,44 @@ jobs:
         with:
           name: perf-report
           path: perf_report.json
+
+  tutor-quality:
+    runs-on: ubuntu-latest
+    needs: [lint-type, unit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Select tutor quality policy
+        run: |
+          if [[ "${GITHUB_REF}" == refs/heads/release/* ]]; then
+            POLICY_NAME=strict_release
+          elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+            POLICY_NAME=balanced_main
+          else
+            POLICY_NAME=feature_relaxed
+          fi
+          echo "TUTOR_QUALITY_POLICY=${POLICY_NAME}" >> "${GITHUB_ENV}"
+      - name: Run tutor quality reference gate
+        run: |
+          python tools/run_tutor_quality_pipeline.py \
+            --mode reference \
+            --matrix tests/tutor_quality/matrix_v1.json \
+            --expected tests/tutor_quality/expected_scores_v1.json \
+            --gates-file tests/tutor_quality/gates_v1.json \
+            --baseline tests/tutor_quality/reference_report_v1.json \
+            --model reference_baseline \
+            --policy-file tests/tutor_quality/policy_profiles_v1.json \
+            --policy "${TUTOR_QUALITY_POLICY}" \
+            --output-dir .
+      - name: Upload tutor quality report
+        uses: actions/upload-artifact@v4
+        with:
+          name: tutor-quality-report
+          path: |
+            tutor_quality_report.json
+            tutor_quality_compare_report.json
+            tutor_quality_trend_report.json
+            tutor_quality_validate_report.json
+            tutor_quality_pipeline_report.json

@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "profiles": {
+    "strict_release": {
+      "compare": {
+        "max_pass_rate_drop": 0.0,
+        "max_avg_score_drop": 0.0,
+        "max_disallow_increase": 0,
+        "require_model_match": 1
+      },
+      "trend": {
+        "window_size": 10,
+        "max_failed_runs": 0,
+        "max_regression_events": 0,
+        "max_pass_rate_drop": 0.0,
+        "max_avg_score_drop": 0.0,
+        "max_disallow_increase": 0,
+        "min_latest_pass_rate": 0.9,
+        "min_latest_avg_score": 0.9
+      }
+    },
+    "balanced_main": {
+      "compare": {
+        "max_pass_rate_drop": 0.01,
+        "max_avg_score_drop": 0.02,
+        "max_disallow_increase": 0,
+        "require_model_match": 1
+      },
+      "trend": {
+        "window_size": 5,
+        "max_failed_runs": 0,
+        "max_regression_events": 0,
+        "max_pass_rate_drop": 0.02,
+        "max_avg_score_drop": 0.03,
+        "max_disallow_increase": 0,
+        "min_latest_pass_rate": 0.85,
+        "min_latest_avg_score": 0.8
+      }
+    },
+    "feature_relaxed": {
+      "compare": {
+        "max_pass_rate_drop": 0.03,
+        "max_avg_score_drop": 0.05,
+        "max_disallow_increase": 1,
+        "require_model_match": 1
+      },
+      "trend": {
+        "window_size": 3,
+        "max_failed_runs": 0,
+        "max_regression_events": 1,
+        "max_pass_rate_drop": 0.03,
+        "max_avg_score_drop": 0.05,
+        "max_disallow_increase": 1,
+        "min_latest_pass_rate": 0.8,
+        "min_latest_avg_score": 0.75
+      }
+    }
+  }
+}

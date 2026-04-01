@@ -12,11 +12,19 @@ import sys
 from pathlib import Path
 from datetime import datetime
 import json
+import subprocess
 
 
-RELEASE_DIR = Path("./releases")
+BASE_DIR = Path(__file__).resolve().parent
+RELEASE_DIR = BASE_DIR / "releases"
 CURRENT_LINK = RELEASE_DIR / "current"
 MANIFEST_FILE = RELEASE_DIR / "manifest.json"
+
+
+def _discover_smoke_test_paths(release_path: Path) -> tuple[str, ...]:
+    """Return the pytest path arguments that exist inside a release tree."""
+    candidates = ("tests", "studyplan/testing")
+    return tuple(path for path in candidates if (release_path / path).exists())
 
 
 def init_release_dir():
@@ -45,14 +53,23 @@ def promote(version: str) -> bool:
     prev = manifest.get("current")
 
     # Smoke test: run quick validation
-    result = __import__("subprocess").run(
-        ["python", "-m", "pytest", "testing/", "-q"],
-        cwd=str(release_path),
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        print(f"❌ Smoke tests failed for {version}")
-        return False
+    smoke_paths = _discover_smoke_test_paths(release_path)
+    if smoke_paths:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", *smoke_paths],
+            cwd=str(release_path),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            if result.stdout:
+                print(result.stdout.rstrip())
+            if result.stderr:
+                print(result.stderr.rstrip(), file=sys.stderr)
+            print(f"❌ Smoke tests failed for {version}")
+            return False
+    else:
+        print(f"⚠ No pytest paths found under {release_path}; skipping smoke tests")
 
     # Atomic promote
     if CURRENT_LINK.exists():

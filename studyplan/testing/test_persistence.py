@@ -1,4 +1,7 @@
+import types
+
 from studyplan.cognitive_state import CognitiveState, CompetencyPosterior
+from studyplan.persistence_layer import PersistenceLayer
 from studyplan.contracts import (
     TutorPracticeItem,
     TutorAssessmentSubmission,
@@ -61,6 +64,39 @@ def test_persistence_cognitive_state_round_trip_with_nondefault_fields(persisten
     loaded = persistence.load_state(learner)
     assert isinstance(loaded, CognitiveState)
     assert _snapshot_wo_timestamp(loaded) == _snapshot_wo_timestamp(state)
+
+
+def test_save_state_atomic_freezes_one_snapshot_and_preserves_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_PERSISTENCE_JOURNAL_MAX_ENTRIES", "3")
+    persistence = PersistenceLayer(str(tmp_path / "state"))
+    state = CognitiveState()
+    state.working_memory.active_chapter = "before-save"
+    state.posteriors["Topic A"] = CompetencyPosterior(alpha=5.0, beta=1.5)
+
+    original_snapshot = state.to_json_snapshot
+    snapshot_calls = {"count": 0}
+
+    def _snapshot_once(self):
+        snapshot_calls["count"] += 1
+        payload = original_snapshot()
+        self.working_memory.active_chapter = "mutated-after-snapshot"
+        self.posteriors["Topic B"] = CompetencyPosterior(alpha=2.5, beta=2.5)
+        return payload
+
+    state.to_json_snapshot = types.MethodType(_snapshot_once, state)
+
+    assert persistence.save_state_atomic("learner-1", state) is True
+    assert snapshot_calls["count"] == 1
+
+    loaded = persistence.load_state("learner-1")
+    assert loaded.working_memory.active_chapter == "before-save"
+    assert "Topic B" not in loaded.posteriors
+    assert loaded.posteriors["Topic A"].alpha == 5.0
+
+    for idx in range(5):
+        persistence._write_journal({"idx": idx})
+    assert persistence.count_unresolved_journals() == 3
+    assert len(persistence.get_journal_tail(10)) == 3
 
 
 def test_contracts_round_trip_practice_submission_result():

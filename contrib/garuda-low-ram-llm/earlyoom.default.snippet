@@ -1,0 +1,4 @@
+# Optional: merge into /etc/default/earlyoom (from pacman -S earlyoom)
+# Prefer killing ollama / llama-server / browser before uninterruptible I/O wedges.
+
+EARLYOOM_ARGS="-m 8,6 -s 15 --prefer '(^|/)ollama$' --prefer '(^|/)llama-server$' --avoid '(^|/)Hyprland$' --avoid '(^|/)systemd$'"

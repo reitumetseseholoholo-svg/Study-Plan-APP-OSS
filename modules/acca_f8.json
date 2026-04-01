@@ -1,380 +1,151 @@
 {
   "title": "AA (F8) Audit and Assurance",
   "chapters": [
-    "A. Audit Framework and Regulation",
-    "B. Planning and Risk Assessment",
-    "C. Internal Control",
-    "D. Audit Evidence",
-    "E. Review and Reporting",
-    "F. Employability and Technology Skills"
+    "Chapter 1: Audit and Other Assurance Engagements",
+    "Chapter 2: External Audit",
+    "Chapter 3: Corporate Governance",
+    "Chapter 4: Professional Codes of Ethics and Conduct",
+    "Chapter 5: Auditor Appointment",
+    "Chapter 6: Audit Documentation",
+    "Chapter 7: Audit Planning",
+    "Chapter 8: Identifying and Assessing Risk",
+    "Chapter 9: System of Internal Control",
+    "Chapter 10: Audit Materiality",
+    "Chapter 11: Fraud, Law and Regulations",
+    "Chapter 12: Tests of Control",
+    "Chapter 13: Communication on Internal Control",
+    "Chapter 14: Internal Audit",
+    "Chapter 15: Audit Evidence",
+    "Chapter 16: Analytical Procedures",
+    "Chapter 17: Accounting Estimates",
+    "Chapter 18: The Work of Others",
+    "Chapter 19: Audit Sampling",
+    "Chapter 20: Written Representations",
+    "Chapter 21: Automated Tools and Techniques",
+    "Chapter 22: Non-current Assets",
+    "Chapter 23: Completion and Review",
+    "Chapter 24: The Audit Report",
+    "Chapter 25: Going Concern"
   ],
   "chapter_flow": {
-    "A. Audit Framework and Regulation": [
-      "B. Planning and Risk Assessment"
+    "Chapter 1: Audit and Other Assurance Engagements": [
+      "Chapter 2: External Audit"
     ],
-    "B. Planning and Risk Assessment": [
-      "C. Internal Control"
+    "Chapter 2: External Audit": [
+      "Chapter 3: Corporate Governance"
     ],
-    "C. Internal Control": [
-      "D. Audit Evidence"
+    "Chapter 3: Corporate Governance": [
+      "Chapter 4: Professional Codes of Ethics and Conduct"
     ],
-    "D. Audit Evidence": [
-      "E. Review and Reporting"
+    "Chapter 4: Professional Codes of Ethics and Conduct": [
+      "Chapter 5: Auditor Appointment"
     ],
-    "E. Review and Reporting": [
-      "F. Employability and Technology Skills"
-    ]
+    "Chapter 5: Auditor Appointment": [
+      "Chapter 6: Audit Documentation"
+    ],
+    "Chapter 6: Audit Documentation": [
+      "Chapter 7: Audit Planning"
+    ],
+    "Chapter 7: Audit Planning": [
+      "Chapter 8: Identifying and Assessing Risk"
+    ],
+    "Chapter 8: Identifying and Assessing Risk": [
+      "Chapter 9: System of Internal Control"
+    ],
+    "Chapter 9: System of Internal Control": [
+      "Chapter 10: Audit Materiality"
+    ],
+    "Chapter 10: Audit Materiality": [
+      "Chapter 11: Fraud, Law and Regulations"
+    ],
+    "Chapter 11: Fraud, Law and Regulations": [
+      "Chapter 12: Tests of Control"
+    ],
+    "Chapter 12: Tests of Control": [
+      "Chapter 13: Communication on Internal Control"
+    ],
+    "Chapter 13: Communication on Internal Control": [
+      "Chapter 14: Internal Audit"
+    ],
+    "Chapter 14: Internal Audit": [
+      "Chapter 15: Audit Evidence"
+    ],
+    "Chapter 15: Audit Evidence": [
+      "Chapter 16: Analytical Procedures"
+    ],
+    "Chapter 16: Analytical Procedures": [
+      "Chapter 17: Accounting Estimates"
+    ],
+    "Chapter 17: Accounting Estimates": [
+      "Chapter 18: The Work of Others"
+    ],
+    "Chapter 18: The Work of Others": [
+      "Chapter 19: Audit Sampling"
+    ],
+    "Chapter 19: Audit Sampling": [
+      "Chapter 20: Written Representations"
+    ],
+    "Chapter 20: Written Representations": [
+      "Chapter 21: Automated Tools and Techniques"
+    ],
+    "Chapter 21: Automated Tools and Techniques": [
+      "Chapter 22: Non-current Assets"
+    ],
+    "Chapter 22: Non-current Assets": [
+      "Chapter 23: Completion and Review"
+    ],
+    "Chapter 23: Completion and Review": [
+      "Chapter 24: The Audit Report"
+    ],
+    "Chapter 24: The Audit Report": [
+      "Chapter 25: Going Concern"
+    ],
+    "Chapter 25: Going Concern": []
   },
   "importance_weights": {
-    "A. Audit Framework and Regulation": 20,
-    "B. Planning and Risk Assessment": 20,
-    "C. Internal Control": 20,
-    "D. Audit Evidence": 20,
-    "E. Review and Reporting": 15,
-    "F. Employability and Technology Skills": 5
+    "Chapter 1: Audit and Other Assurance Engagements": 14,
+    "Chapter 2: External Audit": 14,
+    "Chapter 3: Corporate Governance": 14,
+    "Chapter 4: Professional Codes of Ethics and Conduct": 16,
+    "Chapter 5: Auditor Appointment": 12,
+    "Chapter 6: Audit Documentation": 14,
+    "Chapter 7: Audit Planning": 18,
+    "Chapter 8: Identifying and Assessing Risk": 18,
+    "Chapter 9: System of Internal Control": 18,
+    "Chapter 10: Audit Materiality": 16,
+    "Chapter 11: Fraud, Law and Regulations": 16,
+    "Chapter 12: Tests of Control": 16,
+    "Chapter 13: Communication on Internal Control": 12,
+    "Chapter 14: Internal Audit": 12,
+    "Chapter 15: Audit Evidence": 18,
+    "Chapter 16: Analytical Procedures": 14,
+    "Chapter 17: Accounting Estimates": 14,
+    "Chapter 18: The Work of Others": 12,
+    "Chapter 19: Audit Sampling": 14,
+    "Chapter 20: Written Representations": 10,
+    "Chapter 21: Automated Tools and Techniques": 10,
+    "Chapter 22: Non-current Assets": 12,
+    "Chapter 23: Completion and Review": 16,
+    "Chapter 24: The Audit Report": 18,
+    "Chapter 25: Going Concern": 14
   },
-  "questions": {
-    "A. Audit Framework and Regulation": [
-      {
-        "question": "The objective of an external audit is to:",
-        "options": [
-          "Guarantee the entity will not fail",
-          "Provide reasonable assurance and report on the financial statements",
-          "Detect all fraud",
-          "Prepare the financial statements"
-        ],
-        "correct": "Provide reasonable assurance and report on the financial statements",
-        "explanation": "An audit provides reasonable (not absolute) assurance and results in an audit report."
-      },
-      {
-        "question": "Which is a key element of an assurance engagement?",
-        "options": [
-          "A listed company only",
-          "Suitable criteria",
-          "A tax return",
-          "A management bonus scheme"
-        ],
-        "correct": "Suitable criteria",
-        "explanation": "Assurance requires suitable criteria to evaluate the subject matter."
-      },
-      {
-        "question": "Corporate governance primarily concerns:",
-        "options": [
-          "Day-to-day bookkeeping",
-          "Oversight, accountability, and stewardship",
-          "Marketing strategy",
-          "Employee payroll"
-        ],
-        "correct": "Oversight, accountability, and stewardship",
-        "explanation": "Governance focuses on directing and controlling the entity."
-      },
-      {
-        "question": "Which principle is part of the professional code of ethics?",
-        "options": [
-          "Aggressiveness",
-          "Integrity",
-          "Secrecy",
-          "Marketing"
-        ],
-        "correct": "Integrity",
-        "explanation": "Integrity is a fundamental ethical principle."
-      },
-      {
-        "question": "The external auditor is best described as:",
-        "options": [
-          "An employee of management",
-          "Independent of the entity",
-          "The preparer of financial statements",
-          "A member of internal audit"
-        ],
-        "correct": "Independent of the entity",
-        "explanation": "Independence supports audit objectivity."
-      }
-    ],
-    "B. Planning and Risk Assessment": [
-      {
-        "question": "Before accepting an audit engagement, the auditor should consider:",
-        "options": [
-          "Whether fees are paid in advance only",
-          "Independence, competence, and ethical requirements",
-          "Whether the entity is listed",
-          "Only the industry size"
-        ],
-        "correct": "Independence, competence, and ethical requirements",
-        "explanation": "Acceptance requires meeting ethical and professional requirements."
-      },
-      {
-        "question": "Audit risk is commonly expressed as:",
-        "options": [
-          "AR = IR + CR + DR",
-          "AR = IR \u00d7 CR \u00d7 DR",
-          "AR = IR \u00f7 CR",
-          "AR = DR \u2212 IR"
-        ],
-        "correct": "AR = IR \u00d7 CR \u00d7 DR",
-        "explanation": "Audit risk combines inherent, control, and detection risk."
-      },
-      {
-        "question": "Understanding the entity and its environment helps the auditor:",
-        "options": [
-          "Avoid planning",
-          "Identify risks of material misstatement",
-          "Guarantee detection of all errors",
-          "Reduce sampling to zero"
-        ],
-        "correct": "Identify risks of material misstatement",
-        "explanation": "Risk assessment relies on understanding the entity."
-      },
-      {
-        "question": "Which is a common fraud risk area?",
-        "options": [
-          "Management override of controls",
-          "Routine petty cash claims",
-          "Fixed asset registers",
-          "Bank confirmations"
-        ],
-        "correct": "Management override of controls",
-        "explanation": "Management override is a presumed risk in ISA 240."
-      },
-      {
-        "question": "Audit planning documentation typically includes:",
-        "options": [
-          "Audit strategy and audit plan",
-          "Only the trial balance",
-          "Only management accounts",
-          "Only the audit report"
-        ],
-        "correct": "Audit strategy and audit plan",
-        "explanation": "Planning documents guide audit scope, timing, and direction."
-      }
-    ],
-    "C. Internal Control": [
-      {
-        "question": "The purpose of internal controls is to:",
-        "options": [
-          "Eliminate all risk",
-          "Provide reasonable assurance over objectives",
-          "Replace external audit",
-          "Guarantee profits"
-        ],
-        "correct": "Provide reasonable assurance over objectives",
-        "explanation": "Internal controls mitigate risk but cannot eliminate it."
-      },
-      {
-        "question": "Tests of controls are designed to assess:",
-        "options": [
-          "Whether controls are operating effectively",
-          "Only account balances",
-          "Only estimates",
-          "Only disclosures"
-        ],
-        "correct": "Whether controls are operating effectively",
-        "explanation": "They check the operating effectiveness of controls."
-      },
-      {
-        "question": "Which is a component of internal control?",
-        "options": [
-          "Market share",
-          "Control environment",
-          "Dividend policy",
-          "Tax strategy"
-        ],
-        "correct": "Control environment",
-        "explanation": "Control environment is a key component of internal control frameworks."
-      },
-      {
-        "question": "Internal audit typically provides:",
-        "options": [
-          "Independent assurance to those charged with governance",
-          "Tax advice to shareholders",
-          "External audit opinions",
-          "Legal representation"
-        ],
-        "correct": "Independent assurance to those charged with governance",
-        "explanation": "Internal audit supports governance and risk management."
-      },
-      {
-        "question": "Control deficiencies should be communicated to:",
-        "options": [
-          "Only junior staff",
-          "Those charged with governance and management",
-          "Customers",
-          "Suppliers"
-        ],
-        "correct": "Those charged with governance and management",
-        "explanation": "ISA 265 requires communication of significant deficiencies."
-      }
-    ],
-    "D. Audit Evidence": [
-      {
-        "question": "An assertion related to completeness means:",
-        "options": [
-          "All recorded transactions are valid",
-          "All items that should be recorded are recorded",
-          "All assets exist",
-          "All liabilities are settled"
-        ],
-        "correct": "All items that should be recorded are recorded",
-        "explanation": "Completeness focuses on missing items."
-      },
-      {
-        "question": "Which evidence is generally most reliable?",
-        "options": [
-          "Internal verbal inquiry",
-          "Externally confirmed evidence",
-          "Unaudited management reports",
-          "Oral representations"
-        ],
-        "correct": "Externally confirmed evidence",
-        "explanation": "Independent external evidence is more reliable."
-      },
-      {
-        "question": "Audit sampling risk is the risk that:",
-        "options": [
-          "The auditor uses too many procedures",
-          "The sample is not representative of the population",
-          "All errors are found",
-          "The audit report is delayed"
-        ],
-        "correct": "The sample is not representative of the population",
-        "explanation": "Sampling risk arises because not all items are tested."
-      },
-      {
-        "question": "Which is an audit procedure?",
-        "options": [
-          "Recalculation",
-          "Budgeting",
-          "Forecasting",
-          "Payroll processing"
-        ],
-        "correct": "Recalculation",
-        "explanation": "Recalculation is a standard audit procedure."
-      },
-      {
-        "question": "When using the work of an expert, the auditor must:",
-        "options": [
-          "Always accept the expert\u2019s work without review",
-          "Evaluate the expert\u2019s competence and objectivity",
-          "Reduce all other procedures to zero",
-          "Ignore the expert\u2019s assumptions"
-        ],
-        "correct": "Evaluate the expert\u2019s competence and objectivity",
-        "explanation": "ISA 620 requires evaluation of the expert\u2019s suitability."
-      }
-    ],
-    "E. Review and Reporting": [
-      {
-        "question": "An adjusting subsequent event is one that:",
-        "options": [
-          "Occurs after the reporting period and provides evidence of conditions existing at period end",
-          "Occurs after the audit report date",
-          "Is always disclosed but never adjusted",
-          "Is unrelated to the reporting period"
-        ],
-        "correct": "Occurs after the reporting period and provides evidence of conditions existing at period end",
-        "explanation": "Adjusting events affect amounts recognized at the reporting date."
-      },
-      {
-        "question": "The going concern assessment considers whether the entity:",
-        "options": [
-          "Will liquidate immediately",
-          "Can continue trading for the foreseeable future",
-          "Will change auditors",
-          "Will increase dividends"
-        ],
-        "correct": "Can continue trading for the foreseeable future",
-        "explanation": "Going concern assumes ongoing operations."
-      },
-      {
-        "question": "Written representations are:",
-        "options": [
-          "A substitute for other audit evidence",
-          "Supplementary evidence from management",
-          "Prepared by the auditor",
-          "Issued by regulators"
-        ],
-        "correct": "Supplementary evidence from management",
-        "explanation": "They support other evidence but are not a substitute."
-      },
-      {
-        "question": "A qualified opinion is issued when:",
-        "options": [
-          "There is a material but not pervasive misstatement",
-          "There is no misstatement",
-          "There is a pervasive misstatement",
-          "The auditor cannot obtain any evidence"
-        ],
-        "correct": "There is a material but not pervasive misstatement",
-        "explanation": "Qualified opinions are for material but not pervasive issues."
-      },
-      {
-        "question": "The final review includes:",
-        "options": [
-          "Considering overall presentation and disclosure",
-          "Only recalculations",
-          "Only sampling",
-          "Only cash confirmations"
-        ],
-        "correct": "Considering overall presentation and disclosure",
-        "explanation": "Final review assesses overall financial statement presentation."
-      }
-    ],
-    "F. Employability and Technology Skills": [
-      {
-        "question": "Effective use of audit software helps auditors to:",
-        "options": [
-          "Avoid documentation",
-          "Increase efficiency and consistency",
-          "Eliminate professional judgment",
-          "Guarantee error-free audits"
-        ],
-        "correct": "Increase efficiency and consistency",
-        "explanation": "Technology supports audit execution and documentation."
-      },
-      {
-        "question": "A good audit working paper should be:",
-        "options": [
-          "Incomplete",
-          "Clear, concise, and sufficient",
-          "Unstructured",
-          "Undated"
-        ],
-        "correct": "Clear, concise, and sufficient",
-        "explanation": "Working papers must enable review and re-performance."
-      },
-      {
-        "question": "Data analytics in audit is primarily used to:",
-        "options": [
-          "Replace all audit procedures",
-          "Identify unusual trends and anomalies",
-          "Prepare tax returns",
-          "Eliminate sampling risk"
-        ],
-        "correct": "Identify unusual trends and anomalies",
-        "explanation": "Analytics help direct audit focus to risk areas."
-      },
-      {
-        "question": "When using spreadsheets, a best practice is to:",
-        "options": [
-          "Hide formulas",
-          "Use input cells separated from calculations",
-          "Avoid checks",
-          "Copy values without review"
-        ],
-        "correct": "Use input cells separated from calculations",
-        "explanation": "Separation improves clarity and reduces errors."
-      },
-      {
-        "question": "Professional communication in audit requires:",
-        "options": [
-          "Technical jargon only",
-          "Clear, structured, and evidence-based reporting",
-          "No documentation",
-          "Verbal updates only"
-        ],
-        "correct": "Clear, structured, and evidence-based reporting",
-        "explanation": "Audit communication must be clear and supported by evidence."
-      }
-    ]
+  "semantic_aliases": {
+    "audit": "audit and assurance",
+    "assurance": "assurance engagement",
+    "materiality": "audit materiality",
+    "risk assessment": "identifying and assessing risk",
+    "internal control": "system of internal control",
+    "audit evidence": "audit evidence",
+    "audit report": "the audit report",
+    "going concern": "going concern",
+    "fraud": "fraud law and regulations",
+    "ethics": "professional ethics",
+    "iaasb": "audit framework and regulation",
+    "isa": "international standards on auditing",
+    "governance": "corporate governance",
+    "sampling": "audit sampling",
+    "completion": "completion and review",
+    "review": "completion and review",
+    "report": "the audit report"
   }
 }

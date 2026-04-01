@@ -1,0 +1,31 @@
+{
+  "SoFP": [
+    "Current vs non-current split for assets and liabilities where required (IAS 1).",
+    "Minimum line items and further sub-classification when relevant (e.g. PPE, inventories, receivables, cash, borrowings, tax, equity components).",
+    "Equity section: share capital, reserves (including retained earnings / revaluation where applicable), NCI if consolidated.",
+    "Subtotals: total assets; total liabilities; net assets / total equity; tie to accounting equation.",
+    "Present tax and deferred tax in line with syllabus treatment; do not mix operating creditor lines with borrowings.",
+    "Disclose accounting policies and judgements where the question requires (IAS 1 notes cross-reference)."
+  ],
+  "SoPL": [
+    "Revenue down to profit before tax in logical order; finance costs and investment income separated where material.",
+    "Tax expense line; profit for the period; attribute to owners and NCI if consolidated.",
+    "Other comprehensive income (before or below tax) when the scenario includes OCI items.",
+    "EPS line only when required by the question (IAS 33).",
+    "Avoid netting income and expenses unless standards permit; show by function or nature consistently."
+  ],
+  "SoCF": [
+    "Three headings: operating, investing, financing (IAS 7) — direct or indirect method as the question states.",
+    "Operating: start from PBT or profit for period; adjust for non-cash and working capital; show interest/tax paid in operating unless question specifies otherwise.",
+    "Investing: PPE/intangible/investment cash flows; acquisitions/disposals.",
+    "Financing: equity/debt proceeds and repayments; dividends paid (often financing).",
+    "Cash and cash equivalents at start and end; reconcile to SoFP cash/bank/overdraft lines.",
+    "Disclose non-cash investing/financing if the question includes significant non-cash transactions."
+  ],
+  "Notes": [
+    "Identify the standard (e.g. IAS 16, IFRS 15) and tie note headings to measurement, recognition, and required disclosures.",
+    "For PPE: classes, cost/model, depreciation, impairments, reconciling carrying amounts.",
+    "For provisions: opening, movements, closing; compare to SoFP line.",
+    "Cross-reference amounts to primary statements where examiners expect reconciliation."
+  ]
+}

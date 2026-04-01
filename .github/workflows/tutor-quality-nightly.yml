@@ -1,0 +1,44 @@
+# Scheduled tutor quality checks (reference mode — no Ollama).
+# Phase 5.2 optional nightly complement to PR pytest.
+
+name: Tutor quality (scheduled)
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  reference-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+
+      - name: Tutor quality tests + reference benchmark
+        run: |
+          pytest tests/tutor_quality/ -q --tb=short
+          python tools/run_tutor_quality_benchmark.py \
+            --mode reference \
+            --matrix tests/tutor_quality/matrix_v1.json \
+            --expected tests/tutor_quality/expected_scores_v1.json \
+            --report tutor_quality_nightly_report.json \
+            --min-pass-rate 0.99 \
+            --min-avg-score 0.99 \
+            --max-disallow-violations 0
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tutor-quality-nightly-report
+          path: tutor_quality_nightly_report.json
+          if-no-files-found: ignore

@@ -4,6 +4,7 @@ import datetime
 from typing import Any
 
 from .cognitive_state import CognitiveState, CompetencyPosterior
+from .state_locking import bind_cognitive_state_lock, locked_cognitive_state
 
 
 class MasteryKernel:
@@ -13,9 +14,10 @@ class MasteryKernel:
     struggle flags, and confusion links to improve tutoring policy decisions.
     """
 
-    def __init__(self, engine: Any, cognitive_state: CognitiveState):
+    def __init__(self, engine: Any, cognitive_state: CognitiveState, state_lock: Any | None = None):
         self.engine = engine
         self.cognitive_state = cognitive_state
+        self._state_lock = bind_cognitive_state_lock(cognitive_state, state_lock)
 
     def record_attempt(
         self,
@@ -29,48 +31,50 @@ class MasteryKernel:
         chapter_name = str(chapter or "").strip()
         if not chapter_name:
             return
-        post = self.cognitive_state.posteriors.get(chapter_name)
-        if not isinstance(post, CompetencyPosterior):
-            post = CompetencyPosterior()
-            self.cognitive_state.posteriors[chapter_name] = post
+        with locked_cognitive_state(self.cognitive_state, self._state_lock):
+            post = self.cognitive_state.posteriors.get(chapter_name)
+            if not isinstance(post, CompetencyPosterior):
+                post = CompetencyPosterior()
+                self.cognitive_state.posteriors[chapter_name] = post
 
-        try:
-            latency_val = float(latency_ms) if latency_ms is not None else 0.0
-        except Exception:
-            latency_val = 0.0
-        try:
-            hints = max(0, int(hints_used or 0))
-        except Exception:
-            hints = 0
+            try:
+                latency_val = float(latency_ms) if latency_ms is not None else 0.0
+            except Exception:
+                latency_val = 0.0
+            try:
+                hints = max(0, int(hints_used or 0))
+            except Exception:
+                hints = 0
 
-        attention = self._attention_weight(latency_val)
-        hint_discount = 0.7 ** hints
-        post.hint_penalty = max(0.0, min(1.0, float(post.hint_penalty) * float(hint_discount)))
+            attention = self._attention_weight(latency_val)
+            hint_discount = 0.7 ** hints
+            post.hint_penalty = max(0.0, min(1.0, float(post.hint_penalty) * float(hint_discount)))
 
-        if bool(correct):
-            weight = float(attention) * (1.0 if hints <= 0 else 0.5)
-            post.alpha = max(0.5, float(post.alpha) + max(0.1, weight))
-        else:
-            post.beta = max(0.5, float(post.beta) + 1.0)
-            self._update_confusion_links(chapter_name, latency_val)
-        post.last_observation = datetime.datetime.now().isoformat(timespec="seconds")
+            if bool(correct):
+                weight = float(attention) * (1.0 if hints <= 0 else 0.5)
+                post.alpha = max(0.5, float(post.alpha) + max(0.1, weight))
+            else:
+                post.beta = max(0.5, float(post.beta) + 1.0)
+                self._update_confusion_links(chapter_name, latency_val)
+            post.last_observation = datetime.datetime.now().isoformat(timespec="seconds")
 
-        self._update_struggle_signals(
-            chapter=chapter_name,
-            correct=bool(correct),
-            latency_ms=latency_val,
-            hints_used=hints,
-        )
+            self._update_struggle_signals(
+                chapter=chapter_name,
+                correct=bool(correct),
+                latency_ms=latency_val,
+                hints_used=hints,
+            )
 
-        wm = self.cognitive_state.working_memory
-        if chapter_name:
-            wm.active_chapter = chapter_name
-        if question_id:
-            wm.active_question_id = str(question_id)
+            wm = self.cognitive_state.working_memory
+            if chapter_name:
+                wm.active_chapter = chapter_name
+            if question_id:
+                wm.active_question_id = str(question_id)
 
     def get_posterior_summary(self, chapter: str) -> dict[str, float]:
         chapter_name = str(chapter or "").strip()
-        post = self.cognitive_state.posteriors.get(chapter_name)
+        with locked_cognitive_state(self.cognitive_state, self._state_lock):
+            post = self.cognitive_state.posteriors.get(chapter_name)
         if not isinstance(post, CompetencyPosterior):
             return {"mean": 0.5, "variance": 0.0, "alpha": 0.0, "beta": 0.0}
         return {

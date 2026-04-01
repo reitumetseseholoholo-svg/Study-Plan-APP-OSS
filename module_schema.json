@@ -1,0 +1,247 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ACCA module definition",
+  "description": "Captures chapters, flows, outcomes, and metadata for an ACCA study module.",
+  "type": "object",
+  "required": [
+    "chapters"
+  ],
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Human friendly title shown throughout the app."
+    },
+    "chapters": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      },
+      "description": "Ordered list of chapter/topic names."
+    },
+    "chapter_flow": {
+      "type": "object",
+      "description": "Optional adjacency list describing recommended chapter progression.",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "importance_weights": {
+      "type": "object",
+      "description": "Optional importances (integer or number) keyed by chapter.",
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "target_total_hours": {
+      "type": "number",
+      "description": "Desired study hours for the module."
+    },
+    "aliases": {
+      "type": "object",
+      "description": "Map from alias or abbreviation to canonical chapter title (alias -> canonical). Engine normalizes keys to lowercase for lookup.",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "Capability letter (A, B, C, ...) to full title. Keys are single uppercase letters; values non-empty strings.",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Z]$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "syllabus_structure": {
+      "type": "object",
+      "description": "Per-chapter syllabus details keyed by chapter title. Each value must have learning_outcomes (id, text, level) for accurate outcome coverage and AI reconfiguration. Optional per-outcome type and standard support FR-style analytics and routing.",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "learning_outcomes"
+        ],
+        "properties": {
+          "learning_outcomes": {
+            "type": "array",
+            "description": "Learning outcomes for this chapter; id and text drive question-outcome linking and coverage.",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "text",
+                "level"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Short outcome identifier (e.g. A1a, B2c)."
+                },
+                "text": {
+                  "type": "string",
+                  "description": "Outcome statement (what the candidate must be able to do)."
+                },
+                "level": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3,
+                  "description": "1=knowledge, 2=application, 3=analysis/synthesis."
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Optional outcome task shape (e.g. statement preparation vs explanation).",
+                  "enum": [
+                    "preparation",
+                    "explain",
+                    "calculate"
+                  ]
+                },
+                "standard": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "description": "Optional IFRS/IAS tag when the outcome is standard-specific (e.g. IAS 7, IFRS 15)."
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "capability": {
+            "type": "string"
+          },
+          "subtopics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "intellectual_level_mix": {
+            "type": "object",
+            "properties": {
+              "level_1": {
+                "type": "integer"
+              },
+              "level_2": {
+                "type": "integer"
+              },
+              "level_3": {
+                "type": "integer"
+              }
+            }
+          },
+          "outcome_count": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "syllabus_meta": {
+      "type": "object",
+      "description": "Source metadata: exam code, effective window, parse confidence; optional RAG reconfig fields.",
+      "properties": {
+        "source_pdf": {
+          "type": "string"
+        },
+        "exam_code": {
+          "type": "string"
+        },
+        "effective_window": {
+          "type": "string"
+        },
+        "parsed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "parse_confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "outcome_id_stability_ratio": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Share of outcomes whose ids remained stable after reconfigure."
+        },
+        "reconfigured_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When module was last reconfigured from RAG."
+        },
+        "reconfigured_from_rag_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "PDF paths used for RAG-based reconfiguration."
+        },
+        "reference_pdfs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Syllabus/study guide PDFs used for tutor RAG and optional reconfig."
+        },
+        "unmapped_chapters": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Chapter titles with no learning outcomes after Reconfigure from RAG; review or add syllabus content."
+        }
+      },
+      "additionalProperties": true
+    },
+    "semantic_aliases": {
+      "type": "object"
+    },
+    "concept_graph_meta": {
+      "type": "object"
+    },
+    "concept_nodes": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "concept_edges": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "outcome_concept_links": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "outcome_cluster_meta": {
+      "type": "object"
+    },
+    "outcome_clusters": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "outcome_cluster_edges": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "additionalProperties": true
+}

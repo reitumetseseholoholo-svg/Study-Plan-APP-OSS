@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "gates": {
+    "threshold": 0.75,
+    "min_pass_rate": 0.85,
+    "min_avg_score": 0.8,
+    "max_disallow_violations": 0,
+    "require_all_models_pass": 0
+  }
+}

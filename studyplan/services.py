@@ -3,16 +3,32 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import logging
 import os
-import re
 import random
+import re
+import threading
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
-from typing import Any, Protocol, Sequence
+from typing import Any, Callable, Protocol, Sequence
 
+logger = logging.getLogger(__name__)
+
+from .ai.llm_auth import discover_llm_auth_headers
+from .ai.llm_gateway import (
+    ResolvedOpenAICompatibleEndpoint,
+    resolve_openai_compatible_model_candidates,
+)
+from .ai.prompt_design import (
+    ASSESSMENT_JUDGE_ROLE_BASE,
+    ASSESSMENT_JUDGE_RULES,
+    ASSESSMENT_JUDGE_SCHEMA_ONE_LINE,
+    JUDGE_JSON_ONLY,
+    build_judge_prompt_3es,
+)
 from .ai.recovery import build_deterministic_fallback_response
 from .config import Config
 from .contracts import (
@@ -24,10 +40,10 @@ from .contracts import (
     JudgmentRubricTemplate,
     MisconceptionPattern,
     ModuleDescriptor,
-    RagQueryRequest,
-    RagSourceHint,
-    RagQueryResult,
     ProblemStructure,
+    RagQueryRequest,
+    RagQueryResult,
+    RagSourceHint,
     StructureType,
     SurfaceVariant,
     TransferAttempt,
@@ -187,10 +203,17 @@ class TutorPromptOrchestrationService(Protocol):
 
 @dataclass
 class LlamaCppTutorService:
-    """TutorService implementation for llama.cpp OpenAI-compatible endpoints."""
+    """TutorService implementation for llama.cpp OpenAI-compatible endpoints.
+
+    When ``managed_runtime`` is set, the service delegates model discovery
+    and server lifecycle to the llama.cpp-first runtime (direct GGUF
+    loading via ``llama-server``).  The legacy Ollama-based discovery
+    path is kept as a fallback.
+    """
 
     endpoint: str = field(default_factory=lambda: str(getattr(Config, "LLAMA_CPP_ENDPOINT", "") or "").strip())
     model: str = field(default_factory=lambda: str(getattr(Config, "LLAMA_CPP_MODEL", "") or "").strip())
+    resolved_backend: ResolvedOpenAICompatibleEndpoint | None = field(default=None)
     enabled: bool = field(default_factory=lambda: bool(getattr(Config, "LLAMA_CPP_ENABLED", True)))
     timeout_seconds: float = field(
         default_factory=lambda: float(getattr(Config, "LLAMA_CPP_TIMEOUT_SECONDS", 30.0) or 30.0)
@@ -198,9 +221,7 @@ class LlamaCppTutorService:
     max_retries: int = field(default_factory=lambda: int(getattr(Config, "LLAMA_CPP_MAX_RETRIES", 2) or 2))
     temperature: float = field(default_factory=lambda: float(getattr(Config, "LLAMA_CPP_TEMPERATURE", 0.2) or 0.2))
     top_p: float = field(default_factory=lambda: float(getattr(Config, "LLAMA_CPP_TOP_P", 0.95) or 0.95))
-    context_window: int = field(
-        default_factory=lambda: int(getattr(Config, "LLAMA_CPP_CONTEXT_WINDOW", 8192) or 8192)
-    )
+    context_window: int = field(default_factory=lambda: int(getattr(Config, "LLAMA_CPP_CONTEXT_WINDOW", 8192) or 8192))
     auto_model_discovery: bool = field(
         default_factory=lambda: bool(getattr(Config, "LLAMA_CPP_AUTO_MODEL_DISCOVERY", True))
     )
@@ -215,7 +236,9 @@ class LlamaCppTutorService:
         default_factory=lambda: str(getattr(Config, "LLAMA_CPP_GPT4ALL_MODELS_DIR", "") or "").strip()
     )
     model_preference: str = field(
-        default_factory=lambda: str(getattr(Config, "LLAMA_CPP_MODEL_PREFERENCE", "fast_cpp") or "fast_cpp").strip().lower()
+        default_factory=lambda: (
+            str(getattr(Config, "LLAMA_CPP_MODEL_PREFERENCE", "fast_cpp") or "fast_cpp").strip().lower()
+        )
     )
     model_discovery_ttl_seconds: float = field(
         default_factory=lambda: float(getattr(Config, "LLAMA_CPP_MODEL_DISCOVERY_TTL_SECONDS", 120.0) or 120.0)
@@ -223,6 +246,26 @@ class LlamaCppTutorService:
     _model_catalog_cached_at: float = field(default=0.0, init=False, repr=False)
     _model_catalog_cached: tuple[str, ...] = field(default_factory=tuple, init=False, repr=False)
     _model_catalog_sources: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+
+    # llama.cpp-first managed runtime (None = use legacy Ollama discovery path)
+    managed_runtime: Any = field(default=None)
+    # Registry model name to try before automatic ranking (same semantics as app Preferences).
+    preferred_managed_gguf: str = field(default_factory=lambda: "")
+    _runtime_init_done: bool = field(default=False, init=False, repr=False)
+
+    # Performance optimization fields
+    performance_profiler: PerformanceProfiler | None = field(default=None)
+    performance_cache: PerformanceCacheService | None = field(default=None)
+    performance_middleware: PerformanceMiddleware | None = field(default=None)
+    max_concurrent_requests: int = field(
+        default_factory=lambda: int(getattr(Config, "LLAMA_CPP_MAX_CONCURRENT_REQUESTS", 2) or 2)
+    )
+    queue_wait_seconds: float = field(
+        default_factory=lambda: float(getattr(Config, "LLAMA_CPP_QUEUE_WAIT_SECONDS", 8.0) or 8.0)
+    )
+    _runtime_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    _model_catalog_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    _request_gate: threading.BoundedSemaphore = field(init=False, repr=False)
 
     RETRYABLE_ERROR_CODES: tuple[str, ...] = (
         "timeout",
@@ -234,6 +277,23 @@ class LlamaCppTutorService:
         "empty_output",
         "http_error",
     )
+
+    def __post_init__(self) -> None:
+        try:
+            cap = max(1, int(self.max_concurrent_requests or 1))
+        except Exception:
+            cap = 1
+        self.max_concurrent_requests = cap
+        self._request_gate = threading.BoundedSemaphore(cap)
+        self._apply_resolved_backend()
+
+    def _apply_resolved_backend(self) -> None:
+        resolved = self.resolved_backend
+        if resolved is None:
+            return
+        endpoint = self._coerce_text(getattr(resolved, "endpoint", ""))
+        if endpoint:
+            self.endpoint = endpoint
 
     @staticmethod
     def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -303,7 +363,9 @@ class LlamaCppTutorService:
             return []
         url = f"{host}/api/tags"
         try:
-            with urllib.request.urlopen(url, timeout=self._clamp_float(self.timeout_seconds, 8.0, 2.0, 30.0)) as response:
+            with urllib.request.urlopen(
+                url, timeout=self._clamp_float(self.timeout_seconds, 8.0, 2.0, 30.0)
+            ) as response:
                 raw = response.read()
         except Exception:
             return []
@@ -389,28 +451,49 @@ class LlamaCppTutorService:
         return deduped
 
     def _discover_model_catalog(self) -> tuple[list[str], dict[str, str], bool]:
-        ttl = self._clamp_float(self.model_discovery_ttl_seconds, 120.0, 5.0, 3600.0)
-        now = time.monotonic()
-        if self._model_catalog_cached and (now - float(self._model_catalog_cached_at or 0.0)) <= ttl:
-            return (
-                list(self._model_catalog_cached),
-                dict(self._model_catalog_sources),
-                True,
-            )
-        source_map: dict[str, str] = {}
-        for model_name in self._discover_ollama_models():
-            source_map.setdefault(model_name, "ollama")
-        for model_name in self._discover_gpt4all_models():
-            source_map.setdefault(model_name, "gpt4all")
-        models_sorted = self._sort_model_candidates(list(source_map.keys()))
-        self._model_catalog_cached = tuple(models_sorted)
-        self._model_catalog_sources = dict(source_map)
-        self._model_catalog_cached_at = now
-        return models_sorted, source_map, False
+        with self._model_catalog_lock:
+            ttl = self._clamp_float(self.model_discovery_ttl_seconds, 120.0, 5.0, 3600.0)
+            now = time.monotonic()
+            if self._model_catalog_cached and (now - float(self._model_catalog_cached_at or 0.0)) <= ttl:
+                return (
+                    list(self._model_catalog_cached),
+                    dict(self._model_catalog_sources),
+                    True,
+                )
+            source_map: dict[str, str] = {}
+            for model_name in self._discover_ollama_models():
+                source_map.setdefault(model_name, "ollama")
+            for model_name in self._discover_gpt4all_models():
+                source_map.setdefault(model_name, "gpt4all")
+            models_sorted = self._sort_model_candidates(list(source_map.keys()))
+            self._model_catalog_cached = tuple(models_sorted)
+            self._model_catalog_sources = dict(source_map)
+            self._model_catalog_cached_at = now
+            return models_sorted, source_map, False
 
     def _resolve_model_candidates(self, request_model: str) -> tuple[list[str], dict[str, str], dict[str, Any]]:
         requested = self._coerce_text(request_model, "")
         configured = self._coerce_text(self.model, "")
+        backend_source = self._coerce_text(getattr(self.resolved_backend, "source", ""), "")
+
+        if backend_source in {"gateway", "llama_cpp_cloud"}:
+            if backend_source == "gateway":
+                gateway_model = self._coerce_text(getattr(Config, "LLM_GATEWAY_MODEL", ""), configured)
+                gateway_fallbacks = self._coerce_text(getattr(Config, "LLM_GATEWAY_MODEL_FALLBACKS", ""), "")
+                models = resolve_openai_compatible_model_candidates(
+                    purpose="tutor",
+                    requested_model=requested,
+                    configured_model=gateway_model,
+                    fallback_models=gateway_fallbacks,
+                )
+                source_map = {m: ("request" if m == requested and requested else "gateway") for m in models}
+                return models, source_map, {"mode": "gateway_configured", "cache_hit": False}
+            if requested:
+                return [requested], {requested: "request"}, {"mode": "remote_request_model", "cache_hit": False}
+            if configured:
+                return [configured], {configured: "configured"}, {"mode": "remote_configured", "cache_hit": False}
+            return [], {}, {"mode": "remote_configured", "cache_hit": False}
+
         if requested:
             return [requested], {requested: "request"}, {"mode": "request_model", "cache_hit": False}
 
@@ -527,14 +610,38 @@ class LlamaCppTutorService:
     def _invoke_once(self, normalized: dict[str, Any]) -> tuple[bool, str, str, dict[str, Any]]:
         payload = self._build_payload(normalized)
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        allow_generic_fallback = True
+        try:
+            backend = getattr(self, "resolved_backend", None)
+            source = str(getattr(backend, "source", "") or "").strip().lower()
+            if source in {"gateway", "llama_cpp_cloud"}:
+                allow_generic_fallback = False
+        except Exception:
+            allow_generic_fallback = True
+        try:
+            resolved_auth = discover_llm_auth_headers(
+                self.endpoint,
+                search_paths=[
+                    str(getattr(Config, "CONFIG_HOME", "") or ""),
+                    os.getcwd(),
+                ],
+                allow_generic_fallback=allow_generic_fallback,
+            )
+        except Exception:
+            resolved_auth = None
+        if resolved_auth is not None:
+            headers.update(resolved_auth.headers)
         request = urllib.request.Request(
             url=self.endpoint,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._clamp_float(self.timeout_seconds, 30.0, 1.0, 300.0)) as response:
+            with urllib.request.urlopen(
+                request, timeout=self._clamp_float(self.timeout_seconds, 30.0, 1.0, 600.0)
+            ) as response:
                 status = int(getattr(response, "status", 200) or 200)
                 raw = response.read()
         except urllib.error.HTTPError as exc:
@@ -636,6 +743,67 @@ class LlamaCppTutorService:
 
     def generate(self, request: TutorTurnRequest) -> TutorTurnResult:
         started = time.perf_counter()
+        self._apply_resolved_backend()
+        queue_wait = self._clamp_float(self.queue_wait_seconds, 8.0, 0.1, 120.0)
+        acquired = self._request_gate.acquire(timeout=queue_wait)
+        if not acquired:
+            latency_ms = int(max(0.0, (time.perf_counter() - started) * 1000.0))
+            return TutorTurnResult(
+                text="",
+                model=self._coerce_text(getattr(request, "model", ""), self.model) or "unknown",
+                latency_ms=latency_ms,
+                error_code="queue_timeout",
+                telemetry={"provider": "llama.cpp", "error_code": "queue_timeout", "queue_wait_seconds": queue_wait},
+            )
+        try:
+            if self.performance_profiler:
+                return self.performance_profiler.profile_operation(
+                    "llama_cpp_generate",
+                    self._generate_with_profiling,
+                    request,
+                    started,
+                )
+            return self._generate_with_profiling(request, started)
+        finally:
+            self._request_gate.release()
+
+    def _ensure_runtime(self, purpose: str = "general") -> None:
+        """Lazily initialize managed runtime and update endpoint/model."""
+        with self._runtime_lock:
+            rt = self.managed_runtime
+            if rt is None:
+                return
+            endpoint_ok = self._coerce_text(self.endpoint)
+            if self._runtime_init_done and endpoint_ok:
+                server = getattr(rt, "server", None)
+                managed_ep = ""
+                if server is not None:
+                    managed_ep = self._coerce_text(getattr(server, "endpoint", ""))
+                if managed_ep and endpoint_ok.rstrip("/") == managed_ep.rstrip("/"):
+                    if not bool(getattr(server, "is_running", False)):
+                        self._runtime_init_done = False
+                else:
+                    return
+            if self._runtime_init_done and endpoint_ok:
+                return
+            try:
+                pref = str(getattr(self, "preferred_managed_gguf", "") or "").strip()
+                status = rt.ensure_ready(purpose, preferred_gguf_name=pref)
+            except TypeError:
+                try:
+                    status = rt.ensure_ready(purpose)
+                except Exception:
+                    return
+            except Exception:
+                return
+            if status.healthy and status.endpoint:
+                self.endpoint = status.endpoint
+                if status.model_name:
+                    self.model = status.model_name
+                self._runtime_init_done = True
+
+    def _generate_with_profiling(self, request: TutorTurnRequest, started: float) -> TutorTurnResult:
+        self._ensure_runtime()
         normalized = self._normalize_request(request)
         request_model = self._coerce_text(getattr(request, "model", ""), "")
         model_name = self._coerce_text(request_model, self._coerce_text(normalized.get("model"), self.model))
@@ -644,6 +812,16 @@ class LlamaCppTutorService:
             model_candidates = self._sort_model_candidates([model_name, *model_candidates])
             candidate_sources.setdefault(model_name, "configured")
         primary_model = self._coerce_text(model_candidates[0] if model_candidates else model_name, "")
+
+        runtime_backend = ""
+        if self.managed_runtime is not None:
+            try:
+                runtime_backend = getattr(getattr(self.managed_runtime, "server", None), "current_model", "") or ""
+                if runtime_backend:
+                    runtime_backend = "llama_server"
+            except Exception:
+                pass
+
         telemetry: dict[str, Any] = {
             "provider": "llama.cpp",
             "endpoint": self._coerce_text(self.endpoint),
@@ -653,6 +831,7 @@ class LlamaCppTutorService:
             "model_selection_mode": str(discovery_meta.get("mode", "configured_only") or "configured_only"),
             "model_catalog_cache_hit": bool(discovery_meta.get("cache_hit", False)),
             "model_preference": self._coerce_text(self.model_preference, "fast_cpp"),
+            "runtime_backend": runtime_backend or "external",
             "retry_count": 0,
             "fallback_used": False,
             "error_code": "",
@@ -730,7 +909,28 @@ class LlamaCppTutorService:
             telemetry["model"] = candidate
             telemetry["model_source"] = self._coerce_text(candidate_sources.get(candidate), "unknown")
             for attempt_idx in range(attempts):
+                cancel_check = getattr(request, "cancel_check", None)
+                if callable(cancel_check):
+                    try:
+                        if bool(cancel_check()):
+                            latency_ms = int(max(0.0, (time.perf_counter() - started) * 1000.0))
+                            telemetry["latency_ms"] = latency_ms
+                            telemetry["error_code"] = "cancelled"
+                            return TutorTurnResult(
+                                text="",
+                                model=candidate or primary_model or "unknown",
+                                latency_ms=latency_ms,
+                                error_code="cancelled",
+                                telemetry=telemetry,
+                            )
+                    except Exception:
+                        pass
                 ok, text, error_code, meta = self._invoke_once(normalized)
+                if self.managed_runtime is not None:
+                    try:
+                        self.managed_runtime.mark_server_used()
+                    except Exception:
+                        pass
                 telemetry["retry_count"] = int(retries_used)
                 if isinstance(meta, dict):
                     telemetry.update(meta)
@@ -747,7 +947,9 @@ class LlamaCppTutorService:
                         telemetry=telemetry,
                     )
                 final_error = self._coerce_text(error_code, "unknown_error")
-                final_message = self._coerce_text(meta.get("error_message") if isinstance(meta, dict) else "", "request failed")
+                final_message = self._coerce_text(
+                    meta.get("error_message") if isinstance(meta, dict) else "", "request failed"
+                )
                 retries_used += 1
                 # Move to next discovered model quickly when provider reports missing model.
                 if final_error == "model_missing":
@@ -974,9 +1176,15 @@ class FMModuleAdapter:
 
     def competency_nodes(self) -> Sequence[CompetencyNode]:
         return (
-            CompetencyNode(id="fm.wacc", topic_id="Cost of Capital", label="WACC", kind="formula", tags=("discount_rate",)),
-            CompetencyNode(id="fm.capm", topic_id="Risk Management", label="CAPM", kind="formula", tags=("cost_of_equity",)),
-            CompetencyNode(id="fm.working_capital_policy", topic_id="Working Capital Management", label="Working capital policy"),
+            CompetencyNode(
+                id="fm.wacc", topic_id="Cost of Capital", label="WACC", kind="formula", tags=("discount_rate",)
+            ),
+            CompetencyNode(
+                id="fm.capm", topic_id="Risk Management", label="CAPM", kind="formula", tags=("cost_of_equity",)
+            ),
+            CompetencyNode(
+                id="fm.working_capital_policy", topic_id="Working Capital Management", label="Working capital policy"
+            ),
             CompetencyNode(id="fm.cash_cycle", topic_id="Working Capital Management", label="Cash operating cycle"),
         )
 
@@ -1000,7 +1208,9 @@ class FMModuleAdapter:
 
     def default_tutor_mode_for_topic(self, topic_id: str) -> str:
         topic = str(topic_id or "").strip().lower()
-        if any(token in topic for token in ("wacc", "capm", "working capital", "cash management", "investment appraisal")):
+        if any(
+            token in topic for token in ("wacc", "capm", "working capital", "cash management", "investment appraisal")
+        ):
             return "guided_practice"
         if "risk" in topic:
             return "retrieval_drill"
@@ -1036,7 +1246,9 @@ class FMModuleAdapter:
         out: list[str] = []
         if ("working capital" in topic or "cash" in topic) and any(t in tags for t in ("missing_risk", "risk_omitted")):
             out.append("wc_policy_risk_ignored")
-        if ("capm" in topic or "risk" in topic) and any(t in tags for t in ("formula_direction", "missing_rf", "beta_confusion")):
+        if ("capm" in topic or "risk" in topic) and any(
+            t in tags for t in ("formula_direction", "missing_rf", "beta_confusion")
+        ):
             out.append("capm_component_confusion")
         return tuple(out[:3])
 
@@ -1113,9 +1325,454 @@ class FMModuleAdapter:
         return None
 
 
+@dataclass(frozen=True)
+class FRModuleAdapter:
+    """Adapter for ACCA FR (F7) Financial Reporting: rubrics and RAG tuned for IFRS/consolidation."""
+
+    _descriptor: ModuleDescriptor = field(
+        default_factory=lambda: ModuleDescriptor(
+            module_code="FR",
+            module_title="Financial Reporting",
+            domain_family="reporting",
+            supports_section_c=True,
+            supports_judgment_modes=True,
+        )
+    )
+
+    def descriptor(self) -> ModuleDescriptor:
+        return self._descriptor
+
+    def competency_nodes(self) -> Sequence[CompetencyNode]:
+        return ()
+
+    def competency_edges(self) -> Sequence[CompetencyEdge]:
+        return ()
+
+    def supported_tutor_modes(self) -> Sequence[str]:
+        return (
+            "teach",
+            "guided_practice",
+            "retrieval_drill",
+            "error_clinic",
+            "exam_technique",
+            "section_c_coach",
+            "revision_planner",
+        )
+
+    def default_tutor_mode_for_topic(self, topic_id: str) -> str:
+        topic = str(topic_id or "").strip().lower()
+        if any(
+            token in topic for token in ("consolidat", "ifrs", "ias ", "group", "associate", "goodwill", "cash flow")
+        ):
+            return "guided_practice"
+        return "teach"
+
+    def misconception_patterns(self) -> Sequence[MisconceptionPattern]:
+        return ()
+
+    def map_error_to_misconceptions(
+        self,
+        *,
+        topic_id: str,
+        error_tags: Sequence[str],
+        user_answer: str = "",
+        expected_answer: str = "",
+    ) -> Sequence[str]:
+        _ = (topic_id, user_answer, expected_answer)
+        seen: set[str] = set()
+        mapped: list[str] = []
+        for tag in error_tags:
+            text = str(tag or "").strip().lower()
+            if not text:
+                continue
+            if text.startswith("missing_"):
+                candidate = f"{text}_concept"
+                if candidate not in seen:
+                    seen.add(candidate)
+                    mapped.append(candidate)
+            if len(mapped) >= 3:
+                break
+        return tuple(mapped)
+
+    def section_c_rubric_templates(self, topic_id: str | None = None) -> Sequence[JudgmentRubricTemplate]:
+        topic = str(topic_id or "").strip()
+        label = f"FR constructed response ({topic})" if topic else "FR constructed response"
+        return (
+            JudgmentRubricTemplate(
+                rubric_id="fr_constructed_20",
+                label=label,
+                mode="section_c",
+                criteria=(
+                    ("Technical application (IFRS/standards)", 8),
+                    ("Method / workings / disclosure", 5),
+                    ("Evaluation / conclusion", 4),
+                    ("Structure / exam communication", 3),
+                ),
+            ),
+        )
+
+    def rag_source_hints(self) -> Sequence[RagSourceHint]:
+        return (
+            RagSourceHint(source_key="syllabus", tier="syllabus", priority=10, topic_tags=("all",)),
+            RagSourceHint(source_key="course_notes", tier="notes", priority=30, topic_tags=("reporting", "ifrs")),
+        )
+
+    def build_rag_query_variants(
+        self,
+        *,
+        topic_id: str,
+        user_prompt: str,
+        mode: str,
+        weak_competencies: Sequence[str] = (),
+    ) -> Sequence[str]:
+        topic = str(topic_id or "").strip()
+        prompt = str(user_prompt or "").strip()
+        mode_text = str(mode or "").strip()
+        variants: list[str] = []
+        for candidate in (
+            prompt,
+            f"{topic} ACCA FR Financial Reporting exam {mode_text}".strip(),
+            f"{topic} IFRS IAS standards application pitfalls".strip(),
+            f"{topic} consolidation group accounting worked example".strip(),
+            (" ".join(str(x or "").strip() for x in weak_competencies if str(x or "").strip())[:180]).strip(),
+        ):
+            text = str(candidate or "").strip()
+            if text and text not in variants:
+                variants.append(text)
+        return tuple(variants)
+
+    def infer_transfer_structure(
+        self,
+        *,
+        topic_id: str,
+        question_type: str,
+        tags: Sequence[str] = (),
+        meta: dict[str, Any] | None = None,
+    ) -> str | ProblemStructure | None:
+        _ = (topic_id, question_type, tags, meta)
+        return None
+
+
+@dataclass(frozen=True)
+class AAModuleAdapter:
+    """Adapter for ACCA AA (F8) Audit and Assurance: rubrics and RAG tuned for audit/assurance."""
+
+    _descriptor: ModuleDescriptor = field(
+        default_factory=lambda: ModuleDescriptor(
+            module_code="AA",
+            module_title="Audit and Assurance",
+            domain_family="assurance",
+            supports_section_c=True,
+            supports_judgment_modes=True,
+        )
+    )
+
+    def descriptor(self) -> ModuleDescriptor:
+        return self._descriptor
+
+    def competency_nodes(self) -> Sequence[CompetencyNode]:
+        return ()
+
+    def competency_edges(self) -> Sequence[CompetencyEdge]:
+        return ()
+
+    def supported_tutor_modes(self) -> Sequence[str]:
+        return (
+            "teach",
+            "guided_practice",
+            "retrieval_drill",
+            "error_clinic",
+            "exam_technique",
+            "section_c_coach",
+            "revision_planner",
+        )
+
+    def default_tutor_mode_for_topic(self, topic_id: str) -> str:
+        topic = str(topic_id or "").strip().lower()
+        if any(token in topic for token in ("risk", "internal control", "evidence", "reporting", "materiality")):
+            return "guided_practice"
+        return "teach"
+
+    def misconception_patterns(self) -> Sequence[MisconceptionPattern]:
+        return ()
+
+    def map_error_to_misconceptions(
+        self,
+        *,
+        topic_id: str,
+        error_tags: Sequence[str],
+        user_answer: str = "",
+        expected_answer: str = "",
+    ) -> Sequence[str]:
+        _ = (topic_id, user_answer, expected_answer)
+        seen: set[str] = set()
+        mapped: list[str] = []
+        for tag in error_tags:
+            text = str(tag or "").strip().lower()
+            if not text:
+                continue
+            if text.startswith("missing_"):
+                candidate = f"{text}_concept"
+                if candidate not in seen:
+                    seen.add(candidate)
+                    mapped.append(candidate)
+            if len(mapped) >= 3:
+                break
+        return tuple(mapped)
+
+    def section_c_rubric_templates(self, topic_id: str | None = None) -> Sequence[JudgmentRubricTemplate]:
+        topic = str(topic_id or "").strip()
+        label = f"AA constructed response ({topic})" if topic else "AA constructed response"
+        return (
+            JudgmentRubricTemplate(
+                rubric_id="aa_constructed_20",
+                label=label,
+                mode="section_c",
+                criteria=(
+                    ("Audit/assurance application to scenario", 8),
+                    ("Method / procedures / rationale", 5),
+                    ("Evaluation / conclusion / reporting", 4),
+                    ("Structure / exam communication", 3),
+                ),
+            ),
+        )
+
+    def rag_source_hints(self) -> Sequence[RagSourceHint]:
+        return (
+            RagSourceHint(source_key="syllabus", tier="syllabus", priority=10, topic_tags=("all",)),
+            RagSourceHint(source_key="course_notes", tier="notes", priority=30, topic_tags=("audit", "assurance")),
+        )
+
+    def build_rag_query_variants(
+        self,
+        *,
+        topic_id: str,
+        user_prompt: str,
+        mode: str,
+        weak_competencies: Sequence[str] = (),
+    ) -> Sequence[str]:
+        topic = str(topic_id or "").strip()
+        prompt = str(user_prompt or "").strip()
+        mode_text = str(mode or "").strip()
+        variants: list[str] = []
+        for candidate in (
+            prompt,
+            f"{topic} ACCA AA Audit and Assurance exam {mode_text}".strip(),
+            f"{topic} audit procedures evidence materiality".strip(),
+            f"{topic} internal control risk assessment reporting".strip(),
+            (" ".join(str(x or "").strip() for x in weak_competencies if str(x or "").strip())[:180]).strip(),
+        ):
+            text = str(candidate or "").strip()
+            if text and text not in variants:
+                variants.append(text)
+        return tuple(variants)
+
+    def infer_transfer_structure(
+        self,
+        *,
+        topic_id: str,
+        question_type: str,
+        tags: Sequence[str] = (),
+        meta: dict[str, Any] | None = None,
+    ) -> str | ProblemStructure | None:
+        _ = (topic_id, question_type, tags, meta)
+        return None
+
+
+@dataclass(frozen=True)
+class TXModuleAdapter:
+    """Adapter for ACCA TX (F6) Taxation: rubrics and RAG tuned for tax."""
+
+    _descriptor: ModuleDescriptor = field(
+        default_factory=lambda: ModuleDescriptor(
+            module_code="TX",
+            module_title="Taxation",
+            domain_family="tax",
+            supports_section_c=True,
+            supports_judgment_modes=True,
+        )
+    )
+
+    def descriptor(self) -> ModuleDescriptor:
+        return self._descriptor
+
+    def competency_nodes(self) -> Sequence[CompetencyNode]:
+        return ()
+
+    def competency_edges(self) -> Sequence[CompetencyEdge]:
+        return ()
+
+    def supported_tutor_modes(self) -> Sequence[str]:
+        return (
+            "teach",
+            "guided_practice",
+            "retrieval_drill",
+            "error_clinic",
+            "exam_technique",
+            "section_c_coach",
+            "revision_planner",
+        )
+
+    def default_tutor_mode_for_topic(self, topic_id: str) -> str:
+        topic = str(topic_id or "").strip().lower()
+        if any(token in topic for token in ("computation", "tax", "vat", "allowance", "relief", "corporation")):
+            return "guided_practice"
+        return "teach"
+
+    def misconception_patterns(self) -> Sequence[MisconceptionPattern]:
+        return ()
+
+    def map_error_to_misconceptions(
+        self,
+        *,
+        topic_id: str,
+        error_tags: Sequence[str],
+        user_answer: str = "",
+        expected_answer: str = "",
+    ) -> Sequence[str]:
+        _ = (topic_id, user_answer, expected_answer)
+        seen: set[str] = set()
+        mapped: list[str] = []
+        for tag in error_tags:
+            text = str(tag or "").strip().lower()
+            if not text:
+                continue
+            if text.startswith("missing_"):
+                candidate = f"{text}_concept"
+                if candidate not in seen:
+                    seen.add(candidate)
+                    mapped.append(candidate)
+            if len(mapped) >= 3:
+                break
+        return tuple(mapped)
+
+    def section_c_rubric_templates(self, topic_id: str | None = None) -> Sequence[JudgmentRubricTemplate]:
+        topic = str(topic_id or "").strip()
+        label = f"TX constructed response ({topic})" if topic else "TX constructed response"
+        return (
+            JudgmentRubricTemplate(
+                rubric_id="tx_constructed_20",
+                label=label,
+                mode="section_c",
+                criteria=(
+                    ("Tax technical application to scenario", 8),
+                    ("Computation / workings / allowances", 5),
+                    ("Evaluation / recommendation", 4),
+                    ("Structure / exam communication", 3),
+                ),
+            ),
+        )
+
+    def rag_source_hints(self) -> Sequence[RagSourceHint]:
+        return (
+            RagSourceHint(source_key="syllabus", tier="syllabus", priority=10, topic_tags=("all",)),
+            RagSourceHint(source_key="course_notes", tier="notes", priority=30, topic_tags=("tax", "taxation")),
+        )
+
+    def build_rag_query_variants(
+        self,
+        *,
+        topic_id: str,
+        user_prompt: str,
+        mode: str,
+        weak_competencies: Sequence[str] = (),
+    ) -> Sequence[str]:
+        topic = str(topic_id or "").strip()
+        prompt = str(user_prompt or "").strip()
+        mode_text = str(mode or "").strip()
+        variants: list[str] = []
+        for candidate in (
+            prompt,
+            f"{topic} ACCA TX Taxation exam {mode_text}".strip(),
+            f"{topic} tax computation allowances relief pitfalls".strip(),
+            f"{topic} income tax corporation tax VAT worked example".strip(),
+            (" ".join(str(x or "").strip() for x in weak_competencies if str(x or "").strip())[:180]).strip(),
+        ):
+            text = str(candidate or "").strip()
+            if text and text not in variants:
+                variants.append(text)
+        return tuple(variants)
+
+    def infer_transfer_structure(
+        self,
+        *,
+        topic_id: str,
+        question_type: str,
+        tags: Sequence[str] = (),
+        meta: dict[str, Any] | None = None,
+    ) -> str | ProblemStructure | None:
+        _ = (topic_id, question_type, tags, meta)
+        return None
+
+
+def _normalize_module_code_for_adapter(module_code: str) -> str:
+    """Map app module_id (e.g. acca_f7) to adapter registry code (e.g. FR)."""
+    raw = str(module_code or "").strip().upper().replace("-", "_")
+    if raw in ("ACCA_F9", "F9", "FM"):
+        return "FM"
+    if raw in ("ACCA_F7", "F7", "FR"):
+        return "FR"
+    if raw in ("ACCA_F8", "F8", "AA"):
+        return "AA"
+    if raw in ("ACCA_F6", "F6", "TX"):
+        return "TX"
+    return raw
+
+
+# ACCA syllabus-aligned scope for each module: in-scope calculations/concepts and out-of-scope.
+# Used to constrain AI-generated questions and tutor responses to examinable content only.
+ACCA_SYLLABUS_SCOPE_INSTRUCTIONS: dict[str, str] = {
+    "FM": (
+        "ACCA FM (Financial Management) syllabus scope — use ONLY these examinable methods: "
+        "Total Shareholder Return TSR = (P₁ - P₀ + D₁) / P₀; Cost of equity Ke (Dividend Growth Model: Ke = D₁/P₀ + g); "
+        "Weighted Average Cost of Capital (WACC); NPV and IRR for investment appraisal; "
+        "two-stage and variable growth models for share valuation when dividends grow non-constantly. "
+        "Do NOT use: equity multiple, MOIC, cash-on-cash return, or other private-equity-style multiples — they are not in the FM syllabus."
+    ),
+    "FR": (
+        "ACCA FR (Financial Reporting) syllabus scope — use only IFRS/IAS standards and examinable content: "
+        "conceptual framework, presentation (IFRS 18), revenue (IFRS 15), consolidation, associates, "
+        "leases (IFRS 16), provisions (IAS 37), impairment (IAS 36), income taxes (IAS 12), EPS (IAS 33), "
+        "cash flows (IAS 7), financial instruments. Do not introduce non-syllabus or non-examinable treatments."
+    ),
+    "AA": (
+        "ACCA AA (Audit and Assurance) syllabus scope — use only examinable content: audit framework and regulation, "
+        "planning and risk assessment, internal control, audit evidence, review and reporting. "
+        "Stick to ISA and exam guide terminology and procedures."
+    ),
+    "TX": (
+        "ACCA TX (Taxation) syllabus scope — use only examinable content for the chosen variant (e.g. UK): "
+        "income tax and NIC, chargeable gains, corporation tax, VAT. Use only syllabus tax rules and rates."
+    ),
+}
+
+
+def get_syllabus_scope_instruction(module_id: str) -> str:
+    """Return ACCA syllabus-scope instruction for the given module (e.g. acca_f9, acca_f7)."""
+    code = _normalize_module_code_for_adapter(module_id or "")
+    return ACCA_SYLLABUS_SCOPE_INSTRUCTIONS.get(code, "")
+
+
+def get_module_display_code(module_id: str) -> str:
+    """Return a short display label for the module for tutor/coach context (e.g. 'ACCA FM', 'ACCA FR')."""
+    code = _normalize_module_code_for_adapter(module_id or "")
+    if not code:
+        return ""
+    labels: dict[str, str] = {
+        "FM": "ACCA FM",
+        "FR": "ACCA FR",
+        "AA": "ACCA AA",
+        "TX": "ACCA TX",
+    }
+    return labels.get(code, f"ACCA {code}")
+
+
 def build_default_module_adapter_registry() -> ModuleAdapterRegistry:
     registry = ModuleAdapterRegistry()
     registry.register(FMModuleAdapter())
+    registry.register(FRModuleAdapter())
+    registry.register(AAModuleAdapter())
+    registry.register(TXModuleAdapter())
     return registry
 
 
@@ -1125,7 +1782,8 @@ def resolve_module_adapter(
     registry: ModuleAdapterRegistry | None = None,
 ) -> ModuleAdapter:
     reg = registry if isinstance(registry, ModuleAdapterRegistry) else build_default_module_adapter_registry()
-    adapter = reg.get(module_code)
+    adapter_code = _normalize_module_code_for_adapter(module_code)
+    adapter = reg.get(adapter_code)
     if adapter is not None:
         return adapter
     code = str(module_code or "").strip().upper()
@@ -1348,7 +2006,9 @@ class TransferAttemptLogService:
                 variant_latency_seconds=float(payload.get("variant_latency_seconds", 0.0) or 0.0),
                 base_hint_penalty=float(payload.get("base_hint_penalty", 1.0) or 1.0),
                 variant_hint_penalty=float(payload.get("variant_hint_penalty", 1.0) or 1.0),
-                created_at=created_at_dt if isinstance(created_at_dt, datetime.datetime) else datetime.datetime.now(datetime.timezone.utc),
+                created_at=created_at_dt
+                if isinstance(created_at_dt, datetime.datetime)
+                else datetime.datetime.now(datetime.timezone.utc),
             )
         except Exception:
             return None
@@ -1498,7 +2158,9 @@ class RuleBasedRagEvidencePolicyService:
         source_mix = str(meta.get("rag_source_mix", "") or "").strip()
         if not source_mix:
             try:
-                source_rows = [str(item or "").strip() for item in list(meta.get("sources", []) or []) if str(item or "").strip()]
+                source_rows = [
+                    str(item or "").strip() for item in list(meta.get("sources", []) or []) if str(item or "").strip()
+                ]
             except Exception:
                 source_rows = []
             source_mix = ", ".join(sorted(set(source_rows))) if source_rows else "none"
@@ -1527,8 +2189,7 @@ class RuleBasedRagEvidencePolicyService:
         confidence = max(0.0, min(1.0, confidence))
 
         insufficient = bool(
-            (method not in {"disabled"} and snippet_count <= 0)
-            or (target_query_count > 0 and target_hit_snippets <= 0)
+            (method not in {"disabled"} and snippet_count <= 0) or (target_query_count > 0 and target_hit_snippets <= 0)
         )
         if method == "disabled":
             policy_mode = "disabled"
@@ -1547,22 +2208,18 @@ class RuleBasedRagEvidencePolicyService:
         )
 
         if policy_mode == "strong_grounding":
-            planner_line = "- RAG evidence strong: use snippets for precise rules/formulas, then explain in exam-focused terms."
+            planner_line = (
+                "- RAG evidence strong: use snippets for precise rules/formulas, then explain in exam-focused terms."
+            )
             certainty_style = "grounded"
         elif policy_mode == "mixed_grounding":
-            planner_line = (
-                "- RAG evidence mixed: anchor key claims to snippets when relevant; fill gaps with model knowledge and state assumptions."
-            )
+            planner_line = "- RAG evidence mixed: anchor key claims to snippets when relevant; fill gaps with model knowledge and state assumptions."
             certainty_style = "balanced"
         elif policy_mode == "disabled":
-            planner_line = (
-                "- RAG evidence unavailable: answer with model knowledge and clearly state assumptions for syllabus-specific claims."
-            )
+            planner_line = "- RAG evidence unavailable: answer with model knowledge and clearly state assumptions for syllabus-specific claims."
             certainty_style = "assumption_first"
         else:
-            planner_line = (
-                "- RAG evidence weak: avoid overclaiming; answer with model knowledge, flag assumptions, and prioritize robust principles."
-            )
+            planner_line = "- RAG evidence weak: avoid overclaiming; answer with model knowledge, flag assumptions, and prioritize robust principles."
             certainty_style = "hedged"
         if standard_sensitive and policy_mode in {"weak_grounding", "disabled"}:
             planner_line += " Note uncertainty for standard-specific details."
@@ -1929,10 +2586,13 @@ class InMemoryTutorSessionController:
     """Phase 1 session-state store/controller used by the Tutor learning loop."""
 
     _sessions: dict[str, TutorSessionState] = field(default_factory=dict)
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
     def _now_ts(self) -> str:
         try:
-            return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            return (
+                datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            )
         except Exception:
             return ""
 
@@ -1943,34 +2603,50 @@ class InMemoryTutorSessionController:
         module: str,
         topic: str,
     ) -> TutorSessionState:
-        key = str(session_id or "").strip()
-        if not key:
-            key = "default"
-        existing = self._sessions.get(key)
-        if isinstance(existing, TutorSessionState):
-            return existing
-        state = TutorSessionState(
-            session_id=key,
-            module=str(module or "").strip(),
-            topic=str(topic or "").strip(),
-            mode="auto",
-            loop_phase="observe",
-            updated_at_ts=self._now_ts(),
-        )
-        self._sessions[key] = state
-        return state
+        with self._lock:
+            key = str(session_id or "").strip()
+            if not key:
+                key = "default"
+            existing = self._sessions.get(key)
+            if isinstance(existing, TutorSessionState):
+                new_topic = str(topic or "").strip()
+                new_module = str(module or "").strip()
+                updated = existing
+                changed = False
+                if new_topic and new_topic != str(existing.topic or "").strip():
+                    updated = replace(updated, topic=new_topic, updated_at_ts=self._now_ts())
+                    changed = True
+                if new_module and new_module != str(existing.module or "").strip():
+                    updated = replace(updated, module=new_module, updated_at_ts=self._now_ts())
+                    changed = True
+                if changed:
+                    self._sessions[key] = updated
+                    return updated
+                return existing
+            state = TutorSessionState(
+                session_id=key,
+                module=str(module or "").strip(),
+                topic=str(topic or "").strip(),
+                mode="auto",
+                loop_phase="observe",
+                updated_at_ts=self._now_ts(),
+            )
+            self._sessions[key] = state
+            return state
 
     def save_session(self, state: TutorSessionState) -> TutorSessionState:
-        session_id = str(getattr(state, "session_id", "") or "").strip() or "default"
-        updated = replace(state, session_id=session_id, updated_at_ts=self._now_ts())
-        self._sessions[session_id] = updated
-        return updated
+        with self._lock:
+            session_id = str(getattr(state, "session_id", "") or "").strip() or "default"
+            updated = replace(state, session_id=session_id, updated_at_ts=self._now_ts())
+            self._sessions[session_id] = updated
+            return updated
 
     def reset_session(self, session_id: str) -> None:
-        key = str(session_id or "").strip()
-        if not key:
-            key = "default"
-        self._sessions.pop(key, None)
+        with self._lock:
+            key = str(session_id or "").strip()
+            if not key:
+                key = "default"
+            self._sessions.pop(key, None)
 
     def start_or_resume_session(
         self,
@@ -1983,32 +2659,34 @@ class InMemoryTutorSessionController:
         success_criteria: str = "",
         target_concepts: tuple[str, ...] = (),
     ) -> TutorSessionState:
-        state = self.get_or_create_session(session_id=session_id, module=module, topic=topic)
-        normalized_targets = tuple(str(x or "").strip() for x in target_concepts if str(x or "").strip())
-        updated = replace(
-            state,
-            module=str(module or state.module or "").strip(),
-            topic=str(topic or state.topic or "").strip(),
-            mode=str(mode or state.mode or "auto"),
-            loop_phase="observe" if not bool(state.active) else str(state.loop_phase or "observe"),
-            session_objective=str(session_objective or state.session_objective or ""),
-            success_criteria=str(success_criteria or state.success_criteria or ""),
-            target_concepts=normalized_targets or state.target_concepts,
-            active=True,
-            updated_at_ts=self._now_ts(),
-        )
-        self._sessions[updated.session_id] = updated
-        return updated
+        with self._lock:
+            state = self.get_or_create_session(session_id=session_id, module=module, topic=topic)
+            normalized_targets = tuple(str(x or "").strip() for x in target_concepts if str(x or "").strip())
+            updated = replace(
+                state,
+                module=str(module or state.module or "").strip(),
+                topic=str(topic or state.topic or "").strip(),
+                mode=str(mode or state.mode or "auto"),
+                loop_phase="observe" if not bool(state.active) else str(state.loop_phase or "observe"),
+                session_objective=str(session_objective or state.session_objective or ""),
+                success_criteria=str(success_criteria or state.success_criteria or ""),
+                target_concepts=normalized_targets or state.target_concepts,
+                active=True,
+                updated_at_ts=self._now_ts(),
+            )
+            self._sessions[updated.session_id] = updated
+            return updated
 
     def advance_phase(self, session_id: str, phase: str) -> TutorSessionState:
-        state = self.get_or_create_session(session_id=session_id, module="", topic="")
-        updated = replace(
-            state,
-            loop_phase=str(phase or state.loop_phase or "observe"),
-            updated_at_ts=self._now_ts(),
-        )
-        self._sessions[updated.session_id] = updated
-        return updated
+        with self._lock:
+            state = self.get_or_create_session(session_id=session_id, module="", topic="")
+            updated = replace(
+                state,
+                loop_phase=str(phase or state.loop_phase or "observe"),
+                updated_at_ts=self._now_ts(),
+            )
+            self._sessions[updated.session_id] = updated
+            return updated
 
     def record_assessment_outcome(
         self,
@@ -2018,28 +2696,29 @@ class InMemoryTutorSessionController:
         practice_item_id: str = "",
         increment_streak: bool = False,
     ) -> TutorSessionState:
-        state = self.get_or_create_session(session_id=session_id, module="", topic="")
-        outcome_text = str(outcome or "").strip().lower()
-        is_success = outcome_text in {"correct", "partial"} if increment_streak else False
-        new_streak = int(state.practice_streak or 0)
-        if increment_streak:
-            new_streak = max(0, new_streak + 1) if is_success else 0
-        recent_failures = int(state.recent_failures or 0)
-        if outcome_text == "incorrect":
-            recent_failures = min(10_000, recent_failures + 1)
-        elif outcome_text in {"correct", "partial"}:
-            recent_failures = max(0, recent_failures - 1)
-        updated = replace(
-            state,
-            loop_phase="reinforce" if outcome_text in {"correct", "partial"} else "teach",
-            active_practice_item_id=str(practice_item_id or state.active_practice_item_id or ""),
-            practice_streak=new_streak,
-            recent_failures=recent_failures,
-            last_assessment_outcome=outcome_text,
-            updated_at_ts=self._now_ts(),
-        )
-        self._sessions[updated.session_id] = updated
-        return updated
+        with self._lock:
+            state = self.get_or_create_session(session_id=session_id, module="", topic="")
+            outcome_text = str(outcome or "").strip().lower()
+            is_success = outcome_text in {"correct", "partial"} if increment_streak else False
+            new_streak = int(state.practice_streak or 0)
+            if increment_streak:
+                new_streak = max(0, new_streak + 1) if is_success else 0
+            recent_failures = int(state.recent_failures or 0)
+            if outcome_text == "incorrect":
+                recent_failures = min(10_000, recent_failures + 1)
+            elif outcome_text in {"correct", "partial"}:
+                recent_failures = max(0, recent_failures - 1)
+            updated = replace(
+                state,
+                loop_phase="reinforce" if outcome_text in {"correct", "partial"} else "teach",
+                active_practice_item_id=str(practice_item_id or state.active_practice_item_id or ""),
+                practice_streak=new_streak,
+                recent_failures=recent_failures,
+                last_assessment_outcome=outcome_text,
+                updated_at_ts=self._now_ts(),
+            )
+            self._sessions[updated.session_id] = updated
+            return updated
 
 
 @dataclass
@@ -2048,10 +2727,13 @@ class InMemoryTutorLearnerModelStore:
 
     _profiles: dict[tuple[str, str], TutorLearnerProfileSnapshot] = field(default_factory=dict)
     max_tags: int = 8
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
     def _now_ts(self) -> str:
         try:
-            return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            return (
+                datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            )
         except Exception:
             return ""
 
@@ -2059,23 +2741,25 @@ class InMemoryTutorLearnerModelStore:
         return (str(learner_id or "").strip() or "default", str(module or "").strip())
 
     def get_or_create_profile(self, learner_id: str, module: str) -> TutorLearnerProfileSnapshot:
-        key = self._key(learner_id, module)
-        existing = self._profiles.get(key)
-        if isinstance(existing, TutorLearnerProfileSnapshot):
-            return existing
-        profile = TutorLearnerProfileSnapshot(
-            learner_id=key[0],
-            module=key[1],
-            last_updated_ts=self._now_ts(),
-        )
-        self._profiles[key] = profile
-        return profile
+        with self._lock:
+            key = self._key(learner_id, module)
+            existing = self._profiles.get(key)
+            if isinstance(existing, TutorLearnerProfileSnapshot):
+                return existing
+            profile = TutorLearnerProfileSnapshot(
+                learner_id=key[0],
+                module=key[1],
+                last_updated_ts=self._now_ts(),
+            )
+            self._profiles[key] = profile
+            return profile
 
     def save_profile(self, profile: TutorLearnerProfileSnapshot) -> TutorLearnerProfileSnapshot:
-        key = self._key(profile.learner_id, profile.module)
-        updated = replace(profile, learner_id=key[0], module=key[1], last_updated_ts=self._now_ts())
-        self._profiles[key] = updated
-        return updated
+        with self._lock:
+            key = self._key(profile.learner_id, profile.module)
+            updated = replace(profile, learner_id=key[0], module=key[1], last_updated_ts=self._now_ts())
+            self._profiles[key] = updated
+            return updated
 
     def note_assessment(
         self,
@@ -2085,49 +2769,50 @@ class InMemoryTutorLearnerModelStore:
         *,
         confidence: int | None = None,
     ) -> TutorLearnerProfileSnapshot:
-        profile = self.get_or_create_profile(learner_id, module)
-        prior_mis_tags = tuple(getattr(profile, "misconception_tags_top", ()) or ())
-        misconception_tags = self._merge_tags(profile.misconception_tags_top, assessment.misconception_tags)
-        weak_caps = self._merge_tags(profile.weak_capabilities_top, assessment.error_tags)
-        outcome = str(getattr(assessment, "outcome", "") or "").strip().lower()
-        marks_awarded = float(getattr(assessment, "marks_awarded", 0.0) or 0.0)
-        marks_max = max(0.0, float(getattr(assessment, "marks_max", 0.0) or 0.0))
-        score_ratio = (marks_awarded / marks_max) if marks_max > 0 else (1.0 if outcome == "correct" else 0.0)
+        with self._lock:
+            profile = self.get_or_create_profile(learner_id, module)
+            prior_mis_tags = tuple(getattr(profile, "misconception_tags_top", ()) or ())
+            misconception_tags = self._merge_tags(profile.misconception_tags_top, assessment.misconception_tags)
+            weak_caps = self._merge_tags(profile.weak_capabilities_top, assessment.error_tags)
+            outcome = str(getattr(assessment, "outcome", "") or "").strip().lower()
+            marks_awarded = float(getattr(assessment, "marks_awarded", 0.0) or 0.0)
+            marks_max = max(0.0, float(getattr(assessment, "marks_max", 0.0) or 0.0))
+            score_ratio = (marks_awarded / marks_max) if marks_max > 0 else (1.0 if outcome == "correct" else 0.0)
 
-        prior_transfer = float(getattr(profile, "chat_to_quiz_transfer_score", 0.0) or 0.0)
-        blended_transfer = (0.8 * prior_transfer) + (0.2 * ((score_ratio * 2.0) - 1.0))
-        blended_transfer = max(-1.0, min(1.0, blended_transfer))
+            prior_transfer = float(getattr(profile, "chat_to_quiz_transfer_score", 0.0) or 0.0)
+            blended_transfer = (0.8 * prior_transfer) + (0.2 * ((score_ratio * 2.0) - 1.0))
+            blended_transfer = max(-1.0, min(1.0, blended_transfer))
 
-        bias = float(getattr(profile, "confidence_calibration_bias", 0.0) or 0.0)
-        if confidence is not None:
-            conf_scaled = max(1, min(5, int(confidence))) / 5.0
-            correctness_scaled = max(0.0, min(1.0, score_ratio))
-            bias = max(-5.0, min(5.0, (0.8 * bias) + (0.2 * ((conf_scaled - correctness_scaled) * 5.0))))
+            bias = float(getattr(profile, "confidence_calibration_bias", 0.0) or 0.0)
+            if confidence is not None:
+                conf_scaled = max(1, min(5, int(confidence))) / 5.0
+                correctness_scaled = max(0.0, min(1.0, score_ratio))
+                bias = max(-5.0, min(5.0, (0.8 * bias) + (0.2 * ((conf_scaled - correctness_scaled) * 5.0))))
 
-        speed_tier = str(getattr(profile, "response_speed_tier", "unknown") or "unknown")
-        loop_metrics = self._update_learning_loop_metrics(
-            profile=profile,
-            assessment=assessment,
-            score_ratio=score_ratio,
-            outcome=outcome,
-            confidence=confidence,
-            prior_misconception_tags=prior_mis_tags,
-        )
-        profile_meta = dict(getattr(profile, "meta", {}) or {})
-        profile_meta["learning_loop_metrics"] = loop_metrics
-        updated = replace(
-            profile,
-            misconception_tags_top=misconception_tags,
-            weak_capabilities_top=weak_caps,
-            confidence_calibration_bias=bias,
-            chat_to_quiz_transfer_score=blended_transfer,
-            last_practice_outcome=outcome,
-            response_speed_tier=speed_tier,
-            last_updated_ts=self._now_ts(),
-            meta=profile_meta,
-        )
-        self._profiles[self._key(learner_id, module)] = updated
-        return updated
+            speed_tier = str(getattr(profile, "response_speed_tier", "unknown") or "unknown")
+            loop_metrics = self._update_learning_loop_metrics(
+                profile=profile,
+                assessment=assessment,
+                score_ratio=score_ratio,
+                outcome=outcome,
+                confidence=confidence,
+                prior_misconception_tags=prior_mis_tags,
+            )
+            profile_meta = dict(getattr(profile, "meta", {}) or {})
+            profile_meta["learning_loop_metrics"] = loop_metrics
+            updated = replace(
+                profile,
+                misconception_tags_top=misconception_tags,
+                weak_capabilities_top=weak_caps,
+                confidence_calibration_bias=bias,
+                chat_to_quiz_transfer_score=blended_transfer,
+                last_practice_outcome=outcome,
+                response_speed_tier=speed_tier,
+                last_updated_ts=self._now_ts(),
+                meta=profile_meta,
+            )
+            self._profiles[self._key(learner_id, module)] = updated
+            return updated
 
     def _learning_loop_metrics_from_meta(self, meta: dict[str, Any]) -> dict[str, Any]:
         raw = meta.get("learning_loop_metrics", {}) if isinstance(meta, dict) else {}
@@ -2148,14 +2833,10 @@ class InMemoryTutorLearnerModelStore:
             return max(float(minv), min(float(maxv), val))
 
         recent_outcomes = tuple(
-            str(x or "").strip().lower()
-            for x in list(data.get("recent_outcomes", []) or [])
-            if str(x or "").strip()
+            str(x or "").strip().lower() for x in list(data.get("recent_outcomes", []) or []) if str(x or "").strip()
         )[:8]
         recent_mis = tuple(
-            str(x or "").strip()
-            for x in list(data.get("recent_misconceptions", []) or [])
-            if str(x or "").strip()
+            str(x or "").strip() for x in list(data.get("recent_misconceptions", []) or []) if str(x or "").strip()
         )[:8]
         return {
             "schema_version": 1,
@@ -2206,12 +2887,14 @@ class InMemoryTutorLearnerModelStore:
             score_ema = (0.8 * prev_ema) + (0.2 * max(0.0, min(1.0, float(score_ratio))))
         metrics["avg_score_ratio_ema"] = round(max(0.0, min(1.0, score_ema)), 4)
 
-        current_mis = tuple(str(x or "").strip() for x in tuple(getattr(assessment, "misconception_tags", ()) or ()) if str(x or "").strip())
+        current_mis = tuple(
+            str(x or "").strip()
+            for x in tuple(getattr(assessment, "misconception_tags", ()) or ())
+            if str(x or "").strip()
+        )
         prior_set = {str(x or "").strip().lower() for x in prior_misconception_tags if str(x or "").strip()}
         recent_mis = [
-            str(x or "").strip()
-            for x in list(metrics.get("recent_misconceptions", []) or [])
-            if str(x or "").strip()
+            str(x or "").strip() for x in list(metrics.get("recent_misconceptions", []) or []) if str(x or "").strip()
         ]
         recurrence_hit = False
         for tag in current_mis:
@@ -2225,9 +2908,7 @@ class InMemoryTutorLearnerModelStore:
         metrics["recent_misconceptions"] = recent_mis[-8:]
 
         recent_outcomes = [
-            str(x or "").strip().lower()
-            for x in list(metrics.get("recent_outcomes", []) or [])
-            if str(x or "").strip()
+            str(x or "").strip().lower() for x in list(metrics.get("recent_outcomes", []) or []) if str(x or "").strip()
         ]
         if outcome:
             recent_outcomes.append(outcome)
@@ -2270,6 +2951,10 @@ class InMemoryTutorLearnerModelStore:
 
 from functools import lru_cache
 
+from .components.performance.caching import PerformanceCacheService, create_performance_cache_service
+from .components.performance.optimization import PerformanceMiddleware
+from .components.performance.profiler import PerformanceProfiler
+
 
 def _normalize_free_text(value: Any) -> str:
     text = str(value or "").strip().lower()
@@ -2282,6 +2967,7 @@ def _normalize_free_text(value: Any) -> str:
 def _normalized_cached(value: str) -> str:
     # value expected to be str already
     return _normalize_free_text(value)
+
 
 @lru_cache(maxsize=4096)
 def _tokenize_words(value: Any) -> tuple[str, ...]:
@@ -2327,7 +3013,10 @@ class DeterministicTutorPracticeService:
             return ()
 
         mode = str(getattr(session_state, "mode", "auto") or "auto").strip().lower()
-        topic = str(getattr(session_state, "topic", "") or getattr(app_snapshot, "current_topic", "") or "").strip() or "current topic"
+        topic = (
+            str(getattr(session_state, "topic", "") or getattr(app_snapshot, "current_topic", "") or "").strip()
+            or "current topic"
+        )
         topic_tokens = [t for t in _tokenize_words(topic) if len(t) >= 3]
         core_keywords = tuple(topic_tokens[:3]) or ("concept", "application")
         misconceptions = tuple(getattr(learner_profile, "misconception_tags_top", ()) or ())
@@ -2472,8 +3161,14 @@ class DeterministicTutorPracticeService:
         except Exception:
             prior_round = 0
         variant_round = max(1, prior_round + 1)
-        difficulty_map = {"easier": "easy", "same": str(getattr(item, "difficulty", "medium") or "medium"), "harder": "hard"}
-        difficulty = str(difficulty_map.get(next_diff, str(getattr(item, "difficulty", "medium") or "medium")) or "medium")
+        difficulty_map = {
+            "easier": "easy",
+            "same": str(getattr(item, "difficulty", "medium") or "medium"),
+            "harder": "hard",
+        }
+        difficulty = str(
+            difficulty_map.get(next_diff, str(getattr(item, "difficulty", "medium") or "medium")) or "medium"
+        )
 
         base_meta: dict[str, Any] = dict(source_meta)
         base_meta["variant_of"] = variant_of
@@ -2498,10 +3193,14 @@ class DeterministicTutorPracticeService:
                     "then add one common mistake to avoid."
                 )
                 expected_format = "2-4 short lines"
-                hints = tuple(dict.fromkeys(tuple(getattr(item, "rubric_hints", ()) or ()) + ("fresh wording", "common mistake")))
+                hints = tuple(
+                    dict.fromkeys(tuple(getattr(item, "rubric_hints", ()) or ()) + ("fresh wording", "common mistake"))
+                )
                 variant_kind = "paraphrase_plus_pitfall"
                 transfer_level = "near"
-                optional_keywords = list(dict.fromkeys(list(source_meta.get("optional_keywords") or []) + ["mistake", "avoid"]))
+                optional_keywords = list(
+                    dict.fromkeys(list(source_meta.get("optional_keywords") or []) + ["mistake", "avoid"])
+                )
             else:
                 prompt = (
                     f"Variant re-test ({variant_round}): answer the same concept in a new scenario/example for {topic}. "
@@ -2598,7 +3297,9 @@ class DeterministicTutorPracticeService:
             difficulty=difficulty,
             source="tutor_micro_variant",
             capability_tags=tuple(getattr(item, "capability_tags", ()) or ()),
-            rubric_hints=tuple(dict.fromkeys(tuple(getattr(item, "rubric_hints", ()) or ()) + ("method", "application"))),
+            rubric_hints=tuple(
+                dict.fromkeys(tuple(getattr(item, "rubric_hints", ()) or ()) + ("method", "application"))
+            ),
             meta=base_meta,
         )
 
@@ -2625,11 +3326,17 @@ class DeterministicTutorAssessmentService:
             return self._assess_mcq(item, answer_text)
         if item_type == "calculation_step":
             return self._assess_numeric(item, answer_text)
-        return self._assess_keyword_based(
-            item=item,
-            answer_text=answer_text,
-            session_state=session_state,
-            learner_profile=learner_profile,
+        # Open-ended items: no keyword matching; use AI judge (see AITutorAssessmentService).
+        marks_max = float(meta.get("marks_max", 2.0) or 2.0)
+        return TutorAssessmentResult(
+            item_id=item.item_id,
+            outcome="partial",
+            marks_awarded=round(marks_max * 0.5, 2),
+            marks_max=marks_max,
+            feedback="Open-ended assessment requires AI judge. Enable a local model for expert grading.",
+            error_tags=("ai_judge_required",),
+            retry_recommended=True,
+            next_difficulty="same",
         )
 
     def _assess_mcq(self, item: TutorPracticeItem, answer_text: str) -> TutorAssessmentResult:
@@ -2638,7 +3345,9 @@ class DeterministicTutorAssessmentService:
         picked_match = re.search(r"[A-Da-d]", str(answer_text or ""))
         picked = picked_match.group(0).upper() if picked_match else _normalize_free_text(answer_text).upper()
         marks_max = float(meta.get("marks_max", 1.0) or 1.0)
-        error_tags_by_option = meta.get("error_tags_by_option", {}) if isinstance(meta.get("error_tags_by_option"), dict) else {}
+        error_tags_by_option = (
+            meta.get("error_tags_by_option", {}) if isinstance(meta.get("error_tags_by_option"), dict) else {}
+        )
         if expected and picked == expected:
             return TutorAssessmentResult(
                 item_id=item.item_id,
@@ -2747,7 +3456,9 @@ class DeterministicTutorAssessmentService:
         text_norm = _normalize_free_text(answer_text)
         answer_tokens = set(_tokenize_words(answer_text))
         required_keywords = self._collect_keywords(item, meta)
-        optional_keywords = tuple(str(x).strip().lower() for x in (meta.get("optional_keywords") or []) if str(x).strip())
+        optional_keywords = tuple(
+            str(x).strip().lower() for x in (meta.get("optional_keywords") or []) if str(x).strip()
+        )
         if not text_norm:
             return TutorAssessmentResult(
                 item_id=item.item_id,
@@ -2924,6 +3635,265 @@ class DeterministicTutorAssessmentService:
         return tuple(out)
 
 
+def _extract_first_json_object(text: str) -> str | None:
+    """Extract first {...} or [...] from text. Returns None if not found."""
+    if not text or not isinstance(text, str):
+        return None
+    start = text.find("{")
+    if start < 0:
+        start = text.find("[")
+    if start < 0:
+        return None
+    depth = 0
+    open_ch, close_ch = ("{", "}") if text[start] == "{" else ("[", "]")
+    for i in range(start, len(text)):
+        if text[i] == open_ch:
+            depth += 1
+        elif text[i] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+@dataclass
+class AITutorAssessmentService:
+    """Practice loop assessment using AI judge only. No keyword matching."""
+
+    generate_fn: Callable[[str], tuple[str, str | None]]
+    deterministic_fallback: DeterministicTutorAssessmentService = field(
+        default_factory=DeterministicTutorAssessmentService
+    )
+    get_suggested_tags: Callable[[str, str], Sequence[str]] | None = None
+
+    def assess(
+        self,
+        *,
+        item: TutorPracticeItem,
+        submission: TutorAssessmentSubmission,
+        session_state: TutorSessionState,
+        learner_profile: TutorLearnerProfileSnapshot,
+    ) -> TutorAssessmentResult:
+        item_type = str(getattr(item, "item_type", "") or "").strip().lower()
+        answer_text = str(getattr(submission, "answer_text", "") or "")
+        # MCQ and numeric: use deterministic (no keywords).
+        if item_type == "mcq" or item_type == "calculation_step":
+            return self.deterministic_fallback.assess(
+                item=item,
+                submission=submission,
+                session_state=session_state,
+                learner_profile=learner_profile,
+            )
+        # Open-ended: AI judge only (expertise-based, no keyword matching).
+        return self._assess_with_ai(
+            item=item,
+            submission=submission,
+            answer_text=answer_text,
+            session_state=session_state,
+            learner_profile=learner_profile,
+        )
+
+    def _assess_with_ai(
+        self,
+        *,
+        item: TutorPracticeItem,
+        submission: TutorAssessmentSubmission,
+        answer_text: str,
+        session_state: TutorSessionState,
+        learner_profile: TutorLearnerProfileSnapshot,
+    ) -> TutorAssessmentResult:
+        meta = dict(getattr(item, "meta", {}) or {})
+        marks_max = float(meta.get("marks_max", 2.0) or 2.0)
+        if not str(answer_text or "").strip():
+            return TutorAssessmentResult(
+                item_id=item.item_id,
+                outcome="incorrect",
+                marks_awarded=0.0,
+                marks_max=marks_max,
+                feedback="No answer provided yet.",
+                error_tags=("empty_answer",),
+                retry_recommended=True,
+                next_difficulty="same",
+            )
+        prompt = self._build_judge_prompt(
+            item=item,
+            submission=submission,
+            answer_text=answer_text,
+            session_state=session_state,
+            learner_profile=learner_profile,
+        )
+        text, err = self.generate_fn(prompt)
+        if err or not (text or "").strip():
+            return TutorAssessmentResult(
+                item_id=item.item_id,
+                outcome="partial",
+                marks_awarded=round(marks_max * 0.5, 2),
+                marks_max=marks_max,
+                feedback="Assessment unavailable; try again or enable local model.",
+                error_tags=("ai_judge_unavailable",),
+                retry_recommended=True,
+                next_difficulty="same",
+            )
+        payload = self._parse_judge_response(text, item.item_id, marks_max)
+        if payload is not None:
+            logger.info(
+                "assessment_audit",
+                extra={
+                    "item_id": item.item_id,
+                    "outcome": payload.outcome,
+                    "marks_awarded": payload.marks_awarded,
+                    "marks_max": payload.marks_max,
+                    "source": "ai_judge",
+                },
+            )
+            return payload
+        # Stricter fallback: retry with JSON-only instruction and shorter prompt.
+        retry_prompt = self._build_judge_prompt_json_only(
+            item=item, answer_text=answer_text, session_state=session_state, learner_profile=learner_profile
+        )
+        text2, err2 = self.generate_fn(retry_prompt)
+        if not err2 and (text2 or "").strip():
+            payload = self._parse_judge_response(text2, item.item_id, marks_max)
+            if payload is not None:
+                logger.info(
+                    "assessment_audit",
+                    extra={
+                        "item_id": item.item_id,
+                        "outcome": payload.outcome,
+                        "marks_awarded": payload.marks_awarded,
+                        "marks_max": payload.marks_max,
+                        "source": "ai_judge_retry",
+                    },
+                )
+                return payload
+        return TutorAssessmentResult(
+            item_id=item.item_id,
+            outcome="partial",
+            marks_awarded=round(marks_max * 0.5, 2),
+            marks_max=marks_max,
+            feedback="Could not parse AI judgement; answer recorded.",
+            retry_recommended=True,
+            next_difficulty="same",
+        )
+
+    def _build_judge_prompt(
+        self,
+        *,
+        item: TutorPracticeItem,
+        submission: TutorAssessmentSubmission | None,
+        answer_text: str,
+        session_state: TutorSessionState,
+        learner_profile: TutorLearnerProfileSnapshot,
+    ) -> str:
+        module = str(getattr(learner_profile, "module", "") or getattr(session_state, "module", "") or "").strip()
+        topic = str(getattr(item, "topic", "") or "").strip()
+        prompt = str(getattr(item, "prompt", "") or "").strip()
+        rubric_hints = tuple(getattr(item, "rubric_hints", ()) or ())
+        payload_blocks: list[tuple[str, str]] = [
+            ("Module", module or "ACCA"),
+            ("Topic", topic or "n/a"),
+        ]
+        if submission is not None:
+            conf = getattr(submission, "confidence", None)
+            if conf is not None and isinstance(conf, (int, float)):
+                try:
+                    c = max(1, min(5, int(conf)))
+                    payload_blocks.append(("Learner confidence (1–5)", str(c)))
+                except Exception:
+                    pass
+        get_tags = self.get_suggested_tags
+        if get_tags is not None and module and topic:
+            try:
+                suggested = list(get_tags(module, topic))[:12]
+                if suggested:
+                    payload_blocks.append(
+                        ("Suggested tags for this topic (choose or align with)", ", ".join(str(t) for t in suggested))
+                    )
+            except Exception:
+                pass
+        payload_blocks.append(("Question", prompt[:2000] or "n/a"))
+        if rubric_hints:
+            focus_parts = [str(h) for h in list(rubric_hints)[:5]]
+            payload_blocks.append(("Marking focus", ", ".join(focus_parts)))
+        payload_blocks.append(("Learner answer", (answer_text or "")[:3000].strip() or "n/a"))
+        return build_judge_prompt_3es(
+            role_base=ASSESSMENT_JUDGE_ROLE_BASE,
+            schema_one_line=ASSESSMENT_JUDGE_SCHEMA_ONE_LINE,
+            rules=list(ASSESSMENT_JUDGE_RULES or []),
+            payload_blocks=payload_blocks,
+        )
+
+    def _build_judge_prompt_json_only(
+        self,
+        *,
+        item: TutorPracticeItem,
+        answer_text: str,
+        session_state: TutorSessionState,
+        learner_profile: TutorLearnerProfileSnapshot,
+    ) -> str:
+        """Shorter prompt for parse retry: insist on JSON only (3Es order, minimal payload)."""
+        module = str(getattr(learner_profile, "module", "") or getattr(session_state, "module", "") or "").strip()
+        topic = str(getattr(item, "topic", "") or "").strip()
+        prompt = str(getattr(item, "prompt", "") or "").strip()
+        payload_blocks = [
+            ("Module", f"{module or 'ACCA'} Topic: {topic or 'n/a'}"),
+            ("Question", (prompt or "")[:800] or "n/a"),
+            ("Learner answer", (str(answer_text or "").strip())[:1500] or "n/a"),
+        ]
+        return build_judge_prompt_3es(
+            role_base=JUDGE_JSON_ONLY,
+            schema_one_line=ASSESSMENT_JUDGE_SCHEMA_ONE_LINE,
+            rules=[],
+            payload_blocks=payload_blocks,
+        )
+
+    def _parse_judge_response(self, text: str, item_id: str, marks_max: float) -> TutorAssessmentResult | None:
+        raw = _extract_first_json_object(text)
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        outcome = str(data.get("outcome", "") or "incorrect").strip().lower()
+        if outcome not in ("correct", "partial", "incorrect"):
+            outcome = "incorrect"
+        try:
+            marks_awarded = float(data.get("marks_awarded", 0.0) or 0.0)
+        except Exception:
+            marks_awarded = 0.0
+        marks_awarded = max(0.0, min(marks_max, round(marks_awarded, 2)))
+        feedback = str(data.get("feedback", "") or "").strip() or "Assessed."
+        error_tags_raw = data.get("error_tags")
+        if isinstance(error_tags_raw, list):
+            error_tags = tuple(str(x).strip() for x in error_tags_raw if str(x).strip())[:6]
+        else:
+            error_tags = ()
+        misconception_tags: tuple[str, ...] = ()
+        mis_raw = data.get("misconception_tags")
+        if isinstance(mis_raw, list):
+            misconception_tags = tuple(str(x).strip() for x in mis_raw if str(x).strip())[:6]
+        else:
+            main_mis = data.get("main_misconception")
+            if isinstance(main_mis, str) and main_mis.strip():
+                misconception_tags = (main_mis.strip(),)
+        suggested_next_step = str(data.get("suggested_next_step", "") or "").strip()[:300] or ""
+        return TutorAssessmentResult(
+            item_id=item_id,
+            outcome=outcome,
+            marks_awarded=marks_awarded,
+            marks_max=marks_max,
+            feedback=feedback[:500],
+            error_tags=error_tags,
+            misconception_tags=misconception_tags,
+            suggested_next_step=suggested_next_step,
+            retry_recommended=outcome != "correct",
+            next_difficulty="harder" if outcome == "correct" else ("easier" if outcome == "incorrect" else "same"),
+        )
+
+
 @dataclass
 class DeterministicTutorInterventionPolicyService:
     """Phase 3 starter: deterministic corrective intervention mapping.
@@ -2931,6 +3901,7 @@ class DeterministicTutorInterventionPolicyService:
     Chooses a correction style using outcome/error/misconception signals. This remains
     advisory and explainable (no direct state mutation).
     """
+
     module_adapter: ModuleAdapter | None = None
 
     def choose_intervention(
@@ -2944,9 +3915,7 @@ class DeterministicTutorInterventionPolicyService:
     ) -> dict[str, object]:
         outcome = str(getattr(assessment_result, "outcome", "") or "").strip().lower() or "incorrect"
         error_tags = tuple(
-            str(x).strip().lower()
-            for x in tuple(getattr(assessment_result, "error_tags", ()) or ())
-            if str(x).strip()
+            str(x).strip().lower() for x in tuple(getattr(assessment_result, "error_tags", ()) or ()) if str(x).strip()
         )
         mis_tags = tuple(
             str(x).strip().lower()
@@ -2983,14 +3952,21 @@ class DeterministicTutorInterventionPolicyService:
         recommended_variant = bool(retry_recommended)
         severity = "info"
 
-        if any(tag in error_tags for tag in ("no_numeric_answer", "numeric_mismatch", "numeric_precision")) or item_type == "calculation_step":
+        if (
+            any(tag in error_tags for tag in ("no_numeric_answer", "numeric_mismatch", "numeric_precision"))
+            or item_type == "calculation_step"
+        ):
             intervention_type = "step_drill"
-            rationale = "Numeric/procedural error detected. Rebuild the method step-by-step before checking the final value."
+            rationale = (
+                "Numeric/procedural error detected. Rebuild the method step-by-step before checking the final value."
+            )
             hint_strategy = "show_method_steps"
             severity = "warning" if outcome != "correct" else "info"
         elif mis_tags or recurrence_count >= 2:
             intervention_type = "worked_example_then_retest"
-            rationale = "Recurring misconception signal detected. Correct with a worked example, then re-test on a new variant."
+            rationale = (
+                "Recurring misconception signal detected. Correct with a worked example, then re-test on a new variant."
+            )
             hint_strategy = "worked_example"
             recommended_variant = True
             severity = "intervention" if recurrence_count >= 2 or streak_incorrect >= 2 else "warning"
@@ -3096,7 +4072,9 @@ class RuleBasedTutorLearningLoopService:
             if "posterior_mean" in cognitive_meta:
                 session_meta["cognitive_posterior_mean"] = float(cognitive_meta.get("posterior_mean", 0.0) or 0.0)
             if "posterior_variance" in cognitive_meta:
-                session_meta["cognitive_posterior_variance"] = float(cognitive_meta.get("posterior_variance", 0.0) or 0.0)
+                session_meta["cognitive_posterior_variance"] = float(
+                    cognitive_meta.get("posterior_variance", 0.0) or 0.0
+                )
             session_meta["cognitive_struggle_mode"] = bool(cognitive_meta.get("struggle_mode", False))
 
         session_state = self.session_controller.save_session(
@@ -3390,7 +4368,9 @@ class RuleBasedTutorLearningLoopService:
         if not mode or mode == "auto":
             return None
         try:
-            supported = {str(x or "").strip().lower() for x in (adapter.supported_tutor_modes() or ()) if str(x or "").strip()}
+            supported = {
+                str(x or "").strip().lower() for x in (adapter.supported_tutor_modes() or ()) if str(x or "").strip()
+            }
         except Exception:
             supported = set()
         if supported and mode not in supported:
@@ -3439,7 +4419,9 @@ class RuleBasedTutorLearningLoopService:
         phase_after_turn: str,
     ) -> TutorActionIntent | None:
         autonomy_mode = str(getattr(request, "autonomy_mode", "assist") or "assist").strip().lower()
-        current_topic = str(getattr(app_snapshot, "current_topic", "") or getattr(session_state, "topic", "") or "").strip()
+        current_topic = str(
+            getattr(app_snapshot, "current_topic", "") or getattr(session_state, "topic", "") or ""
+        ).strip()
         weak_topics = tuple(getattr(app_snapshot, "weak_topics_top3", ()) or ())
         must_review_due = int(getattr(app_snapshot, "must_review_due", 0) or 0)
         overdue = int(getattr(app_snapshot, "overdue_srs_count", 0) or 0)
@@ -3619,7 +4601,11 @@ class RuleBasedTutorLearningLoopService:
         cached = self._last_tuned_thresholds
         if isinstance(cached, TutorLoopPolicyThresholds):
             return cached.clamped()
-        base = self.policy_thresholds if isinstance(self.policy_thresholds, TutorLoopPolicyThresholds) else TutorLoopPolicyThresholds()
+        base = (
+            self.policy_thresholds
+            if isinstance(self.policy_thresholds, TutorLoopPolicyThresholds)
+            else TutorLoopPolicyThresholds()
+        )
         return base.clamped()
 
     def _refresh_tuned_thresholds(
@@ -3628,7 +4614,11 @@ class RuleBasedTutorLearningLoopService:
         learner_profile: TutorLearnerProfileSnapshot,
         app_snapshot: AppStateSnapshot,
     ) -> TutorLoopPolicyThresholds:
-        base = self.policy_thresholds if isinstance(self.policy_thresholds, TutorLoopPolicyThresholds) else TutorLoopPolicyThresholds()
+        base = (
+            self.policy_thresholds
+            if isinstance(self.policy_thresholds, TutorLoopPolicyThresholds)
+            else TutorLoopPolicyThresholds()
+        )
         base = base.clamped()
         metrics = self._learner_loop_metrics(learner_profile)
         tuner = self.policy_tuning_service
@@ -3667,7 +4657,9 @@ class RuleBasedTutorLearningLoopService:
         practice_items: tuple[TutorPracticeItem, ...],
         action_intent: TutorActionIntent | None,
     ) -> str:
-        topic = str(getattr(session_state, "topic", "") or getattr(request.app_snapshot, "current_topic", "") or "current topic")
+        topic = str(
+            getattr(session_state, "topic", "") or getattr(request.app_snapshot, "current_topic", "") or "current topic"
+        )
         lines = [
             f"Planner mode: {mode_used}",
             f"Loop phase: {phase_after_turn}",

@@ -1,0 +1,21 @@
+# Example Garuda-style dracut drop-in. Do NOT copy verbatim: your root UUID,
+# subvol=, splash paths, and Secure Boot keys differ per machine.
+#
+# Prefer: keep your existing /etc/dracut.conf.d/dracut-custom.conf and run
+#   ./install-garuda-host.sh
+# which merges kernel-cmdline-studyplan-tuning.txt into your kernel_cmdline= line.
+#
+# To build this file from scratch, start from your live config:
+#   sudo cp /etc/dracut.conf.d/dracut-custom.conf /tmp/dracut-backup.conf
+
+compress='zstd'
+use_fstab='yes'
+early_microcode='yes'
+hostonly='yes'
+kernel_cmdline="root=UUID=REPLACE_WITH_BLKID rootflags=subvol=@ rw quiet loglevel=3"
+show_modules='yes'
+uefi='yes'
+machine_id='yes'
+# uefi_splash_image=...
+# uefi_secureboot_cert=...
+# uefi_secureboot_key=...

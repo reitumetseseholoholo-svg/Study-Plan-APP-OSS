@@ -6,13 +6,31 @@ on:
     paths:
       - 'studyplan/**/*.py'
       - 'tests/**/*.py'
+      - 'studyplan/testing/**/*.py'
+      - 'studyplan_app.py'
+      - 'studyplan_ai_tutor.py'
+      - 'studyplan_engine.py'
+      - 'studyplan_file_safety.py'
+      - 'studyplan_app_path_utils.py'
+      - 'studyplan_app_kpi_routing.py'
+      - 'studyplan_ui_runtime.py'
       - 'pyproject.toml'
+      - '.github/workflows/**'
   pull_request:
     branches: [main, develop]
     paths:
       - 'studyplan/**/*.py'
       - 'tests/**/*.py'
+      - 'studyplan/testing/**/*.py'
+      - 'studyplan_app.py'
+      - 'studyplan_ai_tutor.py'
+      - 'studyplan_engine.py'
+      - 'studyplan_file_safety.py'
+      - 'studyplan_app_path_utils.py'
+      - 'studyplan_app_kpi_routing.py'
+      - 'studyplan_ui_runtime.py'
       - 'pyproject.toml'
+      - '.github/workflows/**'
 
 jobs:
   quality-gates:
