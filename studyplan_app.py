@@ -6170,7 +6170,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not answer:
                 _set_status("Write an answer in the Practice Loop box first.")
                 return
-            assessor = getattr(self, "_tutor_assessment_service", None)
+            assessor = self._get_active_tutor_assessment_service()
             learner_store = getattr(self, "_tutor_learner_model_store", None)
             if assessor is None or not hasattr(assessor, "assess"):
                 _set_status("Tutor assessment service unavailable.")
@@ -23756,6 +23756,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             return []
 
+    def _get_active_tutor_assessment_service(self):
+        """Return AITutorAssessmentService when local LLM is enabled so open-ended answers get AI marking.
+
+        Falls back to the deterministic service otherwise (MCQ/numeric work correctly without AI;
+        open-ended items return a partial placeholder with an explanation).
+        """
+        if bool(getattr(self, "local_llm_enabled", False)):
+            return AITutorAssessmentService(
+                generate_fn=self._ollama_generate_for_practice_judge,
+                get_suggested_tags=self._get_suggested_tags_for_judge,
+            )
+        return getattr(self, "_tutor_assessment_service", None) or DeterministicTutorAssessmentService()
+
     def _get_practice_loop_controller(self) -> PracticeLoopController:
         ctrl = getattr(self, "_practice_loop_controller", None)
         if isinstance(ctrl, PracticeLoopController):
@@ -32571,13 +32584,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 setattr(self, "_coach_pick_topic", coach_topic)
             except Exception:
                 pass
-            current_topic = ""
+            # Always align current_topic with the coach pick so the tutor workspace
+            # reflects the recommended topic regardless of the previous selection.
+            self._set_current_topic(coach_topic, invalidate_snapshot=False)
+            # When no active quiz is guarding the cognitive state, also sync
+            # active_chapter so the tutor context label and status bar show the
+            # coach-recommended topic immediately.
             try:
-                current_topic = str(getattr(self, "current_topic", "") or "").strip()
+                cog = self._cognitive_state()
+                if isinstance(cog, CognitiveState) and not bool(getattr(cog, "quiz_active", False)):
+                    lock_fn = getattr(self, "_cognitive_state_lock_for", None)
+                    lock = lock_fn(cog) if callable(lock_fn) else None
+                    if lock is None:
+                        lock = threading.RLock()
+                    with locked_cognitive_state(cog, lock):
+                        cog.working_memory.active_chapter = coach_topic
             except Exception:
-                current_topic = ""
-            if bool(getattr(self, "coach_only_view", False)) or not current_topic:
-                self._set_current_topic(coach_topic, invalidate_snapshot=False)
+                pass
         except Exception:
             pass
 
