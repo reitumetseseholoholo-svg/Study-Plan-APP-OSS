@@ -73,6 +73,14 @@
                 <property name="tooltip-text">Analyze transfer learning and brittleness</property>
               </object>
             </child>
+            
+            <child>
+              <object class="GtkButton" id="profile_button">
+                <property name="label">User Profile</property>
+                <property name="css-classes">nav-button</property>
+                <property name="tooltip-text">View your learner profile, preferences, and analytics</property>
+              </object>
+            </child>
           </object>
         </child>
         
