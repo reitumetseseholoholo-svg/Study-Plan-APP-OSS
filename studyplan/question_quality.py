@@ -40,6 +40,9 @@ _GAP_OPTION_GENERIC = re.compile(
     r"(?i)^\s*(?:option|choice)\s*[abcd]\s*$|^\s*[abcd][\.\:\)]\s*(?:option|text|choice)\s*\d?\s*$"
 )
 _GAP_OPTION_TBD = re.compile(r"(?i)\b(?:placeholder|tbd|todo|lorem\s+ipsum|\[insert)\b")
+# Single-letter correct field (LLM used 'A'/'B'/'C'/'D' instead of full option text).
+# The app shuffles options on screen, so a bare letter reference is positionally meaningless.
+_CORRECT_IS_BARE_LETTER = re.compile(r"^[A-Da-d]$")
 CALC_KEYWORDS_PATTERN = re.compile(
     r"\b(calculate|compute|derive|estimate|evaluate|discount|npv|irr|wacc|capm|variance|sensitivity)\b",
     re.IGNORECASE,
@@ -74,6 +77,21 @@ def gap_options_look_like_llm_placeholders(options: list[str]) -> bool:
     if stems and len(set(stems)) == 1 and len(stems[0]) >= 8:
         return True
     return False
+
+
+def correct_is_bare_letter(item: dict[str, Any]) -> bool:
+    """
+    Return True when the 'correct' field is a single letter (A/B/C/D).
+
+    The app randomises option display order on screen, so a bare letter reference is
+    positionally meaningless — the question is unanswerably ambiguous without knowing
+    the original rendering order.  The correct field must always be the full text of
+    the winning option, exactly matching one entry in options[].
+    """
+    if not isinstance(item, dict):
+        return False
+    raw = str(item.get("correct", "") or "").strip()
+    return bool(_CORRECT_IS_BARE_LETTER.match(raw))
 
 
 def option_looks_like_see_explanation(option_text: str) -> bool:
@@ -311,7 +329,12 @@ class QuestionQuality:
                 self.score -= 0.5
                 break
         correct = str(self.item.get("correct", "")).strip()
-        if correct not in opts:
+        # Bare letter (A/B/C/D) in 'correct' means the LLM used position-based referencing.
+        # The app shuffles options on display, so this answer is ambiguous and untrustworthy.
+        if _CORRECT_IS_BARE_LETTER.match(correct):
+            self.errors.append("correct field is a bare letter (A/B/C/D) — must be full option text")
+            self.score -= 0.5
+        elif correct not in opts:
             self.errors.append("correct answer not present in options")
             self.score -= 0.4
         # check variety
@@ -425,12 +448,13 @@ def get_poor_quality_indices(
     detect_similar: bool = True,
     similar_min_words: int = 8,
     detect_length_guessable: bool = True,
+    detect_bare_letter_correct: bool = True,
 ) -> List[Tuple[int, str]]:
     """
     Return indices of poor-quality questions that should be removed from the bank.
     Each element is (index, reason). Reasons include: 'see_explanation_in_options',
     'similar_question', 'correct_option_much_longer_than_distractors',
-    'correct_option_much_shorter_than_distractors'.
+    'correct_option_much_shorter_than_distractors', 'correct_is_bare_letter'.
     """
     poor: List[Tuple[int, str]] = []
     if not items:
@@ -444,6 +468,9 @@ def get_poor_quality_indices(
                 if option_looks_like_see_explanation(str(o or "")):
                     poor.append((idx, "see_explanation_in_options"))
                     break
+        if detect_bare_letter_correct and not any(i == idx for i, _ in poor):
+            if correct_is_bare_letter(item):
+                poor.append((idx, "correct_is_bare_letter"))
         if detect_length_guessable and not any(i == idx for i, _ in poor):
             lg_reason = correct_option_length_guessable_reason(item)
             if lg_reason:

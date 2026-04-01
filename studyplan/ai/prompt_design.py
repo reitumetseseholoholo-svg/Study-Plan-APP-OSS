@@ -44,8 +44,8 @@ SYLLABUS_JSON_ONLY = "Return valid JSON only, no markdown or explanation."
 GAP_SCHEMA_ONE_LINE = (
     '{"chapter":"<exact chapter title from payload>","questions":['
     '{"question":"exam-style stem with command verb (Calculate/Evaluate/…)",'
-    '"options":["Full text option A","Full text B","Full text C","Full text D"],'
-    '"correct":"Full text B" or "B",'
+    '"options":["First answer choice — full sentence","Second answer choice — full sentence","Third answer choice — full sentence","Fourth answer choice — full sentence"],'
+    '"correct":"<exact copy of the one correct option string from the options array>",'
     '"explanation":"brief syllabus-grounded rationale"}]}'
 )
 SECTION_C_SCHEMA_ONE_LINE = (
@@ -121,20 +121,32 @@ GAP_GENERATION_ROLE_BASE = (
 )
 GAP_GENERATION_RULES = [
     "Output: one JSON object with \"chapter\" (string) and \"questions\" (array), or a bare JSON array of question objects. No markdown fence, no commentary outside JSON.",
-    "Schema: each question object has \"question\" (string), \"options\" (array of exactly four strings — full option text, not placeholders), \"correct\" (exact copy of the winning option string, or the letter \"A\"|\"B\"|\"C\"|\"D\"), and \"explanation\" (string).",
-    "Stems: ACCA-style command verbs (Calculate, Evaluate, Recommend, Explain, Discuss, Compare, Assess, Advise). One unambiguous best answer; no trick wording; include marks in the stem when appropriate (e.g. (2 marks)).",
-    "Options: four parallel, plausible distractors rooted in typical syllabus misconceptions — not nonsense or filler. Do not use \"See explanation\", \"All of the above\", or placeholder labels as option bodies.",
     (
-        "Length-balance contract (same checks as the app’s strict auto-save gate and bank quarantine): "
-        f"once the three incorrect options average ≥{MCQ_GAP_MIN_AVG_DISTRACTOR_CHARS_LONG_RULE} characters, "
-        f"the correct option must not be ≥{MCQ_GAP_LONG_OUTLIER_VS_DISTRACTOR_MEAN}× that average length "
-        "(avoid the obvious “longest answer is correct” leak). "
-        f"When those three average ≥{MCQ_GAP_MIN_AVG_DISTRACTOR_CHARS_SHORT_RULE} characters, "
-        f"the correct option must not be ≤{MCQ_GAP_SHORT_OUTLIER_VS_DISTRACTOR_MEAN}× that average "
-        "(avoid the extreme short outlier). Aim for similar word counts and grammatical shape across A–D."
+        "Schema: each question object has \"question\" (string), \"options\" (array of exactly four strings — "
+        "every option must be a full, substantive answer sentence, never a placeholder like 'Option A', 'Choice B', or 'Full text C'), "
+        "\"correct\" (the EXACT full text of the one correct option — copy it verbatim from the options array; "
+        "do NOT use a letter like 'A', 'B', 'C', or 'D' — the app shuffles option order on screen so a letter reference is meaningless and will be rejected), "
+        "and \"explanation\" (string)."
+    ),
+    "Stems: ACCA-style command verbs (Calculate, Evaluate, Recommend, Explain, Discuss, Compare, Assess, Advise). One unambiguous best answer; no trick wording; include marks in the stem when appropriate (e.g. (2 marks)).",
+    (
+        "Options quality: four parallel, plausible distractors rooted in typical syllabus misconceptions — not nonsense or filler. "
+        "Do not use 'See explanation', 'All of the above', 'None of the above', or any meta-option as one of the four choices. "
+        "Do not use placeholder labels (e.g. 'Option A', 'Choice B', 'Full text C', 'TBD'). "
+        "Vary which option is correct across questions — do not always place the correct answer in the same position."
+    ),
+    (
+        "Length-balance contract (same checks as the app's strict auto-save gate and bank quarantine): "
+        f"once the three incorrect options average \u2265{MCQ_GAP_MIN_AVG_DISTRACTOR_CHARS_LONG_RULE} characters, "
+        f"the correct option must not be \u2265{MCQ_GAP_LONG_OUTLIER_VS_DISTRACTOR_MEAN}x that average length "
+        "(avoid the obvious 'longest answer is correct' leak). "
+        f"When those three average \u2265{MCQ_GAP_MIN_AVG_DISTRACTOR_CHARS_SHORT_RULE} characters, "
+        f"the correct option must not be \u2264{MCQ_GAP_SHORT_OUTLIER_VS_DISTRACTOR_MEAN}x that average "
+        "(avoid the extreme short outlier). Aim for similar word counts and grammatical shape across all four options."
     ),
     "Structural parity: similar sentence length, clause count, and technical depth across all four options so candidates must use knowledge, not layout heuristics.",
-    "Quality over quantity: fewer flawless items beat many uneven ones. Avoid duplicating stems the model already emitted in this response.",
+    "Difficulty: target ACCA Professional level. Avoid trivially simple recall (e.g. 'What does IAS stand for?'). Every stem must require applying knowledge of the standard to a scenario or concept, not just reproducing a definition verbatim.",
+    "Quality over quantity: fewer flawless items beat many uneven ones. Avoid duplicating stems already emitted in this response.",
     GRAMMAR_QUALITY_RULE,
 ]
 

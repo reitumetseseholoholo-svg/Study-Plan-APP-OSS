@@ -1,0 +1,547 @@
+{
+  "Chapter 1: International Financial Reporting Standards": [
+    {
+      "question": "The IASB replaced which predecessor body when it was established in 2001?",
+      "options": [
+        "The International Auditing and Assurance Standards Board (IAASB)",
+        "The International Accounting Standards Committee (IASC)",
+        "The International Federation of Accountants (IFAC)",
+        "The International Valuation Standards Council (IVSC)"
+      ],
+      "correct": "The International Accounting Standards Committee (IASC)",
+      "explanation": "The IASB was formed in 2001 as part of a reorganisation that replaced the IASC, which had issued IAS Standards since 1973. The IASB adopted those IAS and now issues IFRS Standards."
+    },
+    {
+      "question": "Which body within the IFRS Foundation structure is responsible for providing a broad consultative forum of senior stakeholder representatives?",
+      "options": [
+        "The IASB",
+        "The IFRS Interpretations Committee",
+        "The IFRS Advisory Council",
+        "The Monitoring Board"
+      ],
+      "correct": "The IFRS Advisory Council",
+      "explanation": "The IFRS Advisory Council provides a formal consultative forum for organisations and individuals with an interest in international financial reporting. It advises the IASB on priorities and issues."
+    },
+    {
+      "question": "Under the IFRS Foundation's governance structure, who appoints the members of the IASB?",
+      "options": [
+        "The Monitoring Board",
+        "The IFRS Foundation trustees",
+        "The IFRS Advisory Council",
+        "National standard-setters collectively"
+      ],
+      "correct": "The IFRS Foundation trustees",
+      "explanation": "The IFRS Foundation trustees appoint IASB members and oversee the IASB's work. The Monitoring Board provides public-sector oversight of the IFRS Foundation itself."
+    },
+    {
+      "question": "An entity has debt instruments listed on a regulated securities exchange. Under the IFRS for SMEs Standard, this entity:",
+      "options": [
+        "May use the IFRS for SMEs Standard if its total assets are below a specified threshold",
+        "Has public accountability and is therefore ineligible to use the IFRS for SMEs Standard",
+        "May use the IFRS for SMEs Standard with enhanced disclosures",
+        "Must use the IFRS for SMEs Standard in preference to full IFRS"
+      ],
+      "correct": "Has public accountability and is therefore ineligible to use the IFRS for SMEs Standard",
+      "explanation": "An entity with debt or equity instruments traded in a public market has public accountability. Such entities cannot use the IFRS for SMEs Standard; they must use full IFRS or the equivalent standards required by their regulator."
+    },
+    {
+      "question": "The IASB's due process when developing a new IFRS Standard typically includes all of the following EXCEPT:",
+      "options": [
+        "Publishing an Exposure Draft for public comment",
+        "Forming an advisory group of specialists",
+        "Obtaining formal approval from national finance ministries",
+        "Conducting a post-implementation review after the standard is applied"
+      ],
+      "correct": "Obtaining formal approval from national finance ministries",
+      "explanation": "The IASB's due process is independent of government approval. Steps include research, advisory groups, exposure drafts, re-deliberation, and post-implementation review. National adoption or endorsement is a separate jurisdiction-level process."
+    },
+    {
+      "question": "Which of the following best describes the Basis for Conclusions published alongside each IFRS?",
+      "options": [
+        "It is a binding part of the standard that must be applied by preparers",
+        "It is a non-mandatory document explaining the IASB's reasoning in reaching its conclusions",
+        "It summarises the views of national standard-setters only",
+        "It provides mandatory implementation guidance with worked examples"
+      ],
+      "correct": "It is a non-mandatory document explaining the IASB's reasoning in reaching its conclusions",
+      "explanation": "The Basis for Conclusions is published as a companion document and is not part of the authoritative text of the standard. It aids understanding but does not impose additional requirements."
+    },
+    {
+      "question": "The IFRS Interpretations Committee is best described as a body that:",
+      "options": [
+        "Replaces the IASB when it cannot reach a supermajority decision",
+        "Provides timely guidance on applying IFRS and resolves issues that have led to unsatisfactory practices",
+        "Issues IFRS Standards independently of the IASB",
+        "Sets auditing standards for the global profession"
+      ],
+      "correct": "Provides timely guidance on applying IFRS and resolves issues that have led to unsatisfactory practices",
+      "explanation": "The IFRS Interpretations Committee issues IFRIC Interpretations (now SIC Interpretations for older ones) to resolve application issues. Its interpretations must be approved by the IASB before publication."
+    },
+    {
+      "question": "In 2005, the European Union required listed companies within the EU to prepare consolidated financial statements using:",
+      "options": [
+        "US GAAP",
+        "IFRS as issued by the IASB, as endorsed by the EU",
+        "National GAAP of each member state",
+        "The IFRS for SMEs Standard"
+      ],
+      "correct": "IFRS as issued by the IASB, as endorsed by the EU",
+      "explanation": "From 2005, EU-listed companies preparing consolidated financial statements were required to use IFRS as adopted (endorsed) by the EU under the IAS Regulation. Endorsement means the EU may make limited modifications."
+    },
+    {
+      "question": "When an IAS Standard conflicts with a more recently issued IFRS Standard on the same topic, which should be applied?",
+      "options": [
+        "The IAS Standard, as it has more operational detail",
+        "The IFRS Standard, as it takes precedence over older IAS",
+        "Whichever gives the higher reported profit",
+        "Either, at the entity's choice, provided applied consistently"
+      ],
+      "correct": "The IFRS Standard, as it takes precedence over older IAS",
+      "explanation": "When the IASB issues a new IFRS that supersedes or amends an IAS, the IFRS takes precedence. Older IAS remain in force only where they have not been replaced or amended by IFRS."
+    },
+    {
+      "question": "Which of the following entities would most likely be required to use the IFRS for SMEs Standard rather than full IFRS?",
+      "options": [
+        "A bank holding retail deposits from the public",
+        "An unlisted medium-sized manufacturer that publishes general purpose financial statements and has no public accountability",
+        "A company with shares listed on a national stock exchange",
+        "A government-owned utility that issues public bonds"
+      ],
+      "correct": "An unlisted medium-sized manufacturer that publishes general purpose financial statements and has no public accountability",
+      "explanation": "The IFRS for SMEs Standard is designed for entities that publish general purpose financial statements and do not have public accountability. An unlisted manufacturer with no traded instruments and no fiduciary role would typically qualify, subject to national legislation."
+    },
+    {
+      "question": "The Monitoring Board, in the IFRS Foundation governance structure, provides oversight by:",
+      "options": [
+        "Issuing IFRS on behalf of the IASB when a supermajority cannot be reached",
+        "Providing public accountability of the IFRS Foundation trustees to capital market authorities",
+        "Approving each IFRS before it is issued to the public",
+        "Auditing the IFRS Foundation's financial statements"
+      ],
+      "correct": "Providing public accountability of the IFRS Foundation trustees to capital market authorities",
+      "explanation": "The Monitoring Board provides a formal link between the IFRS Foundation trustees and public authorities (e.g., IOSCO, the EU, and other securities regulators) to ensure public accountability in the governance of the IFRS Foundation."
+    },
+    {
+      "question": "Which statement most accurately describes the geographic scope of IFRS adoption?",
+      "options": [
+        "IFRS applies only in the European Union and G7 countries",
+        "More than 140 jurisdictions have required or permitted the use of IFRS for listed companies",
+        "IFRS is an optional alternative to national GAAP in all jurisdictions",
+        "Only developing economies use IFRS; developed economies use their own GAAP"
+      ],
+      "correct": "More than 140 jurisdictions have required or permitted the use of IFRS for listed companies",
+      "explanation": "As of recent years, IFRS has been adopted or permitted in over 140 jurisdictions worldwide, covering listed companies and often extending to other entities. The US and China are notable economies that maintain their own GAAP for domestic reporting."
+    },
+    {
+      "question": "A new IFRS Standard requires a supermajority vote of the IASB to be issued. What does this mean?",
+      "options": [
+        "A simple majority of 8 out of 14 IASB members must agree",
+        "At least nine of the fourteen IASB members must agree to issue the standard",
+        "All 14 IASB members must be in unanimous agreement",
+        "A two-thirds majority of the IFRS Foundation trustees must approve"
+      ],
+      "correct": "At least nine of the fourteen IASB members must agree to issue the standard",
+      "explanation": "A supermajority means at least nine of the fourteen IASB members must vote in favour to issue an IFRS Standard, Exposure Draft, or IFRIC Interpretation. This ensures broad consensus before major decisions are finalised."
+    },
+    {
+      "question": "An entity in a jurisdiction that has not adopted IFRS voluntarily chooses to prepare its financial statements using IFRS. Which of the following statements is correct?",
+      "options": [
+        "The entity may claim compliance with IFRS only if it is listed",
+        "The entity may claim compliance with IFRS in its financial statements if it complies with all applicable IFRS requirements",
+        "The entity must obtain specific permission from the IASB before claiming IFRS compliance",
+        "The entity can use only IFRS for SMEs because it is an unlisted entity"
+      ],
+      "correct": "The entity may claim compliance with IFRS in its financial statements if it complies with all applicable IFRS requirements",
+      "explanation": "IAS 1 (and now IFRS 18 when effective) allows any entity to claim compliance with IFRS if it meets all requirements of applicable standards. There is no restriction based on listing status or jurisdiction for making such a claim."
+    },
+    {
+      "question": "The IASB's Conceptual Framework underpins the development of IFRS Standards. If an entity faces a transaction not covered by any IFRS, the Conceptual Framework:",
+      "options": [
+        "Overrides all existing IFRS to provide the definitive treatment",
+        "Provides a reference for management judgement in developing an accounting policy, but individual IFRS take precedence over the Framework where they conflict",
+        "Is not applicable and local GAAP must be followed instead",
+        "Requires the entity to use the most conservative treatment available"
+      ],
+      "correct": "Provides a reference for management judgement in developing an accounting policy, but individual IFRS take precedence over the Framework where they conflict",
+      "explanation": "Under IAS 8, when no IFRS addresses a transaction, management uses judgement with reference to the Conceptual Framework. However, the Conceptual Framework is not a standard and individual IFRS take precedence over it in case of conflict."
+    }
+  ],
+  "Chapter 2: Conceptual Framework": [
+    {
+      "question": "Under the Conceptual Framework, which two characteristics are classified as fundamental qualitative characteristics?",
+      "options": [
+        "Comparability and timeliness",
+        "Understandability and verifiability",
+        "Relevance and faithful representation",
+        "Consistency and prudence"
+      ],
+      "correct": "Relevance and faithful representation",
+      "explanation": "The two fundamental qualitative characteristics are relevance (information that can make a difference to users' decisions) and faithful representation (information that is complete, neutral, and free from material error). The other characteristics listed are enhancing qualitative characteristics."
+    },
+    {
+      "question": "Information is said to have confirmatory value when it:",
+      "options": [
+        "Can be confirmed by an independent audit",
+        "Confirms or changes past evaluations made by users",
+        "Is prepared on a consistent basis with prior periods",
+        "Meets the criteria for recognition in the financial statements"
+      ],
+      "correct": "Confirms or changes past evaluations made by users",
+      "explanation": "Under the Conceptual Framework, information has confirmatory value when it provides feedback about previous evaluations. It often has both predictive and confirmatory value together."
+    },
+    {
+      "question": "Which of the following is NOT one of the four enhancing qualitative characteristics identified in the Conceptual Framework?",
+      "options": [
+        "Comparability",
+        "Verifiability",
+        "Prudence",
+        "Timeliness"
+      ],
+      "correct": "Prudence",
+      "explanation": "The four enhancing qualitative characteristics are comparability, verifiability, timeliness, and understandability. Prudence is a component of neutrality within faithful representation (not a separate enhancing characteristic), reinstated in the 2018 Conceptual Framework revision."
+    },
+    {
+      "question": "An asset is defined in the Conceptual Framework as a present economic resource controlled by the entity as a result of past events. Which element of this definition is the key distinguishing feature from legal ownership?",
+      "options": [
+        "'Present' — meaning current reporting period only",
+        "'Economic resource' — implying only physical assets qualify",
+        "'Controlled' — meaning the entity need not legally own the resource to recognise it as an asset",
+        "'Past events' — meaning assets arising from future contracts are excluded"
+      ],
+      "correct": "'Controlled' — meaning the entity need not legally own the resource to recognise it as an asset",
+      "explanation": "Control rather than legal ownership is the defining criterion. An entity can recognise an asset it does not legally own if it has the right to obtain the economic benefits and can restrict others' access, e.g., a right-of-use asset under IFRS 16."
+    },
+    {
+      "question": "Under the Conceptual Framework, what is the difference between a liability and a contingent liability?",
+      "options": [
+        "A liability has a fixed amount; a contingent liability has a range of possible amounts",
+        "A liability is a present obligation; a contingent liability is a possible obligation or a present obligation that fails one of the recognition criteria",
+        "A liability is recognised on the statement of financial position; a contingent liability is always recognised in the income statement",
+        "There is no conceptual difference; the distinction is only in presentation"
+      ],
+      "correct": "A liability is a present obligation; a contingent liability is a possible obligation or a present obligation that fails one of the recognition criteria",
+      "explanation": "A liability exists when there is a present obligation. A contingent liability is either a possible obligation (existence depends on uncertain future events) or a present obligation that is not probable or cannot be measured reliably, hence not recognised per IAS 37."
+    },
+    {
+      "question": "The Conceptual Framework identifies five measurement bases. Which one uses the present value of future cash flows expected from the use and ultimate disposal of an asset?",
+      "options": [
+        "Historical cost",
+        "Current cost",
+        "Fair value",
+        "Value in use"
+      ],
+      "correct": "Value in use",
+      "explanation": "Value in use is an entity-specific measurement reflecting the present value of cash flows the entity expects to derive from the continued use and ultimate disposal of the asset. It is specifically used in IAS 36 Impairment of Assets."
+    },
+    {
+      "question": "Under the Conceptual Framework, information is considered material if:",
+      "options": [
+        "It exceeds 5% of the relevant benchmark such as profit before tax",
+        "Omitting, misstating, or obscuring it could reasonably be expected to influence decisions of primary users",
+        "It relates to related-party transactions with controlling shareholders",
+        "It must be disclosed under a specific IFRS Standard"
+      ],
+      "correct": "Omitting, misstating, or obscuring it could reasonably be expected to influence decisions of primary users",
+      "explanation": "Materiality is an entity-specific aspect of relevance. There is no universal quantitative threshold; the IASB has provided guidance that materiality depends on the nature and magnitude of the information in the context of the entity's financial statements."
+    },
+    {
+      "question": "Which of the following best illustrates the enhancing qualitative characteristic of verifiability?",
+      "options": [
+        "An entity presents five years of comparative data to show performance trends",
+        "Different knowledgeable independent observers could reach consensus that a specific depiction is a faithful representation",
+        "Financial statements are issued within 60 days of the reporting date",
+        "An entity applies the same depreciation method as its industry peers"
+      ],
+      "correct": "Different knowledgeable independent observers could reach consensus that a specific depiction is a faithful representation",
+      "explanation": "Verifiability means that different knowledgeable and independent observers could reach general agreement that information faithfully represents the economic phenomenon. It can be direct (verifying cash balance) or indirect (verifying an estimated amount using the same inputs)."
+    },
+    {
+      "question": "Under the Conceptual Framework, when should an entity recognise an asset in its financial statements?",
+      "options": [
+        "Whenever it meets the definition of an asset, regardless of measurement uncertainty",
+        "When it meets the definition of an asset and recognition provides relevant information about the asset and faithfully represents it, without the cost exceeding the benefit",
+        "Only when the asset has been paid for in cash",
+        "Only when the asset generates a confirmed cash inflow within 12 months"
+      ],
+      "correct": "When it meets the definition of an asset and recognition provides relevant information about the asset and faithfully represents it, without the cost exceeding the benefit",
+      "explanation": "The 2018 Conceptual Framework states that recognition is appropriate only if it provides users with information that is useful (relevant and faithfully represented). High measurement uncertainty may mean the information fails the faithful representation test even if the definition is met."
+    },
+    {
+      "question": "The going concern assumption means that:",
+      "options": [
+        "An entity must hold sufficient cash to continue trading for at least 12 months",
+        "Financial statements are prepared on the basis that the entity will continue in operation for the foreseeable future, and assets and liabilities are measured accordingly",
+        "Management must obtain board approval that the entity is solvent before financial statements are signed",
+        "All assets must be measured at liquidation value if there is any doubt about continuity"
+      ],
+      "correct": "Financial statements are prepared on the basis that the entity will continue in operation for the foreseeable future, and assets and liabilities are measured accordingly",
+      "explanation": "Under the going concern assumption, assets are not intended to be realised immediately and liabilities are not expected to be settled at a forced-sale basis. If going concern is in doubt, different measurement bases and additional disclosures may be required."
+    },
+    {
+      "question": "Which of the following is an example of an accounting policy that would rely on the accrual basis of accounting?",
+      "options": [
+        "Recording cash received from customers when the bank statement is reconciled",
+        "Recognising revenue when performance obligations are satisfied, regardless of when cash is received",
+        "Valuing inventory at the lower of cost and net realisable value based on cash paid",
+        "Depreciating assets only when they are fully paid for"
+      ],
+      "correct": "Recognising revenue when performance obligations are satisfied, regardless of when cash is received",
+      "explanation": "The accrual basis requires recognition of items when they occur, not when cash changes hands. Recognising revenue on satisfaction of performance obligations (IFRS 15) is a direct application of the accrual principle."
+    },
+    {
+      "question": "Which measurement basis is described as 'the price that would be received to sell an asset or paid to transfer a liability in an orderly transaction between market participants at the measurement date'?",
+      "options": [
+        "Value in use",
+        "Current cost",
+        "Fair value",
+        "Net realisable value"
+      ],
+      "correct": "Fair value",
+      "explanation": "This is the precise definition of fair value from IFRS 13 Fair Value Measurement, which the Conceptual Framework also references. Fair value is market-based and exit-price focused, not entity-specific."
+    },
+    {
+      "question": "The Conceptual Framework states that income encompasses both revenue and gains. What is the key difference between them?",
+      "options": [
+        "Revenue is realised in cash; gains may be unrealised",
+        "Revenue arises from ordinary activities; gains are increases in assets or decreases in liabilities that may or may not arise from ordinary activities",
+        "Gains are recognised in equity; revenue is recognised in profit or loss",
+        "There is no conceptual difference; the distinction is only for presentation purposes"
+      ],
+      "correct": "Revenue arises from ordinary activities; gains are increases in assets or decreases in liabilities that may or may not arise from ordinary activities",
+      "explanation": "Income includes both revenue (from ordinary activities such as sales, fees, interest, dividends, royalties) and gains (e.g., on disposal of a non-current asset). The distinction is presentational and aids users in understanding performance quality."
+    },
+    {
+      "question": "Under the Conceptual Framework, the cost constraint means that:",
+      "options": [
+        "Assets must always be measured at historical cost to minimise preparation costs",
+        "The benefits of reporting financial information must justify the costs of providing and using it",
+        "Entities may omit disclosures if they are costly to prepare and are immaterial",
+        "Only information that is inexpensive to collect may be included in financial statements"
+      ],
+      "correct": "The benefits of reporting financial information must justify the costs of providing and using it",
+      "explanation": "The cost constraint is a pervasive constraint on financial reporting. The IASB applies cost-benefit analysis when setting standards, and preparers must consider whether the benefits of providing information outweigh the costs of gathering and presenting it."
+    },
+    {
+      "question": "Which of the following statements about equity is correct under the Conceptual Framework?",
+      "options": [
+        "Equity is the total market value of an entity's shares outstanding",
+        "Equity is the residual interest in the assets after deducting all liabilities; it includes issued capital, retained earnings, and other reserves",
+        "Equity consists only of paid-up share capital and retained earnings",
+        "Equity arises only when an entity makes a profit in the current period"
+      ],
+      "correct": "Equity is the residual interest in the assets after deducting all liabilities; it includes issued capital, retained earnings, and other reserves",
+      "explanation": "Equity is a residual; there is no independent measurement of equity — it is derived from the measurement of assets and liabilities. It may include share capital, share premium, revaluation surplus, other comprehensive income reserves, and retained earnings."
+    },
+    {
+      "question": "In the context of the Conceptual Framework, an expense is best defined as:",
+      "options": [
+        "A cash outflow in the reporting period",
+        "Decreases in assets, or increases in liabilities, that result in decreases in equity, other than those relating to distributions to equity holders",
+        "All costs incurred in generating revenue during the period",
+        "Amounts paid to creditors and employees in the period"
+      ],
+      "correct": "Decreases in assets, or increases in liabilities, that result in decreases in equity, other than those relating to distributions to equity holders",
+      "explanation": "The Conceptual Framework defines expenses as decreases in equity through decreases in assets or increases in liabilities, excluding distributions to equity holders. This definition aligns income and expense recognition with asset/liability movements."
+    },
+    {
+      "question": "Neutrality is a component of faithful representation. A financial report is neutral when:",
+      "options": [
+        "It presents equal amounts of good and bad news about the entity",
+        "The selection, presentation, and wording of information is free from bias — not slanted to achieve a predetermined result or to influence users' behaviour in a particular direction",
+        "It is prepared using historical cost rather than fair value to avoid subjective estimates",
+        "It discloses all management forecasts without adjustment or filtering"
+      ],
+      "correct": "The selection, presentation, and wording of information is free from bias — not slanted to achieve a predetermined result or to influence users' behaviour in a particular direction",
+      "explanation": "Neutrality means there is no bias in the depiction of financial phenomena. The 2018 Conceptual Framework reintroduced prudence as being consistent with neutrality — caution under uncertainty does not mean deliberate understatement."
+    },
+    {
+      "question": "Which of the following is the most accurate description of the 'unit of account' concept in the Conceptual Framework?",
+      "options": [
+        "The currency unit used in the financial statements",
+        "The individual item or group of items to which recognition and measurement requirements are applied",
+        "The level at which materiality is assessed for disclosure purposes",
+        "The basis on which comparative financial statements are presented"
+      ],
+      "correct": "The individual item or group of items to which recognition and measurement requirements are applied",
+      "explanation": "The unit of account is the level at which an asset or liability is recognised and measured. Choosing the right unit of account (e.g., individual asset vs. portfolio) affects recognition and measurement outcomes and is discussed in both the Conceptual Framework and specific standards such as IFRS 9 and IAS 36."
+    }
+  ],
+  "Chapter 3: IFRS 18 Presentation and Disclosure in Financial Statements": [
+    {
+      "question": "IFRS 18, which is effective for annual periods beginning on or after 1 January 2027, primarily replaces which presentation-related requirements?",
+      "options": [
+        "IFRS 7 Financial Instruments: Disclosures",
+        "The presentation of the statement of profit or loss requirements in IAS 1",
+        "IAS 7 Statement of Cash Flows",
+        "IAS 34 Interim Financial Reporting"
+      ],
+      "correct": "The presentation of the statement of profit or loss requirements in IAS 1",
+      "explanation": "IFRS 18 introduces new requirements for the statement of profit or loss, replacing the presentation requirements previously in IAS 1. It introduces defined categories and mandatory subtotals to improve comparability and usefulness."
+    },
+    {
+      "question": "IFRS 18 requires income and expenses in the statement of profit or loss to be classified into how many categories?",
+      "options": [
+        "Three: operating, investing, and financing",
+        "Four: operating, investing, financing, and taxation",
+        "Five: operating, investing, financing, income taxes, and discontinued operations",
+        "Two: recurring and non-recurring"
+      ],
+      "correct": "Five: operating, investing, financing, income taxes, and discontinued operations",
+      "explanation": "IFRS 18 defines five categories: operating, investing, financing, income taxes, and discontinued operations. Each category has specified rules about which income and expenses belong within it."
+    },
+    {
+      "question": "Under IFRS 18, which of the following mandatory subtotals must appear in the statement of profit or loss?",
+      "options": [
+        "Gross profit, operating profit, and profit before tax",
+        "Operating profit, profit before financing and income taxes, and profit or loss",
+        "Operating profit, profit before income taxes, and profit or loss",
+        "Revenue, cost of sales, and profit for the period"
+      ],
+      "correct": "Operating profit, profit before income taxes, and profit or loss",
+      "explanation": "IFRS 18 requires three specific subtotals: operating profit, profit before income taxes, and profit or loss for the period. These subtotals must be labelled consistently and may not be replaced or supplemented with alternative subtotals in the primary statement."
+    },
+    {
+      "question": "Under IFRS 18, where are dividends received from equity-accounted investees (associates and joint ventures) presented in the statement of profit or loss?",
+      "options": [
+        "In the operating category as part of revenue",
+        "In the investing category",
+        "In the financing category",
+        "In other comprehensive income only"
+      ],
+      "correct": "In the investing category",
+      "explanation": "IFRS 18 specifically assigns the share of profit or loss of associates and joint ventures accounted for using the equity method (and dividends from them for entities using cost model) to the investing category, unless the entity's main business activity involves generating returns from investments."
+    },
+    {
+      "question": "IFRS 18 introduces requirements for Management Performance Measures (MPMs). An entity presents an MPM in its financial statements when it:",
+      "options": [
+        "Is required to do so by the securities regulator in its jurisdiction",
+        "Uses a subtotal of income and expenses not specified or named in IFRS 18 in its public communications outside the financial statements, and includes that subtotal in the financial statements",
+        "Reports an adjusted profit figure in the notes due to non-recurring items",
+        "Wishes to show EBITDA as a primary performance measure on the face of the income statement"
+      ],
+      "correct": "Uses a subtotal of income and expenses not specified or named in IFRS 18 in its public communications outside the financial statements, and includes that subtotal in the financial statements",
+      "explanation": "MPMs are entity-defined subtotals used to communicate management's view of performance outside IFRS financial statements. IFRS 18 requires that when such a measure appears in financial communications, if the entity includes it in the financial statements, specific disclosures and a reconciliation to the closest IFRS 18 subtotal are required."
+    },
+    {
+      "question": "Under IFRS 18, where is interest on a bank borrowing used to finance operating activities presented?",
+      "options": [
+        "In the operating category",
+        "In the investing category",
+        "In the financing category",
+        "Either operating or financing, at the entity's choice"
+      ],
+      "correct": "In the financing category",
+      "explanation": "IFRS 18 requires interest expense on liabilities (borrowings) to be classified in the financing category. This is a change from IAS 1 which allowed flexibility in classifying interest in operating or financing activities."
+    },
+    {
+      "question": "Regarding the statement of financial position (balance sheet), IFRS 18:",
+      "options": [
+        "Replaces all of IAS 1's requirements for the balance sheet with a completely new format",
+        "Introduces new mandatory line items for the balance sheet not previously required",
+        "Does not significantly change the requirements for the balance sheet, which remain substantially as in IAS 1",
+        "Requires the balance sheet to be presented in a prescribed vertical format only"
+      ],
+      "correct": "Does not significantly change the requirements for the balance sheet, which remain substantially as in IAS 1",
+      "explanation": "IFRS 18 focuses primarily on the statement of profit or loss and related disclosures (MPMs). The requirements for the statement of financial position are carried forward from IAS 1 with only minor consequential amendments."
+    },
+    {
+      "question": "Under IFRS 18, how are unusual or infrequent items treated?",
+      "options": [
+        "They must be presented as a separate category in the statement of profit or loss",
+        "They must be presented on the face of the statement of profit or loss as a single line below operating profit",
+        "They are included within the appropriate category (operating, investing, or financing) and may be disclosed separately in the notes if material",
+        "They are presented in other comprehensive income until they are realised"
+      ],
+      "correct": "They are included within the appropriate category (operating, investing, or financing) and may be disclosed separately in the notes if material",
+      "explanation": "IFRS 18 specifically eliminates the presentation of 'exceptional' or 'extraordinary' items as a separate category. Unusual or infrequent items are classified within the standard categories based on their nature; they may be separately labelled on the face if material."
+    },
+    {
+      "question": "IFRS 18 requires an entity to disaggregate income and expenses in the notes when aggregation obscures material information. This disaggregation principle is best described as:",
+      "options": [
+        "Mandatory only for items in the operating category exceeding a specified monetary threshold",
+        "A general principle requiring entities to provide information about the nature of aggregated amounts that users need to understand the entity's financial performance",
+        "Applicable only to entities with revenues above a certain size",
+        "Required for all line items without exception, regardless of materiality"
+      ],
+      "correct": "A general principle requiring entities to provide information about the nature of aggregated amounts that users need to understand the entity's financial performance",
+      "explanation": "IFRS 18 includes a disaggregation principle: entities must disaggregate information in the notes when aggregation in the primary statements would obscure material information. The focus is on whether users would need additional detail to understand performance."
+    },
+    {
+      "question": "Under IFRS 18, an entity whose main business activity is investing in financial assets (e.g., an investment fund) would present interest income and dividend income from those investments in which category?",
+      "options": [
+        "Investing category, because investments are always investing activities",
+        "Financing category, because they finance the entity's operations",
+        "Operating category, because generating returns from investments is the entity's main business activity",
+        "There is no specific guidance; the entity chooses based on policy"
+      ],
+      "correct": "Operating category, because generating returns from investments is the entity's main business activity",
+      "explanation": "IFRS 18 provides specific guidance for entities whose main business is investing (e.g., investment companies, banks). For these entities, returns from investments (interest, dividends) belong in the operating category because generating such returns is their core activity."
+    },
+    {
+      "question": "An entity preparing financial statements under IFRS 18 presents 'Adjusted EBITDA' in its quarterly earnings release but not in its annual IFRS financial statements. Which IFRS 18 requirement applies?",
+      "options": [
+        "The entity must include Adjusted EBITDA on the face of the income statement as an MPM",
+        "IFRS 18 MPM requirements do not apply because the measure appears outside the financial statements only",
+        "The entity must provide a reconciliation of Adjusted EBITDA to profit or loss in the annual financial statements",
+        "The entity is prohibited from presenting Adjusted EBITDA anywhere if it is not in the financial statements"
+      ],
+      "correct": "IFRS 18 MPM requirements do not apply because the measure appears outside the financial statements only",
+      "explanation": "MPM requirements under IFRS 18 are triggered only when an entity includes an entity-defined subtotal in its IFRS financial statements. If the measure appears only outside the financial statements (e.g., earnings releases, investor presentations), IFRS 18 does not regulate it directly."
+    },
+    {
+      "question": "For the purposes of IFRS 18's operating profit subtotal, which of the following items would be classified in the operating category by default?",
+      "options": [
+        "Interest expense on a long-term bank loan",
+        "Share of profit of an associate accounted for under the equity method",
+        "Income tax expense for the year",
+        "Depreciation of right-of-use assets for a lease of office premises used in operations"
+      ],
+      "correct": "Depreciation of right-of-use assets for a lease of office premises used in operations",
+      "explanation": "The operating category in IFRS 18 is a residual — it includes all income and expenses not specifically classified in investing, financing, income taxes, or discontinued operations. Depreciation of ROU assets relating to operational leases would fall in the operating category."
+    },
+    {
+      "question": "What is the effective date of IFRS 18?",
+      "options": [
+        "Annual periods beginning on or after 1 January 2024",
+        "Annual periods beginning on or after 1 January 2025",
+        "Annual periods beginning on or after 1 January 2026",
+        "Annual periods beginning on or after 1 January 2027"
+      ],
+      "correct": "Annual periods beginning on or after 1 January 2027",
+      "explanation": "IFRS 18 was issued in April 2024 and is effective for annual reporting periods beginning on or after 1 January 2027, with earlier application permitted. It replaces the presentation requirements in IAS 1 for the statement of profit or loss."
+    },
+    {
+      "question": "Under IFRS 18, an entity is required to present comparative information for the immediately preceding period. When IFRS 18 is first applied, how should comparative periods be restated?",
+      "options": [
+        "Restatement of comparatives is prohibited; the cumulative effect is recognised in opening retained earnings",
+        "Comparatives must be restated retrospectively unless impracticable",
+        "Entities may choose between full retrospective restatement and prospective application",
+        "Only the current period statement of profit or loss is reformatted; prior periods remain under IAS 1"
+      ],
+      "correct": "Comparatives must be restated retrospectively unless impracticable",
+      "explanation": "IFRS 18 requires retrospective application. Comparative information must be restated to present prior period income and expenses in the new category structure and with the new mandatory subtotals, except where retrospective application is impracticable."
+    },
+    {
+      "question": "Under IFRS 18, the classification of income and expenses into the investing category versus the operating category depends primarily on:",
+      "options": [
+        "Whether the item relates to assets held for investment versus assets used in production",
+        "Whether the entity's main business is generating returns from investments or conducting other activities, and specific IFRS 18 classification rules for particular items",
+        "Whether the items are recurring or non-recurring in nature",
+        "The entity's legal form — investment companies always use investing category; manufacturers always use operating"
+      ],
+      "correct": "Whether the entity's main business is generating returns from investments or conducting other activities, and specific IFRS 18 classification rules for particular items",
+      "explanation": "IFRS 18 provides specific rules for classifying items into the investing and financing categories, with the operating category as the residual. For entities whose main business is investing, returns on investments classify as operating; for others, they classify as investing."
+    },
+    {
+      "question": "Which of the following represents a key improvement that IFRS 18 seeks to deliver compared to IAS 1's previous requirements?",
+      "options": [
+        "More flexibility in choosing the format and ordering of line items in the statement of profit or loss",
+        "Greater comparability of operating profit across entities by defining the operating category and mandating consistent subtotals",
+        "Eliminating the requirement for notes to the financial statements to reduce disclosure burden",
+        "Permitting more alternatives for the presentation of other comprehensive income"
+      ],
+      "correct": "Greater comparability of operating profit across entities by defining the operating category and mandating consistent subtotals",
+      "explanation": "A key objective of IFRS 18 is to improve the comparability and usefulness of the statement of profit or loss. Under IAS 1, 'operating profit' was not defined and entities presented it inconsistently. IFRS 18 defines the operating category and mandates specific subtotals."
+    }
+  ]
+}
