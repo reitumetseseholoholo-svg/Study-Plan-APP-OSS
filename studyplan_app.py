@@ -16954,7 +16954,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if parsed > 0.0:
                 return max(0.1, min(10.0, float(parsed)))
         base = float(default_ollama_app_queue_wait_seconds())
-        return max(0.1, min(10.0, float(base)))
+        return max(0.1, min(60.0, float(base)))
 
     def _detect_local_cpu_runtime_profile(self) -> dict[str, Any]:
         logical = max(1, int(os.cpu_count() or 1))
@@ -20030,12 +20030,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             # Backward compatibility for test doubles / older call signatures.
             text, err = self._generate_via_llama_server(prompt_text)
         if err is None:
+            _release_ollama_runtime_slot_if_held()
             return text, None
         if text:
+            _release_ollama_runtime_slot_if_held()
             return text, None
 
         model_name = str(model or "").strip()
         if not model_name:
+            _release_ollama_runtime_slot_if_held()
             return "", "model is required"
         cooldown_reader = getattr(self, "_is_local_llm_model_on_cooldown", None)
         if callable(cooldown_reader):
@@ -20052,6 +20055,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     set_queue(0)
                 except Exception:
                     pass
+            _release_ollama_runtime_slot_if_held()
             return "", f"model cooldown active ({cooldown_remaining}s)"
         ram_budget_reader = getattr(self, "_get_ollama_ram_budget_bytes", None)
         estimate_reader = getattr(self, "_estimate_local_llm_model_ram_bytes", None)
@@ -20578,6 +20582,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     pass
             return "", "Ollama runtime busy. Retry shortly."
 
+        release_slot = getattr(self, "_release_ollama_request_slot", None)
+        slot_released = False
+
+        def _release_runtime_slot_once() -> None:
+            nonlocal slot_released
+            if bool(slot_released):
+                return
+            if callable(release_slot):
+                try:
+                    cast(Any, release_slot)()
+                except Exception:
+                    pass
+            slot_released = True
+
         self._clear_llm_inference_attribution()
         brave_candidate = getattr(self, "_brave_search_ai_is_candidate", None)
         if callable(brave_candidate) and bool(brave_candidate()):
@@ -20595,6 +20613,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     used_model = "brave"
                 self._note_llm_inference_attribution("brave_search", used_model)
                 self._emit_text_as_chunks(brave_text, on_chunk)
+                _release_runtime_slot_once()
                 return brave_text, None
         if self._cloud_endpoint_is_candidate():
             model_candidates = StudyPlanGUI._resolve_cloud_candidate_models(
@@ -20614,6 +20633,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
                 self._note_llm_inference_attribution("llama.cpp", used_model)
                 self._emit_text_as_chunks(cloud_text, on_chunk)
+                _release_runtime_slot_once()
                 return cloud_text, None
         text, err = self._generate_via_llama_server_stream(
             prompt_text,
@@ -20622,12 +20642,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             inference_purpose=str(inference_purpose or "tutor"),
         )
         if err is None:
+            _release_runtime_slot_once()
             return text, None
         if text:
+            _release_runtime_slot_once()
             return text, None
 
         model_name = str(model or "").strip()
         if not model_name:
+            _release_runtime_slot_once()
             return "", "model is required"
         cooldown_reader = getattr(self, "_is_local_llm_model_on_cooldown", None)
         if callable(cooldown_reader):
@@ -20644,6 +20667,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     set_queue(0)
                 except Exception:
                     pass
+            _release_runtime_slot_once()
             return "", f"model cooldown active ({cooldown_remaining}s)"
         ram_budget_reader = getattr(self, "_get_ollama_ram_budget_bytes", None)
         estimate_reader = getattr(self, "_estimate_local_llm_model_ram_bytes", None)
@@ -20665,6 +20689,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         record_outcome(model_name, success=False, err="model_exceeds_ram_budget")
                     except Exception:
                         pass
+                _release_runtime_slot_once()
                 return "", "Selected local model exceeds the configured RAM budget."
         host = self._normalize_ollama_host()
         url = f"{host}/api/generate"
@@ -20736,19 +20761,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         last_err = ""
         record_outcome = getattr(self, "_record_local_llm_model_outcome", None)
         set_queue = getattr(self, "_set_last_ollama_queue_ms", None)
-        release_slot = getattr(self, "_release_ollama_request_slot", None)
-        slot_released = False
-
-        def _release_runtime_slot_once() -> None:
-            nonlocal slot_released
-            if bool(slot_released):
-                return
-            if callable(release_slot):
-                try:
-                    cast(Any, release_slot)()
-                except Exception:
-                    pass
-            slot_released = True
 
         def _attempt_non_stream_recovery(
             err_text: str,
