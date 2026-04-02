@@ -150,8 +150,18 @@ def _evaluate_smoke_kpi_thresholds(kpi: dict[str, Any]) -> list[dict[str, Any]]:
             expected = 0.0
         if op == "==":
             passed = abs(actual - expected) <= 1e-9
-        else:
+        elif op == ">=":
             passed = actual >= expected
+        elif op == "<=":
+            passed = actual <= expected
+        elif op == ">":
+            passed = actual > expected
+        elif op == "<":
+            passed = actual < expected
+        else:
+            # Unknown operator — treat as a failure so misconfigured thresholds
+            # are surfaced immediately rather than silently mis-evaluated.
+            passed = False
         if not passed:
             failures.append(
                 {
@@ -198,8 +208,14 @@ def _evaluate_soak_kpi_thresholds(kpi: dict[str, Any]) -> list[dict[str, Any]]:
             passed = abs(actual - expected) <= 1e-9
         elif op == ">=":
             passed = actual >= expected
-        else:
+        elif op == "<=":
             passed = actual <= expected
+        elif op == ">":
+            passed = actual > expected
+        elif op == "<":
+            passed = actual < expected
+        else:
+            passed = False
         if not passed:
             failures.append(
                 {
