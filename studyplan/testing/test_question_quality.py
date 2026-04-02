@@ -124,7 +124,7 @@ def test_get_poor_quality_indices_similar():
         {"question": "What is the main advantage of using NPV for investment appraisal?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "X"},
         {"question": "What is the main advantage of using NPV for investment appraisal?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Y"},
     ]
-    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, similar_min_words=5)
+    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_bare_letter_correct=False, similar_min_words=5)
     assert len(poor) == 1
     assert poor[0][0] == 1 and poor[0][1] == "similar_question"
 
@@ -168,7 +168,7 @@ def test_get_poor_quality_indices_length_guessable():
             "explanation": "ok",
         },
     ]
-    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False)
+    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False, detect_bare_letter_correct=False)
     assert poor == [(1, "correct_option_much_longer_than_distractors")]
 
 

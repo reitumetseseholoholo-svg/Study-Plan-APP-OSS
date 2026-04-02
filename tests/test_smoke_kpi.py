@@ -57,3 +57,22 @@ def test_compute_strict_smoke_exit_code_uses_status_and_kpi(tmp_path):
 
     # Missing report should fail strict mode.
     assert _compute_strict_smoke_exit_code(str(tmp_path / "missing.json")) == 1
+
+
+def test_evaluate_smoke_kpi_thresholds_unknown_operator_fails():
+    """An unrecognised operator must produce a failure, not silently pass."""
+    import copy
+    import studyplan_app_kpi_routing as m
+
+    patched = copy.deepcopy(m.SMOKE_KPI_THRESHOLDS)
+    patched["coach_pick_consistency_rate"] = {"op": "~=", "value": 0.999}
+    original = m.SMOKE_KPI_THRESHOLDS
+    m.SMOKE_KPI_THRESHOLDS = patched
+    try:
+        failures = _evaluate_smoke_kpi_thresholds({"coach_pick_consistency_rate": 1.0})
+        metrics = {f["metric"] for f in failures}
+        assert "coach_pick_consistency_rate" in metrics, (
+            "Unknown operator must produce a failure entry, not silently pass"
+        )
+    finally:
+        m.SMOKE_KPI_THRESHOLDS = original

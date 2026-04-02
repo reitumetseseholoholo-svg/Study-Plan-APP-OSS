@@ -9956,6 +9956,10 @@ class StudyPlanEngine:
                 for idx in range(len(questions))]
 
         # Pick most forgotten overdue question
+        if not retention_scores:
+            # Fallback: no questions could be scored (e.g. all probability
+            # calculations raised); return the first question as a safe default.
+            return 0
         return min(retention_scores, key=lambda x: x[1])[0]
 
     def _estimate_question_miss_risk(self, chapter: str, idx: int) -> float:
