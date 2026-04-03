@@ -2060,7 +2060,7 @@ class AITutorDialogController:
                 try:
                     describe_action = getattr(app, "_describe_ai_tutor_action", None)
                     if callable(describe_action):
-                        pending_text = str(cast(Any, describe_action)(pending) or "").strip()
+                        pending_text = str(describe_action(pending) or "").strip()
                 except Exception:
                     pending_text = ""
             parts = [detail] if detail else []
@@ -3225,7 +3225,7 @@ class AITutorDialogController:
                             action_plan["source"] = "tutor_dialog"
                             setter = getattr(app, "_set_ai_tutor_pending_suggestion", None)
                             if callable(setter):
-                                cast(Any, setter)(action_plan, source="tutor_dialog")
+                                setter(action_plan, source="tutor_dialog")
                         except Exception:
                             pass
                     _record_turn_telemetry(
