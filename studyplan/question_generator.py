@@ -81,6 +81,8 @@ class OllamaQGenService:
     DEFAULT_HOST = "http://127.0.0.1:11434"
     DEFAULT_MODEL = "llama3.2"
     DEFAULT_TIMEOUT_SECONDS = 30.0
+    MIN_TIMEOUT_SECONDS = 5.0
+    MIN_QUESTION_LENGTH = 10
 
     def __init__(
         self,
@@ -92,7 +94,7 @@ class OllamaQGenService:
         raw_host = str(host or os.getenv("OLLAMA_HOST", "") or self.DEFAULT_HOST).strip()
         self.host = raw_host.rstrip("/")
         self.model = str(model or self.DEFAULT_MODEL).strip() or self.DEFAULT_MODEL
-        self.timeout_seconds = max(5.0, float(timeout_seconds or self.DEFAULT_TIMEOUT_SECONDS))
+        self.timeout_seconds = max(self.MIN_TIMEOUT_SECONDS, float(timeout_seconds or self.DEFAULT_TIMEOUT_SECONDS))
 
     def _build_prompt(self, *, topic: str, source_text: str | None, count: int) -> str:
         context = str(source_text or "").strip() or topic
@@ -107,7 +109,7 @@ class OllamaQGenService:
         questions: List[str] = []
         for line in str(text or "").splitlines():
             stripped = re.sub(r"^\s*\d+[\.\)\-]\s*", "", line).strip()
-            if len(stripped) >= 10:
+            if len(stripped) >= self.MIN_QUESTION_LENGTH:
                 questions.append(stripped)
             if len(questions) >= count:
                 break
