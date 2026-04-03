@@ -22,7 +22,8 @@ class GTK4WindowStateSnapshot:
 
 
 def default_gtk4_window_state_path(config_home: str | None = None) -> str:
-    root = os.path.expanduser(str(config_home or Config.CONFIG_HOME or "~/.config/studyplan"))
+    raw_root = config_home if config_home is not None else getattr(Config, "CONFIG_HOME", "")
+    root = os.path.expanduser(str(raw_root).strip() or "~/.config/studyplan")
     return os.path.join(root, "gtk4_shell", "window_state.json")
 
 

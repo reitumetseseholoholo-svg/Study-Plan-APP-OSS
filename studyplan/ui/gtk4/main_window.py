@@ -47,7 +47,7 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
         super().__init__(application=application)
 
         self._logger = logging.getLogger(__name__)
-        self._state_store_path = default_gtk4_window_state_path(str(getattr(Config, "CONFIG_HOME", "") or ""))
+        self._state_store_path = default_gtk4_window_state_path(str(getattr(Config, "CONFIG_HOME", "")))
         self._restored_state = load_gtk4_window_state(self._state_store_path)
 
         # Initialize core services
@@ -57,7 +57,11 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
         self.learner_store = InMemoryTutorLearnerModelStore()
 
         # Initialize cognitive state
-        self.cognitive_state = self._restored_state.cognitive_state or CognitiveState()
+        restored_cognitive_state = self._restored_state.cognitive_state
+        if restored_cognitive_state is not None:
+            self.cognitive_state = restored_cognitive_state
+        else:
+            self.cognitive_state = CognitiveState()
 
         # Initialize UI components
         self.practice_session = PracticeSessionWindow(self)
@@ -203,9 +207,9 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
                 GTK4WindowStateSnapshot(
                     cognitive_state=self.cognitive_state,
                     session_state=session if isinstance(session, TutorSessionState) else None,
-                    learner_profile=(
-                        learner_profile if isinstance(learner_profile, TutorLearnerProfileSnapshot) else None
-                    ),
+                    learner_profile=learner_profile if isinstance(
+                        learner_profile, TutorLearnerProfileSnapshot
+                    ) else None,
                     visible_page=visible_page,
                 ),
                 self._state_store_path,

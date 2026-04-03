@@ -161,7 +161,7 @@ def resolve_local_llm_default_for_purpose(
     if not ordered_candidates:
         return ""
 
-    def _kimi_k25_match() -> str:
+    def _match_kimi_candidate() -> str:
         best_cloud = ""
         best_any = ""
         for item in ordered_candidates:
@@ -181,7 +181,7 @@ def resolve_local_llm_default_for_purpose(
                 best_any = item
         return best_cloud or best_any
 
-    def _qwen35_4b_match() -> str:
+    def _match_qwen35_4b_candidate() -> str:
         best = ""
         for item in ordered_candidates:
             lower = item.lower()
@@ -203,7 +203,7 @@ def resolve_local_llm_default_for_purpose(
         "section_c_generation",
         "gap_generation",
     }:
-        kimi = _kimi_k25_match()
+        kimi = _match_kimi_candidate()
         if kimi:
             return kimi
 
@@ -214,7 +214,7 @@ def resolve_local_llm_default_for_purpose(
         "section_c_evaluation",
         "section_c_loop_diff",
     }:
-        qwen35_4b = _qwen35_4b_match()
+        qwen35_4b = _match_qwen35_4b_candidate()
         if qwen35_4b:
             return qwen35_4b
 
