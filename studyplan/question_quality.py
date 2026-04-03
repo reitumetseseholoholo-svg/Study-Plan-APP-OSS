@@ -320,14 +320,18 @@ class QuestionQuality:
         opts = [str(x or "").strip() for x in self.item.get("options", [])]
         unique = set(opts)
         if len(opts) != len(unique):
-            self.warnings.append("duplicate option text")
-            self.score -= 0.2
+            self.errors.append("duplicate option text")
+            self.score -= 0.5
         # Option that says "see explanation" (any wording) = poor quality, remove from bank
         for o in opts:
             if option_looks_like_see_explanation(o):
                 self.errors.append("option is 'see explanation' placeholder")
                 self.score -= 0.5
                 break
+        # LLM-generated placeholder options such as "Full option text A" = unanswerably fake
+        if gap_options_look_like_llm_placeholders(opts):
+            self.errors.append("options are LLM placeholder templates")
+            self.score -= 0.5
         correct = str(self.item.get("correct", "")).strip()
         # Bare letter (A/B/C/D) in 'correct' means the LLM used position-based referencing.
         # The app shuffles options on display, so this answer is ambiguous and untrustworthy.
@@ -468,6 +472,15 @@ def get_poor_quality_indices(
                 if option_looks_like_see_explanation(str(o or "")):
                     poor.append((idx, "see_explanation_in_options"))
                     break
+        if not any(i == idx for i, _ in poor):
+            # Duplicate options within a single question (any two options share the same text).
+            norm_opts = [str(o or "").strip().lower() for o in opts]
+            if len(norm_opts) != len(set(norm_opts)):
+                poor.append((idx, "duplicate_options"))
+        if not any(i == idx for i, _ in poor):
+            # LLM placeholder options such as "Full option text A/B/C/D".
+            if gap_options_look_like_llm_placeholders(opts):
+                poor.append((idx, "placeholder_options"))
         if detect_bare_letter_correct and not any(i == idx for i, _ in poor):
             if correct_is_bare_letter(item):
                 poor.append((idx, "correct_is_bare_letter"))
