@@ -106,3 +106,19 @@ def test_atomic_write_csv_rows_outputs_expected_csv(tmp_path):
     content = target.read_text(encoding="utf-8")
     assert "A,B" in content
     assert "1,2" in content
+
+
+def test_atomic_write_text_file_sets_restrictive_permissions(tmp_path):
+    """File must be written with 0o600 permissions (chmod set before rename)."""
+    import stat
+
+    target = tmp_path / "secret.txt"
+    atomic_write_text_file(str(target), "sensitive", mode=0o600)
+    mode = stat.S_IMODE(os.stat(str(target)).st_mode)
+    if os.name == "posix":
+        # On POSIX the written file must not be world- or group-readable.
+        assert mode & 0o077 == 0, f"File has excess permissions: {oct(mode)}"
+    else:
+        # On non-POSIX platforms os.chmod behaviour is platform-defined;
+        # verify only that the file was created successfully.
+        assert os.path.isfile(str(target))

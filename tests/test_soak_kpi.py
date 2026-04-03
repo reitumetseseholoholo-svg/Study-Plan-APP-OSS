@@ -53,3 +53,22 @@ def test_compute_strict_soak_exit_code_uses_status_and_kpi(tmp_path):
     assert _compute_strict_soak_exit_code(str(path)) == 1
 
     assert _compute_strict_soak_exit_code(str(tmp_path / "missing.json")) == 1
+
+
+def test_evaluate_soak_kpi_thresholds_unknown_operator_fails():
+    """An unrecognised operator must produce a failure, not silently pass."""
+    import copy
+    import studyplan_app_kpi_routing as m
+
+    patched = copy.deepcopy(m.SOAK_KPI_THRESHOLDS)
+    patched["samples"] = {"op": "~=", "value": 8.0}
+    original = m.SOAK_KPI_THRESHOLDS
+    m.SOAK_KPI_THRESHOLDS = patched
+    try:
+        failures = _evaluate_soak_kpi_thresholds({"samples": 10.0})
+        metrics = {f["metric"] for f in failures}
+        assert "samples" in metrics, (
+            "Unknown operator must produce a failure entry, not silently pass"
+        )
+    finally:
+        m.SOAK_KPI_THRESHOLDS = original

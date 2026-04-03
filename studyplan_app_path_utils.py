@@ -106,8 +106,10 @@ def atomic_write_bytes_file(file_path: str, payload: bytes, mode: int = 0o600) -
                 os.fsync(tmp.fileno())
             except Exception:
                 pass
+        # Set permissions on the temp file *before* replacing the destination so
+        # the file is never briefly visible with wrong (e.g. world-readable) permissions.
+        secure_path_permissions(tmp_path, mode)
         os.replace(tmp_path, path)
-        secure_path_permissions(path, mode)
     except Exception:
         if fd >= 0:
             try:
