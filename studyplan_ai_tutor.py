@@ -2051,9 +2051,9 @@ class AITutorDialogController:
             mode = _autopilot_mode()
             base = f"Tutor autopilot [{mode}]"
             detail = str(message or "").strip()
-            stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
-            executed = int(stats.get("autopilot_action_executed_count", 0) or 0)
-            dismissed = int(stats.get("autopilot_suggestion_dismissed_count", 0) or 0)
+            stats = getattr(app, "_ai_tutor_autopilot_stats", {})
+            executed = int(stats.get("autopilot_action_executed_count", 0))
+            dismissed = int(stats.get("autopilot_suggestion_dismissed_count", 0))
             pending = getattr(app, "_ai_tutor_pending_suggestion", None)
             pending_text = ""
             if isinstance(pending, dict):
@@ -2068,7 +2068,7 @@ class AITutorDialogController:
             parts.append(f"dismissed {dismissed}")
             if pending_text:
                 parts.append(f"pending {pending_text}")
-            cockpit_status_label.set_text(f"{base}: {' • '.join(part for part in parts if part)}" if parts else base)
+            cockpit_status_label.set_text(f"{base}: {' • '.join(parts)}" if parts else base)
 
         def _toggle_autopilot_pause(*_args) -> None:
             if not bool(getattr(app, "ai_tutor_autopilot_enabled", True)):
@@ -3065,10 +3065,12 @@ class AITutorDialogController:
                     try:
                         action_parser = getattr(app, "_extract_ai_tutor_inline_action", None)
                         if callable(action_parser):
-                            cleaned_text, parsed_action = cast(Any, action_parser(final_text))
-                            final_text = str(cleaned_text or "").strip()
-                            if isinstance(parsed_action, dict):
-                                action_plan = parsed_action
+                            parsed_result = action_parser(final_text)
+                            if isinstance(parsed_result, tuple) and len(parsed_result) == 2:
+                                cleaned_text, parsed_action = parsed_result
+                                final_text = str(cleaned_text or "").strip()
+                                if isinstance(parsed_action, dict):
+                                    action_plan = parsed_action
                     except Exception:
                         action_plan = None
 
