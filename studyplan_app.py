@@ -42648,7 +42648,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         if getattr(self, "_dialog_smoke_mode", False):
             dialog = self._harden_window(
-                Gtk.FileChooserDialog(
+                Gtk.FileChooserDialog(  # gtk4_lint:ignore
                     title="Import Syllabus (JSON)",
                     transient_for=self,
                     action=Gtk.FileChooserAction.OPEN,
