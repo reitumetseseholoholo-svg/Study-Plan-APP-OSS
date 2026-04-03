@@ -2372,6 +2372,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ai_tutor_global_last_event_sig = ""
         self._ai_tutor_global_last_decision_at = 0.0
         self._ai_tutor_global_quiet_until = 0.0
+        self._ai_tutor_pending_suggestion: dict[str, Any] | None = None
+        self._ai_tutor_pending_suggestion_source_id = 0
+        self._ai_tutor_pending_suggestion_token = 0
+        self._ai_tutor_recent_action_log: list[dict[str, Any]] = []
         self._ai_tutor_dialog_open = False
         self._ai_tutor_popup_stream_active = False
         self._ai_tutor_autopilot_stats: dict[str, Any] = {
@@ -2380,6 +2384,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "autopilot_action_executed_count": 0,
             "autopilot_action_blocked_count": 0,
             "autopilot_last_block_reason": "",
+            "autopilot_suggestion_accepted_count": 0,
+            "autopilot_suggestion_dismissed_count": 0,
             "nudge_info_count": 0,
             "nudge_warning_count": 0,
             "nudge_intervention_count": 0,
@@ -2461,6 +2467,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         }
         self._tutor_workspace_status_label: Gtk.Label | None = None
         self._tutor_workspace_summary_label: Gtk.Label | None = None
+        self._tutor_workspace_pending_suggestion_box: Gtk.Box | None = None
+        self._tutor_workspace_pending_suggestion_title_label: Gtk.Label | None = None
+        self._tutor_workspace_pending_suggestion_label: Gtk.Label | None = None
+        self._tutor_workspace_pending_suggestion_accept_btn: Gtk.Button | None = None
+        self._tutor_workspace_pending_suggestion_dismiss_btn: Gtk.Button | None = None
+        self._tutor_workspace_autopilot_panel_last_action_label: Gtk.Label | None = None
+        self._tutor_workspace_autopilot_panel_next_action_label: Gtk.Label | None = None
+        self._tutor_workspace_autopilot_panel_stats_label: Gtk.Label | None = None
+        self._tutor_workspace_autopilot_panel_pause_btn: Gtk.Button | None = None
+        self._tutor_workspace_autopilot_panel_mode_dropdown: Gtk.DropDown | None = None
         self._tutor_workspace_model_dropdown: Gtk.DropDown | None = None
         self._tutor_workspace_prompt_view: Gtk.TextView | None = None
         self._tutor_workspace_prompt_count_label: Gtk.Label | None = None
@@ -4149,6 +4165,71 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cockpit_label.add_css_class("single-line-lock")
         self._tutor_workspace_cockpit_label = cockpit_label
         page_box.append(cockpit_label)
+
+        suggestion_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        suggestion_box.add_css_class("subtle-panel")
+        suggestion_box.add_css_class("tutor-autopilot-suggestion")
+        suggestion_title = Gtk.Label(label="Autopilot suggestion")
+        suggestion_title.set_halign(Gtk.Align.START)
+        suggestion_title.add_css_class("section-title")
+        suggestion_box.append(suggestion_title)
+        suggestion_label = Gtk.Label(label="No pending suggestion.")
+        suggestion_label.set_halign(Gtk.Align.START)
+        suggestion_label.set_wrap(True)
+        suggestion_label.add_css_class("allow-wrap")
+        suggestion_box.append(suggestion_label)
+        suggestion_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        suggestion_actions.add_css_class("inline-toolbar")
+        suggestion_accept_btn = Gtk.Button(label="Accept")
+        suggestion_accept_btn.add_css_class("suggested-action")
+        suggestion_dismiss_btn = Gtk.Button(label="Dismiss")
+        suggestion_actions.append(suggestion_accept_btn)
+        suggestion_actions.append(suggestion_dismiss_btn)
+        suggestion_box.append(suggestion_actions)
+        suggestion_box.set_visible(False)
+        self._tutor_workspace_pending_suggestion_box = suggestion_box
+        self._tutor_workspace_pending_suggestion_title_label = suggestion_title
+        self._tutor_workspace_pending_suggestion_label = suggestion_label
+        self._tutor_workspace_pending_suggestion_accept_btn = suggestion_accept_btn
+        self._tutor_workspace_pending_suggestion_dismiss_btn = suggestion_dismiss_btn
+        page_box.append(suggestion_box)
+
+        autopilot_panel = Gtk.Expander(label="Autopilot cockpit panel")
+        autopilot_panel.set_expanded(True)
+        autopilot_panel_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        autopilot_panel_box.set_margin_top(4)
+        autopilot_panel_box.set_margin_bottom(4)
+        autopilot_last_action_label = Gtk.Label(label="Last action: waiting for first execution.")
+        autopilot_last_action_label.set_halign(Gtk.Align.START)
+        autopilot_last_action_label.set_wrap(True)
+        autopilot_last_action_label.add_css_class("muted")
+        autopilot_panel_box.append(autopilot_last_action_label)
+        autopilot_next_action_label = Gtk.Label(label="Next action: waiting for state change.")
+        autopilot_next_action_label.set_halign(Gtk.Align.START)
+        autopilot_next_action_label.set_wrap(True)
+        autopilot_next_action_label.add_css_class("muted")
+        autopilot_panel_box.append(autopilot_next_action_label)
+        autopilot_stats_label = Gtk.Label(label="Stats: executed 0 • dismissed 0 • nudges 0")
+        autopilot_stats_label.set_halign(Gtk.Align.START)
+        autopilot_stats_label.set_wrap(True)
+        autopilot_stats_label.add_css_class("muted")
+        autopilot_panel_box.append(autopilot_stats_label)
+        autopilot_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        autopilot_controls.add_css_class("inline-toolbar")
+        autopilot_pause_btn = Gtk.Button(label="Pause Autopilot")
+        autopilot_pause_btn.add_css_class("flat")
+        autopilot_controls.append(autopilot_pause_btn)
+        autopilot_mode_dropdown = Gtk.DropDown.new(Gtk.StringList.new(list(AI_TUTOR_AUTONOMY_MODES)), None)
+        autopilot_mode_dropdown.add_css_class("topic-selector")
+        autopilot_controls.append(autopilot_mode_dropdown)
+        autopilot_panel_box.append(autopilot_controls)
+        autopilot_panel.set_child(autopilot_panel_box)
+        self._tutor_workspace_autopilot_panel_last_action_label = autopilot_last_action_label
+        self._tutor_workspace_autopilot_panel_next_action_label = autopilot_next_action_label
+        self._tutor_workspace_autopilot_panel_stats_label = autopilot_stats_label
+        self._tutor_workspace_autopilot_panel_pause_btn = autopilot_pause_btn
+        self._tutor_workspace_autopilot_panel_mode_dropdown = autopilot_mode_dropdown
+        page_box.append(autopilot_panel)
 
         context_label = Gtk.Label(label="Tutor context: —")
         context_label.set_halign(Gtk.Align.START)
@@ -7102,8 +7183,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             else:
                 ap_label = "running"
             scope = "app-wide" if ap_active else ("hold" if autopilot_paused else "manual")
+            pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+            pending_suffix = ""
+            if isinstance(pending, dict):
+                pending_suffix = " • pending suggestion"
             cockpit_full = (
-                f"Tutor autopilot: {ap_label} • mode {mode} • {scope} • dialog {'open' if dialog_open else 'closed'}"
+                f"Tutor autopilot: {ap_label} • mode {mode} • {scope} • dialog {'open' if dialog_open else 'closed'}{pending_suffix}"
             )
             if very_narrow:
                 cockpit_text = (
@@ -7119,6 +7204,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._set_label_text_if_changed(cockpit_label, cockpit_text)
             try:
                 cockpit_label.set_tooltip_text(cockpit_full)
+            except Exception:
+                pass
+            try:
+                self._refresh_ai_tutor_autopilot_surface()
             except Exception:
                 pass
             try:
@@ -8911,6 +9000,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             lambda *_: self._import_file_into_text_view(practice_answer_view, title="Import into Practice Loop"),
         )
         practice_action_run_btn.connect("clicked", _execute_tutor_practice_action)
+        suggestion_accept_btn.connect("clicked", self._accept_ai_tutor_pending_suggestion)
+        suggestion_dismiss_btn.connect("clicked", self._dismiss_ai_tutor_pending_suggestion)
+        autopilot_pause_btn.connect("clicked", self._toggle_ai_tutor_autopilot_pause)
+        autopilot_mode_dropdown.connect("notify::selected", self._on_ai_tutor_autopilot_mode_selected)
         prompt_buf.connect("changed", _on_prompt_changed)
         for btn, template, action_type in quick_prompt_buttons:
             btn.connect(
@@ -8939,6 +9032,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         _render_transcript(force_scroll=True)
         _refresh_practice_panel()
         _refresh_tutor_workspace_layout()
+        self._refresh_ai_tutor_autopilot_surface()
         _set_running(False)
         try:
             run_state.set_tutor_auto_pause_resume_tick_id(
@@ -8983,6 +9077,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 refresh_layout()
             except Exception:
                 pass
+        try:
+            self._refresh_ai_tutor_autopilot_surface()
+        except Exception:
+            pass
         refresh_status = state.get("refresh_status")
         if callable(refresh_status):
             try:
@@ -16580,6 +16678,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         self._record_ai_tutor_autopilot_metrics(dict(autopilot_stats), persist=False)
                     else:
                         self._record_ai_tutor_autopilot_metrics({}, persist=False)
+                    recent_autopilot_actions = data.get("ai_tutor_recent_action_log", []) or []
+                    self._ai_tutor_recent_action_log = self._sanitize_ai_tutor_recent_action_log(
+                        recent_autopilot_actions,
+                        limit=10,
+                    )
                     self.last_coach_pick = data.get("last_coach_pick")
                     self.last_coach_pick_date = data.get("last_coach_pick_date")
                     self.onboarding_dismissed = bool(data.get("onboarding_dismissed", False))
@@ -16842,6 +16945,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 ),
                 "ai_tutor_telemetry_events": telemetry_events,
                 "ai_tutor_autopilot_stats": dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {}),
+                "ai_tutor_recent_action_log": [
+                    {k: v for k, v in row.items() if k != "monotonic_at"}
+                    for row in self._sanitize_ai_tutor_recent_action_log(
+                        getattr(self, "_ai_tutor_recent_action_log", []),
+                        limit=3,
+                    )
+                ],
                 "last_coach_pick": self.last_coach_pick,
                 "last_coach_pick_date": self.last_coach_pick_date,
                 "onboarding_dismissed": bool(self.onboarding_dismissed),
@@ -25286,6 +25396,383 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             mode = str(AI_TUTOR_DEFAULT_AUTONOMY_MODE)
         return mode
 
+    def _sanitize_ai_tutor_recent_action_log(
+        self,
+        rows: Any,
+        *,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        cleaned: list[dict[str, Any]] = []
+        items = list(rows or []) if isinstance(rows, list) else []
+        max_items = max(1, min(20, int(limit or 10)))
+        for item in items[-max_items:]:
+            if not isinstance(item, dict):
+                continue
+            action = str(item.get("action", "") or "").strip().lower()
+            if action not in AI_TUTOR_ALLOWED_ACTIONS:
+                continue
+            topic = str(item.get("topic", "") or "").strip()[:120]
+            reason = str(item.get("reason", "") or "").replace("\n", " ").strip()[:220]
+            outcome = str(item.get("outcome", "") or "").strip().lower()[:40]
+            source = str(item.get("source", "") or "").strip().lower()[:40]
+            at = str(item.get("at", "") or "").strip()[:32]
+            try:
+                monotonic_at = float(item.get("monotonic_at", 0.0) or 0.0)
+            except Exception:
+                monotonic_at = 0.0
+            row = {
+                "action": action,
+                "topic": topic,
+                "reason": reason,
+                "outcome": outcome,
+                "source": source,
+                "at": at,
+            }
+            if monotonic_at > 0.0:
+                row["monotonic_at"] = float(monotonic_at)
+            cleaned.append(row)
+        return cleaned[-max_items:]
+
+    def _describe_ai_tutor_action(self, action_plan: dict[str, Any] | None) -> str:
+        if not isinstance(action_plan, dict):
+            return "No action"
+        action = str(action_plan.get("action", "") or "").strip().lower()
+        topic = str(action_plan.get("topic", "") or "").strip()
+        duration = int(action_plan.get("duration_minutes", 0) or 0)
+        label = action.replace("_", " ").strip().title() or "Tutor action"
+        parts = [label]
+        if topic:
+            parts.append(topic)
+        if duration > 0:
+            parts.append(f"{duration} min")
+        return " • ".join(parts)
+
+    def _record_ai_tutor_recent_action(
+        self,
+        action_plan: dict[str, Any] | None,
+        *,
+        outcome: str,
+        source: str,
+    ) -> None:
+        if not isinstance(action_plan, dict):
+            return
+        action = str(action_plan.get("action", "") or "").strip().lower()
+        if action not in AI_TUTOR_ALLOWED_ACTIONS:
+            return
+        row = {
+            "action": action,
+            "topic": str(action_plan.get("topic", "") or "").strip()[:120],
+            "reason": str(action_plan.get("reason", "") or "").replace("\n", " ").strip()[:220],
+            "outcome": str(outcome or "").strip().lower()[:40],
+            "source": str(source or "").strip().lower()[:40],
+            "at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "monotonic_at": float(time.monotonic()),
+        }
+        history = self._sanitize_ai_tutor_recent_action_log(
+            list(getattr(self, "_ai_tutor_recent_action_log", []) or []) + [row],
+            limit=10,
+        )
+        self._ai_tutor_recent_action_log = history
+
+    def _format_ai_tutor_pending_suggestion(self, action_plan: dict[str, Any] | None) -> tuple[str, str, str]:
+        if not isinstance(action_plan, dict):
+            return ("Autopilot suggestion", "No pending suggestion.", "Accept")
+        action = str(action_plan.get("action", "") or "").strip().lower()
+        reason = str(action_plan.get("reason", "") or "").strip()
+        requires_confirmation = bool(action_plan.get("requires_confirmation", False))
+        evidence_rows = [str(x or "").strip() for x in list(action_plan.get("evidence", []) or []) if str(x or "").strip()]
+        title = "Autopilot suggestion"
+        accept = "Accept"
+        if requires_confirmation:
+            title = "Autopilot wants approval"
+            accept = "Approve"
+        if action == "review_start":
+            accept = "Start Review"
+        elif action == "gap_drill_generate":
+            accept = "Generate Questions"
+        elif action == "section_c_start":
+            accept = "Open Section C"
+        elif action == "timer_stop":
+            accept = "Stop Timer"
+        message = self._describe_ai_tutor_action(action_plan)
+        if reason:
+            message = f"{message} — {reason}"
+        if evidence_rows:
+            message = f"{message} ({'; '.join(evidence_rows[:2])})"
+        return title, message[:280], accept[:24]
+
+    def _extract_ai_tutor_inline_action(self, text: str) -> tuple[str, dict[str, Any] | None]:
+        raw_text = str(text or "")
+        match = re.search(r"(?:\n|\A)\[ACTION:\s*(.+?)\]\s*\Z", raw_text, flags=re.IGNORECASE | re.DOTALL)
+        if match is None:
+            return raw_text.strip(), None
+        payload = str(match.group(1) or "").strip()
+        display_text = raw_text[: match.start()].rstrip()
+        if not payload:
+            return display_text, None
+        parts = [str(part or "").strip() for part in payload.split("|")]
+        action = str(parts[0] if parts else "").strip().lower()
+        raw_plan: dict[str, Any] = {"action": action}
+        for part in parts[1:]:
+            if ":" not in part:
+                continue
+            key, value = part.split(":", 1)
+            key_text = str(key or "").strip().lower()
+            value_text = str(value or "").strip()
+            if not key_text or not value_text:
+                continue
+            if key_text == "topic":
+                raw_plan["topic"] = value_text
+            elif key_text in {"duration", "duration_minutes", "minutes"}:
+                raw_plan["duration_minutes"] = value_text
+            elif key_text == "reason":
+                raw_plan["reason"] = value_text
+        if action not in AI_TUTOR_ALLOWED_ACTIONS:
+            return display_text, None
+        try:
+            snapshot = self._build_ai_tutor_autopilot_snapshot()
+            normalized, _err = self._normalize_ai_tutor_action_plan(raw_plan, snapshot)
+        except Exception:
+            normalized = None
+        return display_text, normalized if isinstance(normalized, dict) else None
+
+    def _clear_ai_tutor_pending_suggestion(self, *, outcome: str = "") -> None:
+        source_id = int(getattr(self, "_ai_tutor_pending_suggestion_source_id", 0) or 0)
+        if source_id > 0:
+            try:
+                self._remove_glib_source(source_id)
+            except Exception:
+                pass
+        self._ai_tutor_pending_suggestion_source_id = 0
+        self._ai_tutor_pending_suggestion = None
+        if outcome:
+            self._record_ai_tutor_autopilot_metrics(
+                {
+                    "autopilot_last_block_reason": str(outcome)[:200],
+                },
+                persist=False,
+            )
+        self._refresh_ai_tutor_autopilot_surface()
+
+    def _set_ai_tutor_pending_suggestion(self, action_plan: dict[str, Any], *, source: str) -> None:
+        if not isinstance(action_plan, dict):
+            return
+        cleaned = dict(action_plan)
+        cleaned["source"] = str(source or "").strip().lower()[:40]
+        self._ai_tutor_pending_suggestion = cleaned
+        self._ai_tutor_pending_suggestion_token = int(getattr(self, "_ai_tutor_pending_suggestion_token", 0) or 0) + 1
+        suggestion_token = int(self._ai_tutor_pending_suggestion_token or 0)
+        self._record_ai_tutor_recent_action(cleaned, outcome="suggested", source=str(source or "autopilot"))
+        source_id = int(getattr(self, "_ai_tutor_pending_suggestion_source_id", 0) or 0)
+        if source_id > 0:
+            try:
+                self._remove_glib_source(source_id)
+            except Exception:
+                pass
+
+        def _expire() -> bool:
+            if int(getattr(self, "_ai_tutor_pending_suggestion_token", 0) or 0) != suggestion_token:
+                return False
+            pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+            if isinstance(pending, dict):
+                self._record_ai_tutor_recent_action(
+                    pending,
+                    outcome="suggested_expired",
+                    source=str(pending.get("source", source) or source),
+                )
+            self._clear_ai_tutor_pending_suggestion(outcome="suggestion_expired")
+            return False
+
+        new_source_id = int(GLib.timeout_add_seconds(120, _expire) or 0)
+        self._ai_tutor_pending_suggestion_source_id = new_source_id
+        self._register_glib_source(new_source_id)
+        self._refresh_ai_tutor_autopilot_surface()
+
+    def _accept_ai_tutor_pending_suggestion(self, *_args: Any) -> None:
+        pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+        if not isinstance(pending, dict):
+            return
+        action_plan = dict(pending)
+        ok, message = self._execute_ai_tutor_action(action_plan)
+        source = str(action_plan.get("source", "manual") or "manual")
+        if ok:
+            now_ts = float(time.monotonic())
+            self._record_ai_tutor_recent_action(action_plan, outcome="suggested_accepted", source=source)
+            self._record_ai_tutor_recent_action(action_plan, outcome="executed", source=source)
+            stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+            self._record_ai_tutor_autopilot_metrics(
+                {
+                    "autopilot_suggestion_accepted_count": int(
+                        stats.get("autopilot_suggestion_accepted_count", 0) or 0
+                    )
+                    + 1,
+                    "autopilot_action_executed_count": int(
+                        stats.get("autopilot_action_executed_count", 0) or 0
+                    )
+                    + 1,
+                    "autopilot_last_block_reason": "",
+                },
+                persist=False,
+            )
+            self._ai_tutor_global_autopilot_last_action_at = now_ts
+            self._record_ai_tutor_action_budget_use(now_ts)
+            quiet_seconds = max(30, min(900, int(AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS)))
+            self._ai_tutor_global_quiet_until = float(time.monotonic()) + float(quiet_seconds)
+            try:
+                self.send_notification("Tutor autopilot", str(message or "Action executed.").strip()[:220])
+            except Exception:
+                pass
+            self._clear_ai_tutor_pending_suggestion()
+            return
+        self._record_ai_tutor_recent_action(action_plan, outcome="suggested_accept_failed", source=source)
+        self._record_ai_tutor_autopilot_metrics(
+            {
+                "autopilot_last_block_reason": str(message or "action_failed")[:200],
+            },
+            persist=False,
+        )
+        self._refresh_ai_tutor_autopilot_surface()
+
+    def _dismiss_ai_tutor_pending_suggestion(self, *_args: Any) -> None:
+        pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+        if isinstance(pending, dict):
+            self._record_ai_tutor_recent_action(
+                pending,
+                outcome="suggested_dismissed",
+                source=str(pending.get("source", "manual") or "manual"),
+            )
+            stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+            self._record_ai_tutor_autopilot_metrics(
+                {
+                    "autopilot_suggestion_dismissed_count": int(
+                        stats.get("autopilot_suggestion_dismissed_count", 0) or 0
+                    )
+                    + 1,
+                },
+                persist=False,
+            )
+        self._clear_ai_tutor_pending_suggestion(outcome="suggestion_dismissed")
+
+    def _refresh_ai_tutor_autopilot_surface(self) -> None:
+        pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+        banner_box = getattr(self, "_tutor_workspace_pending_suggestion_box", None)
+        title_label = getattr(self, "_tutor_workspace_pending_suggestion_title_label", None)
+        message_label = getattr(self, "_tutor_workspace_pending_suggestion_label", None)
+        accept_btn = getattr(self, "_tutor_workspace_pending_suggestion_accept_btn", None)
+        dismiss_btn = getattr(self, "_tutor_workspace_pending_suggestion_dismiss_btn", None)
+        if banner_box is not None:
+            has_pending = isinstance(pending, dict)
+            try:
+                banner_box.set_visible(bool(has_pending))
+            except Exception:
+                pass
+            if has_pending:
+                title, message, accept = self._format_ai_tutor_pending_suggestion(pending)
+                if title_label is not None:
+                    self._set_label_text_if_changed(title_label, title)
+                if message_label is not None:
+                    self._set_label_text_if_changed(message_label, message)
+                    try:
+                        message_label.set_tooltip_text(message)
+                    except Exception:
+                        pass
+                if accept_btn is not None:
+                    try:
+                        accept_btn.set_label(accept)
+                    except Exception:
+                        pass
+                if dismiss_btn is not None:
+                    try:
+                        dismiss_btn.set_label("Dismiss")
+                    except Exception:
+                        pass
+        history = self._sanitize_ai_tutor_recent_action_log(getattr(self, "_ai_tutor_recent_action_log", []), limit=10)
+        last_action_label = getattr(self, "_tutor_workspace_autopilot_panel_last_action_label", None)
+        if last_action_label is not None:
+            executed_rows = [
+                row
+                for row in reversed(history)
+                if str(row.get("outcome", "") or "").strip().lower() in {"executed", "suggested_accepted"}
+            ]
+            if executed_rows:
+                last_row = executed_rows[0]
+                action_text = self._describe_ai_tutor_action(last_row)
+                at_text = str(last_row.get("at", "") or "").strip()
+                line = f"Last action: {action_text}"
+                if at_text:
+                    line += f" @ {at_text[-8:]}"
+            else:
+                line = "Last action: waiting for first execution."
+            self._set_label_text_if_changed(last_action_label, line)
+        next_action_label = getattr(self, "_tutor_workspace_autopilot_panel_next_action_label", None)
+        if next_action_label is not None:
+            if isinstance(pending, dict):
+                line = f"Next action: {self._describe_ai_tutor_action(pending)}"
+            else:
+                line = "Next action: waiting for state change."
+            self._set_label_text_if_changed(next_action_label, line)
+        stats_label = getattr(self, "_tutor_workspace_autopilot_panel_stats_label", None)
+        if stats_label is not None:
+            stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+            stats_line = (
+                f"Stats: executed {int(stats.get('autopilot_action_executed_count', 0) or 0)} • "
+                f"dismissed {int(stats.get('autopilot_suggestion_dismissed_count', 0) or 0)} • "
+                f"nudges {int(stats.get('nudge_info_count', 0) or 0)}"
+            )
+            self._set_label_text_if_changed(stats_label, stats_line)
+        pause_btn = getattr(self, "_tutor_workspace_autopilot_panel_pause_btn", None)
+        if pause_btn is not None:
+            autopilot_enabled = bool(getattr(self, "ai_tutor_autopilot_enabled", True))
+            paused = bool(getattr(self, "ai_tutor_autopilot_paused", False))
+            try:
+                pause_btn.set_sensitive(bool(autopilot_enabled))
+                pause_btn.set_label("Resume Autopilot" if paused else "Pause Autopilot")
+            except Exception:
+                pass
+        mode_dropdown = getattr(self, "_tutor_workspace_autopilot_panel_mode_dropdown", None)
+        if mode_dropdown is not None:
+            mode_index = {"suggest": 0, "assist": 1, "cockpit": 2}
+            target_index = int(mode_index.get(str(self._effective_ai_tutor_autonomy_mode() or "assist"), 1))
+            try:
+                if int(mode_dropdown.get_selected() or 0) != target_index:
+                    mode_dropdown.set_selected(target_index)
+            except Exception:
+                pass
+
+    def _toggle_ai_tutor_autopilot_pause(self, *_args: Any) -> None:
+        if not bool(getattr(self, "ai_tutor_autopilot_enabled", True)):
+            return
+        self.ai_tutor_autopilot_paused = not bool(getattr(self, "ai_tutor_autopilot_paused", False))
+        self._ai_tutor_global_autopilot_busy = False
+        if not bool(self.ai_tutor_autopilot_paused):
+            self._restart_ai_tutor_global_autopilot_timer()
+        self._refresh_ai_tutor_autopilot_surface()
+        try:
+            self.save_preferences()
+        except Exception:
+            pass
+
+    def _on_ai_tutor_autopilot_mode_selected(self, dropdown: Gtk.DropDown, *_args: Any) -> None:
+        try:
+            selected = int(dropdown.get_selected() or 0)
+        except Exception:
+            selected = 1
+        mode_map = {0: "suggest", 1: "assist", 2: "cockpit"}
+        new_mode = self._coerce_ai_tutor_autonomy_mode(mode_map.get(selected, "assist"))
+        if new_mode == str(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE) or ""):
+            return
+        self.ai_tutor_autonomy_mode = new_mode
+        self._ai_tutor_global_autopilot_busy = False
+        if bool(getattr(self, "ai_tutor_autopilot_enabled", True)) and not bool(
+            getattr(self, "ai_tutor_autopilot_paused", False)
+        ):
+            self._restart_ai_tutor_global_autopilot_timer()
+        self._refresh_ai_tutor_autopilot_surface()
+        try:
+            self.save_preferences()
+        except Exception:
+            pass
+
     def _coerce_ai_tutor_nudge_policy(self, value: Any) -> str:
         policy = str(value or "").strip().lower()
         if policy not in AI_TUTOR_NUDGE_POLICIES:
@@ -25391,6 +25878,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "must_review_due": int(snapshot.get("must_review_due", 0) or 0),
             "overdue_srs_count": int(snapshot.get("overdue_srs_count", 0) or 0),
             "new_srs_count": int(snapshot.get("new_srs_count", 0) or 0),
+            "tutor_dialog_open": bool(snapshot.get("tutor_dialog_open", False)),
             "pomodoro_active": bool(snapshot.get("pomodoro_active", False)),
             "pomodoro_paused": bool(snapshot.get("pomodoro_paused", False)),
             "pomodoro_bucket": int(max(0, pomodoro_remaining_sec // 300)),
@@ -25398,6 +25886,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "weak_topics_top3": list(snapshot.get("weak_topics_top3", []) or [])[:3],
             "risk_snapshot_top3": list(snapshot.get("risk_snapshot_top3", []) or [])[:2],
             "due_snapshot_top3": list(snapshot.get("due_snapshot_top3", []) or [])[:2],
+            "recent_autopilot_actions": list(snapshot.get("recent_autopilot_actions", []) or [])[:2],
             "runtime_scope": str(snapshot.get("runtime_scope", "") or ""),
         }
         signal_json = json.dumps(signal, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -25445,6 +25934,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             refresh_seconds = int(AI_TUTOR_AUTOPILOT_DECISION_REFRESH_SECONDS)
         refresh_seconds = max(45, min(1800, int(refresh_seconds)))
+        recent_log = self._sanitize_ai_tutor_recent_action_log(
+            getattr(self, "_ai_tutor_recent_action_log", []),
+            limit=5,
+        )
+        repeated_suggestions = [
+            row
+            for row in reversed(recent_log)
+            if str(row.get("outcome", "") or "").strip().lower().startswith("suggested")
+        ][:3]
+        if len(repeated_suggestions) >= 3:
+            repeated_actions = {
+                str(row.get("action", "") or "").strip().lower()
+                for row in repeated_suggestions
+                if str(row.get("action", "") or "").strip()
+            }
+            if len(repeated_actions) == 1 and last_decision_at > 0.0:
+                backoff_seconds = max(refresh_seconds, 600)
+                if (now_val - last_decision_at) < float(backoff_seconds):
+                    return False, "repeated_suggestion_backoff", event_sig
         if last_decision_at <= 0.0 or (now_val - last_decision_at) >= float(refresh_seconds):
             return True, "periodic_refresh", event_sig
         return False, "no_material_change", event_sig
@@ -25561,11 +26069,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         f"{must_due} must-review items are due. Consider a short review burst now.",
                     )
                 if isinstance(decision, dict):
+                    mode = self._effective_ai_tutor_autonomy_mode()
                     action = str(decision.get("action", "") or "").strip().lower()
                     requires_confirmation = bool(decision.get("requires_confirmation", False))
                     local_blocked = ""
                     if not bool(self._can_auto_execute_ai_tutor_action(action, mode, requires_confirmation)):
                         blocked_reason_local = "needs_confirmation_or_mode_block"
+                        self._set_ai_tutor_pending_suggestion(decision, source="autopilot")
                         reason = str(decision.get("reason", "") or "").strip()
                         if reason:
                             self._emit_global_ai_tutor_nudge("info", f"Suggested: {action} - {reason}")
@@ -25578,14 +26088,47 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         elif not self._consume_global_ai_tutor_action_budget(now_ts):
                             local_blocked = "action_rate_limit"
                         else:
-                            ok, msg = self._execute_ai_tutor_action(decision)
-                            action_message = str(msg or "").strip()
-                            executed = bool(ok)
-                            if executed:
-                                self._ai_tutor_global_autopilot_last_action_at = now_ts
-                                self._record_ai_tutor_action_budget_use(now_ts)
+                            recent_log = self._sanitize_ai_tutor_recent_action_log(
+                                getattr(self, "_ai_tutor_recent_action_log", []),
+                                limit=10,
+                            )
+                            duplicate_recent = False
+                            for row in reversed(recent_log):
+                                if str(row.get("outcome", "") or "").strip().lower() != "executed":
+                                    continue
+                                if str(row.get("action", "") or "").strip().lower() != action:
+                                    continue
+                                if str(row.get("topic", "") or "").strip() != str(decision.get("topic", "") or "").strip():
+                                    continue
+                                try:
+                                    row_ts = float(row.get("monotonic_at", 0.0) or 0.0)
+                                except Exception:
+                                    row_ts = 0.0
+                                if row_ts > 0.0 and (now_ts - row_ts) < 60.0:
+                                    duplicate_recent = True
+                                    break
+                            if duplicate_recent:
+                                local_blocked = "action_duplicate_guard"
                             else:
-                                local_blocked = action_message or "action_failed"
+                                ok, msg = self._execute_ai_tutor_action(decision)
+                                action_message = str(msg or "").strip()
+                                executed = bool(ok)
+                                if executed:
+                                    self._ai_tutor_global_autopilot_last_action_at = now_ts
+                                    self._record_ai_tutor_action_budget_use(now_ts)
+                                    self._record_ai_tutor_recent_action(
+                                        decision,
+                                        outcome="executed",
+                                        source="autopilot",
+                                    )
+                                    pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+                                    if (
+                                        isinstance(pending, dict)
+                                        and str(pending.get("action", "") or "").strip().lower() == action
+                                    ):
+                                        self._clear_ai_tutor_pending_suggestion()
+                                else:
+                                    local_blocked = action_message or "action_failed"
                     if not executed:
                         if local_blocked:
                             updates["autopilot_action_blocked_count"] = (
@@ -25643,6 +26186,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "autopilot_action_executed_count": 0,
                 "autopilot_action_blocked_count": 0,
                 "autopilot_last_block_reason": "",
+                "autopilot_suggestion_accepted_count": 0,
+                "autopilot_suggestion_dismissed_count": 0,
                 "nudge_info_count": 0,
                 "nudge_warning_count": 0,
                 "nudge_intervention_count": 0,
@@ -25687,6 +26232,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         stats["autopilot_mode"] = str(self._effective_ai_tutor_autonomy_mode())
         stats["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
         self._ai_tutor_autopilot_stats = stats
+        try:
+            self._refresh_ai_tutor_autopilot_surface()
+        except Exception:
+            pass
         if bool(persist):
             try:
                 self.save_preferences()
@@ -25745,6 +26294,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "tutor_popup_generation_active": bool(getattr(self, "_ai_tutor_popup_stream_active", False)),
             "allowed_actions": list(AI_TUTOR_ALLOWED_ACTIONS),
             "autonomy_mode": str(self._effective_ai_tutor_autonomy_mode()),
+            "recent_autopilot_actions": self._sanitize_ai_tutor_recent_action_log(
+                getattr(self, "_ai_tutor_recent_action_log", []),
+                limit=5,
+            ),
             "total_question_count": int(self._get_total_question_count()),
             "question_generation_cap": int(getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 1500) or 1500),
             "gap_generation_recommended": (
@@ -25985,9 +26538,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     ) -> dict[str, Any]:
         current_topic = str(snapshot.get("current_topic", "") or "").strip()
         must_review_due = int(snapshot.get("must_review_due", 0) or 0)
+        overdue_srs_count = int(snapshot.get("overdue_srs_count", 0) or 0)
+        weak_topics = [
+            row for row in list(snapshot.get("weak_topics_top3", []) or []) if isinstance(row, dict)
+        ]
         action = "focus_start"
-        if must_review_due > 0:
+        if must_review_due >= 3:
             action = "review_start"
+        elif overdue_srs_count > 0:
+            action = "leitner_drill_start"
+        elif weak_topics:
+            action = "weak_drill_start"
+            current_topic = str(weak_topics[0].get("chapter", "") or "").strip() or current_topic
         reason = "Fallback cockpit action from current due-review and focus signals."
         if issue:
             reason = f"{reason} ({issue})"

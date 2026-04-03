@@ -2051,7 +2051,24 @@ class AITutorDialogController:
             mode = _autopilot_mode()
             base = f"Tutor autopilot [{mode}]"
             detail = str(message or "").strip()
-            cockpit_status_label.set_text(f"{base}: {detail}" if detail else base)
+            stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
+            executed = int(stats.get("autopilot_action_executed_count", 0) or 0)
+            dismissed = int(stats.get("autopilot_suggestion_dismissed_count", 0) or 0)
+            pending = getattr(app, "_ai_tutor_pending_suggestion", None)
+            pending_text = ""
+            if isinstance(pending, dict):
+                try:
+                    describe_action = getattr(app, "_describe_ai_tutor_action", None)
+                    if callable(describe_action):
+                        pending_text = str(cast(Any, describe_action)(pending) or "").strip()
+                except Exception:
+                    pending_text = ""
+            parts = [detail] if detail else []
+            parts.append(f"exec {executed}")
+            parts.append(f"dismissed {dismissed}")
+            if pending_text:
+                parts.append(f"pending {pending_text}")
+            cockpit_status_label.set_text(f"{base}: {' • '.join(part for part in parts if part)}" if parts else base)
 
         def _toggle_autopilot_pause(*_args) -> None:
             if not bool(getattr(app, "ai_tutor_autopilot_enabled", True)):
@@ -3044,6 +3061,16 @@ class AITutorDialogController:
                             ).strip()
                     except Exception:
                         pass
+                    action_plan: dict[str, Any] | None = None
+                    try:
+                        action_parser = getattr(app, "_extract_ai_tutor_inline_action", None)
+                        if callable(action_parser):
+                            cleaned_text, parsed_action = cast(Any, action_parser(final_text))
+                            final_text = str(cleaned_text or "").strip()
+                            if isinstance(parsed_action, dict):
+                                action_plan = parsed_action
+                    except Exception:
+                        action_plan = None
 
                     coverage_eval = assess_tutor_coverage(final_text, coverage_targets)
                     coverage_state["target_count"] = int(coverage_eval.get("target_count", coverage_target_count) or coverage_target_count)
@@ -3191,6 +3218,14 @@ class AITutorDialogController:
                         except Exception:
                             pass
                         _persist_history()
+                    if isinstance(action_plan, dict):
+                        try:
+                            action_plan["source"] = "tutor_dialog"
+                            setter = getattr(app, "_set_ai_tutor_pending_suggestion", None)
+                            if callable(setter):
+                                cast(Any, setter)(action_plan, source="tutor_dialog")
+                        except Exception:
+                            pass
                     _record_turn_telemetry(
                         outcome="success",
                         error_class="",

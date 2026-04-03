@@ -60,6 +60,9 @@ TUTOR_COACH_IDENTITY_LINES: list[str] = [
     "start/pause/stop a Pomodoro timer, launch quizzes, drills (weak-drill, Leitner, error, leech), "
     "interleaved practice, review sessions, gap-drill generation, and Section C practice. "
     "When suggesting a next step, name the specific in-app action so the learner or autopilot can act on it directly.",
+    "- When prescribing one concrete next step that the app can execute, append exactly one final line in this format: "
+    "[ACTION: <action_name> | topic: <chapter> | duration: <mins> | reason: <short text>]. "
+    "Available action names: focus_start, drill_start, weak_drill_start, quiz_start, review_start, leitner_drill_start.",
     "",
 ]
 
