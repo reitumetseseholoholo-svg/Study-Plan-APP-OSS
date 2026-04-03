@@ -23674,7 +23674,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "Schema:",
                 '{"items":[{"item_id":"topic-slug-1","item_type":"mcq","prompt":"Stem only (no A–D in the stem).","topic":"chapter","expected_format":"Answer A–D","difficulty":"medium","rubric_hints":[],"meta":{"options":["Real distractor one","Real distractor two","Real distractor three","Correct statement text"],"correct_option":"D","marks_max":1.0}}]}',
                 "Rules:",
-                "- item_type: short_answer, teach_back, or mcq. For mcq: meta.options MUST be four distinct, exam-realistic strings (not placeholders like 'Option A' or 'Full option text B'). meta.correct_option is A/B/C/D.",
+                "- item_type: short_answer, teach_back, or mcq. For mcq: meta.options MUST be four distinct, exam-realistic strings (not placeholders like 'Option A' or 'Full option text B'). meta.correct_option MUST be ONLY the single letter A, B, C, or D — never the full option text.",
                 "- prompt: one clear, compelling question that applies to the topic and (if present) targets weak_topics/misconceptions/outcome_expectations.",
                 "- Difficulty: align with cognitive.posterior_mean (low→easier, high→harder); if struggle_mode prefer easy/medium.",
                 "- outcome_expectations: prefer questions that address these syllabus outcomes when listed.",
@@ -23717,6 +23717,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 opt_list = [str(x or "").strip() for x in opts] if isinstance(opts, list) else []
                 if len(opt_list) != 4 or gap_options_look_like_llm_placeholders(opt_list):
                     continue
+                # Normalize correct_option: the LLM sometimes stores the full option text
+                # instead of a letter.  Convert to letter A-D by matching against options.
+                if isinstance(meta, dict):
+                    correct_opt = str(meta.get("correct_option", "") or "").strip()
+                    if correct_opt.upper() not in {"A", "B", "C", "D"}:
+                        correct_opt_norm = " ".join(correct_opt.lower().split())
+                        for i, opt in enumerate(opt_list[:4]):
+                            if " ".join(opt.lower().split()) == correct_opt_norm:
+                                meta["correct_option"] = chr(ord("A") + i)
+                                break
+                    # Reject the item if correct_option is still not a valid letter.
+                    if str(meta.get("correct_option", "") or "").strip().upper() not in {"A", "B", "C", "D"}:
+                        continue
             try:
                 out.append(TutorPracticeItem.from_dict(row))
             except Exception:
