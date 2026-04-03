@@ -3354,7 +3354,7 @@ class DeterministicTutorAssessmentService:
 
         # Use word boundaries so that letters embedded inside words (e.g. 'a' in "answer",
         # 'b' in "because") are not mistaken for a choice label.
-        picked_match = re.search(r"\b([A-Da-d])\b", str(answer_text or ""))
+        picked_match = re.search(r"\b[A-Da-d]\b", str(answer_text or ""))
         picked = picked_match.group(0).upper() if picked_match else _normalize_free_text(answer_text).upper()
 
         marks_max = float(meta.get("marks_max", 1.0) or 1.0)
