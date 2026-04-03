@@ -25347,6 +25347,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         GLib.idle_add(_kick_once, priority=GLib.PRIORITY_LOW)
 
     def _consume_global_ai_tutor_action_budget(self, now_ts: float) -> bool:
+        """Check if action budget allows execution. Only records the timestamp
+        if budget is available (caller must call _record_ai_tutor_action_budget_use
+        after confirming execution succeeded)."""
         window: list[float] = []
         for ts in list(getattr(self, "_ai_tutor_global_autopilot_action_window", []) or []):
             try:
@@ -25355,12 +25358,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 continue
             if (now_ts - value) <= float(AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS):
                 window.append(value)
+        self._ai_tutor_global_autopilot_action_window = window
         if len(window) >= int(max(1, AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW)):
-            self._ai_tutor_global_autopilot_action_window = window
             return False
+        return True
+
+    def _record_ai_tutor_action_budget_use(self, now_ts: float) -> None:
+        """Record a successful action execution in the rate-limit window."""
+        window = list(getattr(self, "_ai_tutor_global_autopilot_action_window", []) or [])
         window.append(float(now_ts))
         self._ai_tutor_global_autopilot_action_window = window
-        return True
 
     def _build_ai_tutor_autopilot_event_signature(self, snapshot: dict[str, Any]) -> str:
         focus_info = (
@@ -25500,7 +25507,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ai_tutor_global_autopilot_busy = True
 
         def _worker() -> None:
-            mode = self._effective_ai_tutor_autonomy_mode()
+            mode = "suggest"
             snapshot: dict[str, Any] = {}
             decision: dict[str, Any] | None = None
             decision_err: str | None = None
@@ -25509,6 +25516,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             model_requested = False
             event_sig = ""
             try:
+                mode = self._effective_ai_tutor_autonomy_mode()
                 snapshot = self._build_ai_tutor_autopilot_snapshot()
                 should_request, gate_reason, event_sig = self._should_request_global_ai_tutor_decision(snapshot)
                 if self._ai_tutor_user_turn_busy():
@@ -25575,6 +25583,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             executed = bool(ok)
                             if executed:
                                 self._ai_tutor_global_autopilot_last_action_at = now_ts
+                                self._record_ai_tutor_action_budget_use(now_ts)
                             else:
                                 local_blocked = action_message or "action_failed"
                     if not executed:
