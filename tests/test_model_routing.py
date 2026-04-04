@@ -34,18 +34,14 @@ def test_routed_primary_and_failover_from_json(tmp_path: Path, monkeypatch: pyte
 
 
 def test_resolve_local_llm_default_prefers_routing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import types
-
-    from studyplan_app import StudyPlanGUI
+    from studyplan_app_runtime_helpers import resolve_local_llm_default_for_purpose
 
     cfg = {"purposes": {"tutor": {"primary": "routed-a:latest", "failover": []}}}
     path = tmp_path / "route.json"
     path.write_text(json.dumps(cfg), encoding="utf-8")
     monkeypatch.setenv("STUDYPLAN_LLM_MODEL_ROUTING_PATH", str(path))
     model_routing.clear_llm_model_routing_cache()
-    dummy = types.SimpleNamespace()
-    picked = StudyPlanGUI._resolve_local_llm_default_for_purpose(
-        dummy,
+    picked = resolve_local_llm_default_for_purpose(
         "tutor",
         ["other:latest", "routed-a:latest"],
     )

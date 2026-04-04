@@ -33,3 +33,6 @@ tutor_quality_pipeline_report.json
 
 # Internal planning / strategy docs (not shipped)
 docs/
+!docs/
+docs/*
+!docs/LLM_TELEMETRY_SCHEMA.md
