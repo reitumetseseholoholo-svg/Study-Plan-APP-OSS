@@ -64,11 +64,12 @@ AI_TUTOR_PROMPT_CONTRACT_VERSION = 5
 AI_TUTOR_STREAM_STALL_MS = 900
 AI_TUTOR_STREAM_WATCHDOG_INTERVAL_MS = 240
 AI_TUTOR_RAG_USAGE_HINT = (
-    "RAG snippets are from reference materials (course notes, textbooks). When you use a fact, example, definition, "
-    "or figure that comes from a snippet, tie it to the matching tag (e.g. [S2]). If the snippets do not cover the "
-    "question, say so briefly, then answer from general syllabus knowledge and label any extra detail as unsupported "
-    "by the provided excerpts. Do not cite or quote the syllabus document unless the learner asks why a topic or "
-    "subtopic is important (e.g. exam relevance)."
+    "RAG snippets come from two source types: [syllabus] snippets define exam scope and indicate which topics "
+    "matter — use them to confirm relevance, not as your main explanation; [notes] and [supplemental] snippets "
+    "contain detailed definitions, worked examples, and formulas — these are your primary knowledge source. "
+    "When you use a fact, example, or formula from a snippet, cite the matching tag (e.g. [S2]). "
+    "If the snippets do not cover the question, say so briefly, then answer from general knowledge and label "
+    "any extra detail as unsupported by the provided excerpts."
 )
 # Single source for repeated tutor rules (economy + consistency).
 AI_TUTOR_NEXT_STEP_RULE = (
@@ -650,7 +651,9 @@ def build_rag_context_block(snippets: list[dict[str, Any]]) -> str:
         if len(text) > 420:
             text = f"{text[:417].rstrip()}..."
         source_label = source if source else "PDF source"
-        rows.append(f"[{sid}] {source_label}: {text}")
+        tier = str(row.get("tier", "") or "").strip()
+        tier_tag = f"[{tier}] " if tier else ""
+        rows.append(f"[{sid}] {tier_tag}{source_label}: {text}")
     if not rows:
         return ""
     return "\n".join(
