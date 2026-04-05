@@ -190,6 +190,16 @@ SECTION_C_FR_EXTRA_RULES = [
     "Marks split: When using preparation tasks, typical split is (a) main statement 10–14 marks, (b) second statement or detailed workings 4–8 marks, (c) short explanation, disclosure, or recommendation 2–6 marks; total must remain 20.",
     "model_answer_outline: For any part that asks to prepare or present a statement, the matching bullet must be a clear statement skeleton (key headings and line items, e.g. non-current assets, current assets, equity, subtotals), not only a generic narrative.",
     "Use IFRS/IAS terminology where the scenario implies a standard (e.g. IAS 1 presentation, IAS 7 cash flows, relevant recognition standards).",
+    "Exhibits: For FR questions, include at least one numerical pipe/ASCII table exhibit per statement required "
+    "(e.g. draft Statement of Financial Position with figures, trial balance extract, or note workings table). "
+    "Each table must have column headers and at least 3 data rows with currency figures.",
+    "FR exhibit templates: preferred exhibit forms are (1) consolidated/single-entity SoFP with non-current assets, "
+    "current assets, equity, and liabilities sections; (2) SoPL/SoCI with revenue, operating expenses, and tax; "
+    "(3) SoCF with operating/investing/financing sections per IAS 7; "
+    "(4) note disclosures for IAS 12 deferred tax, IFRS 9 classification, or IFRS 16 lease liabilities.",
+    "Numeric completeness: every figure referenced in the scenario narrative or requirements (e.g. 'as per the "
+    "draft accounts', 'the information provided') must appear verbatim in an exhibit table—never omit data that "
+    "a candidate needs to calculate or prepare a statement.",
 ]
 
 # Syllabus extraction: default role for build_syllabus_extraction_prompt and reconfig.

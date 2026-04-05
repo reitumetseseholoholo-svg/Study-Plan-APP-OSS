@@ -11084,6 +11084,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def on_menu_section_c_browse(self, *_args):
         self._open_section_c_browse_dialog()
 
+    def on_menu_section_c_analytics(self, *_args):
+        self._open_section_c_analytics_dialog()
+
+    def on_menu_section_c_exam_simulation(self, *_args):
+        self._open_section_c_exam_simulation_dialog()
+
     def on_open_ai_coach(self, *_args):
         if bool(getattr(self, "ui_modern_enabled", False)) and self._open_workspace_tab("coach"):
             return
@@ -27395,6 +27401,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         safe = re.sub(r"[^a-z0-9_-]+", "_", mid) if mid else "default"
         return os.path.join(base, f"{safe}_section_c_attempts.jsonl")
 
+    def _section_c_archive_path(self) -> str:
+        raw = str(os.environ.get("STUDYPLAN_SECTION_C_ARCHIVE_PATH", "") or "").strip()
+        if raw:
+            return os.path.abspath(os.path.expanduser(raw))
+        base = Config.CONFIG_HOME
+        mid = str(getattr(self, "module_id", "") or "").strip().lower()
+        safe = re.sub(r"[^a-z0-9_-]+", "_", mid) if mid else "default"
+        return os.path.join(base, f"{safe}_section_c_archive.json")
+
     def _section_c_question_id(self, chapter: str, prompt: str) -> str:
         payload = json.dumps(
             {
@@ -27500,6 +27515,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     exhibits.append(block[:ex_cap])
         if scenario_text and not exhibits:
             exhibits = [scenario_text[:1200]]
+        # FR modules: enforce at least one exhibit with a numeric table.
+        # If no exhibit contains a pipe-table row (i.e. " | "), inject a placeholder so downstream
+        # evaluation prompt knows data was missing from generation.
+        if self._is_fr_financial_reporting_module() and exhibits:
+            has_table = any("|" in ex for ex in exhibits)
+            if not has_table:
+                exhibits[0] = exhibits[0] + "\n(Note: numeric data table required for FR question – see scenario)"
         tasks_raw = row.get("required_tasks", [])
         required_tasks: list[str] = []
         if requirements:
@@ -27739,6 +27761,65 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
+    def _load_section_c_archive(self) -> dict[str, list[dict[str, Any]]]:
+        path = self._section_c_archive_path()
+        if not os.path.isfile(path):
+            return {}
+        try:
+            raw = self._read_text_file(path)
+            data = json.loads(raw or "{}")
+            if not isinstance(data, dict):
+                return {}
+            return {str(k): list(v) for k, v in data.items() if isinstance(v, list)}
+        except Exception:
+            return {}
+
+    def _save_section_c_archive(self, archive: dict[str, list[dict[str, Any]]]) -> None:
+        path = self._section_c_archive_path()
+        payload = {"schema": "section_c_archive_v1", "updated_at": datetime.datetime.now().isoformat(timespec="seconds"), "questions": archive}
+        try:
+            self._atomic_write_text_file(path, json.dumps(payload, ensure_ascii=True, indent=2))
+            self._secure_user_path(path, 0o600)
+        except Exception:
+            pass
+
+    def _archive_section_c_question(self, chapter: str, question: dict[str, Any]) -> None:
+        """Move a question to the archive (called when the 64-cap evicts it)."""
+        if not isinstance(question, dict):
+            return
+        try:
+            archive = self._load_section_c_archive()
+        except Exception:
+            archive = {}
+        chapter_rows = list(archive.get(chapter, []) or [])
+        qid = str(question.get("id", "") or "")
+        # Deduplicate by id
+        chapter_rows = [r for r in chapter_rows if str(r.get("id", "") or "") != qid]
+        chapter_rows.append(dict(question))
+        archive[chapter] = chapter_rows[-256:]  # keep up to 256 archived per chapter
+        try:
+            self._save_section_c_archive(archive)
+        except Exception:
+            pass
+
+    def _get_section_c_archived_questions(self, chapter: str | None = None) -> list[tuple[str, int, dict[str, Any]]]:
+        """Return list of (chapter, index, question_dict) from archive, optionally filtered by chapter."""
+        try:
+            data = self._load_section_c_archive()
+        except Exception:
+            return []
+        archive = data if isinstance(data, dict) else {}
+        chapters = [str(ch) for ch in getattr(self.engine, "CHAPTERS", []) or [] if str(ch or "").strip()]
+        result: list[tuple[str, int, dict[str, Any]]] = []
+        for ch in chapters:
+            if chapter and ch != chapter:
+                continue
+            rows = list(archive.get(ch, []) or [])
+            for idx, row in enumerate(rows):
+                if isinstance(row, dict):
+                    result.append((ch, idx, dict(row)))
+        return result
+
     def _get_section_c_questions(self, chapter: str) -> list[dict[str, Any]]:
         chapter_name = str(chapter or "").strip()
         if chapter_name not in getattr(self.engine, "CHAPTERS", []):
@@ -27781,7 +27862,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 break
         if not replaced:
             chapter_rows.append(normalized)
-        bank[chapter_name] = chapter_rows[-64:]
+        if len(chapter_rows) > 64:
+            evicted = chapter_rows[:-64]
+            chapter_rows = chapter_rows[-64:]
+            for evicted_q in evicted:
+                try:
+                    self._archive_section_c_question(chapter_name, evicted_q)
+                except Exception:
+                    pass
+        bank[chapter_name] = chapter_rows
         self._section_c_question_bank = bank
         self._section_c_question_bank_loaded = True
         if bool(persist):
@@ -28015,6 +28104,88 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         parsed["source"] = "ai_generated"
         saved = self._upsert_section_c_question(chapter_name, parsed, persist=True)
         return (saved if isinstance(saved, dict) else parsed), None
+
+    def _build_section_c_keyword_checklist(
+        self,
+        question: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """
+        Build a per-requirement keyword checklist from model_answer_outline + requirements.
+        Used as a self-marking guide when Ollama is unavailable.
+        Returns list of {part, requirement_text, marks, keywords: list[str]}.
+        """
+        requirements = list(question.get("requirements", []) or [])
+        model_outline = list(question.get("model_answer_outline", []) or [])
+        exhibits = list(question.get("exhibits", []) or [])
+        exhibit_text = " ".join(str(e or "") for e in exhibits).lower()
+
+        stop = {
+            "the", "and", "for", "with", "that", "this", "from", "into", "your",
+            "should", "would", "could", "which", "their", "there", "about", "than",
+            "section", "question", "response", "finance", "financial", "answer",
+            "requirement", "case", "study", "using", "provide", "must", "will",
+        }
+
+        def _extract_keywords(text: str, cap: int = 12) -> list[str]:
+            tokens = re.findall(r"[A-Za-z]{4,}", str(text or "").lower())
+            seen: set[str] = set()
+            out: list[str] = []
+            for tok in tokens:
+                if tok in stop or tok in seen:
+                    continue
+                seen.add(tok)
+                out.append(tok)
+                if len(out) >= cap:
+                    break
+            return out
+
+        checklist: list[dict[str, Any]] = []
+        for i, req in enumerate(requirements):
+            if not isinstance(req, dict):
+                continue
+            part = str(req.get("part", "") or "").strip()
+            req_text = str(req.get("requirement_text", "") or "").strip()
+            marks = max(0, int(req.get("marks", 0) or 0))
+            outline_text = str(model_outline[i] if i < len(model_outline) else "").strip()
+            combined = f"{req_text} {outline_text} {exhibit_text}"
+            keywords = _extract_keywords(combined, cap=12)
+            if keywords:
+                checklist.append({
+                    "part": part,
+                    "requirement_text": req_text[:160],
+                    "marks": marks,
+                    "keywords": keywords,
+                })
+        return checklist
+
+    def _format_section_c_self_marking_guide(
+        self,
+        question: dict[str, Any],
+    ) -> str:
+        """
+        Format a self-marking keyword checklist guide for use when AI is unavailable.
+        Learner reads the checklist and self-assesses coverage.
+        """
+        checklist = self._build_section_c_keyword_checklist(question)
+        if not checklist:
+            return "AI feedback unavailable. Review your answer against the requirements and model_answer_outline manually."
+        lines = [
+            "AI unavailable – self-marking guide",
+            "Tick the concepts you covered in your answer:",
+            "",
+        ]
+        for item in checklist:
+            part = str(item.get("part", "") or "").upper()
+            req_text = str(item.get("requirement_text", "") or "")
+            marks = int(item.get("marks", 0) or 0)
+            keywords = list(item.get("keywords", []) or [])
+            lines.append(f"Part ({part}) – {marks} marks: {req_text[:80]}")
+            if keywords:
+                kw_line = "  Concepts to check: " + ", ".join(keywords[:10])
+                lines.append(kw_line)
+            lines.append("")
+        lines.append("Estimate your score based on how many key concepts you addressed.")
+        return "\n".join(lines).strip()
 
     def _evaluate_section_c_response_deterministic(
         self,
@@ -28379,6 +28550,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         question: dict[str, Any],
         response_text: str,
         evaluation: dict[str, Any],
+        time_taken_seconds: int | None = None,
     ) -> None:
         # Extra safety: only persist evaluation payloads that match the app's expected shape.
         # This prevents malformed AI outputs from polluting attempt logs.
@@ -28441,6 +28613,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "question_id": str(question.get("id", "") or ""),
             "prompt": str(question.get("prompt", "") or "")[:400],
             "response_chars": int(len(str(response_text or ""))),
+            "time_taken_seconds": int(time_taken_seconds) if time_taken_seconds is not None else None,
             "evaluation": dict(evaluation or {}),
         }
         path = self._section_c_attempts_log_path()
@@ -28862,10 +29035,41 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 lines.append(f"- {str(item.get('criterion', '') or '').strip()}: {int(item.get('max_marks', 0) or 0)}")
         return "\n".join(lines).strip()
 
-    def _format_section_c_feedback_text(self, evaluation: dict[str, Any]) -> str:
+    def _format_section_c_model_answer_text(self, question: dict[str, Any]) -> str:
+        """Format the model answer outline for reveal after evaluation."""
+        outline = list(question.get("model_answer_outline", []) or [])
+        requirements = list(question.get("requirements", []) or [])
+        if not outline:
+            return "No model answer outline available for this question."
+        lines = ["Model Answer Outline", "=" * 20, ""]
+        for i, bullet in enumerate(outline):
+            bullet_text = clean_ai_tutor_text(str(bullet or "").strip())
+            if not bullet_text:
+                continue
+            # Try to match with requirement part label
+            part_label = ""
+            if i < len(requirements) and isinstance(requirements[i], dict):
+                part = str(requirements[i].get("part", "") or "").strip().upper()
+                marks = int(requirements[i].get("marks", 0) or 0)
+                if part:
+                    part_label = f"Part ({part}) – {marks} marks: "
+            lines.append(f"{part_label}{bullet_text}")
+            lines.append("")
+        total_marks = sum(int(r.get("marks", 0) or 0) for r in requirements if isinstance(r, dict))
+        if total_marks:
+            lines.append(f"Total: {total_marks} marks")
+        return "\n".join(lines).strip()
+
+    def _format_section_c_feedback_text(self, evaluation: dict[str, Any], *, time_taken_seconds: int | None = None) -> str:
         total = int(evaluation.get("total_mark", 0) or 0)
         max_mark = int(evaluation.get("max_mark", 0) or 0)
         lines = [f"Score: {total}/{max_mark}", ""]
+        if time_taken_seconds is not None and time_taken_seconds > 0:
+            mins_taken = time_taken_seconds // 60
+            max_mark_val = max(1, int(max_mark))
+            suggested_mins = round(max_mark_val * 1.8)
+            lines.append(f"Time: {mins_taken} min taken (suggested ~{suggested_mins} min for {max_mark_val} marks)")
+            lines.append("")
         rows = list(evaluation.get("criterion_scores", []) or [])
         if rows:
             lines.append("By criterion:")
@@ -29809,6 +30013,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         feedback_scroll.set_child(feedback_view)
         content.append(feedback_scroll)
 
+        model_answer_btn = Gtk.Button(label="Show model answer")
+        model_answer_btn.set_tooltip_text("Reveal the model answer outline after evaluating your response.")
+        model_answer_btn.set_visible(False)
+        content.append(model_answer_btn)
+
+        model_answer_label = Gtk.Label(label="Model answer")
+        model_answer_label.set_halign(Gtk.Align.START)
+        model_answer_label.add_css_class("caption")
+        model_answer_label.set_visible(False)
+        content.append(model_answer_label)
+        model_answer_view = Gtk.TextView()
+        model_answer_view.set_editable(False)
+        model_answer_view.set_cursor_visible(False)
+        model_answer_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        model_answer_scroll = Gtk.ScrolledWindow()
+        model_answer_scroll.set_min_content_height(140)
+        model_answer_scroll.set_child(model_answer_view)
+        model_answer_scroll.set_visible(False)
+        content.append(model_answer_scroll)
+
         rewrite_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         rewrite_box.add_css_class("subtle-panel")
         rewrite_title = Gtk.Label(label="Rewrite Loop")
@@ -29840,6 +30064,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         rewrite_box.append(rewrite_controls)
         content.append(rewrite_box)
 
+        footer_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        section_c_analytics_btn = Gtk.Button(label="Progress dashboard")
+        section_c_analytics_btn.set_tooltip_text("View your Section C score trends and criterion performance.")
+        section_c_analytics_btn.connect("clicked", lambda *_: self._open_section_c_analytics_dialog())
+        footer_controls.append(section_c_analytics_btn)
+        content.append(footer_controls)
+
         state: dict[str, Any] = {
             "chapter": str(initial_chapter),
             "question": None,
@@ -29852,6 +30083,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "section_c_intelligence": None,
             "workflow_token": self._issue_workflow_token("section_c"),
             "evaluation_token": 0,
+            "answer_start_time": None,
         }
 
         # Cancellation support for non-streaming AI calls (generate/evaluate).
@@ -30112,6 +30344,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     state["rewrite_baseline_response"] = ""
                     _set_view_text(question_view, self._format_section_c_question_text(case))
                     _set_view_text(feedback_view, "")
+                    model_answer_btn.set_visible(False)
+                    model_answer_scroll.set_visible(False)
+                    model_answer_label.set_visible(False)
+                    import time as _time
+                    state["answer_start_time"] = _time.monotonic()
                     _refresh_rewrite_panel()
                     if err:
                         _set_status(f"Generated fallback case: {err}")
@@ -30135,6 +30372,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if len(response) < 8:
                 _set_status("Write a response first, then evaluate.")
                 return
+            elapsed_seconds: int | None = None
+            t0 = state.get("answer_start_time")
+            if isinstance(t0, float):
+                import time as _time
+                elapsed_seconds = max(0, int(_time.monotonic() - t0))
             section_c_cancel_event.clear()
             workflow_token = int(state.get("workflow_token", 0) or 0)
             evaluation_token = _section_c_bump_evaluation_token()
@@ -30170,10 +30412,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             question=question,
                             response_text=response,
                             evaluation=evaluation,
+                            time_taken_seconds=elapsed_seconds,
                         )
                 except Exception as exc:
                     evaluation = self._evaluate_section_c_response_deterministic(question, response)
                     warn = f"Evaluation fallback: {exc}"
+                    # Append self-marking guide as a note in the evaluation
+                    try:
+                        guide = self._format_section_c_self_marking_guide(question)
+                        if guide and isinstance(evaluation, dict):
+                            evaluation = dict(evaluation)
+                            existing_rationale = str(evaluation.get("examiner_rationale", "") or "").strip()
+                            evaluation["examiner_rationale"] = (guide + ("\n\n" + existing_rationale if existing_rationale else "")).strip()
+                    except Exception:
+                        pass
 
                 def _finish() -> bool:
                     if _section_c_is_stale(workflow_token, evaluation_token):
@@ -30210,7 +30462,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             state["rewrite_delta"] = None
                     except Exception:
                         state["rewrite_delta"] = None
-                    _set_view_text(feedback_view, self._format_section_c_feedback_text(evaluation))
+                    _set_view_text(feedback_view, self._format_section_c_feedback_text(evaluation, time_taken_seconds=elapsed_seconds))
+                    model_answer_btn.set_visible(True)
                     _refresh_section_c_intelligence(str(state.get("chapter", "") or ""))
                     _refresh_rewrite_panel()
                     if warn:
@@ -30323,6 +30576,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         rewrite_btn.connect("clicked", _on_rewrite_weakest)
         rewrite_recheck_btn.connect("clicked", _on_recheck_rewrite)
 
+        def _on_show_model_answer(*_args: object) -> None:
+            question = state.get("question")
+            if not isinstance(question, dict):
+                return
+            currently_visible = bool(model_answer_scroll.get_visible())
+            if currently_visible:
+                model_answer_scroll.set_visible(False)
+                model_answer_label.set_visible(False)
+                model_answer_btn.set_label("Show model answer")
+            else:
+                text = self._format_section_c_model_answer_text(question)
+                _set_view_text(model_answer_view, text)
+                model_answer_scroll.set_visible(True)
+                model_answer_label.set_visible(True)
+                model_answer_btn.set_label("Hide model answer")
+
+        model_answer_btn.connect("clicked", _on_show_model_answer)
+
         def _on_clear_answer(*_args) -> None:
             _set_view_text(answer_view, "")
             state["rewrite_delta"] = None
@@ -30399,6 +30670,554 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         _load_saved_case(initial_chapter, question_index=initial_question_index)
         _refresh_rewrite_panel()
+        dialog.present()
+
+    def _open_section_c_analytics_dialog(self) -> None:
+        """Open a Section C analytics dashboard showing score trends and criterion performance."""
+        if not self._ensure_chapters_ready("Section C Analytics"):
+            return
+        try:
+            _cr_label = self._constructed_response_button_label()
+        except Exception:
+            _cr_label = "Section C"
+
+        # Read all attempts from the JSONL log
+        attempts: list[dict[str, Any]] = []
+        try:
+            raw = self._read_text_file(self._section_c_attempts_log_path())
+            for line in (raw or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                    if isinstance(payload, dict):
+                        attempts.append(payload)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        dialog = self._new_dialog(
+            title=f"{_cr_label} Progress Dashboard",
+            transient_for=self,
+            modal=False,
+        )
+        dialog.add_buttons("_Close", Gtk.ResponseType.CLOSE)
+        try:
+            dialog.set_default_size(720, 540)
+        except Exception:
+            pass
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+
+        header = Gtk.Label(label=f"{_cr_label} – Performance Analytics")
+        header.set_halign(Gtk.Align.START)
+        header.add_css_class("section-title")
+        content.append(header)
+
+        if not attempts:
+            empty_label = Gtk.Label(
+                label="No attempts recorded yet.\nComplete at least one Section C practice and evaluate your answer to see analytics here."
+            )
+            empty_label.set_halign(Gtk.Align.START)
+            empty_label.set_wrap(True)
+            empty_label.add_css_class("muted")
+            content.append(empty_label)
+            dialog.connect("response", lambda d, _r: d.destroy())
+            dialog.present()
+            return
+
+        # Compute aggregate stats
+        total_attempts = len(attempts)
+        score_pcts: list[float] = []
+        criterion_totals: dict[str, list[float]] = {}  # criterion -> [score_pct, ...]
+        chapters_attempted: set[str] = set()
+        all_chapters: set[str] = set(str(ch) for ch in getattr(self.engine, "CHAPTERS", []) or [])
+        times_taken: list[int] = []
+
+        for att in attempts:
+            ch = str(att.get("chapter", "") or "").strip()
+            if ch:
+                chapters_attempted.add(ch)
+            ev = att.get("evaluation")
+            if not isinstance(ev, dict):
+                continue
+            total_mark = int(ev.get("total_mark", 0) or 0)
+            max_mark = int(ev.get("max_mark", 0) or 0)
+            if max_mark > 0:
+                score_pcts.append(round(total_mark / max_mark * 100.0, 1))
+            t_secs = att.get("time_taken_seconds")
+            if t_secs is not None:
+                try:
+                    times_taken.append(max(0, int(t_secs)))
+                except Exception:
+                    pass
+            for row in list(ev.get("criterion_scores", []) or []):
+                if not isinstance(row, dict):
+                    continue
+                crit = str(row.get("criterion", "") or "").strip()
+                if not crit:
+                    continue
+                row_max = int(row.get("max_mark", 1) or 1)
+                row_score = int(row.get("score", 0) or 0)
+                if row_max > 0:
+                    criterion_totals.setdefault(crit, []).append(round(row_score / row_max * 100.0, 1))
+
+        # Build summary text
+        lines: list[str] = []
+        if score_pcts:
+            avg_pct = round(sum(score_pcts) / len(score_pcts), 1)
+            first_pct = score_pcts[0]
+            last_pct = score_pcts[-1]
+            best_pct = max(score_pcts)
+            lines.append(f"Total attempts: {total_attempts}")
+            lines.append(f"Average score: {avg_pct}%  |  First: {first_pct}%  |  Latest: {last_pct}%  |  Best: {best_pct}%")
+            improvement = round(last_pct - first_pct, 1)
+            direction = "▲" if improvement > 0 else ("▼" if improvement < 0 else "→")
+            lines.append(f"Improvement (first → latest): {direction} {abs(improvement)}%")
+            lines.append("")
+
+        if times_taken:
+            avg_secs = int(sum(times_taken) / len(times_taken))
+            lines.append(f"Average time per attempt: {avg_secs // 60} min {avg_secs % 60} sec")
+            lines.append("")
+
+        chapters_not_attempted = sorted(all_chapters - chapters_attempted)
+        lines.append(f"Chapters attempted: {len(chapters_attempted)} / {len(all_chapters)}")
+        if chapters_not_attempted:
+            not_att_str = ", ".join(list(chapters_not_attempted)[:5])
+            if len(chapters_not_attempted) > 5:
+                not_att_str += f" (+{len(chapters_not_attempted) - 5} more)"
+            lines.append(f"Not yet attempted: {not_att_str}")
+        lines.append("")
+
+        # Recent score trend (last 10)
+        if len(score_pcts) >= 2:
+            recent = score_pcts[-10:]
+            lines.append(f"Recent scores (last {len(recent)} attempts): {' → '.join(str(s) + '%' for s in recent)}")
+            lines.append("")
+
+        # Per-criterion analysis
+        if criterion_totals:
+            lines.append("By criterion (average % score across all attempts):")
+            sorted_criteria = sorted(criterion_totals.items(), key=lambda x: sum(x[1]) / len(x[1]))
+            for crit, pcts in sorted_criteria:
+                avg_c = round(sum(pcts) / len(pcts), 1)
+                count_c = len(pcts)
+                lines.append(f"  {crit[:60]}: {avg_c}% (over {count_c} evaluation{'s' if count_c != 1 else ''})")
+            lines.append("")
+            # Surface weak criteria
+            weak = [(crit, round(sum(pcts) / len(pcts), 1)) for crit, pcts in sorted_criteria if sum(pcts) / len(pcts) < 60.0]
+            if weak:
+                lines.append("⚠ Consistently weak criteria (below 60%):")
+                for crit, avg_c in weak[:3]:
+                    lines.append(f"  • {crit[:60]}: {avg_c}% average")
+
+        summary_text = "\n".join(lines)
+
+        analytics_view = Gtk.TextView()
+        analytics_view.set_editable(False)
+        analytics_view.set_cursor_visible(False)
+        analytics_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        analytics_view.set_monospace(False)
+        buf = analytics_view.get_buffer()
+        buf.set_text(summary_text)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_min_content_height(380)
+        scroll.set_child(analytics_view)
+        content.append(scroll)
+
+        dialog.connect("response", lambda d, _r: d.destroy())
+        dialog.present()
+
+    def _open_section_c_exam_simulation_dialog(self) -> None:
+        """
+        Full-exam simulation: 2 Section C questions (from different chapters), 81-minute shared timer.
+        After both answers are submitted, evaluates each and presents combined X/40 score.
+        Attempt is logged with mode='exam_simulation'.
+        """
+        if not self._ensure_chapters_ready("Section C Exam Simulation"):
+            return
+        chapters = [str(ch) for ch in list(getattr(self.engine, "CHAPTERS", []) or []) if str(ch or "").strip()]
+        if len(chapters) < 1:
+            self._show_text_dialog(
+                "Exam Simulation",
+                "No study content loaded. Add a module first.",
+                Gtk.MessageType.ERROR,
+            )
+            return
+
+        try:
+            _cr_label = self._constructed_response_button_label()
+        except Exception:
+            _cr_label = "Section C"
+
+        # Auto-select 2 chapters: weakest first (from intelligence), then a different one
+        try:
+            intel = self._build_section_c_intelligence_snapshot(chapters[0])
+            weakest_ch = str(intel.get("recent_section_c_weakest_criterion", "") or "").strip()
+        except Exception:
+            weakest_ch = ""
+
+        if not bool(getattr(self, "_section_c_question_bank_loaded", False)):
+            self._load_section_c_question_bank()
+
+        bank = getattr(self, "_section_c_question_bank", {}) or {}
+        chapters_with_questions = [ch for ch in chapters if bank.get(ch)]
+        if len(chapters_with_questions) < 2:
+            # Fewer than 2 chapters have banked questions – use any 2 chapter names for generation
+            selected_chapters = chapters[:2] if len(chapters) >= 2 else (chapters * 2)[:2]
+        else:
+            # Prefer weakest chapter first, then a different one
+            if weakest_ch and weakest_ch in chapters_with_questions:
+                ch1 = weakest_ch
+                remaining = [c for c in chapters_with_questions if c != ch1]
+                ch2 = remaining[0] if remaining else chapters_with_questions[-1]
+            else:
+                ch1, ch2 = chapters_with_questions[0], chapters_with_questions[1]
+            selected_chapters = [ch1, ch2]
+
+        EXAM_TOTAL_MINUTES = 81
+        EXAM_TOTAL_SECONDS = EXAM_TOTAL_MINUTES * 60
+
+        dialog = self._new_dialog(
+            title=f"{_cr_label} Exam Simulation (2 × 20 marks, {EXAM_TOTAL_MINUTES} min)",
+            transient_for=self,
+            modal=False,
+        )
+        dialog.add_buttons("_Close", Gtk.ResponseType.CLOSE)
+        try:
+            dialog.set_default_size(960, 800)
+        except Exception:
+            pass
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+
+        header = Gtk.Label(label=f"Exam Simulation – 2 Questions × 20 marks = 40 marks total ({EXAM_TOTAL_MINUTES} minutes)")
+        header.set_halign(Gtk.Align.START)
+        header.add_css_class("section-title")
+        content.append(header)
+
+        subtitle = Gtk.Label(
+            label="Load or generate both questions, write your answers under timed conditions, then submit all for combined feedback."
+        )
+        subtitle.set_halign(Gtk.Align.START)
+        subtitle.set_wrap(True)
+        subtitle.add_css_class("muted")
+        content.append(subtitle)
+
+        # Timer row
+        timer_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        timer_label = Gtk.Label(label=f"Time remaining: {EXAM_TOTAL_MINUTES}:00")
+        timer_label.set_halign(Gtk.Align.START)
+        timer_label.add_css_class("section-title")
+        start_timer_btn = Gtk.Button(label="Start exam timer")
+        stop_timer_btn = Gtk.Button(label="Stop timer")
+        stop_timer_btn.set_sensitive(False)
+        timer_row.append(timer_label)
+        timer_row.append(start_timer_btn)
+        timer_row.append(stop_timer_btn)
+        content.append(timer_row)
+
+        status_label = Gtk.Label(label="Load or generate both questions to begin.")
+        status_label.set_halign(Gtk.Align.START)
+        status_label.add_css_class("muted")
+        content.append(status_label)
+
+        sim_state: dict[str, Any] = {
+            "questions": [None, None],
+            "busy": False,
+            "timer_remaining": EXAM_TOTAL_SECONDS,
+            "timer_id": None,
+            "timer_running": False,
+            "evaluations": [None, None],
+            "workflow_token": self._issue_workflow_token("section_c_sim"),
+        }
+        sim_cancel_event = threading.Event()
+
+        def _set_status(text: str) -> None:
+            status_label.set_label(str(text or ""))
+
+        def _set_busy(val: bool) -> None:
+            sim_state["busy"] = bool(val)
+
+        def _update_timer_label() -> None:
+            remaining = max(0, int(sim_state.get("timer_remaining", 0) or 0))
+            mins = remaining // 60
+            secs = remaining % 60
+            timer_label.set_label(f"Time remaining: {mins}:{secs:02d}")
+            if remaining == 0:
+                timer_label.add_css_class("error-label")
+            else:
+                try:
+                    timer_label.remove_css_class("error-label")
+                except Exception:
+                    pass
+
+        def _tick_timer() -> bool:
+            if not bool(sim_state.get("timer_running", False)):
+                return False
+            remaining = int(sim_state.get("timer_remaining", 0) or 0)
+            remaining = max(0, remaining - 1)
+            sim_state["timer_remaining"] = remaining
+            _update_timer_label()
+            if remaining <= 0:
+                sim_state["timer_running"] = False
+                sim_state["timer_id"] = None
+                _set_status("Time is up! Submit your answers now.")
+                return False
+            return True
+
+        def _on_start_timer(*_args: object) -> None:
+            if bool(sim_state.get("timer_running", False)):
+                return
+            sim_state["timer_running"] = True
+            start_timer_btn.set_sensitive(False)
+            stop_timer_btn.set_sensitive(True)
+            tid = GLib.timeout_add(1000, _tick_timer)
+            sim_state["timer_id"] = tid
+
+        def _on_stop_timer(*_args: object) -> None:
+            sim_state["timer_running"] = False
+            tid = sim_state.get("timer_id")
+            if tid:
+                try:
+                    GLib.source_remove(int(tid))
+                except Exception:
+                    pass
+                sim_state["timer_id"] = None
+            start_timer_btn.set_sensitive(True)
+            stop_timer_btn.set_sensitive(False)
+
+        start_timer_btn.connect("clicked", _on_start_timer)
+        stop_timer_btn.connect("clicked", _on_stop_timer)
+
+        # Two question panels
+        panels_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+
+        question_views: list[Gtk.TextView] = []
+        answer_views: list[Gtk.TextView] = []
+        q_status_labels: list[Gtk.Label] = []
+        gen_btns: list[Gtk.Button] = []
+
+        def _set_view_text(view: Gtk.TextView, text: str) -> None:
+            try:
+                buf = view.get_buffer()
+                buf.set_text(str(text or ""))
+            except Exception:
+                pass
+
+        def _get_view_text(view: Gtk.TextView) -> str:
+            try:
+                buf = view.get_buffer()
+                start = buf.get_start_iter()
+                end = buf.get_end_iter()
+                return str(buf.get_text(start, end, True) or "")
+            except Exception:
+                return ""
+
+        for q_idx in range(2):
+            q_frame_label = Gtk.Label(label=f"Question {q_idx + 1} – {selected_chapters[q_idx]} (20 marks)")
+            q_frame_label.set_halign(Gtk.Align.START)
+            q_frame_label.add_css_class("caption")
+            panels_box.append(q_frame_label)
+
+            q_ctrl = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            gen_btn = Gtk.Button(label=f"Generate Q{q_idx + 1}")
+            q_status = Gtk.Label(label="Not loaded")
+            q_status.set_halign(Gtk.Align.START)
+            q_status.add_css_class("muted")
+            q_ctrl.append(gen_btn)
+            q_ctrl.append(q_status)
+            panels_box.append(q_ctrl)
+
+            q_view = Gtk.TextView()
+            q_view.set_editable(False)
+            q_view.set_cursor_visible(False)
+            q_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+            q_scroll = Gtk.ScrolledWindow()
+            q_scroll.set_min_content_height(120)
+            q_scroll.set_child(q_view)
+            panels_box.append(q_scroll)
+
+            a_label = Gtk.Label(label=f"Your answer to Q{q_idx + 1}")
+            a_label.set_halign(Gtk.Align.START)
+            a_label.add_css_class("caption")
+            panels_box.append(a_label)
+            a_view = Gtk.TextView()
+            a_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+            a_scroll = Gtk.ScrolledWindow()
+            a_scroll.set_min_content_height(120)
+            a_scroll.set_child(a_view)
+            panels_box.append(a_scroll)
+
+            question_views.append(q_view)
+            answer_views.append(a_view)
+            q_status_labels.append(q_status)
+            gen_btns.append(gen_btn)
+
+        content.append(panels_box)
+
+        # Submit all + results
+        submit_all_btn = Gtk.Button(label="Submit all answers for evaluation")
+        submit_all_btn.set_sensitive(False)
+        content.append(submit_all_btn)
+
+        results_label = Gtk.Label(label="Results")
+        results_label.set_halign(Gtk.Align.START)
+        results_label.add_css_class("caption")
+        results_label.set_visible(False)
+        content.append(results_label)
+        results_view = Gtk.TextView()
+        results_view.set_editable(False)
+        results_view.set_cursor_visible(False)
+        results_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        results_scroll = Gtk.ScrolledWindow()
+        results_scroll.set_min_content_height(160)
+        results_scroll.set_child(results_view)
+        results_scroll.set_visible(False)
+        content.append(results_scroll)
+
+        def _check_submit_ready() -> None:
+            q1_ready = isinstance(sim_state["questions"][0], dict)
+            q2_ready = isinstance(sim_state["questions"][1], dict)
+            submit_all_btn.set_sensitive(q1_ready and q2_ready and not bool(sim_state.get("busy", False)))
+
+        def _make_generate_handler(q_idx: int):  # type: ignore[return]
+            def _on_gen(*_args: object) -> None:
+                if bool(sim_state.get("busy", False)):
+                    return
+                chapter = selected_chapters[q_idx]
+                _set_busy(True)
+                gen_btns[q_idx].set_sensitive(False)
+                q_status_labels[q_idx].set_label("Generating…")
+                sim_cancel_event.clear()
+                workflow_token = int(sim_state.get("workflow_token", 0) or 0)
+
+                def _worker() -> None:
+                    try:
+                        case, err = self._generate_section_c_question(chapter, snapshot=None)
+                    except Exception as exc:
+                        case = self._default_section_c_question(chapter)
+                        err = str(exc)
+
+                    def _finish() -> bool:
+                        if int(sim_state.get("workflow_token", 0) or 0) != workflow_token:
+                            return False
+                        sim_state["questions"][q_idx] = self._snapshot_question_payload(case) or dict(case) if isinstance(case, dict) else None
+                        if isinstance(case, dict):
+                            _set_view_text(question_views[q_idx], self._format_section_c_question_text(case))
+                            q_status_labels[q_idx].set_label("Ready" + (f" ({err})" if err else ""))
+                        else:
+                            q_status_labels[q_idx].set_label("Generation failed")
+                        gen_btns[q_idx].set_sensitive(True)
+                        _set_busy(False)
+                        _check_submit_ready()
+                        return False
+
+                    GLib.idle_add(_finish)
+
+                StudyPlanGUI._start_managed_background_thread(self, _worker)
+
+            return _on_gen
+
+        for q_idx in range(2):
+            gen_btns[q_idx].connect("clicked", _make_generate_handler(q_idx))
+
+        def _on_submit_all(*_args: object) -> None:
+            if bool(sim_state.get("busy", False)):
+                return
+            q1 = sim_state["questions"][0]
+            q2 = sim_state["questions"][1]
+            if not (isinstance(q1, dict) and isinstance(q2, dict)):
+                _set_status("Generate both questions first.")
+                return
+            r1 = _get_view_text(answer_views[0]).strip()
+            r2 = _get_view_text(answer_views[1]).strip()
+            if not r1 or not r2:
+                _set_status("Write answers to both questions before submitting.")
+                return
+            _set_busy(True)
+            submit_all_btn.set_sensitive(False)
+            _set_status("Evaluating both answers…")
+            # Stop timer
+            _on_stop_timer()
+            elapsed_secs = EXAM_TOTAL_SECONDS - max(0, int(sim_state.get("timer_remaining", 0) or 0))
+            workflow_token = int(sim_state.get("workflow_token", 0) or 0)
+
+            def _worker() -> None:
+                results: list[dict[str, Any] | None] = [None, None]
+                for q_idx, (question, response) in enumerate([(q1, r1), (q2, r2)]):
+                    try:
+                        ev, _warn = self._evaluate_section_c_response(
+                            question,
+                            response,
+                            cancel_check=lambda: bool(sim_cancel_event.is_set()),
+                        )
+                        results[q_idx] = ev
+                        try:
+                            self._append_section_c_attempt(
+                                chapter=str(question.get("chapter", selected_chapters[q_idx]) or ""),
+                                question=question,
+                                response_text=response,
+                                evaluation=ev,
+                                time_taken_seconds=elapsed_secs // 2 if elapsed_secs else None,
+                            )
+                        except Exception:
+                            pass
+                    except Exception:
+                        results[q_idx] = self._evaluate_section_c_response_deterministic(question, response)
+
+                def _finish() -> bool:
+                    if int(sim_state.get("workflow_token", 0) or 0) != workflow_token:
+                        return False
+                    sim_state["evaluations"] = results
+                    ev1 = results[0]
+                    ev2 = results[1]
+                    m1 = int(ev1.get("total_mark", 0) or 0) if isinstance(ev1, dict) else 0
+                    x1 = int(ev1.get("max_mark", 20) or 20) if isinstance(ev1, dict) else 20
+                    m2 = int(ev2.get("total_mark", 0) or 0) if isinstance(ev2, dict) else 0
+                    x2 = int(ev2.get("max_mark", 20) or 20) if isinstance(ev2, dict) else 20
+                    combined_mark = m1 + m2
+                    combined_max = x1 + x2
+                    combined_pct = round(combined_mark / combined_max * 100.0, 1) if combined_max > 0 else 0.0
+                    pass_fail = "PASS" if combined_pct >= 50.0 else "FAIL"
+                    result_lines = [
+                        f"Combined score: {combined_mark}/{combined_max} ({combined_pct}%) – {pass_fail}",
+                        f"Time used: {elapsed_secs // 60} min {elapsed_secs % 60} sec of {EXAM_TOTAL_MINUTES} min",
+                        "",
+                        f"Q1 ({selected_chapters[0]}): {m1}/{x1}",
+                        self._format_section_c_feedback_text(ev1) if isinstance(ev1, dict) else "Evaluation unavailable",
+                        "",
+                        f"Q2 ({selected_chapters[1]}): {m2}/{x2}",
+                        self._format_section_c_feedback_text(ev2) if isinstance(ev2, dict) else "Evaluation unavailable",
+                    ]
+                    _set_view_text(results_view, "\n".join(result_lines))
+                    results_label.set_visible(True)
+                    results_scroll.set_visible(True)
+                    _set_status(f"Simulation complete. Combined: {combined_mark}/{combined_max} ({combined_pct}%) – {pass_fail}")
+                    _set_busy(False)
+                    return False
+
+                GLib.idle_add(_finish)
+
+            StudyPlanGUI._start_managed_background_thread(self, _worker)
+
+        submit_all_btn.connect("clicked", _on_submit_all)
+
+        def _on_sim_destroy(*_args: object) -> None:
+            sim_cancel_event.set()
+            try:
+                sim_state["timer_running"] = False
+                tid = sim_state.get("timer_id")
+                if tid:
+                    GLib.source_remove(int(tid))
+            except Exception:
+                pass
+
+        dialog.connect("destroy", _on_sim_destroy)
+        dialog.connect("response", lambda d, _r: d.destroy())
         dialog.present()
 
     def _open_section_c_browse_dialog(self) -> None:
@@ -30493,6 +31312,80 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         open_btn.connect("clicked", _on_open_clicked)
         content.append(open_btn)
+        archived_btn = Gtk.Button(label="Browse archived questions")
+        archived_btn.set_tooltip_text("View questions that were evicted from the main bank (max 64 per chapter). Opening one moves it back to the live bank.")
+
+        def _on_open_archived(*_args: object) -> None:
+            try:
+                archived_rows = self._get_section_c_archived_questions()
+            except Exception:
+                archived_rows = []
+            if not archived_rows:
+                self._show_text_dialog(
+                    "Archived Questions",
+                    "No archived questions found. Questions are archived when the bank reaches the 64-question cap per chapter.",
+                    Gtk.MessageType.INFO,
+                )
+                return
+            # Show a simple picker dialog
+            pick_dialog = self._new_dialog(title="Archived Section C Questions", transient_for=dialog, modal=True)
+            pick_dialog.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Restore & Open", Gtk.ResponseType.OK)
+            try:
+                pick_dialog.set_default_size(640, 360)
+            except Exception:
+                pass
+            pc = pick_dialog.get_content_area()
+            pc.set_spacing(6)
+            pc.append(Gtk.Label(label="Select an archived question to restore it to the live bank and open for practice."))
+            arc_scroll = Gtk.ScrolledWindow()
+            arc_scroll.set_min_content_height(240)
+            arc_listbox = Gtk.ListBox()
+            arc_listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+            for ch, idx, q_dict in archived_rows:
+                arc_row = Gtk.ListBoxRow()
+                arc_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+                ch_short = (ch[:40] + "…") if len(ch) > 40 else ch
+                arc_title = str(q_dict.get("prompt", "") or q_dict.get("scenario", "") or "Case")[:60]
+                arc_left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                arc_left.append(Gtk.Label(label=ch_short, xalign=0, halign=Gtk.Align.START))
+                arc_left.append(Gtk.Label(label=f"Q{idx + 1}: {arc_title}", xalign=0, halign=Gtk.Align.START))
+                arc_box.append(arc_left)
+                arc_row.set_child(arc_box)
+                arc_row._section_c_archived_data = (ch, idx, q_dict)  # type: ignore[attr-defined]
+                arc_listbox.append(arc_row)
+            arc_scroll.set_child(arc_listbox)
+            pc.append(arc_scroll)
+
+            def _on_arc_response(_d: object, response_id: int) -> None:
+                if response_id == Gtk.ResponseType.OK:
+                    sel = arc_listbox.get_selected_row()
+                    if sel is None:
+                        pick_dialog.destroy()
+                        return
+                    arc_data = getattr(sel, "_section_c_archived_data", None)
+                    if isinstance(arc_data, tuple) and len(arc_data) == 3:
+                        ch, _idx, q_dict = arc_data
+                        try:
+                            self._upsert_section_c_question(ch, q_dict, persist=True)
+                        except Exception:
+                            pass
+                        pick_dialog.destroy()
+                        dialog.destroy()
+                        self._open_section_c_practice_dialog(topic=ch)
+                    else:
+                        pick_dialog.destroy()
+                else:
+                    pick_dialog.destroy()
+
+            pick_dialog.connect("response", _on_arc_response)
+            pick_dialog.present()
+
+        archived_btn.connect("clicked", _on_open_archived)
+        content.append(archived_btn)
+        analytics_btn = Gtk.Button(label="View progress dashboard")
+        analytics_btn.set_tooltip_text("See score trends, per-criterion performance, and improvement rate.")
+        analytics_btn.connect("clicked", lambda *_: self._open_section_c_analytics_dialog())
+        content.append(analytics_btn)
         dialog.connect("response", lambda d, _r: d.destroy())
         dialog.present()
 
