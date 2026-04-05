@@ -13873,10 +13873,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _ai_tutor_rag_source_weight_multiplier(self, source_path: str, source_name: str = "") -> float:
         tier = self._classify_ai_tutor_rag_source_tier(source_path, source_name)
         if tier == "syllabus":
-            return 1.08
+            return 0.88  # Syllabus gives direction and scope; prefer notes for detailed knowledge
         if tier == "notes":
-            return 1.02
-        return 0.98
+            return 1.18  # Notes and textbooks are the primary knowledge source
+        return 1.00
 
     def _format_ai_tutor_rag_source_mix(self, sources: Any) -> str:
         rows = list(sources or []) if isinstance(sources, (list, tuple, set)) else []
@@ -21567,6 +21567,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             source_name = str(doc.get("source", "") or "").strip() or "PDF source"
             doc_path = str(doc.get("path", "") or "").strip() or source_name
             doc_key = str(doc.get("cache_key", "") or "").strip()
+            try:
+                doc_tier = str(self._classify_ai_tutor_rag_source_tier(doc_path, source_name))
+            except Exception:
+                doc_tier = "supplemental"
             chunk_texts: list[str] = []
             chunk_indices: list[int] = []
             chunk_hashes: list[str] = []
@@ -21588,6 +21592,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     "chunk_index": int(chunk_idx),
                     "text": text,
                     "chunk_hash": chunk_hash,
+                    "tier": doc_tier,
                 }
                 chunk_texts.append(text)
                 chunk_indices.append(int(chunk_idx))
@@ -21688,6 +21693,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         "score": float(blended_lex * source_weight),
                         "target_hits": int(target_hits),
                         "source_weight": float(source_weight),
+                        "tier": doc_tier,
                     }
                 )
         if not candidates:
@@ -21892,6 +21898,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             "lex_score": neighbor_lex,
                             "sem_score": 0.0,
                             "score": neighbor_score,
+                            "tier": str(payload.get("tier", "") or ""),
                         }
                     )
         expanded_neighbors.sort(
@@ -21949,6 +21956,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     "chunk_index": int(item.get("chunk_index", 0)),
                     "score": float(item.get("score", item.get("lex_score", 0.0)) or 0.0),
                     "target_hits": int(item.get("target_hits", 0) or 0),
+                    "tier": str(item.get("tier", "") or ""),
                 }
             )
             char_used += len(text)

@@ -1010,6 +1010,27 @@ def test_build_rag_context_block_formats_snippet_ids():
     assert "fm_textbook.pdf" in block
 
 
+def test_build_rag_context_block_shows_tier_label_when_tier_present():
+    block = build_rag_context_block(
+        [
+            {"id": "S1", "source": "syllabus.pdf", "tier": "syllabus", "text": "Topic: Cost of Capital scope."},
+            {"id": "S2", "source": "fm_textbook.pdf", "tier": "notes", "text": "WACC = (E/V)*Ke + (D/V)*Kd*(1-T)"},
+            {"id": "S3", "source": "extra.pdf", "tier": "supplemental", "text": "Further reading on CAPM."},
+        ]
+    )
+    assert "[syllabus]" in block
+    assert "[notes]" in block
+    assert "[supplemental]" in block
+    assert "[S1]" in block and "[S2]" in block and "[S3]" in block
+
+
+def test_build_rag_context_block_no_tier_label_when_tier_absent():
+    block = build_rag_context_block(
+        [{"id": "S1", "source": "notes.pdf", "text": "A definition."}]
+    )
+    assert "[S1] notes.pdf:" in block
+
+
 def test_build_ai_tutor_rag_prompt_context_returns_snippets_for_relevant_query():
     dummy = types.SimpleNamespace(
         module_title="FM",
@@ -2217,6 +2238,23 @@ def test_get_rag_embedding_insights_includes_per_pdf_details_and_tiers(tmp_path)
     assert len(details) == 2
     assert {row["tier"] for row in details} == {"syllabus", "notes"}
     assert all("memory_loaded" in row for row in details)
+
+
+def test_rag_source_weight_notes_outranks_syllabus_outranks_supplemental():
+    """Notes/textbooks should score higher than syllabus, which in turn scores higher than supplemental."""
+    dummy = types.SimpleNamespace()
+    dummy._classify_ai_tutor_rag_source_tier = types.MethodType(
+        StudyPlanGUI._classify_ai_tutor_rag_source_tier, dummy
+    )
+    weight_fn = types.MethodType(StudyPlanGUI._ai_tutor_rag_source_weight_multiplier, dummy)
+
+    w_notes = weight_fn("course_notes_textbook.pdf", "course_notes_textbook.pdf")
+    w_syllabus = weight_fn("syllabus.pdf", "syllabus.pdf")
+    w_supplemental = weight_fn("extra_reading.pdf", "extra_reading.pdf")
+
+    assert w_notes > w_syllabus, "Notes should rank above syllabus for detailed knowledge retrieval"
+    assert w_notes > w_supplemental
+    assert w_supplemental > w_syllabus, "Neutral supplemental should outrank directional syllabus"
 
 
 def test_compute_tutor_control_state_enables_send_and_copy_last_when_ready():
