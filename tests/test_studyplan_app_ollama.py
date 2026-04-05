@@ -2240,8 +2240,13 @@ def test_get_rag_embedding_insights_includes_per_pdf_details_and_tiers(tmp_path)
     assert all("memory_loaded" in row for row in details)
 
 
-def test_rag_source_weight_notes_outranks_syllabus_outranks_supplemental():
-    """Notes/textbooks should score higher than syllabus, which in turn scores higher than supplemental."""
+def test_rag_source_weight_notes_outranks_supplemental_outranks_syllabus():
+    """Notes/textbooks should score higher than neutral supplemental, which outranks syllabus.
+
+    Ranking: notes (1.18) > supplemental (1.00) > syllabus (0.88).
+    Syllabus gives direction; the LLM uses it for scoping, not detailed explanations.
+    Notes/textbooks are the primary knowledge source.
+    """
     dummy = types.SimpleNamespace()
     dummy._classify_ai_tutor_rag_source_tier = types.MethodType(
         StudyPlanGUI._classify_ai_tutor_rag_source_tier, dummy
