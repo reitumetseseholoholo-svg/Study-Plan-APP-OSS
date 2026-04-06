@@ -2703,9 +2703,9 @@ class AITutorDialogController:
                 "failover_count": 0,
             }
             turn_started_at = float(turn_requested_at)
-            prompt_chars = len(str(user_prompt or ""))
+            prompt_chars = len(str(full_prompt or ""))
             try:
-                prompt_tokens_est = int(app._estimate_ai_tutor_token_count(str(user_prompt or "")))
+                prompt_tokens_est = int(app._estimate_ai_tutor_token_count(str(full_prompt or "")))
             except Exception:
                 prompt_tokens_est = max(0, int(round(float(prompt_chars) / 4.0)))
             coverage_state: dict[str, Any] = {

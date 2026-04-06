@@ -21048,7 +21048,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             # Full payload cached in memory.
             chunks = cached.get("chunks")
             if isinstance(chunks, list) and chunks:
-                return dict(cached), None
+                result = dict(cached)
+                cached_meta = result.get("meta")
+                if isinstance(cached_meta, dict) and not cached_meta.get("disk_cache_hit"):
+                    merged_meta = dict(cached_meta)
+                    merged_meta["mem_cache_hit"] = True
+                    result["meta"] = merged_meta
+                return result, None
             # Meta-only cache: fetch chunks from sqlite on demand.
             if cached.get("_rag_doc_ref") and callable(getattr(self, "_ai_cache_get_rag_doc", None)):
                 cache_get_doc = getattr(self, "_ai_cache_get_rag_doc", None)
@@ -21324,7 +21330,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if isinstance(doc_payload, dict):
                 docs.append(doc_payload)
                 meta = doc_payload.get("meta", {})
-                if isinstance(meta, dict) and bool(meta.get("disk_cache_hit", False)):
+                if isinstance(meta, dict) and bool(meta.get("disk_cache_hit", False) or meta.get("mem_cache_hit", False)):
                     rag_doc_cache_hit_count += 1
             elif err:
                 errors.append(f"{os.path.basename(pdf_path)}: {err}")
