@@ -671,14 +671,14 @@ AI_COACH_MIN_DURATION_MINUTES = 5
 AI_COACH_MAX_DURATION_MINUTES = 60
 AI_COACH_REASON_MAX_CHARS = 220
 AI_TUTOR_AUTONOMY_MODES = ("suggest", "assist", "cockpit")
-AI_TUTOR_DEFAULT_AUTONOMY_MODE = "assist"
+AI_TUTOR_DEFAULT_AUTONOMY_MODE = "cockpit"
 AI_TUTOR_NUDGE_POLICIES = ("minimal", "moderate", "aggressive")
 AI_TUTOR_DEFAULT_NUDGE_POLICY = "moderate"
 AI_TUTOR_AUTOPILOT_TICK_DEFAULT_SECONDS = 45
 AI_TUTOR_AUTOPILOT_TICK_MIN_SECONDS = 15
 AI_TUTOR_AUTOPILOT_TICK_MAX_SECONDS = 180
-AI_TUTOR_AUTOPILOT_DECISION_REFRESH_SECONDS = 240
-AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS = 180
+AI_TUTOR_AUTOPILOT_DECISION_REFRESH_SECONDS = 120
+AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS = 90
 AI_TUTOR_AUTOPILOT_ACTION_COOLDOWN_SECONDS = 20
 AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW = 6
 AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS = 600
@@ -717,6 +717,11 @@ AI_TUTOR_SAFE_AUTONOMOUS_ACTIONS = {
     "coach_next",
     "quick_quiz_start",
     "drill_start",
+    "weak_drill_start",
+    "leitner_drill_start",
+    "error_drill_start",
+    "leech_drill_start",
+    "interleave_start",
     "review_start",
 }
 AI_TUTOR_GAP_GENERATION_MIN_QUESTIONS = 1
@@ -856,6 +861,9 @@ ALL_BADGES = [
     ("streak_7", "One Week", "7-day streak"),
     ("streak_14", "Two Weeks", "14-day streak"),
     ("streak_30", "30-Day Streak", "30-day streak"),
+    ("early_bird", "🌅 Early Bird", "Study session before 8 AM"),
+    ("night_owl", "🦉 Night Owl", "Study session after 10 PM"),
+    ("chapter_complete", "📖 Chapter Master", "Answer every question in a chapter at least once"),
 ]
 try:
     import fitz  # type: ignore[import-untyped]  # PyMuPDF
@@ -2932,6 +2940,47 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.study_room_card = study_room_card
         self._badge_highlight_id = None
 
+        # --- AI Cockpit live status card ---
+        cockpit_card = ui.hero_card()
+        cockpit_card.add_css_class("cockpit-live-card")
+        cockpit_card_title = ui.section_title("🤖 AI Cockpit")
+        cockpit_card.append(cockpit_card_title)
+        self._dashboard_cockpit_mode_label = Gtk.Label(label="Mode: —")
+        self._dashboard_cockpit_mode_label.set_halign(Gtk.Align.START)
+        self._dashboard_cockpit_mode_label.add_css_class("muted")
+        self._dashboard_cockpit_mode_label.add_css_class("single-line-lock")
+        self._dashboard_cockpit_mode_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self._dashboard_cockpit_mode_label.set_max_width_chars(60)
+        cockpit_card.append(self._dashboard_cockpit_mode_label)
+        self._dashboard_cockpit_last_label = Gtk.Label(label="Last action: —")
+        self._dashboard_cockpit_last_label.set_halign(Gtk.Align.START)
+        self._dashboard_cockpit_last_label.add_css_class("muted")
+        self._dashboard_cockpit_last_label.set_wrap(True)
+        self._dashboard_cockpit_last_label.add_css_class("allow-wrap")
+        cockpit_card.append(self._dashboard_cockpit_last_label)
+        self._dashboard_cockpit_next_label = Gtk.Label(label="Next: waiting…")
+        self._dashboard_cockpit_next_label.set_halign(Gtk.Align.START)
+        self._dashboard_cockpit_next_label.add_css_class("muted")
+        self._dashboard_cockpit_next_label.set_wrap(True)
+        self._dashboard_cockpit_next_label.add_css_class("allow-wrap")
+        cockpit_card.append(self._dashboard_cockpit_next_label)
+        cockpit_force_btn = Gtk.Button(label="Force tick now")
+        cockpit_force_btn.add_css_class("flat")
+        cockpit_force_btn.set_halign(Gtk.Align.START)
+        cockpit_force_btn.set_tooltip_text("Trigger an immediate autopilot evaluation cycle.")
+        cockpit_force_btn.connect("clicked", self._on_dashboard_cockpit_force_tick)
+        cockpit_card.append(cockpit_force_btn)
+        left_panel.append(cockpit_card)
+        self._dashboard_cockpit_card = cockpit_card
+        self._refresh_dashboard_cockpit_status()
+
+        # Overdue SRS debt label
+        self._dashboard_srs_debt_label = Gtk.Label(label="")
+        self._dashboard_srs_debt_label.set_halign(Gtk.Align.START)
+        self._dashboard_srs_debt_label.add_css_class("muted")
+        self._dashboard_srs_debt_label.set_visible(False)
+        left_panel.append(self._dashboard_srs_debt_label)
+
         # Pomodoro controls
         pomodoro_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.pomodoro_btn_start = Gtk.Button(label="Start pomodoro")
@@ -3946,6 +3995,80 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
         try:
             label.set_tooltip_text(status_tooltip)
+        except Exception:
+            pass
+
+    def _refresh_dashboard_cockpit_status(self) -> None:
+        """Update the dashboard AI Cockpit live status card."""
+        mode_label = getattr(self, "_dashboard_cockpit_mode_label", None)
+        last_label = getattr(self, "_dashboard_cockpit_last_label", None)
+        next_label = getattr(self, "_dashboard_cockpit_next_label", None)
+        if mode_label is None and last_label is None and next_label is None:
+            return
+        autopilot_enabled = bool(getattr(self, "ai_tutor_autopilot_enabled", True))
+        autopilot_paused = bool(getattr(self, "ai_tutor_autopilot_paused", False))
+        mode = self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))
+        mode_icons = {"cockpit": "🤖", "assist": "🤝", "suggest": "💬"}
+        mode_icon = mode_icons.get(mode, "🤖")
+        if not autopilot_enabled:
+            ap_status = "off"
+        elif autopilot_paused:
+            ap_status = "paused"
+        else:
+            ap_status = "active"
+        if mode_label is not None:
+            self._set_label_text_if_changed(mode_label, f"{mode_icon} {mode.title()} — {ap_status}")
+        history = self._sanitize_ai_tutor_recent_action_log(getattr(self, "_ai_tutor_recent_action_log", []), limit=10)
+        if last_label is not None:
+            executed_rows = [
+                row for row in reversed(history)
+                if str(row.get("outcome", "") or "").strip().lower() in {"executed", "suggested_accepted"}
+            ]
+            if executed_rows:
+                row = executed_rows[0]
+                at_text = str(row.get("at", "") or "").strip()
+                line = f"Last: {self._describe_ai_tutor_action(row)}"
+                if at_text:
+                    line += f" @ {at_text[-8:]}"
+            else:
+                line = "Last: no actions yet"
+            self._set_label_text_if_changed(last_label, line)
+        if next_label is not None:
+            pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+            if isinstance(pending, dict):
+                self._set_label_text_if_changed(next_label, f"Next: {self._describe_ai_tutor_action(pending)}")
+            else:
+                self._set_label_text_if_changed(next_label, "Next: evaluating…")
+        # Update SRS debt label
+        self._refresh_dashboard_srs_debt()
+
+    def _refresh_dashboard_srs_debt(self) -> None:
+        """Refresh the overdue SRS debt label on the dashboard."""
+        label = getattr(self, "_dashboard_srs_debt_label", None)
+        if label is None:
+            return
+        try:
+            today = datetime.date.today()
+            overdue = int(getattr(self, "_get_must_review_due_count", lambda d: 0)(today) or 0)
+        except Exception:
+            overdue = 0
+        if overdue > 0:
+            text = f"⏰ {overdue} SRS card{'s' if overdue != 1 else ''} overdue — start review!"
+            try:
+                label.set_text(text)
+                label.set_visible(True)
+            except Exception:
+                pass
+        else:
+            try:
+                label.set_visible(False)
+            except Exception:
+                pass
+
+    def _on_dashboard_cockpit_force_tick(self, *_args: Any) -> None:
+        """Force an immediate autopilot evaluation tick from the dashboard."""
+        try:
+            self._restart_ai_tutor_global_autopilot_timer()
         except Exception:
             pass
 
@@ -25739,6 +25862,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     mode_dropdown.set_selected(target_index)
             except Exception:
                 pass
+        # Also refresh the persistent dashboard cockpit card.
+        try:
+            self._refresh_dashboard_cockpit_status()
+        except Exception:
+            pass
 
     def _toggle_ai_tutor_autopilot_pause(self, *_args: Any) -> None:
         if not bool(getattr(self, "ai_tutor_autopilot_enabled", True)):
@@ -37441,6 +37569,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "streak_7": "One Week",
             "streak_14": "Two Weeks",
             "streak_30": "30-Day Streak",
+            "early_bird": "🌅 Early Bird",
+            "night_owl": "🦉 Night Owl",
+            "chapter_complete": "📖 Chapter Master",
         }
         if key.startswith("level_"):
             return f"Level {key.split('_', 1)[1]}"
@@ -37501,7 +37632,41 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.achievements.add(key)
         self.send_notification(title, message)
         self.update_badges_display()
+        self._animate_badge_unlock(key)
         self.save_preferences()
+
+    def _animate_badge_unlock(self, key: str) -> None:
+        """Briefly pulse the badge chip with a CSS class to celebrate the unlock."""
+        badge_flow = getattr(self, "badge_flow", None)
+        if badge_flow is None:
+            return
+        target_text = self._badge_title_for(key)
+        child = badge_flow.get_first_child()
+        while child:
+            widget = child.get_child() if hasattr(child, "get_child") else child
+            if widget is None:
+                child = child.get_next_sibling()
+                continue
+            try:
+                label_text = str(widget.get_label() if hasattr(widget, "get_label") else "")
+            except Exception:
+                label_text = ""
+            if label_text == target_text:
+                try:
+                    widget.add_css_class("badge-unlock")
+
+                    def _remove_pulse(w: Any = widget) -> bool:
+                        try:
+                            w.remove_css_class("badge-unlock")
+                        except Exception:
+                            pass
+                        return False
+
+                    GLib.timeout_add(1600, _remove_pulse)
+                except Exception:
+                    pass
+                break
+            child = child.get_next_sibling()
 
     def _award_pomodoro_xp(self, credited_minutes: float) -> dict:
         today = datetime.date.today().isoformat()
@@ -37536,6 +37701,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._unlock_achievement("pomodoro_4", "Focus Marathon", "4 Pomodoros in a day!")
         if self.pomodoro_today_count == 8:
             self._unlock_achievement("pomodoro_8", "Deep Work", "8 Pomodoros in a day. Impressive!")
+
+        # Time-of-day badges
+        now_hour = datetime.datetime.now().hour
+        if now_hour < 8:
+            self._unlock_achievement("early_bird", "🌅 Early Bird", "You studied before 8 AM — sunrise grind!")
+        if now_hour >= 22:
+            self._unlock_achievement("night_owl", "🦉 Night Owl", "Late-night study session. Keep going!")
+
         self.update_daily_quests_display()
         return {"counted": True, "short_counted": False, "xp": points}
 
@@ -43086,6 +43259,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self._unlock_achievement("quiz_10", "Quiz Runner", "10 quizzes completed!")
             if self.quiz_sessions_completed == 50:
                 self._unlock_achievement("quiz_50", "Quiz Master", "50 quizzes completed!")
+            # Chapter complete badge: check if all questions in this chapter have been seen.
+            try:
+                if session_topic:
+                    all_qs = list((getattr(self.engine, "QUESTIONS", {}) or {}).get(session_topic, []) or [])
+                    seen_set = set(int(i) for i in (getattr(self.engine, "quiz_recent", {}) or {}).get(session_topic, []) or [] if isinstance(i, (int, float)))
+                    if all_qs and len(seen_set) >= len(all_qs):
+                        self._unlock_achievement(
+                            "chapter_complete",
+                            "📖 Chapter Master",
+                            f"You've answered every question in {session_topic}!",
+                        )
+            except Exception:
+                pass
             try:
                 xp_start = int(self.quiz_session.get("xp_start", self.xp_total) or 0)
                 xp_after = int(getattr(self, "xp_total", 0) or 0)
@@ -45471,12 +45657,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if days_to_exam < 0:
                 self.days_label.set_label(f"Exam date passed: {-days_to_exam} days ago")
                 self.exam_warning_label.set_visible(True)
+                self.days_label.remove_css_class("exam-urgent")
+                self.days_label.remove_css_class("exam-warning")
+            elif days_to_exam <= 7:
+                self.days_label.set_label(f"⚠️ {days_to_exam} days to exam!")
+                self.exam_warning_label.set_visible(False)
+                self.days_label.add_css_class("exam-urgent")
+                self.days_label.remove_css_class("exam-warning")
+            elif days_to_exam <= 30:
+                self.days_label.set_label(f"🗓 {days_to_exam} days to exam")
+                self.exam_warning_label.set_visible(False)
+                self.days_label.add_css_class("exam-warning")
+                self.days_label.remove_css_class("exam-urgent")
             else:
                 self.days_label.set_label(f"Days to exam: {days_to_exam}")
                 self.exam_warning_label.set_visible(False)
+                self.days_label.remove_css_class("exam-urgent")
+                self.days_label.remove_css_class("exam-warning")
         else:
             self.days_label.set_label("Exam date not set")
             self.exam_warning_label.set_visible(True)
+            self.days_label.remove_css_class("exam-urgent")
+            self.days_label.remove_css_class("exam-warning")
 
     def on_save_availability(self, _button):
         try:
@@ -50377,7 +50579,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 raise AttributeError("self.streak_label is None")
             if self.study_streak is None:
                 raise AttributeError("self.study_streak is None")
-            self.streak_label.set_markup(f"Study Streak: {self.study_streak} days")
+            streak = int(self.study_streak or 0)
+            if streak >= 30:
+                flame = "🔥🔥🔥"
+            elif streak >= 14:
+                flame = "🔥🔥"
+            elif streak >= 3:
+                flame = "🔥"
+            else:
+                flame = ""
+            streak_text = f"Study Streak: {streak} days{' ' + flame if flame else ''}"
+            self.streak_label.set_markup(streak_text)
             self.update_xp_display()
         except AttributeError as e:
             print(f"AttributeError: {e}")
@@ -50428,12 +50640,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 d = week_start + datetime.timedelta(days=week_idx * 7 + day_idx)
                 cell = Gtk.Label(label=" ")
                 cell.set_size_request(10, 10)
-                cell.set_tooltip_text(d.isoformat())
                 if d > today:
+                    cell.set_tooltip_text(f"{d.isoformat()} — future")
                     cell.add_css_class("heatmap-future")
                 elif d in study_days:
+                    cell.set_tooltip_text(f"{d.isoformat()} — ✅ studied")
                     cell.add_css_class("heatmap-active")
                 else:
+                    cell.set_tooltip_text(f"{d.isoformat()} — no session")
                     cell.add_css_class("heatmap-inactive")
                 week_col.append(cell)
             grid_box.append(week_col)
