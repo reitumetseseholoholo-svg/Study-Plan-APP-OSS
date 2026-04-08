@@ -7155,6 +7155,16 @@ class StudyPlanEngine:
                 if last is None:
                     due_count += 1
                     continue
+                # Prefer FSRS due date when available.
+                fsrs_due = item.get("fsrs_due")
+                if fsrs_due:
+                    try:
+                        if datetime.date.fromisoformat(str(fsrs_due)) <= today:
+                            due_count += 1
+                        continue
+                    except Exception:
+                        pass
+                # Fall back to SM-2 interval.
                 try:
                     last_date = datetime.date.fromisoformat(str(last))
                 except Exception:
@@ -9869,15 +9879,28 @@ class StudyPlanEngine:
     def is_overdue(self, srs_item, today):
         """Check if an SRS item is overdue for review.
 
-        If the SRS item is None or missing 'last_review', returns False.
-        If the last review date is None (never reviewed), returns False.
-        If the last review date is invalid (not a valid date string), raises ValueError.
-        If the last review date is valid, compares it with the current date and returns True if the next review date has passed, False otherwise.
+        Prefers the FSRS ``fsrs_due`` date when available (set by the default
+        FSRS scheduler).  Falls back to the SM-2 ``last_review`` + ``interval``
+        calculation for legacy items that have not yet been processed by FSRS.
+
+        Returns False when the item is None or has never been reviewed.
         """
-        if srs_item is None or 'last_review' not in srs_item:
+        if srs_item is None:
             return False
 
-        last_review = srs_item.get('last_review')
+        # Prefer the FSRS due date when the card has been scheduled by FSRS.
+        fsrs_due = srs_item.get("fsrs_due")
+        if fsrs_due:
+            try:
+                return datetime.date.fromisoformat(str(fsrs_due)) <= today
+            except (ValueError, TypeError):
+                pass
+
+        # Legacy SM-2 fallback.
+        if "last_review" not in srs_item:
+            return False
+
+        last_review = srs_item.get("last_review")
         if last_review is None:
             return False
 
@@ -9886,7 +9909,7 @@ class StudyPlanEngine:
         except ValueError:
             return False
 
-        interval = srs_item.get('interval', 1)
+        interval = srs_item.get("interval", 1)
         next_review_date = last_review_date + datetime.timedelta(days=interval)
         return next_review_date <= today
 
@@ -11098,16 +11121,27 @@ class StudyPlanEngine:
 
     def get_retention_probability(self, chapter, idx):
         srs_list = self.srs_data.get(chapter, [])
-        if idx >= len(srs_list): return 0.0
+        if idx >= len(srs_list):
+            return 0.0
         srs = srs_list[idx]
-        if srs.get('last_review') is None:
+        last_review = srs.get("fsrs_last_review") or srs.get("last_review")
+        if last_review is None:
             return 0.0
         try:
-            days_since = (datetime.date.today() - datetime.date.fromisoformat(srs['last_review'])).days
+            days_since = (datetime.date.today() - datetime.date.fromisoformat(str(last_review))).days
         except (ValueError, TypeError):
             return 0.0
+        # Use FSRS stability when available: R(t) = 0.9^(t/S)
+        fsrs_stability = srs.get("fsrs_stability")
+        if fsrs_stability is not None:
+            try:
+                s = max(0.1, float(fsrs_stability))
+                return math.pow(0.9, days_since / s)
+            except Exception:
+                pass
+        # Fall back to SM-2 interval-based estimate.
         try:
-            interval = int(srs.get('interval', 1) or 1)
+            interval = int(srs.get("interval", 1) or 1)
         except Exception:
             interval = 1
         interval = max(1, interval)
@@ -11116,11 +11150,10 @@ class StudyPlanEngine:
 
     def update_srs(self, chapter: str, question_index: int, is_correct: bool):
         """
-        Update SRS stats.  Uses FSRS-4.5 when enabled, otherwise improved SM-2.
+        Update SRS stats.  Uses FSRS-4.5 by default, falling back to SM-2.
 
-        FSRS can be enabled by setting the environment variable
-        ``STUDYPLAN_SRS_ALGORITHM=fsrs`` before launching the app.  The legacy
-        SM-2 path is the default for backwards compatibility.
+        FSRS is the default algorithm.  Set ``STUDYPLAN_SRS_ALGORITHM=sm2``
+        (or ``legacy``) to force the legacy SM-2 path instead.
 
         Args:
             chapter (str): The chapter name (e.g., "FM Function")
@@ -11148,12 +11181,13 @@ class StudyPlanEngine:
                     return
             srs = srs_data[question_index]
 
-            # Route to FSRS or SM-2 based on runtime flag.
-            use_fsrs = str(os.environ.get("STUDYPLAN_SRS_ALGORITHM", "") or "").strip().lower() == "fsrs"
-            if use_fsrs:
-                self._update_srs_fsrs(srs, chapter, question_index, is_correct)
-            else:
+            # Route to SM-2 only when explicitly requested; FSRS is the default.
+            _algo = str(os.environ.get("STUDYPLAN_SRS_ALGORITHM", "") or "").strip().lower()
+            use_sm2 = _algo in ("sm2", "legacy")
+            if use_sm2:
                 self._update_srs_sm2(srs, chapter, question_index, is_correct)
+            else:
+                self._update_srs_fsrs(srs, chapter, question_index, is_correct)
         except Exception as e:
             print(f"Error updating SRS for question {question_index} in chapter {chapter}: {e}", file=sys.stderr)
 
@@ -11326,7 +11360,17 @@ class StudyPlanEngine:
                 due_kind_by_idx[idx] = 1
                 overdue_by_idx[idx] = 1
                 continue
-            # due today (non-overdue but scheduled)
+            # due today (non-overdue but scheduled); prefer fsrs_due when available
+            fsrs_due = srs.get("fsrs_due")
+            if fsrs_due:
+                try:
+                    if datetime.date.fromisoformat(str(fsrs_due)) <= today:
+                        due_indices.append(idx)
+                        due_kind_by_idx[idx] = 0
+                        overdue_by_idx[idx] = 0
+                    continue
+                except Exception:
+                    pass
             last = srs.get("last_review")
             if isinstance(last, str) and last:
                 try:
