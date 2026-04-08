@@ -243,5 +243,26 @@
       }
     }
   },
-  "additionalProperties": true
+  "additionalProperties": true,
+  "x-module-versioning": {
+    "description": "Optional versioning fields that the app uses to detect stale configs and enable community sharing.",
+    "module_version": {
+      "type": "string",
+      "description": "Semantic version of this module config (e.g. '1.2.0').  Increment when syllabus structure or question bank changes meaningfully.",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "content_hash": {
+      "type": "string",
+      "description": "SHA-256 hex digest of the canonical content (chapters + syllabus_structure serialised deterministically).  Written by the app on each save; can be used to detect external edits."
+    },
+    "registry_id": {
+      "type": "string",
+      "description": "Optional stable identifier for community registry lookup (e.g. 'acca_f7_sep2025').  Omit for private/local modules."
+    },
+    "registry_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Optional URL pointing to the canonical upstream JSON for this module (enables update checks)."
+    }
+  }
 }
