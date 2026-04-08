@@ -209,12 +209,12 @@ class TestRenderMarkdownToBuffer(unittest.TestCase):
     def test_pipe_table_separator_gets_sep_tag(self):
         md = "| Item | Amount |\n|------|--------|\n| Revenue | 100 |"
         buf = self._render(md)
-        # Separator is rebuilt from dashes; look for any segment with dashes
+        # Separator is now rendered as Unicode rule characters (─), not dashes
         sep_tags = next(
-            (tags for seg, tags in buf.segments if "---" in seg and "table_sep" in tags),
+            (tags for seg, tags in buf.segments if "─" in seg and "table_sep" in tags),
             None,
         )
-        self.assertIsNotNone(sep_tags, "Expected a table_sep-tagged segment containing dashes")
+        self.assertIsNotNone(sep_tags, "Expected a table_sep-tagged segment containing rule characters")
 
     def test_pipe_table_content_preserved(self):
         md = "| Revenue | 500,000 |"
@@ -258,6 +258,27 @@ class TestRenderMarkdownToBuffer(unittest.TestCase):
         # Asterisks should not appear in the output; the word should be preserved
         self.assertIn("Revenue", buf.plain_text)
         self.assertNotIn("**", buf.plain_text)
+
+    def test_pipe_table_no_pipe_characters_in_output(self):
+        md = "| Item | Amount |\n|------|--------|\n| Revenue | 100 |"
+        buf = self._render(md)
+        # Pipe characters must not appear in the rendered output
+        self.assertNotIn("|", buf.plain_text)
+
+    def test_pipe_table_total_row_gets_table_total_tag(self):
+        md = (
+            "| Item | Amount |\n"
+            "|------|--------|\n"
+            "| Revenue | 100 |\n"
+            "| Total assets | 100 |"
+        )
+        buf = self._render(md)
+        self.assertIn("table_total", buf.tag_names_for("Total assets"))
+
+    def test_pipe_table_non_total_row_not_table_total(self):
+        md = "| Item | Amount |\n|------|--------|\n| Revenue | 100 |"
+        buf = self._render(md)
+        self.assertNotIn("table_total", buf.tag_names_for("Revenue"))
 
     # ------------------------------------------------------------------
     # Bullet lists

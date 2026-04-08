@@ -5,8 +5,11 @@ Supports:
 - **bold** and *italic* inline spans
 - `inline code` (monospace)
 - Fenced code blocks (``` … ```) in monospace
-- Pipe tables (| … | rows) with aligned columns, bold header row, and
-  right-aligned numeric columns — ideal for financial statements
+- Pipe tables (| … | rows) rendered as clean financial-statement-style blocks:
+  aligned columns without pipe characters, Unicode rule separators (─),
+  bold header row, right-aligned numeric columns, and bold emphasis for
+  total/subtotal rows — so exhibits look like professional IFRS statements
+  rather than CLI grids.
 - Unordered bullet lists (- / * / •)
 - Ordered lists (1. 2. …)
 - Horizontal rules (--- / ***)
@@ -41,6 +44,7 @@ _TAG_SPECS: dict[str, dict[str, Any]] = {
     "code_block":   {"family": "monospace"},
     "table":        {"family": "monospace"},
     "table_header": {"family": "monospace", "weight": 700},
+    "table_total":  {"family": "monospace", "weight": 700},
     "table_sep":    {"family": "monospace", "foreground": "#888888"},
     "h_rule":       {"foreground": "#888888"},
     "list_bullet":  {},
@@ -160,13 +164,32 @@ def _parse_table_cells(line: str) -> list[str]:
     return [c.strip() for c in s.split("|")]
 
 
-def _format_aligned_table(table_lines: list[str]) -> list[tuple[str, bool, bool]]:
-    """Return a list of ``(formatted_line, is_sep, is_header)`` tuples.
+def _is_total_row(cells: list[str]) -> bool:
+    """Return True if this row should be rendered with total/subtotal emphasis.
+
+    Detects rows whose first cell (markup stripped) starts with "total",
+    "subtotal", or "grand total" — the conventional phrasing used in IFRS
+    financial statements for aggregate line items.
+    """
+    if not cells:
+        return False
+    first_clean = _strip_inline_markup(cells[0]).strip().lower()
+    return first_clean.startswith(("total", "subtotal", "grand total"))
+
+
+def _format_aligned_table(table_lines: list[str]) -> list[tuple[str, bool, bool, bool]]:
+    """Return a list of ``(formatted_line, is_sep, is_header, is_total)`` tuples.
 
     Columns are padded to uniform widths (based on the widest cell in each
     column).  Numeric columns (all body-row values match a number pattern) are
     right-aligned; all other columns are left-aligned.  The first non-separator
-    row is treated as the header.
+    row is treated as the header.  Total/subtotal rows (first cell starts with
+    "total" or "subtotal") are flagged so callers can apply bold emphasis.
+
+    Rows are rendered **without** surrounding pipe characters so the output
+    looks like a professional financial statement rather than a CLI grid.
+    Separator rows are rendered as a line of Unicode box-drawing characters
+    (─) matching the width of the data rows.
     """
     # Parse each row: None means separator row, list[str] means data row
     parsed: list[list[str] | None] = []
@@ -178,7 +201,7 @@ def _format_aligned_table(table_lines: list[str]) -> list[tuple[str, bool, bool]
 
     data_rows = [r for r in parsed if r is not None]
     if not data_rows:
-        return [(line + "\n", False, False) for line in table_lines]
+        return [(line + "\n", False, False, False) for line in table_lines]
 
     num_cols = max(len(r) for r in data_rows)
 
@@ -202,14 +225,17 @@ def _format_aligned_table(table_lines: list[str]) -> list[tuple[str, bool, bool]
             if col_vals and all(_is_numeric_cell(v) for v in col_vals):
                 numeric_col[j] = True
 
-    result: list[tuple[str, bool, bool]] = []
+    # Width of the rule line: two leading spaces + columns joined by two spaces
+    rule_width = 2 + sum(col_widths) + 2 * max(num_cols - 1, 0)
+
+    result: list[tuple[str, bool, bool, bool]] = []
     is_header_seen = False
 
     for item in parsed:
         if item is None:
-            # Rebuild separator from column widths
-            sep = "| " + " | ".join("-" * w for w in col_widths) + " |"
-            result.append((sep + "\n", True, False))
+            # Render separator as a Unicode horizontal rule (no pipes)
+            sep = "─" * rule_width
+            result.append((sep + "\n", True, False, False))
         else:
             padded_cells: list[str] = []
             for j, cell in enumerate(item):
@@ -222,10 +248,12 @@ def _format_aligned_table(table_lines: list[str]) -> list[tuple[str, bool, bool]
                     padded_cells.append(display.rjust(w))
                 else:
                     padded_cells.append(display.ljust(w))
-            row_str = "| " + " | ".join(padded_cells) + " |"
+            # Two-space indent + two-space column separators (no outer pipes)
+            row_str = "  " + "  ".join(padded_cells)
             is_hdr = not is_header_seen
             is_header_seen = is_header_seen or is_hdr
-            result.append((row_str + "\n", False, is_hdr))
+            is_total = not is_hdr and _is_total_row(item)
+            result.append((row_str + "\n", False, is_hdr, is_total))
 
     return result
 
@@ -334,12 +362,14 @@ def render_markdown_to_buffer(text: str, buf: Any) -> None:
             while i < len(lines) and (_is_table_row(lines[i]) or _is_table_sep(lines[i])):
                 table_lines.append(lines[i])
                 i += 1
-            # Render with column alignment; header row is bold
-            for fmt_line, is_sep, is_hdr in _format_aligned_table(table_lines):
+            # Render with column alignment; header row is bold; totals are bold
+            for fmt_line, is_sep, is_hdr, is_total in _format_aligned_table(table_lines):
                 if is_sep:
                     _ins(fmt_line, "table_sep")
                 elif is_hdr:
                     _ins(fmt_line, "table_header")
+                elif is_total:
+                    _ins(fmt_line, "table_total")
                 else:
                     _ins(fmt_line, "table")
             _ins("\n")
