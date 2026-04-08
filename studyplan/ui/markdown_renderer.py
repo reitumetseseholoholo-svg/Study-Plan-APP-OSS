@@ -5,7 +5,8 @@ Supports:
 - **bold** and *italic* inline spans
 - `inline code` (monospace)
 - Fenced code blocks (``` … ```) in monospace
-- Pipe tables (| … | rows) in monospace with separator detection
+- Pipe tables (| … | rows) with aligned columns, bold header row, and
+  right-aligned numeric columns — ideal for financial statements
 - Unordered bullet lists (- / * / •)
 - Ordered lists (1. 2. …)
 - Horizontal rules (--- / ***)
@@ -39,6 +40,7 @@ _TAG_SPECS: dict[str, dict[str, Any]] = {
     "code_inline":  {"family": "monospace"},
     "code_block":   {"family": "monospace"},
     "table":        {"family": "monospace"},
+    "table_header": {"family": "monospace", "weight": 700},
     "table_sep":    {"family": "monospace", "foreground": "#888888"},
     "h_rule":       {"foreground": "#888888"},
     "list_bullet":  {},
@@ -128,6 +130,104 @@ def _is_table_row(line: str) -> bool:
 
 def _is_table_sep(line: str) -> bool:
     return bool(_TABLE_SEP_RE.match(line.strip()))
+
+
+# Pattern for numeric cell values (integers, decimals, currency, %, parenthesised negatives)
+_NUMERIC_CELL_RE = re.compile(
+    r"^\s*[£$€(]?\s*[\d,]*\.?\d+\)?\s*%?\s*$"
+)
+
+# Pattern to strip inline markup characters from a cell before width measurement
+_INLINE_MARKUP_RE = re.compile(r"\*{1,3}|_{1,2}|`")
+
+
+def _strip_inline_markup(text: str) -> str:
+    """Remove markdown inline markers so cell widths are measured correctly."""
+    return _INLINE_MARKUP_RE.sub("", text)
+
+
+def _is_numeric_cell(value: str) -> bool:
+    return bool(_NUMERIC_CELL_RE.match(value))
+
+
+def _parse_table_cells(line: str) -> list[str]:
+    """Extract and strip cell strings from a pipe-delimited table row."""
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def _format_aligned_table(table_lines: list[str]) -> list[tuple[str, bool, bool]]:
+    """Return a list of ``(formatted_line, is_sep, is_header)`` tuples.
+
+    Columns are padded to uniform widths (based on the widest cell in each
+    column).  Numeric columns (all body-row values match a number pattern) are
+    right-aligned; all other columns are left-aligned.  The first non-separator
+    row is treated as the header.
+    """
+    # Parse each row: None means separator row, list[str] means data row
+    parsed: list[list[str] | None] = []
+    for line in table_lines:
+        if _is_table_sep(line):
+            parsed.append(None)
+        else:
+            parsed.append(_parse_table_cells(line))
+
+    data_rows = [r for r in parsed if r is not None]
+    if not data_rows:
+        return [(line + "\n", False, False) for line in table_lines]
+
+    num_cols = max(len(r) for r in data_rows)
+
+    # Pad short rows to num_cols
+    for r in data_rows:
+        while len(r) < num_cols:
+            r.append("")
+
+    # Compute column widths from display text (markup stripped)
+    col_widths = [3] * num_cols  # minimum 3
+    for r in data_rows:
+        for j, cell in enumerate(r):
+            col_widths[j] = max(col_widths[j], len(_strip_inline_markup(cell)))
+
+    # Detect numeric columns from body rows (rows after the header)
+    body_rows = data_rows[1:] if len(data_rows) > 1 else []
+    numeric_col = [False] * num_cols
+    if body_rows:
+        for j in range(num_cols):
+            col_vals = [r[j] for r in body_rows if j < len(r) and r[j]]
+            if col_vals and all(_is_numeric_cell(v) for v in col_vals):
+                numeric_col[j] = True
+
+    result: list[tuple[str, bool, bool]] = []
+    is_header_seen = False
+
+    for item in parsed:
+        if item is None:
+            # Rebuild separator from column widths
+            sep = "| " + " | ".join("-" * w for w in col_widths) + " |"
+            result.append((sep + "\n", True, False))
+        else:
+            padded_cells: list[str] = []
+            for j, cell in enumerate(item):
+                w = col_widths[j] if j < len(col_widths) else len(cell)
+                display = _strip_inline_markup(cell)
+                if not is_header_seen:
+                    # Header: left-aligned
+                    padded_cells.append(display.ljust(w))
+                elif numeric_col[j]:
+                    padded_cells.append(display.rjust(w))
+                else:
+                    padded_cells.append(display.ljust(w))
+            row_str = "| " + " | ".join(padded_cells) + " |"
+            is_hdr = not is_header_seen
+            is_header_seen = is_header_seen or is_hdr
+            result.append((row_str + "\n", False, is_hdr))
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -234,12 +334,14 @@ def render_markdown_to_buffer(text: str, buf: Any) -> None:
             while i < len(lines) and (_is_table_row(lines[i]) or _is_table_sep(lines[i])):
                 table_lines.append(lines[i])
                 i += 1
-            # Render: separator rows get a dimmer colour
-            for tline in table_lines:
-                if _is_table_sep(tline):
-                    _ins(tline + "\n", "table_sep")
+            # Render with column alignment; header row is bold
+            for fmt_line, is_sep, is_hdr in _format_aligned_table(table_lines):
+                if is_sep:
+                    _ins(fmt_line, "table_sep")
+                elif is_hdr:
+                    _ins(fmt_line, "table_header")
                 else:
-                    _ins(tline + "\n", "table")
+                    _ins(fmt_line, "table")
             _ins("\n")
             continue
 
