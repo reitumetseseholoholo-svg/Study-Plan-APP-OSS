@@ -524,11 +524,17 @@ def build_review_history_from_srs_data(
             except (ValueError, TypeError):
                 continue
             lapses = int(item.get("fsrs_lapses", 0) or 0)
+            # Heuristic: classify the card's *last* review outcome.
+            # A card with zero lapses has never been forgotten → recalled.
+            # A card with lapses but more reps than lapses had at least one
+            # successful review after its last lapse → treat as recalled.
+            # If reps == lapses the card has only ever been lapsed → not recalled.
+            recalled = (lapses == 0 and int(reps) > 0) or (lapses > 0 and int(reps) > lapses)
             result.append(
                 {
                     "fsrs_stability": float(stability),
                     "elapsed_days": elapsed,
-                    "recalled": lapses == 0 or int(reps) > lapses,
+                    "recalled": recalled,
                 }
             )
     return result

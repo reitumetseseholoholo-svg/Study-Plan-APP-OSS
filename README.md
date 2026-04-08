@@ -27,7 +27,7 @@ STUDYPLAN_MODULE_TITLE="Your Module" python studyplan_app.py
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `STUDYPLAN_SRS_ALGORITHM` | `fsrs` | Spaced-repetition algorithm. Set to `sm2` or `legacy` to use the original SM-2 scheduler. Default is `fsrs` (FSRS-4.5). |
+| `STUDYPLAN_SRS_ALGORITHM` | `fsrs` | Spaced-repetition algorithm. Set to `sm2` or `legacy` to use the original SM-2 scheduler. When unset or set to any other value, FSRS-4.5 is used by default. |
 | `STUDYPLAN_LLM_GATEWAY_ENABLED` | `0` | Set to `1` to route AI tutor through the cloud gateway instead of local Ollama. Can also be toggled in Preferences → Cloud AI. |
 | `STUDYPLAN_LLM_GATEWAY_ENDPOINT` | — | OpenAI-compatible endpoint URL, e.g. `https://openrouter.ai/api/v1/chat/completions`. |
 | `STUDYPLAN_LLM_GATEWAY_API_KEY` | — | API key for the cloud gateway (also settable as `OPENROUTER_API_KEY`). |
