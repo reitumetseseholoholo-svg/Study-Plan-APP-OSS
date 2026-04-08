@@ -223,6 +223,7 @@ def test_no_metacognition_trigger_with_too_few_samples():
 
 def test_normalized_confidence_over_5_scales_correctly():
     c = ConfidenceCalibrator()
-    # Passing confidence as percentage (100) should normalise correctly.
+    # Confidence passed as 100 (percentage) should be treated as >5, normalised to 1.0, then
+    # stored as predicted_confidence = int(1.0 * 100) = 100.
     c.add_attempt(100, was_correct=True, topic="T")
-    assert c.history[0].predicted_confidence == 100  # stored as int * 100 of [0,1]
+    assert c.history[0].predicted_confidence == 100  # stored as int(normalised_fraction * 100)
