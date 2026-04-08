@@ -7155,6 +7155,20 @@ class StudyPlanEngine:
                 if last is None:
                     due_count += 1
                     continue
+                # Prefer FSRS due date when available.
+                fsrs_due = item.get("fsrs_due")
+                if fsrs_due:
+                    _fsrs_parsed = False
+                    try:
+                        _fsrs_date = datetime.date.fromisoformat(str(fsrs_due))
+                        _fsrs_parsed = True
+                    except Exception:
+                        pass
+                    if _fsrs_parsed:
+                        if _fsrs_date <= today:
+                            due_count += 1
+                        continue  # FSRS owns this card's schedule; skip SM-2
+                # Fall back to SM-2 interval.
                 try:
                     last_date = datetime.date.fromisoformat(str(last))
                 except Exception:
@@ -9869,15 +9883,28 @@ class StudyPlanEngine:
     def is_overdue(self, srs_item, today):
         """Check if an SRS item is overdue for review.
 
-        If the SRS item is None or missing 'last_review', returns False.
-        If the last review date is None (never reviewed), returns False.
-        If the last review date is invalid (not a valid date string), raises ValueError.
-        If the last review date is valid, compares it with the current date and returns True if the next review date has passed, False otherwise.
+        Prefers the FSRS ``fsrs_due`` date when available (set by the default
+        FSRS scheduler).  Falls back to the SM-2 ``last_review`` + ``interval``
+        calculation for legacy items that have not yet been processed by FSRS.
+
+        Returns False when the item is None or has never been reviewed.
         """
-        if srs_item is None or 'last_review' not in srs_item:
+        if srs_item is None:
             return False
 
-        last_review = srs_item.get('last_review')
+        # Prefer the FSRS due date when the card has been scheduled by FSRS.
+        fsrs_due = srs_item.get("fsrs_due")
+        if fsrs_due:
+            try:
+                return datetime.date.fromisoformat(str(fsrs_due)) <= today
+            except (ValueError, TypeError):
+                pass
+
+        # Legacy SM-2 fallback.
+        if "last_review" not in srs_item:
+            return False
+
+        last_review = srs_item.get("last_review")
         if last_review is None:
             return False
 
@@ -9886,7 +9913,7 @@ class StudyPlanEngine:
         except ValueError:
             return False
 
-        interval = srs_item.get('interval', 1)
+        interval = srs_item.get("interval", 1)
         next_review_date = last_review_date + datetime.timedelta(days=interval)
         return next_review_date <= today
 
@@ -11098,16 +11125,27 @@ class StudyPlanEngine:
 
     def get_retention_probability(self, chapter, idx):
         srs_list = self.srs_data.get(chapter, [])
-        if idx >= len(srs_list): return 0.0
+        if idx >= len(srs_list):
+            return 0.0
         srs = srs_list[idx]
-        if srs.get('last_review') is None:
+        last_review = srs.get("fsrs_last_review") or srs.get("last_review")
+        if last_review is None:
             return 0.0
         try:
-            days_since = (datetime.date.today() - datetime.date.fromisoformat(srs['last_review'])).days
+            days_since = (datetime.date.today() - datetime.date.fromisoformat(str(last_review))).days
         except (ValueError, TypeError):
             return 0.0
+        # Use FSRS stability when available: R(t) = 0.9^(t/S)
+        fsrs_stability = srs.get("fsrs_stability")
+        if fsrs_stability is not None:
+            try:
+                s = max(0.1, float(fsrs_stability))
+                return math.pow(0.9, days_since / s)
+            except Exception:
+                pass
+        # Fall back to SM-2 interval-based estimate.
         try:
-            interval = int(srs.get('interval', 1) or 1)
+            interval = int(srs.get("interval", 1) or 1)
         except Exception:
             interval = 1
         interval = max(1, interval)
@@ -11116,11 +11154,10 @@ class StudyPlanEngine:
 
     def update_srs(self, chapter: str, question_index: int, is_correct: bool):
         """
-        Update SRS stats.  Uses FSRS-4.5 when enabled, otherwise improved SM-2.
+        Update SRS stats.  Uses FSRS-4.5 by default, falling back to SM-2.
 
-        FSRS can be enabled by setting the environment variable
-        ``STUDYPLAN_SRS_ALGORITHM=fsrs`` before launching the app.  The legacy
-        SM-2 path is the default for backwards compatibility.
+        FSRS is the default algorithm.  Set ``STUDYPLAN_SRS_ALGORITHM=sm2``
+        (or ``legacy``) to force the legacy SM-2 path instead.
 
         Args:
             chapter (str): The chapter name (e.g., "FM Function")
@@ -11148,12 +11185,13 @@ class StudyPlanEngine:
                     return
             srs = srs_data[question_index]
 
-            # Route to FSRS or SM-2 based on runtime flag.
-            use_fsrs = str(os.environ.get("STUDYPLAN_SRS_ALGORITHM", "") or "").strip().lower() == "fsrs"
-            if use_fsrs:
-                self._update_srs_fsrs(srs, chapter, question_index, is_correct)
-            else:
+            # Route to SM-2 only when explicitly requested; FSRS is the default.
+            _algo = str(os.environ.get("STUDYPLAN_SRS_ALGORITHM", "") or "").strip().lower()
+            use_sm2 = _algo in ("sm2", "legacy")
+            if use_sm2:
                 self._update_srs_sm2(srs, chapter, question_index, is_correct)
+            else:
+                self._update_srs_fsrs(srs, chapter, question_index, is_correct)
         except Exception as e:
             print(f"Error updating SRS for question {question_index} in chapter {chapter}: {e}", file=sys.stderr)
 
@@ -11326,7 +11364,21 @@ class StudyPlanEngine:
                 due_kind_by_idx[idx] = 1
                 overdue_by_idx[idx] = 1
                 continue
-            # due today (non-overdue but scheduled)
+            # due today (non-overdue but scheduled); prefer fsrs_due when available
+            fsrs_due = srs.get("fsrs_due")
+            if fsrs_due:
+                _fsrs_parsed = False
+                try:
+                    _fsrs_date = datetime.date.fromisoformat(str(fsrs_due))
+                    _fsrs_parsed = True
+                except Exception:
+                    pass
+                if _fsrs_parsed:
+                    if _fsrs_date <= today:
+                        due_indices.append(idx)
+                        due_kind_by_idx[idx] = 0
+                        overdue_by_idx[idx] = 0
+                    continue  # FSRS owns this card's schedule; skip SM-2 check
             last = srs.get("last_review")
             if isinstance(last, str) and last:
                 try:
@@ -13214,6 +13266,108 @@ class StudyPlanEngine:
                             "fsrs_lapses": srs.get("fsrs_lapses", ""),
                         }
                         writer.writerow(row)
+                        chapter_rows += 1
+                    if chapter_rows:
+                        chapters_included.append(chapter)
+                        rows_written += chapter_rows
+            os.replace(tmp_path, output_path)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        return {
+            "rows_written": rows_written,
+            "chapters": chapters_included,
+            "output_path": output_path,
+        }
+
+    def export_anki_note_tsv(self, output_path: str, *, chapters: list[str] | None = None) -> dict:
+        """Export question bank as Anki-importable tab-separated notes (Basic note type).
+
+        The output file uses Anki's plain-text import format:
+        - Tab-separated, no header row.
+        - Column 1 (Front): question text with lettered options appended.
+        - Column 2 (Back): correct answer letter + explanation.
+        - Column 3 (Tags): chapter name, FSRS stability bucket, and due-status tags.
+
+        Import into Anki via File → Import, selecting "Fields separated by: Tab" and
+        "Note Type: Basic".
+
+        Parameters
+        ----------
+        output_path:
+            Destination ``.tsv`` path.
+        chapters:
+            Optional list of chapter names.  Defaults to all chapters.
+
+        Returns
+        -------
+        dict with keys: ``rows_written``, ``chapters``, ``output_path``
+        """
+        target_chapters = chapters if isinstance(chapters, list) else self.CHAPTERS
+        rows_written = 0
+        chapters_included: list[str] = []
+        today = datetime.date.today()
+        tmp_path = output_path + ".tmp"
+        try:
+            with open(tmp_path, "w", newline="", encoding="utf-8") as fh:
+                for chapter in target_chapters:
+                    questions = self.QUESTIONS.get(chapter, [])
+                    srs_list = self.srs_data.get(chapter, [])
+                    if not isinstance(questions, list) or not questions:
+                        continue
+                    chapter_rows = 0
+                    # Build a safe tag from the chapter name (Anki tags cannot have spaces).
+                    chapter_tag = chapter.replace(" ", "_").replace(":", "").replace("/", "_")
+                    for idx, q in enumerate(questions):
+                        if not isinstance(q, dict):
+                            continue
+                        question_text = str(q.get("question", "") or "").strip()
+                        if not question_text:
+                            continue
+                        options: list[str] = list(q.get("options") or [])
+                        correct = str(q.get("correct", "") or "").strip()
+                        explanation = str(q.get("explanation", "") or "").strip()
+                        # Build front: question + lettered options.
+                        letter_map = {opt: chr(ord("A") + i) for i, opt in enumerate(options)}
+                        options_block = "\n".join(
+                            f"{chr(ord('A') + i)}. {opt}" for i, opt in enumerate(options)
+                        )
+                        front = f"{question_text}\n\n{options_block}" if options else question_text
+                        # Build back: correct answer + optional explanation.
+                        correct_letter = letter_map.get(correct, "?")
+                        back = f"{correct_letter}. {correct}"
+                        if explanation:
+                            back += f"\n\n{explanation}"
+                        # Build tags.
+                        tags_parts = [chapter_tag]
+                        srs: dict = srs_list[idx] if idx < len(srs_list) and isinstance(srs_list[idx], dict) else {}
+                        fsrs_stability = srs.get("fsrs_stability")
+                        if fsrs_stability is not None:
+                            try:
+                                s = float(fsrs_stability)
+                                if s < 7:
+                                    tags_parts.append("fsrs:fragile")
+                                elif s < 30:
+                                    tags_parts.append("fsrs:moderate")
+                                else:
+                                    tags_parts.append("fsrs:stable")
+                            except (TypeError, ValueError):
+                                pass
+                        if self.is_overdue(srs, today):
+                            tags_parts.append("due:overdue")
+                        elif srs.get("last_review") is None:
+                            tags_parts.append("due:new")
+                        tags_str = " ".join(tags_parts)
+                        # Escape tabs and newlines within fields (Anki TSV uses \n in fields as line breaks).
+                        def _esc(text: str) -> str:
+                            return text.replace("\t", " ").replace("\r", "")
+                        row = "\t".join([_esc(front), _esc(back), _esc(tags_str)])
+                        fh.write(row + "\n")
                         chapter_rows += 1
                     if chapter_rows:
                         chapters_included.append(chapter)

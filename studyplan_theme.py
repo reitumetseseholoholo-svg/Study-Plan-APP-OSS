@@ -1041,6 +1041,25 @@ textview:focus-visible {
     background: alpha(@theme_selected_bg_color, 0.055);
     letter-spacing: 0.18px;
 }
+/* Activity heatmap squares */
+.heatmap-active {
+    background-color: mix(@theme_selected_bg_color, green, 0.6);
+    border-radius: 2px;
+    min-width: 10px;
+    min-height: 10px;
+}
+.heatmap-inactive {
+    background-color: alpha(@theme_fg_color, 0.10);
+    border-radius: 2px;
+    min-width: 10px;
+    min-height: 10px;
+}
+.heatmap-future {
+    background-color: alpha(@theme_fg_color, 0.04);
+    border-radius: 2px;
+    min-width: 10px;
+    min-height: 10px;
+}
 """
 
 COACH_THEME_CSS = """
@@ -2133,6 +2152,25 @@ textview:focus-visible {
 .panel-left .section-title {
     border-bottom: 1px solid rgba(139, 175, 255, 0.22);
     color: #90a8cc;
+}
+/* Activity heatmap squares */
+.heatmap-active {
+    background-color: #3dba73;
+    border-radius: 2px;
+    min-width: 10px;
+    min-height: 10px;
+}
+.heatmap-inactive {
+    background-color: rgba(255, 255, 255, 0.10);
+    border-radius: 2px;
+    min-width: 10px;
+    min-height: 10px;
+}
+.heatmap-future {
+    background-color: rgba(255, 255, 255, 0.04);
+    border-radius: 2px;
+    min-width: 10px;
+    min-height: 10px;
 }
 """
 

@@ -23,6 +23,19 @@ Optional module override (env vars):
 STUDYPLAN_MODULE_TITLE="Your Module" python studyplan_app.py
 ```
 
+### Key environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STUDYPLAN_SRS_ALGORITHM` | `fsrs` | Spaced-repetition algorithm. Set to `sm2` or `legacy` to use the original SM-2 scheduler. When unset or set to any other value, FSRS-4.5 is used by default. |
+| `STUDYPLAN_LLM_GATEWAY_ENABLED` | `0` | Set to `1` to route AI tutor through the cloud gateway instead of local Ollama. Can also be toggled in Preferences → Cloud AI. |
+| `STUDYPLAN_LLM_GATEWAY_ENDPOINT` | — | OpenAI-compatible endpoint URL, e.g. `https://openrouter.ai/api/v1/chat/completions`. |
+| `STUDYPLAN_LLM_GATEWAY_API_KEY` | — | API key for the cloud gateway (also settable as `OPENROUTER_API_KEY`). |
+| `STUDYPLAN_LLM_GATEWAY_MODEL` | — | Primary model ID for the cloud gateway, e.g. `openrouter/google/gemini-2.5-flash`. |
+| `STUDYPLAN_LLM_GATEWAY_MODEL_FALLBACKS` | — | Comma-separated fallback model IDs. |
+| `STUDYPLAN_MODULE_TITLE` | — | Override the active module title at startup. |
+| `STUDYPLAN_SMOKE_MODE` | `0` | Set to `1` to run the dialog smoke test (headless CI). |
+
 ## Requirements
 
 - Python 3 with **PyGObject (GTK4)**

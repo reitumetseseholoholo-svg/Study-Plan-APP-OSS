@@ -2190,6 +2190,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.local_llm_timeout_seconds = int(DEFAULT_OLLAMA_TIMEOUT_SECONDS)
         self.local_llm_max_concurrent_slots = 0
         self.local_llm_ollama_queue_wait_seconds = 0.0
+        # Cloud AI (OpenRouter / LiteLLM gateway) preferences.
+        self.cloud_ai_enabled = False
+        self.cloud_ai_endpoint = ""
+        self.cloud_ai_model = ""
+        self.cloud_ai_api_key = ""
+        self.cloud_ai_fallback_models = ""
         self._last_llm_inference_backend = ""
         self._last_llm_inference_model = ""
         self._ollama_runtime_lock = threading.RLock()
@@ -2904,6 +2910,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         study_room_actions.append(self.study_room_drill_btn)
         study_room_actions.append(self.study_room_interleave_btn)
         study_room_card.append(study_room_actions)
+        # Daily review quick-start row.
+        study_room_reviews_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.study_room_reviews_label = Gtk.Label()
+        self.study_room_reviews_label.set_halign(Gtk.Align.START)
+        self.study_room_reviews_label.add_css_class("muted")
+        self.study_room_reviews_label.set_hexpand(True)
+        study_room_reviews_spacer = Gtk.Box()
+        study_room_reviews_spacer.set_hexpand(True)
+        self.study_room_reviews_btn = Gtk.Button(label="Start Reviews")
+        self.study_room_reviews_btn.set_tooltip_text("Start today's spaced-repetition review queue")
+        self.study_room_reviews_btn.connect("clicked", self.on_start_daily_reviews)
+        self.study_room_reviews_btn.set_sensitive(False)
+        study_room_reviews_row.append(self.study_room_reviews_label)
+        study_room_reviews_row.append(study_room_reviews_spacer)
+        study_room_reviews_row.append(self.study_room_reviews_btn)
+        study_room_card.append(study_room_reviews_row)
         self.study_room_ai_btn = ui.action_button("AI coach", on_click=self.on_open_ai_coach)
         study_room_card.append(self.study_room_ai_btn)
         left_panel.append(study_room_card)
@@ -3024,6 +3046,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.streak_label.add_css_class("kpi-line")
         self.update_streak_display()
         left_panel.append(self.streak_label)
+
+        # Activity heatmap: compact 12-week grid of study-day squares.
+        self._heatmap_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self._heatmap_box.set_margin_top(2)
+        self._heatmap_box.set_margin_bottom(2)
+        self._heatmap_title = Gtk.Label(label="Activity (12 weeks)")
+        self._heatmap_title.set_halign(Gtk.Align.START)
+        self._heatmap_title.add_css_class("muted")
+        self._heatmap_box.append(self._heatmap_title)
+        self._heatmap_grid_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        self._heatmap_box.append(self._heatmap_grid_box)
+        left_panel.append(self._heatmap_box)
+        self._refresh_activity_heatmap()
 
         self.xp_label = Gtk.Label()
         self._mark_critical_label(self.xp_label)
@@ -3354,6 +3389,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         file_menu.append("Export data (CSV)…", "win.export_csv")
         file_menu.append("Export import template…", "win.export_template")
         file_menu.append("Export question stats (CSV)…", "win.export_question_stats")
+        file_menu.append("Export Anki notes (TSV)…", "win.export_anki_tsv")
         file_menu.append("Weekly Report…", "win.weekly_report")
         file_menu.append("Reset Data…", "win.reset_data")
         file_menu.append("Quit", "win.quit_app")
@@ -11053,6 +11089,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def on_menu_export_question_stats(self, _action, _param):
         self.on_export_question_stats(None)
 
+    def on_menu_export_anki_tsv(self, _action, _param):
+        self.on_export_anki_tsv(None)
+
     def on_menu_view_health_log(self, _action, _param):
         self.on_view_health_log(None)
 
@@ -13196,6 +13235,85 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         content.append(llm_concurrency_row)
         content.append(llm_queue_row)
 
+        # SRS algorithm status (informational).
+        _algo_name = str(os.environ.get("STUDYPLAN_SRS_ALGORITHM", "") or "").strip().lower()
+        _srs_display = "SM-2 (legacy, set via env)" if _algo_name in ("sm2", "legacy") else "FSRS-4.5 (default)"
+        srs_status_label = Gtk.Label(label=f"Active SRS algorithm: {_srs_display}")
+        srs_status_label.set_halign(Gtk.Align.START)
+        srs_status_label.add_css_class("muted")
+        content.append(srs_status_label)
+
+        # Cloud AI / OpenRouter section.
+        cloud_ai_title = Gtk.Label(label="Cloud AI (OpenRouter / LiteLLM)")
+        cloud_ai_title.set_halign(Gtk.Align.START)
+        cloud_ai_title.add_css_class("section-title")
+        content.append(cloud_ai_title)
+        cloud_ai_note = Gtk.Label(
+            label="Route the AI tutor through an OpenAI-compatible cloud gateway (OpenRouter, LiteLLM, etc.)."
+            " Set OPENROUTER_API_KEY or paste a key below."
+        )
+        cloud_ai_note.set_halign(Gtk.Align.START)
+        cloud_ai_note.set_wrap(True)
+        cloud_ai_note.add_css_class("muted")
+        content.append(cloud_ai_note)
+
+        cloud_ai_enabled_check = Gtk.CheckButton(label="Enable Cloud AI gateway")
+        cloud_ai_enabled_check.set_active(bool(getattr(self, "cloud_ai_enabled", False)))
+        content.append(cloud_ai_enabled_check)
+
+        cloud_endpoint_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        cloud_endpoint_label = Gtk.Label(label="Endpoint URL")
+        cloud_endpoint_label.set_halign(Gtk.Align.START)
+        cloud_endpoint_label.set_size_request(140, -1)
+        cloud_endpoint_entry = Gtk.Entry()
+        cloud_endpoint_entry.set_hexpand(True)
+        cloud_endpoint_entry.set_text(str(getattr(self, "cloud_ai_endpoint", "") or ""))
+        cloud_endpoint_entry.set_placeholder_text("https://openrouter.ai/api/v1/chat/completions")
+        cloud_endpoint_row.append(cloud_endpoint_label)
+        cloud_endpoint_row.append(cloud_endpoint_entry)
+        content.append(cloud_endpoint_row)
+
+        cloud_model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        cloud_model_label = Gtk.Label(label="Model ID")
+        cloud_model_label.set_halign(Gtk.Align.START)
+        cloud_model_label.set_size_request(140, -1)
+        cloud_model_entry = Gtk.Entry()
+        cloud_model_entry.set_hexpand(True)
+        cloud_model_entry.set_text(str(getattr(self, "cloud_ai_model", "") or ""))
+        cloud_model_entry.set_placeholder_text("e.g. openrouter/google/gemini-2.5-flash")
+        cloud_model_row.append(cloud_model_label)
+        cloud_model_row.append(cloud_model_entry)
+        content.append(cloud_model_row)
+
+        cloud_fallback_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        cloud_fallback_label = Gtk.Label(label="Fallback models")
+        cloud_fallback_label.set_halign(Gtk.Align.START)
+        cloud_fallback_label.set_size_request(140, -1)
+        cloud_fallback_entry = Gtk.Entry()
+        cloud_fallback_entry.set_hexpand(True)
+        cloud_fallback_entry.set_text(str(getattr(self, "cloud_ai_fallback_models", "") or ""))
+        cloud_fallback_entry.set_placeholder_text("e.g. openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet")
+        cloud_fallback_row.append(cloud_fallback_label)
+        cloud_fallback_row.append(cloud_fallback_entry)
+        content.append(cloud_fallback_row)
+
+        cloud_key_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        cloud_key_label = Gtk.Label(label="API key")
+        cloud_key_label.set_halign(Gtk.Align.START)
+        cloud_key_label.set_size_request(140, -1)
+        cloud_key_entry = Gtk.PasswordEntry()
+        cloud_key_entry.set_hexpand(True)
+        cloud_key_entry.set_show_peek_icon(True)
+        cloud_key_entry.set_text(str(getattr(self, "cloud_ai_api_key", "") or ""))
+        cloud_key_hint = Gtk.Label(label="Stored in preferences. Also reads OPENROUTER_API_KEY env var automatically.")
+        cloud_key_hint.set_halign(Gtk.Align.START)
+        cloud_key_hint.set_wrap(True)
+        cloud_key_hint.add_css_class("muted")
+        cloud_key_row.append(cloud_key_label)
+        cloud_key_row.append(cloud_key_entry)
+        content.append(cloud_key_row)
+        content.append(cloud_key_hint)
+
         cockpit_title = Gtk.Label(label="Tutor Cockpit")
         cockpit_title.set_halign(Gtk.Align.START)
         cockpit_title.add_css_class("section-title")
@@ -13744,6 +13862,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 self.local_llm_ollama_queue_wait_seconds = 0.0
             self._configure_ollama_runtime_limits()
+            # Cloud AI / OpenRouter preferences.
+            self.cloud_ai_enabled = bool(cloud_ai_enabled_check.get_active())
+            self.cloud_ai_endpoint = str(cloud_endpoint_entry.get_text() or "").strip()
+            self.cloud_ai_model = str(cloud_model_entry.get_text() or "").strip()
+            self.cloud_ai_fallback_models = str(cloud_fallback_entry.get_text() or "").strip()
+            self.cloud_ai_api_key = str(cloud_key_entry.get_text() or "").strip()
+            # Apply cloud AI config to the runtime Config object so it takes effect immediately.
+            try:
+                from studyplan.config import Config as _Cfg
+                _Cfg.LLM_GATEWAY_ENABLED = bool(self.cloud_ai_enabled)
+                if self.cloud_ai_endpoint:
+                    _Cfg.LLM_GATEWAY_ENDPOINT = self.cloud_ai_endpoint
+                if self.cloud_ai_model:
+                    _Cfg.LLM_GATEWAY_MODEL = self.cloud_ai_model
+                if self.cloud_ai_fallback_models:
+                    _Cfg.LLM_GATEWAY_MODEL_FALLBACKS = self.cloud_ai_fallback_models
+                if self.cloud_ai_api_key:
+                    _Cfg.LLM_GATEWAY_API_KEY = self.cloud_ai_api_key
+                    os.environ["STUDYPLAN_LLM_GATEWAY_API_KEY"] = self.cloud_ai_api_key
+            except Exception:
+                pass
             self.ai_tutor_autopilot_enabled = bool(cockpit_enabled.get_active())
             self.ai_tutor_autopilot_paused = bool(cockpit_paused.get_active())
             self.ai_tutor_autonomy_mode = self._coerce_ai_tutor_autonomy_mode(
@@ -16493,6 +16632,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         )
                     except Exception:
                         self.local_llm_ollama_queue_wait_seconds = 0.0
+                    # Cloud AI preferences.
+                    self.cloud_ai_enabled = bool(data.get("cloud_ai_enabled", False))
+                    self.cloud_ai_endpoint = str(data.get("cloud_ai_endpoint", "") or "").strip()
+                    self.cloud_ai_model = str(data.get("cloud_ai_model", "") or "").strip()
+                    self.cloud_ai_fallback_models = str(data.get("cloud_ai_fallback_models", "") or "").strip()
+                    self.cloud_ai_api_key = str(data.get("cloud_ai_api_key", "") or "").strip()
+                    # Apply loaded cloud AI settings to the runtime Config object.
+                    try:
+                        from studyplan.config import Config as _Cfg
+                        _Cfg.LLM_GATEWAY_ENABLED = bool(self.cloud_ai_enabled)
+                        if self.cloud_ai_endpoint:
+                            _Cfg.LLM_GATEWAY_ENDPOINT = self.cloud_ai_endpoint
+                        if self.cloud_ai_model:
+                            _Cfg.LLM_GATEWAY_MODEL = self.cloud_ai_model
+                        if self.cloud_ai_fallback_models:
+                            _Cfg.LLM_GATEWAY_MODEL_FALLBACKS = self.cloud_ai_fallback_models
+                        if self.cloud_ai_api_key:
+                            _Cfg.LLM_GATEWAY_API_KEY = self.cloud_ai_api_key
+                            os.environ["STUDYPLAN_LLM_GATEWAY_API_KEY"] = self.cloud_ai_api_key
+                    except Exception:
+                        pass
                     self.ai_tutor_autopilot_enabled = bool(data.get("ai_tutor_autopilot_enabled", True))
                     self.ai_tutor_autopilot_paused = bool(data.get("ai_tutor_autopilot_paused", False))
                     self.ai_tutor_autonomy_mode = self._coerce_ai_tutor_autonomy_mode(
@@ -16782,6 +16942,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "local_llm_ollama_queue_wait_seconds": float(
                     getattr(self, "local_llm_ollama_queue_wait_seconds", 0.0) or 0.0
                 ),
+                "cloud_ai_enabled": bool(getattr(self, "cloud_ai_enabled", False)),
+                "cloud_ai_endpoint": str(getattr(self, "cloud_ai_endpoint", "") or ""),
+                "cloud_ai_model": str(getattr(self, "cloud_ai_model", "") or ""),
+                "cloud_ai_fallback_models": str(getattr(self, "cloud_ai_fallback_models", "") or ""),
+                "cloud_ai_api_key": str(getattr(self, "cloud_ai_api_key", "") or ""),
                 "ai_tutor_autopilot_enabled": bool(getattr(self, "ai_tutor_autopilot_enabled", True)),
                 "ai_tutor_autopilot_paused": bool(getattr(self, "ai_tutor_autopilot_paused", False)),
                 "ai_tutor_autonomy_mode": str(
@@ -40005,6 +40170,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         "Target repeatedly-missed questions." if leech_total > 0 else ""
                     )
                     self.study_room_leech_btn.set_visible(leech_total > 0)
+            except Exception:
+                pass
+        # Daily review queue count (all chapters combined).
+        if getattr(self, "study_room_reviews_label", None) and getattr(self, "study_room_reviews_btn", None):
+            try:
+                today = datetime.date.today()
+                due_map = self.engine.get_due_today_by_chapter(today)
+                total_due = sum(int(v or 0) for v in due_map.values())
+                if total_due > 0:
+                    self.study_room_reviews_label.set_text(f"Due today: {total_due} card(s) across {len(due_map)} chapter(s)")
+                    self.study_room_reviews_btn.set_sensitive(True)
+                    self.study_room_reviews_btn.set_visible(True)
+                else:
+                    self.study_room_reviews_label.set_text("No cards due today 🎉")
+                    self.study_room_reviews_btn.set_sensitive(False)
+                    self.study_room_reviews_btn.set_visible(False)
+            except Exception:
+                pass
                 if getattr(self, "study_room_error_stats_label", None):
                     stats_text = ""
                     try:
@@ -40544,6 +40727,45 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
             return
         self.start_quiz_session(topic=topic, total_override=8, kind="leech", indices_override=indices)
+
+    def on_start_daily_reviews(self, _button):
+        """Start the daily spaced-repetition review queue (all chapters, due cards only).
+
+        Picks the chapter with the highest due count and starts a review session.
+        If multiple chapters have due cards, shows a notification with the full breakdown.
+        """
+        self._ensure_coach_selection()
+        if not self._ensure_chapters_ready("Daily Reviews"):
+            return
+        try:
+            today = datetime.date.today()
+            due_map = self.engine.get_due_today_by_chapter(today)
+        except Exception:
+            due_map = {}
+        if not due_map:
+            self.send_notification(
+                "Daily Reviews",
+                "No cards due today. Great job staying on top of your reviews! 🎉",
+            )
+            return
+        # Pick the chapter with the most due cards; fall back to the current topic.
+        best_topic = max(due_map, key=lambda ch: due_map[ch])
+        preferred = self.current_topic or self._get_recommended_topic()
+        if preferred and preferred in due_map:
+            best_topic = preferred
+        self._set_current_topic(best_topic)
+        # Cap total at min(due_count, 20) to keep sessions manageable.
+        total = min(int(due_map.get(best_topic, 6) or 6), 20)
+        total = max(total, 4)
+        if len(due_map) > 1:
+            other_chapters = [ch for ch in due_map if ch != best_topic]
+            other_total = sum(due_map[ch] for ch in other_chapters)
+            self.send_notification(
+                "Daily Reviews",
+                f"Starting {best_topic}: {due_map[best_topic]} due. "
+                f"Also due in {len(other_chapters)} other chapter(s): {other_total} card(s).",
+            )
+        self.start_quiz_session(topic=best_topic, total_override=total, kind="review")
 
     def _finalize_pomodoro_session(
         self,
@@ -42652,6 +42874,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         message = "Correct! ✓" if is_correct else f"Incorrect. ✗  Correct: {question['correct']}"
         if "explanation" in question:
             message += f"\n\n💡{question['explanation']}"
+        # FSRS retention badge: show current retrievability probability after the update.
+        try:
+            if resolved_index is not None:
+                r = float(self.engine.get_retention_probability(session_topic, resolved_index))
+                if r > 0.0:
+                    badge = "🟢" if r >= 0.80 else "🟡" if r >= 0.50 else "🔴"
+                    message += f"\n\n{badge} Retention: {r:.0%}"
+        except Exception:
+            pass
         self.quiz_feedback.set_label(message)
         for btn in self.quiz_option_buttons.values():
             btn.set_sensitive(False)
@@ -44686,6 +44917,76 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 message_type=Gtk.MessageType.ERROR,
                 buttons=Gtk.ButtonsType.OK,
                 text=f"Error exporting question stats: {e}",
+            )
+            error_dialog.connect("response", lambda d, r: d.destroy())
+            error_dialog.present()
+
+    def on_export_anki_tsv(self, _button):
+        """Export all questions as Anki-importable TSV (Basic note format)."""
+        if getattr(self, "engine", None) is None:
+            self._show_engine_not_ready("Export Anki TSV")
+            return
+        if getattr(self, "_dialog_smoke_mode", False):
+            dialog = self._harden_window(
+                Gtk.FileChooserDialog(  # gtk4_lint:ignore
+                    title="Export Anki Notes (TSV)",
+                    transient_for=self,
+                    action=Gtk.FileChooserAction.SAVE,
+                )
+            )
+            dialog.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Save", Gtk.ResponseType.ACCEPT)
+            dialog.connect("response", self._on_export_anki_tsv_response)
+            dialog.present()
+            return
+        dialog = Gtk.FileChooserNative(
+            title="Export Anki Notes (TSV)",
+            transient_for=self,
+            action=Gtk.FileChooserAction.SAVE,
+            accept_label="_Save",
+            cancel_label="_Cancel",
+        )
+        self._active_native_dialog = dialog
+        dialog.connect("response", self._on_export_anki_tsv_response)
+        dialog.connect("response", lambda *_args: setattr(self, "_active_native_dialog", None))
+        dialog.show()
+
+    def _on_export_anki_tsv_response(self, dialog, response):
+        if response != Gtk.ResponseType.ACCEPT:
+            dialog.destroy()
+            return
+        file_path = self._get_file_path(dialog)
+        dialog.destroy()
+        try:
+            if not file_path:
+                raise ValueError("No file selected.")
+            file_path = self._prepare_export_target_path(
+                file_path,
+                "Anki TSV export",
+                default_extension=".tsv",
+                allowed_extensions=(".tsv", ".txt"),
+            )
+            result = self.engine.export_anki_note_tsv(file_path)
+            rows_written = int(result.get("rows_written", 0))
+            chapters_count = len(result.get("chapters", []))
+            success_dialog = self._new_message_dialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text=(
+                    f"Anki TSV exported: {rows_written} note(s) from {chapters_count} chapter(s).\n\n"
+                    "Import in Anki: File → Import → select the file → Note type: Basic → Fields: Tab."
+                ),
+            )
+            success_dialog.connect("response", lambda d, r: d.destroy())
+            success_dialog.present()
+        except Exception as e:
+            error_dialog = self._new_message_dialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.ERROR,
+                buttons=Gtk.ButtonsType.OK,
+                text=f"Error exporting Anki TSV: {e}",
             )
             error_dialog.connect("response", lambda d, r: d.destroy())
             error_dialog.present()
@@ -50049,6 +50350,60 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             print(f"AttributeError: {e}")
         except Exception as e:
             print(f"Exception: {e}")
+        try:
+            self._refresh_activity_heatmap()
+        except Exception:
+            pass
+
+    def _refresh_activity_heatmap(self) -> None:
+        """Rebuild the 12-week activity heatmap grid from engine.study_days."""
+        grid_box = getattr(self, "_heatmap_grid_box", None)
+        if grid_box is None:
+            return
+        # Clear existing columns.
+        child = grid_box.get_first_child()
+        while child:
+            next_child = child.get_next_sibling()
+            grid_box.remove(child)
+            child = next_child
+
+        today = datetime.date.today()
+        # study_days is a set[datetime.date] stored on the engine.
+        study_days: set = set()
+        try:
+            eng = getattr(self, "engine", None)
+            raw = getattr(eng, "study_days", set()) or set()
+            for d in raw:
+                try:
+                    if isinstance(d, datetime.date):
+                        study_days.add(d)
+                    else:
+                        study_days.add(datetime.date.fromisoformat(str(d)))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Build 12 columns (weeks), 7 rows each.
+        num_weeks = 12
+        # Start Monday of the week that began 11 weeks ago.
+        week_start = today - datetime.timedelta(days=today.weekday() + 7 * (num_weeks - 1))
+
+        for week_idx in range(num_weeks):
+            week_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            for day_idx in range(7):
+                d = week_start + datetime.timedelta(days=week_idx * 7 + day_idx)
+                cell = Gtk.Label(label=" ")
+                cell.set_size_request(10, 10)
+                cell.set_tooltip_text(d.isoformat())
+                if d > today:
+                    cell.add_css_class("heatmap-future")
+                elif d in study_days:
+                    cell.add_css_class("heatmap-active")
+                else:
+                    cell.add_css_class("heatmap-inactive")
+                week_col.append(cell)
+            grid_box.append(week_col)
 
     def update_streak(self):
         today = datetime.date.today()
