@@ -1060,6 +1060,32 @@ textview:focus-visible {
     min-width: 10px;
     min-height: 10px;
 }
+
+/* Exam countdown urgency */
+.exam-urgent {
+    color: #cc0000;
+    font-weight: bold;
+}
+.exam-warning {
+    color: #cc6600;
+    font-weight: bold;
+}
+
+/* Badge unlock pulse animation */
+@keyframes badge-unlock-pulse {
+    0%   { box-shadow: 0 0 0 0 alpha(@theme_selected_bg_color, 0.8); transform: scale(1.0); }
+    40%  { box-shadow: 0 0 0 8px alpha(@theme_selected_bg_color, 0.0); transform: scale(1.15); }
+    70%  { transform: scale(0.96); }
+    100% { transform: scale(1.0); }
+}
+.badge-unlock {
+    animation: badge-unlock-pulse 600ms ease-out;
+}
+
+/* AI Cockpit live card */
+.cockpit-live-card {
+    border-left: 4px solid alpha(@theme_selected_bg_color, 0.85);
+}
 """
 
 COACH_THEME_CSS = """
@@ -2171,6 +2197,32 @@ textview:focus-visible {
     border-radius: 2px;
     min-width: 10px;
     min-height: 10px;
+}
+
+/* Exam countdown urgency */
+.exam-urgent {
+    color: #ff4444;
+    font-weight: bold;
+}
+.exam-warning {
+    color: #ff9900;
+    font-weight: bold;
+}
+
+/* Badge unlock pulse animation */
+@keyframes badge-unlock-pulse {
+    0%   { box-shadow: 0 0 0 0 alpha(@theme_selected_bg_color, 0.8); transform: scale(1.0); }
+    40%  { box-shadow: 0 0 0 8px alpha(@theme_selected_bg_color, 0.0); transform: scale(1.15); }
+    70%  { transform: scale(0.96); }
+    100% { transform: scale(1.0); }
+}
+.badge-unlock {
+    animation: badge-unlock-pulse 600ms ease-out;
+}
+
+/* AI Cockpit live card */
+.cockpit-live-card {
+    border-left: 4px solid alpha(#4dabf7, 0.85);
 }
 """
 
