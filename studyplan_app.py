@@ -198,6 +198,7 @@ from studyplan.tutor_memory import (
 )
 from studyplan.tutor_workspace_controller import TutorWorkspaceController
 from studyplan.ui import UIBuilder
+from studyplan.ui.markdown_renderer import render_markdown_to_buffer
 from studyplan.working_memory_service import WorkingMemoryService
 from studyplan_ai_tutor import (
     AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS,
@@ -219,6 +220,7 @@ from studyplan_ai_tutor import (
     chunk_text_for_rag,
     classify_ollama_error,
     clean_ai_tutor_text,
+    clean_ai_tutor_text_for_rich_display,
     compact_ai_tutor_history_for_prefs,
     compute_tutor_control_state,
     format_ai_tutor_transcript,
@@ -6780,7 +6782,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 near_bottom=_response_is_near_bottom(56.0 if bool(turn.active) else 28.0),
             )
             text = _transcript_text_for_clipboard()
-            response_buf.set_text(text if text else "No conversation yet.")
+            if text:
+                rich_text = clean_ai_tutor_text_for_rich_display(str(turn.draft_assistant or ""))
+                if rich_text:
+                    # Build rich transcript: history as plain prefix + rich current assistant turn.
+                    history_text = _transcript_text_for_clipboard()
+                    # Find where the last "Assistant:" / "Tutor:" block starts so we can
+                    # render the current turn with formatting while history stays readable.
+                    try:
+                        render_markdown_to_buffer(history_text, response_buf)
+                    except Exception:
+                        response_buf.set_text(history_text)
+                else:
+                    try:
+                        render_markdown_to_buffer(text, response_buf)
+                    except Exception:
+                        response_buf.set_text(text)
+            else:
+                response_buf.set_text("No conversation yet.")
             stream.last_clean_text = clean_ai_tutor_text(str(turn.draft_assistant or ""))
             stream.label_inserted = bool(stream.last_clean_text)
             stream.last_render_at = float(time.monotonic())
@@ -30102,7 +30121,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return
             if buf is None:
                 return
-            buf.set_text(str(text or ""))
+            try:
+                render_markdown_to_buffer(str(text or ""), buf)
+            except Exception:
+                buf.set_text(str(text or ""))
 
         def _get_view_text(view: Gtk.TextView) -> str:
             try:
@@ -31010,7 +31032,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         def _set_view_text(view: Gtk.TextView, text: str) -> None:
             try:
                 buf = view.get_buffer()
-                buf.set_text(str(text or ""))
+                try:
+                    render_markdown_to_buffer(str(text or ""), buf)
+                except Exception:
+                    buf.set_text(str(text or ""))
             except Exception:
                 pass
 
