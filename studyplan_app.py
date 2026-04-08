@@ -7542,6 +7542,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             rag_ms: int,
             first_token_ms: int,
             credited_model: str = "",
+            rag_doc_cache_hit: int = 0,
+            rag_query_cache_hit: int = 0,
+            embedding_cache_hits: int = 0,
+            embedding_cache_misses: int = 0,
+            prefilter_kept: int = 0,
         ) -> None:
             clean_response = clean_ai_tutor_text(str(response_text or ""))
             response_chars = len(clean_response)
@@ -7620,6 +7625,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "rag_target_hit_count": int(max(0, rag_target_hit_count)),
                 "rag_insufficient_flag": 1 if int(rag_insufficient_flag or 0) > 0 else 0,
                 "rag_source_mix": str(rag_source_mix or "").strip(),
+                "gap_q_generated_count": int(autopilot_stats.get("gap_q_generated_count", 0) or 0),
+                "gap_q_saved_count": int(autopilot_stats.get("gap_q_saved_count", 0) or 0),
+                "gap_q_quarantined_count": int(autopilot_stats.get("gap_q_quarantined_count", 0) or 0),
+                "rag_doc_cache_hit": int(max(0, rag_doc_cache_hit)),
+                "rag_query_cache_hit": int(max(0, rag_query_cache_hit)),
+                "embedding_cache_hits": int(max(0, embedding_cache_hits)),
+                "embedding_cache_misses": int(max(0, embedding_cache_misses)),
+                "prefilter_kept": int(max(0, prefilter_kept)),
             }
             try:
                 self._record_ai_tutor_telemetry(payload, persist=True)
@@ -8205,6 +8218,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             rag_method = str(rag_meta.get("method", "disabled") or "disabled").strip()
             rag_target_count = max(0, int(rag_meta.get("target_query_count", 0) or 0))
             rag_target_hit_count = max(0, int(rag_meta.get("target_hit_snippets", 0) or 0))
+            rag_doc_cache_hit = max(0, int(rag_meta.get("rag_doc_cache_hit", 0) or 0))
+            rag_query_cache_hit = max(0, int(rag_meta.get("rag_query_cache_hit", 0) or 0))
+            rag_embedding_cache_hits = max(0, int(rag_meta.get("embedding_cache_hits", 0) or 0))
+            rag_embedding_cache_misses = max(0, int(rag_meta.get("embedding_cache_misses", 0) or 0))
+            rag_prefilter_kept = max(0, int(rag_meta.get("prefilter_kept", 0) or 0))
             try:
                 rag_source_mix = str(self._format_ai_tutor_rag_source_mix(rag_meta.get("sources", [])) or "none")
             except recoverable_tutor_runtime_errors as exc:
@@ -8438,6 +8456,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 prompt_build_ms=prompt_build_ms,
                                 rag_ms=rag_ms,
                                 first_token_ms=int(guard_state.get("first_token_ms", 0) or 0),
+                                rag_doc_cache_hit=rag_doc_cache_hit,
+                                rag_query_cache_hit=rag_query_cache_hit,
+                                embedding_cache_hits=rag_embedding_cache_hits,
+                                embedding_cache_misses=rag_embedding_cache_misses,
+                                prefilter_kept=rag_prefilter_kept,
                             )
                             suffix = "[Stopped]"
                             if auto_paused:
@@ -8502,6 +8525,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 prompt_build_ms=prompt_build_ms,
                                 rag_ms=rag_ms,
                                 first_token_ms=int(guard_state.get("first_token_ms", 0) or 0),
+                                rag_doc_cache_hit=rag_doc_cache_hit,
+                                rag_query_cache_hit=rag_query_cache_hit,
+                                embedding_cache_hits=rag_embedding_cache_hits,
+                                embedding_cache_misses=rag_embedding_cache_misses,
+                                prefilter_kept=rag_prefilter_kept,
                             )
                             _set_status(friendly)
                             _render_transcript()
@@ -8597,6 +8625,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             prompt_build_ms=prompt_build_ms,
                             rag_ms=rag_ms,
                             first_token_ms=int(guard_state.get("first_token_ms", 0) or 0),
+                            rag_doc_cache_hit=rag_doc_cache_hit,
+                            rag_query_cache_hit=rag_query_cache_hit,
+                            embedding_cache_hits=rag_embedding_cache_hits,
+                            embedding_cache_misses=rag_embedding_cache_misses,
+                            prefilter_kept=rag_prefilter_kept,
                         )
                         _render_transcript(force_scroll=True)
                         _refresh_help_feedback_buttons()
