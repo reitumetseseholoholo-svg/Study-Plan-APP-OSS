@@ -983,6 +983,21 @@ def reconfigure_from_rag(
         rag_sub = subtopics_by_chapter.get(ch) if isinstance(subtopics_by_chapter, dict) else None
         subtopics_list = list(rag_sub) if isinstance(rag_sub, list) and rag_sub else existing_sub
         if los:
+            # Merge additively: never reduce already-counted outcomes.
+            # Preserve all existing outcomes; only append outcomes whose text is new.
+            prior = list(existing_by_chapter.get(ch) or [])
+            if prior:
+                prior_keys: set[str] = {
+                    re.sub(r"\s+", " ", str(o.get("text", "") or "").lower()).strip()
+                    for o in prior
+                }
+                merged: list[dict[str, Any]] = list(prior)
+                for o in los:
+                    key = re.sub(r"\s+", " ", str(o.get("text", "") or "").lower()).strip()
+                    if key and key not in prior_keys:
+                        prior_keys.add(key)
+                        merged.append(o)
+                los = merged
             structure[ch] = {
                 "capability": _cap_for_chapter(ch),
                 "learning_outcomes": los,
