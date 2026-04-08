@@ -64,11 +64,12 @@ AI_TUTOR_PROMPT_CONTRACT_VERSION = 5
 AI_TUTOR_STREAM_STALL_MS = 900
 AI_TUTOR_STREAM_WATCHDOG_INTERVAL_MS = 240
 AI_TUTOR_RAG_USAGE_HINT = (
-    "RAG snippets are from reference materials (course notes, textbooks). When you use a fact, example, definition, "
-    "or figure that comes from a snippet, tie it to the matching tag (e.g. [S2]). If the snippets do not cover the "
-    "question, say so briefly, then answer from general syllabus knowledge and label any extra detail as unsupported "
-    "by the provided excerpts. Do not cite or quote the syllabus document unless the learner asks why a topic or "
-    "subtopic is important (e.g. exam relevance)."
+    "RAG snippets come from two source types: [syllabus] snippets define exam scope and indicate which topics "
+    "matter — use them to confirm relevance, not as your main explanation; [notes] and [supplemental] snippets "
+    "contain detailed definitions, worked examples, and formulas — these are your primary knowledge source. "
+    "When you use a fact, example, or formula from a snippet, cite the matching tag (e.g. [S2]). "
+    "If the snippets do not cover the question, say so briefly, then answer from general knowledge and label "
+    "any extra detail as unsupported by the provided excerpts."
 )
 # Single source for repeated tutor rules (economy + consistency).
 AI_TUTOR_NEXT_STEP_RULE = (
@@ -650,7 +651,9 @@ def build_rag_context_block(snippets: list[dict[str, Any]]) -> str:
         if len(text) > 420:
             text = f"{text[:417].rstrip()}..."
         source_label = source if source else "PDF source"
-        rows.append(f"[{sid}] {source_label}: {text}")
+        tier = str(row.get("tier", "") or "").strip()
+        tier_tag = f"[{tier}] " if tier else ""
+        rows.append(f"[{sid}] {tier_tag}{source_label}: {text}")
     if not rows:
         return ""
     return "\n".join(
@@ -1281,6 +1284,17 @@ def _latex_to_human_readable(text: str) -> str:
     return t
 
 
+def _normalise_math_spacing(cleaned: str) -> str:
+    """Shared numeric / operator spacing fix used by both clean_ai_tutor_text variants."""
+    cleaned = re.sub(r"(\d)\s*([=+\-])\s*(\d)", r"\1 \2 \3", cleaned)
+    cleaned = re.sub(r"([a-zA-Z0-9_)])\s*=\s*", r"\1 = ", cleaned)
+    # Fix missing spaces between words and numbers (e.g., "is30,000" -> "is 30,000").
+    cleaned = re.sub(r"([a-z])(\d)", r"\1 \2", cleaned)
+    cleaned = re.sub(r"([A-Z]{2,})(\d)", r"\1 \2", cleaned)
+    cleaned = re.sub(r"(\d)([a-z])", r"\1 \2", cleaned)
+    return cleaned
+
+
 def clean_ai_tutor_text(text: str) -> str:
     """Clean AI output to human-readable text: formulas as humans write them, no LaTeX/code noise."""
     cleaned = str(text or "")
@@ -1316,12 +1330,54 @@ def clean_ai_tutor_text(text: str) -> str:
 
     # Remove remaining $ and normalize spacing around = + - for readability.
     cleaned = cleaned.replace("$", "")
-    cleaned = re.sub(r"(\d)\s*([=+\-])\s*(\d)", r"\1 \2 \3", cleaned)
-    cleaned = re.sub(r"([a-zA-Z0-9_)])\s*=\s*", r"\1 = ", cleaned)
-    # Fix missing spaces between words and numbers (e.g., "is30,000" -> "is 30,000").
-    cleaned = re.sub(r"([a-z])(\d)", r"\1 \2", cleaned)
-    cleaned = re.sub(r"([A-Z]{2,})(\d)", r"\1 \2", cleaned)
-    cleaned = re.sub(r"(\d)([a-z])", r"\1 \2", cleaned)
+    cleaned = _normalise_math_spacing(cleaned)
+
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def clean_ai_tutor_text_for_rich_display(text: str) -> str:
+    """Like :func:`clean_ai_tutor_text` but preserves Markdown structure for rich rendering.
+
+    Strips thinking traces, AI disclaimers, LaTeX, and study-guide question refs
+    just like :func:`clean_ai_tutor_text` does, but keeps:
+    - ``**bold**`` / ``*italic*`` inline spans
+    - ``# Heading`` / ``## Heading`` ATX headings
+    - Pipe-table rows (``| col | col |``)
+    - Fenced code blocks (`` ``` ``)
+    - Bullet list markers (``-`` / ``*``)
+
+    These are then rendered visually by :func:`studyplan.ui.markdown_renderer.render_markdown_to_buffer`.
+    """
+    cleaned = str(text or "")
+    if not cleaned:
+        return ""
+    cleaned = sanitize_visible_local_llm_answer(cleaned)
+    cleaned = polish_tutor_answer_prose(cleaned)
+    cleaned = strip_study_guide_question_refs(cleaned)
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Remove AI disclaimers.
+    cleaned = _strip_ai_disclaimers(cleaned)
+
+    # Remove fenced code language hints (``` python → ```) but keep the fence.
+    cleaned = re.sub(r"```([A-Za-z0-9_-]+)\n", "```\n", cleaned)
+
+    # Convert LaTeX and math to human-readable form (keep markdown intact).
+    cleaned = re.sub(r"\\{2,}", r"\\", cleaned)
+    cleaned = _latex_to_human_readable(cleaned)
+
+    # Inline math $...$: convert contents then strip delimiters.
+    def _replace_inline_math(m: re.Match[str]) -> str:
+        inner = _latex_to_human_readable(m.group(1) or "")
+        return inner.strip()
+    cleaned = re.sub(r"\$\$?([^$]+)\$\$?", _replace_inline_math, cleaned)
+
+    # Remove remaining $ and normalise spacing around operators.
+    cleaned = cleaned.replace("$", "")
+    cleaned = _normalise_math_spacing(cleaned)
 
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
@@ -2051,7 +2107,24 @@ class AITutorDialogController:
             mode = _autopilot_mode()
             base = f"Tutor autopilot [{mode}]"
             detail = str(message or "").strip()
-            cockpit_status_label.set_text(f"{base}: {detail}" if detail else base)
+            stats = getattr(app, "_ai_tutor_autopilot_stats", {})
+            executed = int(stats.get("autopilot_action_executed_count", 0))
+            dismissed = int(stats.get("autopilot_suggestion_dismissed_count", 0))
+            pending = getattr(app, "_ai_tutor_pending_suggestion", None)
+            pending_text = ""
+            if isinstance(pending, dict):
+                try:
+                    describe_action = getattr(app, "_describe_ai_tutor_action", None)
+                    if callable(describe_action):
+                        pending_text = str(describe_action(pending) or "").strip()
+                except Exception:
+                    pending_text = ""
+            parts = [detail] if detail else []
+            parts.append(f"exec {executed}")
+            parts.append(f"dismissed {dismissed}")
+            if pending_text:
+                parts.append(f"pending {pending_text}")
+            cockpit_status_label.set_text(f"{base}: {' • '.join(parts)}" if parts else base)
 
         def _toggle_autopilot_pause(*_args) -> None:
             if not bool(getattr(app, "ai_tutor_autopilot_enabled", True)):
@@ -2683,9 +2756,9 @@ class AITutorDialogController:
                 "failover_count": 0,
             }
             turn_started_at = float(turn_requested_at)
-            prompt_chars = len(str(user_prompt or ""))
+            prompt_chars = len(str(full_prompt or ""))
             try:
-                prompt_tokens_est = int(app._estimate_ai_tutor_token_count(str(user_prompt or "")))
+                prompt_tokens_est = int(app._estimate_ai_tutor_token_count(str(full_prompt or "")))
             except Exception:
                 prompt_tokens_est = max(0, int(round(float(prompt_chars) / 4.0)))
             coverage_state: dict[str, Any] = {
@@ -3044,6 +3117,18 @@ class AITutorDialogController:
                             ).strip()
                     except Exception:
                         pass
+                    action_plan: dict[str, Any] | None = None
+                    try:
+                        action_parser = getattr(app, "_extract_ai_tutor_inline_action", None)
+                        if callable(action_parser):
+                            parsed_result = action_parser(final_text)
+                            if isinstance(parsed_result, tuple) and len(parsed_result) == 2:
+                                cleaned_text, parsed_action = parsed_result
+                                final_text = str(cleaned_text or "").strip()
+                                if isinstance(parsed_action, dict):
+                                    action_plan = parsed_action
+                    except Exception:
+                        action_plan = None
 
                     coverage_eval = assess_tutor_coverage(final_text, coverage_targets)
                     coverage_state["target_count"] = int(coverage_eval.get("target_count", coverage_target_count) or coverage_target_count)
@@ -3191,6 +3276,14 @@ class AITutorDialogController:
                         except Exception:
                             pass
                         _persist_history()
+                    if isinstance(action_plan, dict):
+                        try:
+                            action_plan["source"] = "tutor_dialog"
+                            setter = getattr(app, "_set_ai_tutor_pending_suggestion", None)
+                            if callable(setter):
+                                setter(action_plan, source="tutor_dialog")
+                        except Exception:
+                            pass
                     _record_turn_telemetry(
                         outcome="success",
                         error_class="",

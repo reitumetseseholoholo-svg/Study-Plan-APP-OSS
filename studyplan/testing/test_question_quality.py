@@ -44,7 +44,7 @@ def test_quality_bad_item():
     q.assess()
     rpt = q.report()
     assert "missing question text" in rpt["errors"]
-    assert "duplicate option" in rpt["warnings"][0]
+    assert any("duplicate option" in e for e in rpt["errors"])
     assert rpt["score"] < 0.5
 
 
@@ -124,7 +124,7 @@ def test_get_poor_quality_indices_similar():
         {"question": "What is the main advantage of using NPV for investment appraisal?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "X"},
         {"question": "What is the main advantage of using NPV for investment appraisal?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Y"},
     ]
-    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, similar_min_words=5)
+    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_bare_letter_correct=False, similar_min_words=5)
     assert len(poor) == 1
     assert poor[0][0] == 1 and poor[0][1] == "similar_question"
 
@@ -168,7 +168,7 @@ def test_get_poor_quality_indices_length_guessable():
             "explanation": "ok",
         },
     ]
-    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False)
+    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False, detect_bare_letter_correct=False)
     assert poor == [(1, "correct_option_much_longer_than_distractors")]
 
 
@@ -180,6 +180,93 @@ def test_length_guessable_not_flagged_when_balanced():
         "explanation": "Arithmetic.",
     }
     assert correct_option_length_guessable_reason(item) is None
+
+
+def test_quality_duplicate_options_is_error():
+    """Duplicate options are now an error (not just a warning) in QuestionQuality."""
+    item = {
+        "question": "What is the treatment of goodwill under IFRS 3?",
+        "options": ["Amortise over useful life", "Amortise over useful life", "Write off immediately", "Capitalise"],
+        "correct": "Capitalise",
+        "explanation": "Goodwill is not amortised under IFRS 3.",
+    }
+    q = QuestionQuality(item)
+    q.assess()
+    rpt = q.report()
+    assert any("duplicate option" in e for e in rpt["errors"])
+    assert rpt["score"] < 0.6
+
+
+def test_quality_all_identical_options_is_error():
+    """All four options being the same text is caught as duplicate options error."""
+    item = {
+        "question": "Which of the following is a current asset?",
+        "options": ["Cash", "Cash", "Cash", "Cash"],
+        "correct": "Cash",
+        "explanation": "Cash is a current asset.",
+    }
+    q = QuestionQuality(item)
+    q.assess()
+    rpt = q.report()
+    assert any("duplicate option" in e for e in rpt["errors"])
+    assert rpt["score"] < 0.6
+
+
+def test_quality_placeholder_options_is_error():
+    """Options that look like LLM-generated placeholders are caught as an error."""
+    item = {
+        "question": "Which treatment applies to development costs under IAS 38?",
+        "options": [
+            "Full option text A",
+            "Full option text B",
+            "Full option text C",
+            "Full option text D",
+        ],
+        "correct": "Full option text A",
+        "explanation": "Development costs may be capitalised if criteria are met.",
+    }
+    q = QuestionQuality(item)
+    q.assess()
+    rpt = q.report()
+    assert any("placeholder" in e for e in rpt["errors"])
+    assert rpt["score"] < 0.6
+
+
+def test_get_poor_quality_indices_duplicate_options():
+    """get_poor_quality_indices flags questions with duplicate options."""
+    items = [
+        {"question": "Q1?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Yes."},
+        {"question": "Q2?", "options": ["Same", "Same", "Other", "Another"], "correct": "Other", "explanation": "No."},
+    ]
+    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False, detect_bare_letter_correct=False, detect_length_guessable=False)
+    assert len(poor) == 1
+    assert poor[0] == (1, "duplicate_options")
+
+
+def test_get_poor_quality_indices_all_identical_options():
+    """get_poor_quality_indices flags questions where all four options are the same."""
+    items = [
+        {"question": "Q1?", "options": ["Cash", "Cash", "Cash", "Cash"], "correct": "Cash", "explanation": "Yes."},
+    ]
+    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False, detect_bare_letter_correct=False, detect_length_guessable=False)
+    assert len(poor) == 1
+    assert poor[0] == (0, "duplicate_options")
+
+
+def test_get_poor_quality_indices_placeholder_options():
+    """get_poor_quality_indices flags questions with LLM placeholder option text."""
+    items = [
+        {"question": "Q1?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Yes."},
+        {
+            "question": "Q2?",
+            "options": ["Full option text A", "Full option text B", "Full option text C", "Full option text D"],
+            "correct": "Full option text A",
+            "explanation": "No.",
+        },
+    ]
+    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False, detect_bare_letter_correct=False, detect_length_guessable=False)
+    assert len(poor) == 1
+    assert poor[0] == (1, "placeholder_options")
 
 
 if __name__ == "__main__":

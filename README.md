@@ -4,15 +4,10 @@ A focused module-aware study coach built around Pomodoro discipline, SRS‑based
 
 ## Documentation map
 
-- Full feature inventory: `FEATURES.md`
 - Setup and operations: `README.md`
-- Day-to-day usage: `USER_GUIDE.md`
-- Fast onboarding: `QUICK_START.md`
-- Developer details and architecture notes: `DEVELOPER_DOC.md`
-- LLM roadmap (performance, quality, versatility, economy): `docs/LLM_IMPLEMENTATION_ROADMAP.md`
+- Tutor quality tooling: `tests/tutor_quality/README.md`
+- Module chapter tooling notes: `scripts/README_module_chapters.md`
 - LLM telemetry fields + golden prompts: `docs/LLM_TELEMETRY_SCHEMA.md`
-- GUI monolith performance plan: `docs/GUI_MONOLITH_PERFORMANCE_PLAN.md`
-- GUI workflow hardening plan: `docs/GUI_WORKFLOW_HARDENING_PLAN.md`
 
 ## Quick start
 
@@ -51,6 +46,26 @@ pytest tests/ studyplan/testing/
 
 - **Default (no GTK):** **388 tests** run. Path helpers live in `studyplan_app_path_utils.py`, so `tests/test_studyplan_app_paths.py` no longer needs `studyplan_app`. The remaining gap is `tests/test_studyplan_app_ollama.py` (157 tests), which requires `studyplan_app` and thus PyGObject/GTK4.
 - **Full suite (500+ tests):** install the optional extra and system GTK4 so the ollama app tests run: `pip install -e ".[test-full]"` (or `poetry install -E test-full`). Requires system libraries (e.g. Debian/Ubuntu: `apt install python3-gi gir1.2-gtk-4.0`). Then `pytest` runs **545 tests**.
+
+### Protected no-regression flows
+
+- Module loading and path safety: `tests/test_studyplan_app_paths.py`, `tests/test_studyplan_file_safety.py`
+- Cognitive/runtime state and persistence recovery: `tests/test_cognitive_runtime.py`, `studyplan/testing/test_persistence.py`, `studyplan/testing/test_schema_migration.py`
+- Tutor prompt and routing behavior: `tests/test_model_routing.py`, `tests/test_tutor_prompt_layers.py`, `tests/test_golden_tutor_prompts.py`, `tests/tutor_quality/`
+- KPI/smoke routing helpers: `tests/test_smoke_kpi.py`, `tests/test_soak_kpi.py`
+- GTK-independent action/runtime seams: `tests/test_action_registry.py`, `tests/test_studyplan_ui_runtime.py`
+- Secure import and module reconfiguration: `studyplan/testing/test_secure_importer.py`, `studyplan/testing/test_module_reconfig.py`, `tests/test_rag_and_reconfig_safety.py`
+
+### Canonical desktop validation
+
+The primary desktop no-regression gate is `.github/workflows/linux-ci.yml`:
+
+- `python tools/gtk4_lint.py`
+- `pyright studyplan_app.py studyplan_ai_tutor.py studyplan_engine.py studyplan tests`
+- `pytest -q`
+- `xvfb-run -a timeout 180s python studyplan_app.py --dialog-smoke-strict`
+
+`studyplan_app.py` remains a large orchestration module. When adding new non-GTK logic, prefer extracting it into small testable modules so unit tests can run without importing the GTK runtime.
 
 ## Terminology
 

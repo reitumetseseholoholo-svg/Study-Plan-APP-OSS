@@ -946,6 +946,101 @@ window.high-contrast label.coach-title {
 window.high-contrast .hint {
     color: alpha(@theme_fg_color, 0.82);
 }
+/* ── masterpiece polish pass ── */
+/* cards: subtle top-sheen gradient for a sense of depth */
+.card {
+    background-image: linear-gradient(
+        to bottom,
+        alpha(@theme_selected_bg_color, 0.025),
+        alpha(@theme_selected_bg_color, 0.0)
+    );
+}
+/* card hover: lift via stronger shadow */
+.card:hover {
+    box-shadow: 0 0 0 1px alpha(@theme_selected_bg_color, 0.48),
+                0 10px 28px alpha(@theme_selected_bg_color, 0.26),
+                0 3px 8px alpha(@theme_fg_color, 0.12);
+}
+/* hero card: more vibrant accent shadow */
+.hero-card {
+    box-shadow: 0 1px 0 alpha(@theme_selected_bg_color, 0.30),
+                0 6px 20px alpha(@theme_selected_bg_color, 0.22),
+                0 2px 6px alpha(@theme_fg_color, 0.10);
+}
+/* suggested-action button: gradient fill + stronger glow */
+button.suggested-action {
+    background-image: linear-gradient(
+        to bottom,
+        alpha(@theme_selected_bg_color, 1.0),
+        mix(@theme_selected_bg_color, @theme_fg_color, 0.06)
+    );
+    box-shadow: 0 1px 0 alpha(@theme_selected_fg_color, 0.22),
+                0 3px 10px alpha(@theme_selected_bg_color, 0.42);
+}
+button.suggested-action:hover {
+    background-image: linear-gradient(
+        to bottom,
+        mix(@theme_selected_bg_color, @theme_fg_color, 0.10),
+        mix(@theme_selected_bg_color, @theme_fg_color, 0.14)
+    );
+}
+/* badge: subtle sheen */
+.badge {
+    background-image: linear-gradient(
+        to bottom,
+        alpha(@theme_selected_bg_color, 0.10),
+        alpha(@theme_selected_bg_color, 0.0)
+    );
+}
+/* section-title and coach-title: slightly more refined pill */
+.section-title {
+    border-radius: 10px;
+    background-image: linear-gradient(
+        to bottom,
+        alpha(@theme_selected_bg_color, 0.40),
+        alpha(@theme_selected_bg_color, 0.22)
+    );
+}
+.coach-title {
+    border-radius: 10px;
+    background-image: linear-gradient(
+        to bottom,
+        alpha(@theme_selected_bg_color, 0.42),
+        alpha(@theme_selected_bg_color, 0.24)
+    );
+}
+/* progress bar: solid accent fill with consistent opacity */
+progressbar progress {
+    background-color: app_accent;
+    background-image: none;
+}
+/* nudge pills: consistent, generous border radius */
+.nudge-warn, .nudge-info, .nudge-good {
+    border-radius: 10px;
+}
+/* quiz option: more generous padding + hover lift */
+.quiz-option {
+    padding: 9px 12px;
+    transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+.quiz-option:hover {
+    box-shadow: 0 0 0 2px alpha(@theme_selected_bg_color, 0.18);
+}
+/* focus ring universally consistent */
+button:focus-visible,
+entry:focus-visible,
+textview:focus-visible {
+    box-shadow: 0 0 0 2px alpha(@theme_selected_bg_color, 0.50);
+}
+/* insight card: stronger accent border */
+.insight-card {
+    border-left-width: 5px;
+}
+/* workbench status bar: subtle accent tint */
+.workbench-status {
+    background: alpha(@theme_selected_bg_color, 0.055);
+    letter-spacing: 0.18px;
+}
 """
 
 COACH_THEME_CSS = """
@@ -1890,6 +1985,155 @@ window.high-contrast label.coach-title {
 window.high-contrast .hint {
     color: #c8d4eb;
 }
+/* ── masterpiece polish pass (coach) ── */
+/* window: ultra-subtle diagonal depth gradient */
+window {
+    background-image: linear-gradient(
+        155deg,
+        rgba(26, 38, 62, 0.55),
+        rgba(18, 23, 36, 0.0) 72%
+    );
+}
+/* cards: top highlight sheen + deeper multi-layer shadow */
+.card {
+    background-image: linear-gradient(
+        to bottom,
+        rgba(255, 255, 255, 0.030),
+        rgba(0, 0, 0, 0.0)
+    );
+    box-shadow: 0 1px 0 rgba(179, 198, 232, 0.09),
+                0 6px 20px rgba(0, 0, 0, 0.46),
+                0 2px 5px rgba(0, 0, 0, 0.24);
+}
+/* card hover: clear lift */
+.card:hover {
+    background-image: linear-gradient(
+        to bottom,
+        rgba(139, 175, 255, 0.060),
+        rgba(0, 0, 0, 0.0)
+    );
+    box-shadow: 0 0 0 1px rgba(139, 175, 255, 0.52),
+                0 10px 28px rgba(139, 175, 255, 0.24),
+                0 3px 8px rgba(0, 0, 0, 0.36);
+}
+/* hero card: vibrant accent glow shadow */
+.hero-card {
+    background-image: linear-gradient(
+        to bottom,
+        rgba(139, 175, 255, 0.070),
+        rgba(139, 175, 255, 0.018)
+    );
+    box-shadow: 0 1px 0 rgba(123, 149, 200, 0.32),
+                0 8px 24px rgba(79, 209, 197, 0.22),
+                0 2px 6px rgba(0, 0, 0, 0.32);
+}
+/* suggested-action: gradient fill + stronger emerald glow */
+button.suggested-action {
+    background-image: linear-gradient(
+        to bottom,
+        rgba(255, 255, 255, 0.20),
+        rgba(0, 0, 0, 0.06)
+    );
+    box-shadow: 0 1px 0 rgba(188, 246, 240, 0.52),
+                0 3px 12px rgba(79, 209, 197, 0.48);
+}
+button.suggested-action:hover {
+    background-image: linear-gradient(
+        to bottom,
+        rgba(255, 255, 255, 0.28),
+        rgba(0, 0, 0, 0.04)
+    );
+}
+/* progress bar fill: gradient for visual momentum */
+progressbar progress {
+    background-image: linear-gradient(
+        to right,
+        #7facff,
+        #b4ccff
+    );
+    box-shadow: 0 0 8px 2px rgba(139, 175, 255, 0.36);
+}
+.xp-progress progress {
+    background-image: linear-gradient(
+        to right,
+        #4fd1c5,
+        #82e6df
+    );
+    box-shadow: 0 0 10px 3px rgba(79, 209, 197, 0.46);
+}
+/* section-title: slightly more opaque gradient + rounded */
+.section-title {
+    border-radius: 10px;
+    background: linear-gradient(
+        to bottom,
+        rgba(139, 175, 255, 0.46),
+        rgba(139, 175, 255, 0.26)
+    );
+    border: 1px solid rgba(139, 175, 255, 0.90);
+}
+.coach-title {
+    border-radius: 10px;
+    background: linear-gradient(
+        to bottom,
+        rgba(139, 175, 255, 0.48),
+        rgba(139, 175, 255, 0.28)
+    );
+    border: 1px solid rgba(139, 175, 255, 0.92);
+}
+/* badge: subtle gradient sheen */
+.badge {
+    background-image: linear-gradient(
+        to bottom,
+        rgba(139, 175, 255, 0.14),
+        rgba(139, 175, 255, 0.02)
+    );
+    border: 1px solid #536684;
+}
+/* quiz option: more generous touch target + animated hover */
+.quiz-option {
+    padding: 9px 12px;
+    transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+.quiz-option:hover {
+    border-color: rgba(139, 175, 255, 0.80);
+    background: linear-gradient(
+        to bottom,
+        rgba(139, 175, 255, 0.10),
+        rgba(139, 175, 255, 0.04)
+    );
+    box-shadow: 0 0 0 1px rgba(139, 175, 255, 0.24);
+}
+/* nudge pills: consistent radius */
+.nudge-warn, .nudge-info, .nudge-good {
+    border-radius: 10px;
+}
+/* insight card: stronger accent border */
+.insight-card {
+    border-left: 5px solid rgba(139, 175, 255, 0.65);
+}
+/* workbench status: richer accent tint + better contrast */
+.workbench-status {
+    background: #131c2e;
+    border-top: 1px solid rgba(93, 119, 170, 0.48);
+    color: #b8cadf;
+    letter-spacing: 0.18px;
+}
+/* focus ring consistent with accent */
+button:focus-visible {
+    box-shadow: 0 0 0 2px rgba(79, 209, 197, 0.50);
+}
+entry:focus-visible,
+spinbutton entry:focus-visible,
+textview:focus-visible {
+    outline: none;
+    border-color: #b8d0ff;
+    box-shadow: 0 0 0 2px rgba(139, 175, 255, 0.48);
+}
+/* panel-left section titles: slightly brighter */
+.panel-left .section-title {
+    border-bottom: 1px solid rgba(139, 175, 255, 0.22);
+    color: #90a8cc;
+}
 """
 
 provider = Gtk.CssProvider()
@@ -1982,19 +2226,36 @@ window.study-window {{
 window.study-window .panel {{
     background: {surface["panel"]};
     border: 1px solid {border["soft"]};
-    box-shadow: 0 1px 6px alpha({color["text"]}, 0.10);
+    box-shadow: 0 1px 8px alpha({color["text"]}, 0.09);
 }}
 window.study-window .card {{
-    background: {surface["card"]};
+    background-color: {surface["card"]};
+    background-image: linear-gradient(
+        to bottom,
+        alpha({color["accent"]}, 0.028),
+        alpha({color["accent"]}, 0.0)
+    );
     border: 1px solid {border["soft"]};
     border-radius: 12px;
-    padding: 10px;
-    box-shadow: 0 1px 8px alpha({color["text"]}, 0.09);
+    padding: 12px;
+    box-shadow: 0 1px 0 alpha({color["text"]}, 0.06),
+                0 4px 14px alpha({color["text"]}, 0.10);
+}}
+window.study-window .card:hover {{
+    box-shadow: 0 0 0 1px alpha({color["accent"]}, 0.40),
+                0 8px 22px alpha({color["accent"]}, 0.14),
+                0 2px 6px alpha({color["text"]}, 0.10);
 }}
 window.study-window .hero-card {{
     border-color: {border["strong"]};
-    background: {surface["card_alt"]};
-    box-shadow: 0 1px 8px alpha({color["text"]}, 0.12);
+    background-color: {surface["card_alt"]};
+    background-image: linear-gradient(
+        to bottom,
+        alpha({color["accent"]}, 0.055),
+        alpha({color["accent"]}, 0.0)
+    );
+    box-shadow: 0 2px 14px alpha({color["accent"]}, 0.14),
+                0 1px 4px alpha({color["text"]}, 0.10);
 }}
 window.study-window .section-title {{
     background: transparent;
@@ -2002,14 +2263,14 @@ window.study-window .section-title {{
     color: {color["text"]};
     font-weight: 740;
     font-size: 12px;
-    letter-spacing: 0.42px;
+    letter-spacing: 0.44px;
     padding: 0;
     margin-top: 2px;
     margin-bottom: 4px;
 }}
 window.study-window .muted {{
     color: {color["muted"]};
-    line-height: 1.44;
+    line-height: 1.46;
 }}
 window.study-window .inline-toolbar {{
     border-bottom: 1px solid {border["soft"]};
@@ -2057,6 +2318,8 @@ window.study-window .workbench-quick-actions button {{
 }}
 window.study-window .workbench-title {{
     margin-right: 6px;
+    font-weight: 780;
+    letter-spacing: 0.18px;
 }}
 window.study-window .workspace-tabs {{
     margin-left: 0;
@@ -2064,19 +2327,27 @@ window.study-window .workspace-tabs {{
 }}
 window.study-window .workspace-tabs button {{
     min-height: 30px;
-    padding: 4px 12px;
+    padding: 4px 14px;
     border-radius: 8px;
-    border: 1px solid alpha({color["text"]}, 0.14);
-    background: alpha({color["text"]}, 0.05);
+    border: 1px solid alpha({color["text"]}, 0.13);
+    background: alpha({color["text"]}, 0.04);
+    transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }}
 window.study-window .workspace-tabs button:checked {{
-    background: alpha({color["accent"]}, 0.22);
-    border-color: alpha({color["accent"]}, 0.56);
+    background-image: linear-gradient(
+        to bottom,
+        alpha({color["accent"]}, 0.28),
+        alpha({color["accent"]}, 0.18)
+    );
+    border-color: alpha({color["accent"]}, 0.58);
     color: {color["text"]};
-    box-shadow: 0 1px 0 alpha({color["accent"]}, 0.26);
+    box-shadow: 0 1px 0 alpha({color["accent"]}, 0.28),
+                0 2px 6px alpha({color["accent"]}, 0.16);
+    font-weight: 660;
 }}
 window.study-window .workspace-tabs button:hover {{
-    background: alpha({color["text"]}, 0.10);
+    background: alpha({color["text"]}, 0.09);
+    border-color: alpha({color["text"]}, 0.22);
 }}
 window.study-window .workbench-stack {{
     border-radius: 10px;
@@ -2129,15 +2400,21 @@ window.study-window .dashboard-workbench-panel {{
 window.study-window .dashboard-workbench-panel > .card {{
     border-radius: 13px;
     border: 1px solid alpha({color["text"]}, 0.11);
-    background: linear-gradient(180deg, alpha({color["text"]}, 0.015), alpha({color["text"]}, 0.005));
+    background: linear-gradient(180deg, alpha({color["text"]}, 0.018), alpha({color["text"]}, 0.005));
     box-shadow: 0 1px 10px alpha({color["text"]}, 0.07);
 }}
 window.study-window .dashboard-workbench-panel > .hero-card {{
-    border-color: alpha({color["accent"]}, 0.38);
-    box-shadow: 0 2px 12px alpha({color["accent"]}, 0.10);
+    border-color: alpha({color["accent"]}, 0.44);
+    background-image: linear-gradient(
+        to bottom,
+        alpha({color["accent"]}, 0.060),
+        alpha({color["bg"]}, 0.0)
+    );
+    box-shadow: 0 2px 14px alpha({color["accent"]}, 0.14),
+                0 1px 4px alpha({color["text"]}, 0.08);
 }}
 window.study-window .dashboard-workbench-panel .section-title {{
-    letter-spacing: 0.48px;
+    letter-spacing: 0.50px;
     font-weight: 760;
 }}
 window.study-window .coach-diagnostics-expander {{
@@ -2155,15 +2432,15 @@ window.study-window .tutor-workbench .tutor-prompt-scroll,
 window.study-window .tutor-workbench .tutor-response-scroll {{
     border-radius: 10px;
     border: 1px solid alpha({color["text"]}, 0.14);
-    background: alpha({color["text"]}, 0.02);
+    background: alpha({color["text"]}, 0.025);
 }}
 window.study-window .tutor-workbench .tutor-prompt-view {{
     font-size: 13px;
-    line-height: 1.45;
+    line-height: 1.46;
 }}
 window.study-window .tutor-workbench .tutor-response-view {{
     font-size: 13px;
-    line-height: 1.50;
+    line-height: 1.52;
 }}
 window.study-window .tutor-workbench .inline-toolbar {{
     border-bottom: 1px solid alpha({color["text"]}, 0.09);
@@ -2185,29 +2462,44 @@ window.study-window .tutor-workbench .tutor-summary-line {{
 window.study-window .workbench-status {{
     border: 1px solid alpha({color["text"]}, 0.10);
     border-radius: 8px;
-    background: alpha({color["text"]}, 0.03);
+    background: alpha({color["text"]}, 0.035);
     padding: 5px 8px;
     margin-top: 1px;
     margin-bottom: 2px;
+    letter-spacing: 0.16px;
 }}
 window.study-window .workbench-heading {{
     font-size: 13px;
-    font-weight: 780;
-    letter-spacing: 0.34px;
+    font-weight: 800;
+    letter-spacing: 0.36px;
 }}
 window.study-window .workbench-text {{
     font-family: "Iosevka Aile", "JetBrains Mono NL", "Noto Sans Mono", monospace;
     font-size: 12px;
 }}
 window.study-window button.coach-action {{
-    background: alpha({color["accent"]}, 0.16);
-    border: 1px solid alpha({color["accent"]}, 0.42);
+    background-color: alpha({color["accent"]}, 0.14);
+    background-image: linear-gradient(
+        to bottom,
+        alpha({color["accent"]}, 0.08),
+        alpha({color["accent"]}, 0.0)
+    );
+    border: 1px solid alpha({color["accent"]}, 0.44);
 }}
 window.study-window button.coach-action:hover {{
-    background: alpha({color["accent"]}, 0.24);
+    background-color: alpha({color["accent"]}, 0.22);
 }}
 window.study-window .study-room-actions button {{
     min-height: 34px;
+}}
+window.study-window button.suggested-action {{
+    background-image: linear-gradient(
+        to bottom,
+        alpha({color["accent"]}, 1.0),
+        alpha({color["accent"]}, 0.92)
+    );
+    box-shadow: 0 1px 0 alpha({color["text"]}, 0.18),
+                0 3px 10px alpha({color["accent"]}, 0.38);
 }}
 window.study-window.compact .card {{
     padding: 8px;

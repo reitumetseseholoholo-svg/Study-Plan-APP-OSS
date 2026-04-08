@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 
 def test_build_question_stats_export_rows_includes_qid_keys_and_manual_links():
-    from studyplan_app import _build_question_stats_export_rows
+    from studyplan_app_runtime_helpers import build_question_stats_export_rows
 
     chapter = "FM Function"
     engine = SimpleNamespace(
@@ -22,7 +22,7 @@ def test_build_question_stats_export_rows_includes_qid_keys_and_manual_links():
         resolve_question_outcomes=lambda ch, idx: {"outcome_ids": ["resolved1"]} if (ch == chapter and idx == 0) else {"outcome_ids": []},
     )
 
-    rows = _build_question_stats_export_rows(engine)
+    rows = build_question_stats_export_rows(engine)
     assert rows and rows[0][0] == "Chapter"
     assert len(rows) == 2
     data = rows[1]
@@ -34,4 +34,3 @@ def test_build_question_stats_export_rows_includes_qid_keys_and_manual_links():
     assert data[12] == "manual"
     assert data[13] == "2026-03-27T12:00:00"
     assert data[14] == "resolved1"
-

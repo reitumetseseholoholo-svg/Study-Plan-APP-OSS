@@ -3342,13 +3342,39 @@ class DeterministicTutorAssessmentService:
     def _assess_mcq(self, item: TutorPracticeItem, answer_text: str) -> TutorAssessmentResult:
         meta = dict(item.meta or {})
         expected = str(meta.get("correct_option", "") or meta.get("answer_key", "") or "").strip().upper()
-        picked_match = re.search(r"[A-Da-d]", str(answer_text or ""))
+
+        # If correct_option was stored as the full option text instead of a letter, convert it.
+        if expected and expected not in {"A", "B", "C", "D"}:
+            options = meta.get("options")
+            if isinstance(options, list):
+                for i, opt in enumerate(options[:4]):
+                    if _normalize_free_text(str(opt or "")) == _normalize_free_text(expected):
+                        expected = chr(ord("A") + i)
+                        break
+
+        # Use word boundaries so that letters embedded inside words (e.g. 'a' in "answer",
+        # 'b' in "because") are not mistaken for a choice label.
+        picked_match = re.search(r"\b[A-Da-d]\b", str(answer_text or ""))
         picked = picked_match.group(0).upper() if picked_match else _normalize_free_text(answer_text).upper()
+
         marks_max = float(meta.get("marks_max", 1.0) or 1.0)
         error_tags_by_option = (
             meta.get("error_tags_by_option", {}) if isinstance(meta.get("error_tags_by_option"), dict) else {}
         )
-        if expected and picked == expected:
+
+        is_correct = bool(expected and picked == expected)
+
+        # Fallback: accept the full text of the correct option typed verbatim.
+        if not is_correct and expected in {"A", "B", "C", "D"}:
+            options = meta.get("options")
+            if isinstance(options, list):
+                correct_idx = ord(expected) - ord("A")
+                if 0 <= correct_idx < len(options):
+                    correct_text = _normalize_free_text(str(options[correct_idx] or ""))
+                    if correct_text and correct_text == _normalize_free_text(answer_text):
+                        is_correct = True
+
+        if is_correct:
             return TutorAssessmentResult(
                 item_id=item.item_id,
                 outcome="correct",

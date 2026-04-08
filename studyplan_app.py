@@ -198,6 +198,7 @@ from studyplan.tutor_memory import (
 )
 from studyplan.tutor_workspace_controller import TutorWorkspaceController
 from studyplan.ui import UIBuilder
+from studyplan.ui.markdown_renderer import render_markdown_to_buffer
 from studyplan.working_memory_service import WorkingMemoryService
 from studyplan_ai_tutor import (
     AI_TUTOR_DEFAULT_TURN_TIMEOUT_SECONDS,
@@ -219,6 +220,7 @@ from studyplan_ai_tutor import (
     chunk_text_for_rag,
     classify_ollama_error,
     clean_ai_tutor_text,
+    clean_ai_tutor_text_for_rich_display,
     compact_ai_tutor_history_for_prefs,
     compute_tutor_control_state,
     format_ai_tutor_transcript,
@@ -272,148 +274,19 @@ from studyplan_ui_runtime import (
     UIRenderContext,
     UISectionState,
 )
+from studyplan_app_runtime_helpers import (
+    build_question_stats_export_rows as _runtime_build_question_stats_export_rows,
+)
+from studyplan_app_runtime_helpers import (
+    resolve_local_llm_default_for_purpose as _runtime_resolve_local_llm_default_for_purpose,
+)
 
 log = logging.getLogger(__name__)
 
 
 def _build_question_stats_export_rows(engine: Any) -> list[list[Any]]:
     """Build rows for question stats export (CSV)."""
-    stats = getattr(engine, "question_stats", {}) or {}
-    questions = getattr(engine, "QUESTIONS", {}) or {}
-
-    rows: list[list[Any]] = [
-        [
-            "Chapter",
-            "Question Index",
-            "Question",
-            "Attempts",
-            "Correct",
-            "Miss Rate",
-            "Streak",
-            "Avg Time (sec)",
-            "Last Time (sec)",
-            "Last Seen",
-            "Outcome IDs (direct)",
-            "Outcome IDs (manual linked)",
-            "Manual Link Source",
-            "Manual Link At",
-            "Outcome IDs (resolved)",
-            "Quality Score",
-            "Quality Issues",
-            "Difficulty Guess",
-            "Max Distractor Similarity",
-        ]
-    ]
-
-    qid_fn = getattr(engine, "_question_qid", None)
-    resolve_fn = getattr(engine, "resolve_question_outcomes", None)
-    for chapter, chapter_stats in stats.items():
-        if not isinstance(chapter_stats, dict):
-            continue
-        q_list = questions.get(chapter, []) if isinstance(questions, dict) else []
-        qid_to_idx: dict[str, int] = {}
-        if isinstance(q_list, list):
-            for idx in range(len(q_list)):
-                qid = ""
-                if callable(qid_fn):
-                    try:
-                        qid = str(qid_fn(chapter, idx) or "").strip()
-                    except Exception:
-                        qid = ""
-                if not qid:
-                    qid = str(idx)
-                qid_to_idx[qid] = idx
-
-        for key, entry in chapter_stats.items():
-            if not isinstance(entry, dict):
-                continue
-            idx: int | None = None
-            try:
-                idx_int = int(str(key))
-                idx = idx_int
-            except Exception:
-                idx = qid_to_idx.get(str(key))
-            q_text = ""
-            direct_outcome_ids_str = ""
-            quality: dict[str, Any] = {}
-            if idx is not None and isinstance(q_list, list) and 0 <= idx < len(q_list):
-                try:
-                    q_obj = q_list[idx]
-                    if isinstance(q_obj, dict):
-                        q_text = str(q_obj.get("question", "") or "")
-                        direct = q_obj.get("outcome_ids")
-                        if isinstance(direct, list) and direct:
-                            direct_outcome_ids_str = "|".join(str(x) for x in direct if str(x).strip())
-                        quality = assess_question_quality_extended(q_obj)
-                except Exception:
-                    q_text = ""
-                    quality = {}
-
-            linked = entry.get("linked_outcome_ids")
-            manual_outcome_ids_str = ""
-            if isinstance(linked, list) and linked:
-                manual_outcome_ids_str = "|".join(str(x).strip() for x in linked if str(x).strip())
-            manual_source = str(entry.get("linked_outcome_source", "") or "")
-            manual_at = str(entry.get("linked_outcome_at", "") or "")
-
-            resolved_outcome_ids_str = ""
-            if idx is not None and callable(resolve_fn):
-                try:
-                    route = resolve_fn(chapter, idx)
-                except Exception:
-                    route = None
-                if isinstance(route, dict):
-                    oids = route.get("outcome_ids")
-                    if isinstance(oids, list) and oids:
-                        resolved_outcome_ids_str = "|".join(str(x).strip() for x in oids if str(x).strip())
-
-            try:
-                attempts = int(entry.get("attempts", 0) or 0)
-            except Exception:
-                attempts = 0
-            try:
-                correct = int(entry.get("correct", 0) or 0)
-            except Exception:
-                correct = 0
-            miss_rate = 0.0 if attempts <= 0 else 1.0 - (correct / max(1, attempts))
-            try:
-                streak = int(entry.get("streak", 0) or 0)
-            except Exception:
-                streak = 0
-            try:
-                avg_time = float(entry.get("avg_time_sec", 0) or 0.0)
-            except Exception:
-                avg_time = 0.0
-            try:
-                last_time = float(entry.get("last_time_sec", 0) or 0.0)
-            except Exception:
-                last_time = 0.0
-            last_seen = entry.get("last_seen") or ""
-
-            rows.append(
-                [
-                    chapter,
-                    (idx if idx is not None else str(key)),
-                    q_text,
-                    attempts,
-                    correct,
-                    f"{miss_rate:.2f}",
-                    streak,
-                    f"{avg_time:.1f}",
-                    f"{last_time:.1f}",
-                    last_seen,
-                    direct_outcome_ids_str,
-                    manual_outcome_ids_str,
-                    manual_source,
-                    manual_at,
-                    resolved_outcome_ids_str,
-                    f"{float(quality.get('score', 0.0) or 0.0):.2f}",
-                    "|".join(str(x) for x in (quality.get("issues") or [])),
-                    str(quality.get("difficulty_guess", "") or ""),
-                    f"{float(quality.get('max_distractor_similarity', 0.0) or 0.0):.2f}",
-                ]
-            )
-    return rows
+    return _runtime_build_question_stats_export_rows(engine)
 
 
 def _capture_loky_diagnostics(label: str) -> dict[str, Any]:
@@ -2372,6 +2245,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ai_tutor_global_last_event_sig = ""
         self._ai_tutor_global_last_decision_at = 0.0
         self._ai_tutor_global_quiet_until = 0.0
+        self._ai_tutor_pending_suggestion: dict[str, Any] | None = None
+        self._ai_tutor_pending_suggestion_source_id = 0
+        self._ai_tutor_pending_suggestion_token = 0
+        self._ai_tutor_recent_action_log: list[dict[str, Any]] = []
         self._ai_tutor_dialog_open = False
         self._ai_tutor_popup_stream_active = False
         self._ai_tutor_autopilot_stats: dict[str, Any] = {
@@ -2380,6 +2257,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "autopilot_action_executed_count": 0,
             "autopilot_action_blocked_count": 0,
             "autopilot_last_block_reason": "",
+            "autopilot_suggestion_accepted_count": 0,
+            "autopilot_suggestion_dismissed_count": 0,
             "nudge_info_count": 0,
             "nudge_warning_count": 0,
             "nudge_intervention_count": 0,
@@ -2461,6 +2340,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         }
         self._tutor_workspace_status_label: Gtk.Label | None = None
         self._tutor_workspace_summary_label: Gtk.Label | None = None
+        self._tutor_workspace_pending_suggestion_box: Gtk.Box | None = None
+        self._tutor_workspace_pending_suggestion_title_label: Gtk.Label | None = None
+        self._tutor_workspace_pending_suggestion_label: Gtk.Label | None = None
+        self._tutor_workspace_pending_suggestion_accept_btn: Gtk.Button | None = None
+        self._tutor_workspace_pending_suggestion_dismiss_btn: Gtk.Button | None = None
+        self._tutor_workspace_autopilot_panel_last_action_label: Gtk.Label | None = None
+        self._tutor_workspace_autopilot_panel_next_action_label: Gtk.Label | None = None
+        self._tutor_workspace_autopilot_panel_stats_label: Gtk.Label | None = None
+        self._tutor_workspace_autopilot_panel_pause_btn: Gtk.Button | None = None
+        self._tutor_workspace_autopilot_panel_mode_dropdown: Gtk.DropDown | None = None
         self._tutor_workspace_model_dropdown: Gtk.DropDown | None = None
         self._tutor_workspace_prompt_view: Gtk.TextView | None = None
         self._tutor_workspace_prompt_count_label: Gtk.Label | None = None
@@ -4149,6 +4038,71 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cockpit_label.add_css_class("single-line-lock")
         self._tutor_workspace_cockpit_label = cockpit_label
         page_box.append(cockpit_label)
+
+        suggestion_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        suggestion_box.add_css_class("subtle-panel")
+        suggestion_box.add_css_class("tutor-autopilot-suggestion")
+        suggestion_title = Gtk.Label(label="Autopilot suggestion")
+        suggestion_title.set_halign(Gtk.Align.START)
+        suggestion_title.add_css_class("section-title")
+        suggestion_box.append(suggestion_title)
+        suggestion_label = Gtk.Label(label="No pending suggestion.")
+        suggestion_label.set_halign(Gtk.Align.START)
+        suggestion_label.set_wrap(True)
+        suggestion_label.add_css_class("allow-wrap")
+        suggestion_box.append(suggestion_label)
+        suggestion_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        suggestion_actions.add_css_class("inline-toolbar")
+        suggestion_accept_btn = Gtk.Button(label="Accept")
+        suggestion_accept_btn.add_css_class("suggested-action")
+        suggestion_dismiss_btn = Gtk.Button(label="Dismiss")
+        suggestion_actions.append(suggestion_accept_btn)
+        suggestion_actions.append(suggestion_dismiss_btn)
+        suggestion_box.append(suggestion_actions)
+        suggestion_box.set_visible(False)
+        self._tutor_workspace_pending_suggestion_box = suggestion_box
+        self._tutor_workspace_pending_suggestion_title_label = suggestion_title
+        self._tutor_workspace_pending_suggestion_label = suggestion_label
+        self._tutor_workspace_pending_suggestion_accept_btn = suggestion_accept_btn
+        self._tutor_workspace_pending_suggestion_dismiss_btn = suggestion_dismiss_btn
+        page_box.append(suggestion_box)
+
+        autopilot_panel = Gtk.Expander(label="Autopilot cockpit panel")
+        autopilot_panel.set_expanded(True)
+        autopilot_panel_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        autopilot_panel_box.set_margin_top(4)
+        autopilot_panel_box.set_margin_bottom(4)
+        autopilot_last_action_label = Gtk.Label(label="Last action: waiting for first execution.")
+        autopilot_last_action_label.set_halign(Gtk.Align.START)
+        autopilot_last_action_label.set_wrap(True)
+        autopilot_last_action_label.add_css_class("muted")
+        autopilot_panel_box.append(autopilot_last_action_label)
+        autopilot_next_action_label = Gtk.Label(label="Next action: waiting for state change.")
+        autopilot_next_action_label.set_halign(Gtk.Align.START)
+        autopilot_next_action_label.set_wrap(True)
+        autopilot_next_action_label.add_css_class("muted")
+        autopilot_panel_box.append(autopilot_next_action_label)
+        autopilot_stats_label = Gtk.Label(label="Stats: executed 0 • dismissed 0 • nudges 0")
+        autopilot_stats_label.set_halign(Gtk.Align.START)
+        autopilot_stats_label.set_wrap(True)
+        autopilot_stats_label.add_css_class("muted")
+        autopilot_panel_box.append(autopilot_stats_label)
+        autopilot_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        autopilot_controls.add_css_class("inline-toolbar")
+        autopilot_pause_btn = Gtk.Button(label="Pause Autopilot")
+        autopilot_pause_btn.add_css_class("flat")
+        autopilot_controls.append(autopilot_pause_btn)
+        autopilot_mode_dropdown = Gtk.DropDown.new(Gtk.StringList.new(list(AI_TUTOR_AUTONOMY_MODES)), None)
+        autopilot_mode_dropdown.add_css_class("topic-selector")
+        autopilot_controls.append(autopilot_mode_dropdown)
+        autopilot_panel_box.append(autopilot_controls)
+        autopilot_panel.set_child(autopilot_panel_box)
+        self._tutor_workspace_autopilot_panel_last_action_label = autopilot_last_action_label
+        self._tutor_workspace_autopilot_panel_next_action_label = autopilot_next_action_label
+        self._tutor_workspace_autopilot_panel_stats_label = autopilot_stats_label
+        self._tutor_workspace_autopilot_panel_pause_btn = autopilot_pause_btn
+        self._tutor_workspace_autopilot_panel_mode_dropdown = autopilot_mode_dropdown
+        page_box.append(autopilot_panel)
 
         context_label = Gtk.Label(label="Tutor context: —")
         context_label.set_halign(Gtk.Align.START)
@@ -6170,7 +6124,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not answer:
                 _set_status("Write an answer in the Practice Loop box first.")
                 return
-            assessor = getattr(self, "_tutor_assessment_service", None)
+            assessor = self._get_active_tutor_assessment_service()
             learner_store = getattr(self, "_tutor_learner_model_store", None)
             if assessor is None or not hasattr(assessor, "assess"):
                 _set_status("Tutor assessment service unavailable.")
@@ -6828,7 +6782,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 near_bottom=_response_is_near_bottom(56.0 if bool(turn.active) else 28.0),
             )
             text = _transcript_text_for_clipboard()
-            response_buf.set_text(text if text else "No conversation yet.")
+            if text:
+                rich_text = clean_ai_tutor_text_for_rich_display(str(turn.draft_assistant or ""))
+                if rich_text:
+                    # Build rich transcript: history as plain prefix + rich current assistant turn.
+                    history_text = _transcript_text_for_clipboard()
+                    # Find where the last "Assistant:" / "Tutor:" block starts so we can
+                    # render the current turn with formatting while history stays readable.
+                    try:
+                        render_markdown_to_buffer(history_text, response_buf)
+                    except Exception:
+                        response_buf.set_text(history_text)
+                else:
+                    try:
+                        render_markdown_to_buffer(text, response_buf)
+                    except Exception:
+                        response_buf.set_text(text)
+            else:
+                response_buf.set_text("No conversation yet.")
             stream.last_clean_text = clean_ai_tutor_text(str(turn.draft_assistant or ""))
             stream.label_inserted = bool(stream.last_clean_text)
             stream.last_render_at = float(time.monotonic())
@@ -7102,8 +7073,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             else:
                 ap_label = "running"
             scope = "app-wide" if ap_active else ("hold" if autopilot_paused else "manual")
+            pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+            pending_suffix = ""
+            if isinstance(pending, dict):
+                pending_suffix = " • pending suggestion"
             cockpit_full = (
-                f"Tutor autopilot: {ap_label} • mode {mode} • {scope} • dialog {'open' if dialog_open else 'closed'}"
+                f"Tutor autopilot: {ap_label} • mode {mode} • {scope} • dialog {'open' if dialog_open else 'closed'}{pending_suffix}"
             )
             if very_narrow:
                 cockpit_text = (
@@ -7119,6 +7094,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._set_label_text_if_changed(cockpit_label, cockpit_text)
             try:
                 cockpit_label.set_tooltip_text(cockpit_full)
+            except Exception:
+                pass
+            try:
+                self._refresh_ai_tutor_autopilot_surface()
             except Exception:
                 pass
             try:
@@ -8911,6 +8890,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             lambda *_: self._import_file_into_text_view(practice_answer_view, title="Import into Practice Loop"),
         )
         practice_action_run_btn.connect("clicked", _execute_tutor_practice_action)
+        suggestion_accept_btn.connect("clicked", self._accept_ai_tutor_pending_suggestion)
+        suggestion_dismiss_btn.connect("clicked", self._dismiss_ai_tutor_pending_suggestion)
+        autopilot_pause_btn.connect("clicked", self._toggle_ai_tutor_autopilot_pause)
+        autopilot_mode_dropdown.connect("notify::selected", self._on_ai_tutor_autopilot_mode_selected)
         prompt_buf.connect("changed", _on_prompt_changed)
         for btn, template, action_type in quick_prompt_buttons:
             btn.connect(
@@ -8939,6 +8922,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         _render_transcript(force_scroll=True)
         _refresh_practice_panel()
         _refresh_tutor_workspace_layout()
+        self._refresh_ai_tutor_autopilot_surface()
         _set_running(False)
         try:
             run_state.set_tutor_auto_pause_resume_tick_id(
@@ -8983,6 +8967,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 refresh_layout()
             except Exception:
                 pass
+        try:
+            self._refresh_ai_tutor_autopilot_surface()
+        except Exception:
+            pass
         refresh_status = state.get("refresh_status")
         if callable(refresh_status):
             try:
@@ -11114,6 +11102,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def on_menu_section_c_browse(self, *_args):
         self._open_section_c_browse_dialog()
+
+    def on_menu_section_c_analytics(self, *_args):
+        self._open_section_c_analytics_dialog()
+
+    def on_menu_section_c_exam_simulation(self, *_args):
+        self._open_section_c_exam_simulation_dialog()
 
     def on_open_ai_coach(self, *_args):
         if bool(getattr(self, "ui_modern_enabled", False)) and self._open_workspace_tab("coach"):
@@ -13904,10 +13898,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _ai_tutor_rag_source_weight_multiplier(self, source_path: str, source_name: str = "") -> float:
         tier = self._classify_ai_tutor_rag_source_tier(source_path, source_name)
         if tier == "syllabus":
-            return 1.08
+            return 0.88  # Syllabus gives direction and scope; prefer notes for detailed knowledge
         if tier == "notes":
-            return 1.02
-        return 0.98
+            return 1.18  # Notes and textbooks are the primary knowledge source
+        return 1.00
 
     def _format_ai_tutor_rag_source_mix(self, sources: Any) -> str:
         rows = list(sources or []) if isinstance(sources, (list, tuple, set)) else []
@@ -16580,6 +16574,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         self._record_ai_tutor_autopilot_metrics(dict(autopilot_stats), persist=False)
                     else:
                         self._record_ai_tutor_autopilot_metrics({}, persist=False)
+                    recent_autopilot_actions = data.get("ai_tutor_recent_action_log", []) or []
+                    self._ai_tutor_recent_action_log = self._sanitize_ai_tutor_recent_action_log(
+                        recent_autopilot_actions,
+                        limit=10,
+                    )
                     self.last_coach_pick = data.get("last_coach_pick")
                     self.last_coach_pick_date = data.get("last_coach_pick_date")
                     self.onboarding_dismissed = bool(data.get("onboarding_dismissed", False))
@@ -16842,6 +16841,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 ),
                 "ai_tutor_telemetry_events": telemetry_events,
                 "ai_tutor_autopilot_stats": dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {}),
+                "ai_tutor_recent_action_log": [
+                    {k: v for k, v in row.items() if k != "monotonic_at"}
+                    for row in self._sanitize_ai_tutor_recent_action_log(
+                        getattr(self, "_ai_tutor_recent_action_log", []),
+                        limit=3,
+                    )
+                ],
                 "last_coach_pick": self.last_coach_pick,
                 "last_coach_pick_date": self.last_coach_pick_date,
                 "onboarding_dismissed": bool(self.onboarding_dismissed),
@@ -17744,134 +17750,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         purpose: str,
         candidates: list[str],
     ) -> str:
-        purpose_key = str(purpose or "").strip().lower()
-        ordered_candidates = [str(item or "").strip() for item in list(candidates or []) if str(item or "").strip()]
-        if not ordered_candidates:
-            return ""
-
-        def _kimi_k25_match() -> str:
-            best_cloud = ""
-            best_any = ""
-            for item in ordered_candidates:
-                lower = item.lower()
-                compact = lower.replace("_", "").replace("-", "").replace(" ", "")
-                if "incomplete" in lower:
-                    continue
-                if "kimi" not in compact:
-                    continue
-                if "k2.5" not in compact and "k25" not in compact:
-                    continue
-                if compact == "kimik2.5:cloud" or lower.strip() == "kimi-k2.5:cloud":
-                    return item
-                if lower.endswith(":cloud") and not best_cloud:
-                    best_cloud = item
-                if not best_any:
-                    best_any = item
-            return best_cloud or best_any
-
-        def _qwen35_4b_match() -> str:
-            best = ""
-            for item in ordered_candidates:
-                lower = item.lower()
-                compact = lower.replace("_", "").replace("-", "").replace(" ", "")
-                if "incomplete" in lower:
-                    continue
-                if ("qwen3.5" in compact or "qwen35" in compact) and "4b" in compact:
-                    # Prefer canonical "gpt4all-qwen3-5-4b" tag if present.
-                    if "gpt4allqwen354b" in compact:
-                        return item
-                    if not best:
-                        best = item
-            return best
-
-        if purpose_key in {
-            "coach",
-            "autopilot",
-            "tutor",
-            "deep_reason",
-            "section_c_generation",
-            "gap_generation",
-        }:
-            kimi = _kimi_k25_match()
-            if kimi:
-                return kimi
-
-        if purpose_key in {
-            "coach",
-            "autopilot",
-            "tutor",
-            "section_c_evaluation",
-            "section_c_loop_diff",
-        }:
-            qwen35_4b = _qwen35_4b_match()
-            if qwen35_4b:
-                return qwen35_4b
-
-        routed = routed_primary_for_purpose(purpose_key, ordered_candidates)
-        if routed:
-            return routed
-
-        if purpose_key in {
-            "coach",
-            "autopilot",
-            "section_c_evaluation",
-            "section_c_loop_diff",
-        }:
-            preferred = [
-                str(DEFAULT_OLLAMA_MODEL_COACH or "").strip(),
-                str(DEFAULT_OLLAMA_MODEL_AUTOPILOT or "").strip(),
-                str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
-                str(DEFAULT_OLLAMA_MODEL or "").strip(),
-            ]
-        elif purpose_key in {"section_c_judgment"}:
-            preferred = [
-                str(DEFAULT_OLLAMA_MODEL_TUTOR or "").strip(),
-                str(DEFAULT_OLLAMA_MODEL_COACH or "").strip(),
-                str(DEFAULT_OLLAMA_MODEL or "").strip(),
-                str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
-            ]
-        elif purpose_key in {
-            "tutor",
-            "deep_reason",
-            "section_c_generation",
-            "gap_generation",
-        }:
-            preferred = [
-                str(DEFAULT_OLLAMA_MODEL_TUTOR or "").strip(),
-                str(DEFAULT_OLLAMA_MODEL or "").strip(),
-                str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
-            ]
-        else:
-            preferred = [
-                str(DEFAULT_OLLAMA_MODEL or "").strip(),
-                str(DEFAULT_OLLAMA_MODEL_COACH or "").strip(),
-                str(DEFAULT_OLLAMA_MODEL_TUTOR or "").strip(),
-                str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
-            ]
-        preferred = [item for item in preferred if item]
-        if not preferred:
-            return ""
-
-        for pref in preferred:
-            if pref in ordered_candidates:
-                return pref
-
-        normalized: list[tuple[str, str]] = []
-        for item in ordered_candidates:
-            base = str(item.split(":", 1)[0] or "").strip()
-            normalized.append((item, base))
-
-        for pref in preferred:
-            pref_base = str(pref.split(":", 1)[0] or "").strip()
-            if not pref_base:
-                continue
-            for full_name, base in normalized:
-                if base == pref_base:
-                    return full_name
-            for full_name, base in normalized:
-                if pref_base in base or base in pref_base:
-                    return full_name
-        return ""
+        return _runtime_resolve_local_llm_default_for_purpose(
+            purpose,
+            candidates,
+            default_ollama_model=str(DEFAULT_OLLAMA_MODEL or "").strip(),
+            default_ollama_model_coach=str(DEFAULT_OLLAMA_MODEL_COACH or "").strip(),
+            default_ollama_model_tutor=str(DEFAULT_OLLAMA_MODEL_TUTOR or "").strip(),
+            default_ollama_model_fallback=str(DEFAULT_OLLAMA_MODEL_FALLBACK or "").strip(),
+        )
 
     def _heuristic_local_llm_model_prior(self, model_name: str, purpose: str = "general") -> float:
         name = str(model_name or "").strip().lower()
@@ -21181,7 +21067,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             # Full payload cached in memory.
             chunks = cached.get("chunks")
             if isinstance(chunks, list) and chunks:
-                return dict(cached), None
+                result = dict(cached)
+                cached_meta = result.get("meta")
+                if isinstance(cached_meta, dict) and not cached_meta.get("disk_cache_hit"):
+                    merged_meta = dict(cached_meta)
+                    merged_meta["mem_cache_hit"] = True
+                    result["meta"] = merged_meta
+                return result, None
             # Meta-only cache: fetch chunks from sqlite on demand.
             if cached.get("_rag_doc_ref") and callable(getattr(self, "_ai_cache_get_rag_doc", None)):
                 cache_get_doc = getattr(self, "_ai_cache_get_rag_doc", None)
@@ -21457,7 +21349,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if isinstance(doc_payload, dict):
                 docs.append(doc_payload)
                 meta = doc_payload.get("meta", {})
-                if isinstance(meta, dict) and bool(meta.get("disk_cache_hit", False)):
+                if isinstance(meta, dict) and bool(meta.get("disk_cache_hit", False) or meta.get("mem_cache_hit", False)):
                     rag_doc_cache_hit_count += 1
             elif err:
                 errors.append(f"{os.path.basename(pdf_path)}: {err}")
@@ -21706,6 +21598,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             source_name = str(doc.get("source", "") or "").strip() or "PDF source"
             doc_path = str(doc.get("path", "") or "").strip() or source_name
             doc_key = str(doc.get("cache_key", "") or "").strip()
+            try:
+                doc_tier = str(self._classify_ai_tutor_rag_source_tier(doc_path, source_name))
+            except Exception:
+                doc_tier = "supplemental"
             chunk_texts: list[str] = []
             chunk_indices: list[int] = []
             chunk_hashes: list[str] = []
@@ -21727,6 +21623,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     "chunk_index": int(chunk_idx),
                     "text": text,
                     "chunk_hash": chunk_hash,
+                    "tier": doc_tier,
                 }
                 chunk_texts.append(text)
                 chunk_indices.append(int(chunk_idx))
@@ -21827,6 +21724,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         "score": float(blended_lex * source_weight),
                         "target_hits": int(target_hits),
                         "source_weight": float(source_weight),
+                        "tier": doc_tier,
                     }
                 )
         if not candidates:
@@ -22031,6 +21929,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             "lex_score": neighbor_lex,
                             "sem_score": 0.0,
                             "score": neighbor_score,
+                            "tier": str(payload.get("tier", "") or ""),
                         }
                     )
         expanded_neighbors.sort(
@@ -22088,6 +21987,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     "chunk_index": int(item.get("chunk_index", 0)),
                     "score": float(item.get("score", item.get("lex_score", 0.0)) or 0.0),
                     "target_hits": int(item.get("target_hits", 0) or 0),
+                    "tier": str(item.get("tier", "") or ""),
                 }
             )
             char_used += len(text)
@@ -23564,7 +23464,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "Schema:",
                 '{"items":[{"item_id":"topic-slug-1","item_type":"mcq","prompt":"Stem only (no A–D in the stem).","topic":"chapter","expected_format":"Answer A–D","difficulty":"medium","rubric_hints":[],"meta":{"options":["Real distractor one","Real distractor two","Real distractor three","Correct statement text"],"correct_option":"D","marks_max":1.0}}]}',
                 "Rules:",
-                "- item_type: short_answer, teach_back, or mcq. For mcq: meta.options MUST be four distinct, exam-realistic strings (not placeholders like 'Option A' or 'Full option text B'). meta.correct_option is A/B/C/D.",
+                "- item_type: short_answer, teach_back, or mcq. For mcq: meta.options MUST be four distinct, exam-realistic strings (not placeholders like 'Option A' or 'Full option text B'). meta.correct_option MUST be ONLY the single letter A, B, C, or D — never the full option text.",
                 "- prompt: one clear, compelling question that applies to the topic and (if present) targets weak_topics/misconceptions/outcome_expectations.",
                 "- Difficulty: align with cognitive.posterior_mean (low→easier, high→harder); if struggle_mode prefer easy/medium.",
                 "- outcome_expectations: prefer questions that address these syllabus outcomes when listed.",
@@ -23607,6 +23507,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 opt_list = [str(x or "").strip() for x in opts] if isinstance(opts, list) else []
                 if len(opt_list) != 4 or gap_options_look_like_llm_placeholders(opt_list):
                     continue
+                # Normalize correct_option: the LLM sometimes stores the full option text
+                # instead of a letter.  Convert to letter A-D by matching against options.
+                if isinstance(meta, dict):
+                    correct_opt = str(meta.get("correct_option", "") or "").strip()
+                    if correct_opt.upper() not in {"A", "B", "C", "D"}:
+                        correct_opt_norm = " ".join(correct_opt.lower().split())
+                        for i, opt in enumerate(opt_list[:4]):
+                            if " ".join(opt.lower().split()) == correct_opt_norm:
+                                meta["correct_option"] = chr(ord("A") + i)
+                                break
+                    # Reject the item if correct_option is still not a valid letter.
+                    if str(meta.get("correct_option", "") or "").strip().upper() not in {"A", "B", "C", "D"}:
+                        continue
             try:
                 out.append(TutorPracticeItem.from_dict(row))
             except Exception:
@@ -23755,6 +23668,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return out[:12]
         except Exception:
             return []
+
+    def _get_active_tutor_assessment_service(self):
+        """Return AITutorAssessmentService when local LLM is enabled so open-ended answers get AI marking.
+
+        Falls back to the deterministic service otherwise (MCQ/numeric work correctly without AI;
+        open-ended items return a partial placeholder with an explanation).
+        """
+        if bool(getattr(self, "local_llm_enabled", False)):
+            return AITutorAssessmentService(
+                generate_fn=self._ollama_generate_for_practice_judge,
+                get_suggested_tags=self._get_suggested_tags_for_judge,
+            )
+        return getattr(self, "_tutor_assessment_service", None) or DeterministicTutorAssessmentService()
 
     def _get_practice_loop_controller(self) -> PracticeLoopController:
         ctrl = getattr(self, "_practice_loop_controller", None)
@@ -25273,6 +25199,383 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             mode = str(AI_TUTOR_DEFAULT_AUTONOMY_MODE)
         return mode
 
+    def _sanitize_ai_tutor_recent_action_log(
+        self,
+        rows: Any,
+        *,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        cleaned: list[dict[str, Any]] = []
+        items = list(rows or []) if isinstance(rows, list) else []
+        max_items = max(1, min(20, int(limit or 10)))
+        for item in items[-max_items:]:
+            if not isinstance(item, dict):
+                continue
+            action = str(item.get("action", "") or "").strip().lower()
+            if action not in AI_TUTOR_ALLOWED_ACTIONS:
+                continue
+            topic = str(item.get("topic", "") or "").strip()[:120]
+            reason = str(item.get("reason", "") or "").replace("\n", " ").strip()[:220]
+            outcome = str(item.get("outcome", "") or "").strip().lower()[:40]
+            source = str(item.get("source", "") or "").strip().lower()[:40]
+            at = str(item.get("at", "") or "").strip()[:32]
+            try:
+                monotonic_at = float(item.get("monotonic_at", 0.0) or 0.0)
+            except Exception:
+                monotonic_at = 0.0
+            row = {
+                "action": action,
+                "topic": topic,
+                "reason": reason,
+                "outcome": outcome,
+                "source": source,
+                "at": at,
+            }
+            if monotonic_at > 0.0:
+                row["monotonic_at"] = float(monotonic_at)
+            cleaned.append(row)
+        return cleaned[-max_items:]
+
+    def _describe_ai_tutor_action(self, action_plan: dict[str, Any] | None) -> str:
+        if not isinstance(action_plan, dict):
+            return "No action"
+        action = str(action_plan.get("action", "") or "").strip().lower()
+        topic = str(action_plan.get("topic", "") or "").strip()
+        duration = int(action_plan.get("duration_minutes", 0) or 0)
+        label = action.replace("_", " ").strip().title() or "Tutor action"
+        parts = [label]
+        if topic:
+            parts.append(topic)
+        if duration > 0:
+            parts.append(f"{duration} min")
+        return " • ".join(parts)
+
+    def _record_ai_tutor_recent_action(
+        self,
+        action_plan: dict[str, Any] | None,
+        *,
+        outcome: str,
+        source: str,
+    ) -> None:
+        if not isinstance(action_plan, dict):
+            return
+        action = str(action_plan.get("action", "") or "").strip().lower()
+        if action not in AI_TUTOR_ALLOWED_ACTIONS:
+            return
+        row = {
+            "action": action,
+            "topic": str(action_plan.get("topic", "") or "").strip()[:120],
+            "reason": str(action_plan.get("reason", "") or "").replace("\n", " ").strip()[:220],
+            "outcome": str(outcome or "").strip().lower()[:40],
+            "source": str(source or "").strip().lower()[:40],
+            "at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "monotonic_at": float(time.monotonic()),
+        }
+        history = self._sanitize_ai_tutor_recent_action_log(
+            list(getattr(self, "_ai_tutor_recent_action_log", []) or []) + [row],
+            limit=10,
+        )
+        self._ai_tutor_recent_action_log = history
+
+    def _format_ai_tutor_pending_suggestion(self, action_plan: dict[str, Any] | None) -> tuple[str, str, str]:
+        if not isinstance(action_plan, dict):
+            return ("Autopilot suggestion", "No pending suggestion.", "Accept")
+        action = str(action_plan.get("action", "") or "").strip().lower()
+        reason = str(action_plan.get("reason", "") or "").strip()
+        requires_confirmation = bool(action_plan.get("requires_confirmation", False))
+        evidence_rows = [str(x or "").strip() for x in list(action_plan.get("evidence", []) or []) if str(x or "").strip()]
+        title = "Autopilot suggestion"
+        accept = "Accept"
+        if requires_confirmation:
+            title = "Autopilot wants approval"
+            accept = "Approve"
+        if action == "review_start":
+            accept = "Start Review"
+        elif action == "gap_drill_generate":
+            accept = "Generate Questions"
+        elif action == "section_c_start":
+            accept = "Open Section C"
+        elif action == "timer_stop":
+            accept = "Stop Timer"
+        message = self._describe_ai_tutor_action(action_plan)
+        if reason:
+            message = f"{message} — {reason}"
+        if evidence_rows:
+            message = f"{message} ({'; '.join(evidence_rows[:2])})"
+        return title, message[:280], accept[:24]
+
+    def _extract_ai_tutor_inline_action(self, text: str) -> tuple[str, dict[str, Any] | None]:
+        raw_text = str(text or "")
+        match = re.search(r"(?:\n|\A)\[ACTION:\s*(.+?)\]\s*\Z", raw_text, flags=re.IGNORECASE | re.DOTALL)
+        if match is None:
+            return raw_text.strip(), None
+        payload = str(match.group(1) or "").strip()
+        display_text = raw_text[: match.start()].rstrip()
+        if not payload:
+            return display_text, None
+        parts = [str(part or "").strip() for part in payload.split("|")]
+        action = str(parts[0] if parts else "").strip().lower()
+        raw_plan: dict[str, Any] = {"action": action}
+        for part in parts[1:]:
+            if ":" not in part:
+                continue
+            key, value = part.split(":", 1)
+            key_text = str(key or "").strip().lower()
+            value_text = str(value or "").strip()
+            if not key_text or not value_text:
+                continue
+            if key_text == "topic":
+                raw_plan["topic"] = value_text
+            elif key_text in {"duration", "duration_minutes", "minutes"}:
+                raw_plan["duration_minutes"] = value_text
+            elif key_text == "reason":
+                raw_plan["reason"] = value_text
+        if action not in AI_TUTOR_ALLOWED_ACTIONS:
+            return display_text, None
+        try:
+            snapshot = self._build_ai_tutor_autopilot_snapshot()
+            normalized, _err = self._normalize_ai_tutor_action_plan(raw_plan, snapshot)
+        except Exception:
+            normalized = None
+        return display_text, normalized if isinstance(normalized, dict) else None
+
+    def _clear_ai_tutor_pending_suggestion(self, *, outcome: str = "") -> None:
+        source_id = int(getattr(self, "_ai_tutor_pending_suggestion_source_id", 0) or 0)
+        if source_id > 0:
+            try:
+                self._remove_glib_source(source_id)
+            except Exception:
+                pass
+        self._ai_tutor_pending_suggestion_source_id = 0
+        self._ai_tutor_pending_suggestion = None
+        if outcome:
+            self._record_ai_tutor_autopilot_metrics(
+                {
+                    "autopilot_last_block_reason": str(outcome)[:200],
+                },
+                persist=False,
+            )
+        self._refresh_ai_tutor_autopilot_surface()
+
+    def _set_ai_tutor_pending_suggestion(self, action_plan: dict[str, Any], *, source: str) -> None:
+        if not isinstance(action_plan, dict):
+            return
+        cleaned = dict(action_plan)
+        cleaned["source"] = str(source or "").strip().lower()[:40]
+        self._ai_tutor_pending_suggestion = cleaned
+        self._ai_tutor_pending_suggestion_token = int(getattr(self, "_ai_tutor_pending_suggestion_token", 0) or 0) + 1
+        suggestion_token = int(self._ai_tutor_pending_suggestion_token or 0)
+        self._record_ai_tutor_recent_action(cleaned, outcome="suggested", source=str(source or "autopilot"))
+        source_id = int(getattr(self, "_ai_tutor_pending_suggestion_source_id", 0) or 0)
+        if source_id > 0:
+            try:
+                self._remove_glib_source(source_id)
+            except Exception:
+                pass
+
+        def _expire() -> bool:
+            if int(getattr(self, "_ai_tutor_pending_suggestion_token", 0) or 0) != suggestion_token:
+                return False
+            pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+            if isinstance(pending, dict):
+                self._record_ai_tutor_recent_action(
+                    pending,
+                    outcome="suggested_expired",
+                    source=str(pending.get("source", source) or source),
+                )
+            self._clear_ai_tutor_pending_suggestion(outcome="suggestion_expired")
+            return False
+
+        new_source_id = int(GLib.timeout_add_seconds(120, _expire) or 0)
+        self._ai_tutor_pending_suggestion_source_id = new_source_id
+        self._register_glib_source(new_source_id)
+        self._refresh_ai_tutor_autopilot_surface()
+
+    def _accept_ai_tutor_pending_suggestion(self, *_args: Any) -> None:
+        pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+        if not isinstance(pending, dict):
+            return
+        action_plan = dict(pending)
+        ok, message = self._execute_ai_tutor_action(action_plan)
+        source = str(action_plan.get("source", "manual") or "manual")
+        if ok:
+            now_ts = float(time.monotonic())
+            self._record_ai_tutor_recent_action(action_plan, outcome="suggested_accepted", source=source)
+            self._record_ai_tutor_recent_action(action_plan, outcome="executed", source=source)
+            stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+            self._record_ai_tutor_autopilot_metrics(
+                {
+                    "autopilot_suggestion_accepted_count": int(
+                        stats.get("autopilot_suggestion_accepted_count", 0) or 0
+                    )
+                    + 1,
+                    "autopilot_action_executed_count": int(
+                        stats.get("autopilot_action_executed_count", 0) or 0
+                    )
+                    + 1,
+                    "autopilot_last_block_reason": "",
+                },
+                persist=False,
+            )
+            self._ai_tutor_global_autopilot_last_action_at = now_ts
+            self._record_ai_tutor_action_budget_use(now_ts)
+            quiet_seconds = max(30, min(900, int(AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS)))
+            self._ai_tutor_global_quiet_until = float(time.monotonic()) + float(quiet_seconds)
+            try:
+                self.send_notification("Tutor autopilot", str(message or "Action executed.").strip()[:220])
+            except Exception:
+                pass
+            self._clear_ai_tutor_pending_suggestion()
+            return
+        self._record_ai_tutor_recent_action(action_plan, outcome="suggested_accept_failed", source=source)
+        self._record_ai_tutor_autopilot_metrics(
+            {
+                "autopilot_last_block_reason": str(message or "action_failed")[:200],
+            },
+            persist=False,
+        )
+        self._refresh_ai_tutor_autopilot_surface()
+
+    def _dismiss_ai_tutor_pending_suggestion(self, *_args: Any) -> None:
+        pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+        if isinstance(pending, dict):
+            self._record_ai_tutor_recent_action(
+                pending,
+                outcome="suggested_dismissed",
+                source=str(pending.get("source", "manual") or "manual"),
+            )
+            stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+            self._record_ai_tutor_autopilot_metrics(
+                {
+                    "autopilot_suggestion_dismissed_count": int(
+                        stats.get("autopilot_suggestion_dismissed_count", 0) or 0
+                    )
+                    + 1,
+                },
+                persist=False,
+            )
+        self._clear_ai_tutor_pending_suggestion(outcome="suggestion_dismissed")
+
+    def _refresh_ai_tutor_autopilot_surface(self) -> None:
+        pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+        banner_box = getattr(self, "_tutor_workspace_pending_suggestion_box", None)
+        title_label = getattr(self, "_tutor_workspace_pending_suggestion_title_label", None)
+        message_label = getattr(self, "_tutor_workspace_pending_suggestion_label", None)
+        accept_btn = getattr(self, "_tutor_workspace_pending_suggestion_accept_btn", None)
+        dismiss_btn = getattr(self, "_tutor_workspace_pending_suggestion_dismiss_btn", None)
+        if banner_box is not None:
+            has_pending = isinstance(pending, dict)
+            try:
+                banner_box.set_visible(bool(has_pending))
+            except Exception:
+                pass
+            if has_pending:
+                title, message, accept = self._format_ai_tutor_pending_suggestion(pending)
+                if title_label is not None:
+                    self._set_label_text_if_changed(title_label, title)
+                if message_label is not None:
+                    self._set_label_text_if_changed(message_label, message)
+                    try:
+                        message_label.set_tooltip_text(message)
+                    except Exception:
+                        pass
+                if accept_btn is not None:
+                    try:
+                        accept_btn.set_label(accept)
+                    except Exception:
+                        pass
+                if dismiss_btn is not None:
+                    try:
+                        dismiss_btn.set_label("Dismiss")
+                    except Exception:
+                        pass
+        history = self._sanitize_ai_tutor_recent_action_log(getattr(self, "_ai_tutor_recent_action_log", []), limit=10)
+        last_action_label = getattr(self, "_tutor_workspace_autopilot_panel_last_action_label", None)
+        if last_action_label is not None:
+            executed_rows = [
+                row
+                for row in reversed(history)
+                if str(row.get("outcome", "") or "").strip().lower() in {"executed", "suggested_accepted"}
+            ]
+            if executed_rows:
+                last_row = executed_rows[0]
+                action_text = self._describe_ai_tutor_action(last_row)
+                at_text = str(last_row.get("at", "") or "").strip()
+                line = f"Last action: {action_text}"
+                if at_text:
+                    line += f" @ {at_text[-8:]}"
+            else:
+                line = "Last action: waiting for first execution."
+            self._set_label_text_if_changed(last_action_label, line)
+        next_action_label = getattr(self, "_tutor_workspace_autopilot_panel_next_action_label", None)
+        if next_action_label is not None:
+            if isinstance(pending, dict):
+                line = f"Next action: {self._describe_ai_tutor_action(pending)}"
+            else:
+                line = "Next action: waiting for state change."
+            self._set_label_text_if_changed(next_action_label, line)
+        stats_label = getattr(self, "_tutor_workspace_autopilot_panel_stats_label", None)
+        if stats_label is not None:
+            stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+            stats_line = (
+                f"Stats: executed {int(stats.get('autopilot_action_executed_count', 0) or 0)} • "
+                f"dismissed {int(stats.get('autopilot_suggestion_dismissed_count', 0) or 0)} • "
+                f"nudges {int(stats.get('nudge_info_count', 0) or 0)}"
+            )
+            self._set_label_text_if_changed(stats_label, stats_line)
+        pause_btn = getattr(self, "_tutor_workspace_autopilot_panel_pause_btn", None)
+        if pause_btn is not None:
+            autopilot_enabled = bool(getattr(self, "ai_tutor_autopilot_enabled", True))
+            paused = bool(getattr(self, "ai_tutor_autopilot_paused", False))
+            try:
+                pause_btn.set_sensitive(bool(autopilot_enabled))
+                pause_btn.set_label("Resume Autopilot" if paused else "Pause Autopilot")
+            except Exception:
+                pass
+        mode_dropdown = getattr(self, "_tutor_workspace_autopilot_panel_mode_dropdown", None)
+        if mode_dropdown is not None:
+            mode_index = {"suggest": 0, "assist": 1, "cockpit": 2}
+            target_index = int(mode_index.get(str(self._effective_ai_tutor_autonomy_mode() or "assist"), 1))
+            try:
+                if int(mode_dropdown.get_selected() or 0) != target_index:
+                    mode_dropdown.set_selected(target_index)
+            except Exception:
+                pass
+
+    def _toggle_ai_tutor_autopilot_pause(self, *_args: Any) -> None:
+        if not bool(getattr(self, "ai_tutor_autopilot_enabled", True)):
+            return
+        self.ai_tutor_autopilot_paused = not bool(getattr(self, "ai_tutor_autopilot_paused", False))
+        self._ai_tutor_global_autopilot_busy = False
+        if not bool(self.ai_tutor_autopilot_paused):
+            self._restart_ai_tutor_global_autopilot_timer()
+        self._refresh_ai_tutor_autopilot_surface()
+        try:
+            self.save_preferences()
+        except Exception:
+            pass
+
+    def _on_ai_tutor_autopilot_mode_selected(self, dropdown: Gtk.DropDown, *_args: Any) -> None:
+        try:
+            selected = int(dropdown.get_selected() or 0)
+        except Exception:
+            selected = 1
+        mode_map = {0: "suggest", 1: "assist", 2: "cockpit"}
+        new_mode = self._coerce_ai_tutor_autonomy_mode(mode_map.get(selected, "assist"))
+        if new_mode == str(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE) or ""):
+            return
+        self.ai_tutor_autonomy_mode = new_mode
+        self._ai_tutor_global_autopilot_busy = False
+        if bool(getattr(self, "ai_tutor_autopilot_enabled", True)) and not bool(
+            getattr(self, "ai_tutor_autopilot_paused", False)
+        ):
+            self._restart_ai_tutor_global_autopilot_timer()
+        self._refresh_ai_tutor_autopilot_surface()
+        try:
+            self.save_preferences()
+        except Exception:
+            pass
+
     def _coerce_ai_tutor_nudge_policy(self, value: Any) -> str:
         policy = str(value or "").strip().lower()
         if policy not in AI_TUTOR_NUDGE_POLICIES:
@@ -25334,6 +25637,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         GLib.idle_add(_kick_once, priority=GLib.PRIORITY_LOW)
 
     def _consume_global_ai_tutor_action_budget(self, now_ts: float) -> bool:
+        """Check if action budget allows execution. Only records the timestamp
+        if budget is available (caller must call _record_ai_tutor_action_budget_use
+        after confirming execution succeeded)."""
         window: list[float] = []
         for ts in list(getattr(self, "_ai_tutor_global_autopilot_action_window", []) or []):
             try:
@@ -25342,12 +25648,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 continue
             if (now_ts - value) <= float(AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS):
                 window.append(value)
+        self._ai_tutor_global_autopilot_action_window = window
         if len(window) >= int(max(1, AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW)):
-            self._ai_tutor_global_autopilot_action_window = window
             return False
+        return True
+
+    def _record_ai_tutor_action_budget_use(self, now_ts: float) -> None:
+        """Record a successful action execution in the rate-limit window."""
+        window = list(getattr(self, "_ai_tutor_global_autopilot_action_window", []) or [])
         window.append(float(now_ts))
         self._ai_tutor_global_autopilot_action_window = window
-        return True
 
     def _build_ai_tutor_autopilot_event_signature(self, snapshot: dict[str, Any]) -> str:
         focus_info = (
@@ -25371,6 +25681,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "must_review_due": int(snapshot.get("must_review_due", 0) or 0),
             "overdue_srs_count": int(snapshot.get("overdue_srs_count", 0) or 0),
             "new_srs_count": int(snapshot.get("new_srs_count", 0) or 0),
+            "tutor_dialog_open": bool(snapshot.get("tutor_dialog_open", False)),
             "pomodoro_active": bool(snapshot.get("pomodoro_active", False)),
             "pomodoro_paused": bool(snapshot.get("pomodoro_paused", False)),
             "pomodoro_bucket": int(max(0, pomodoro_remaining_sec // 300)),
@@ -25378,6 +25689,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "weak_topics_top3": list(snapshot.get("weak_topics_top3", []) or [])[:3],
             "risk_snapshot_top3": list(snapshot.get("risk_snapshot_top3", []) or [])[:2],
             "due_snapshot_top3": list(snapshot.get("due_snapshot_top3", []) or [])[:2],
+            "recent_autopilot_actions": list(snapshot.get("recent_autopilot_actions", []) or [])[:2],
             "runtime_scope": str(snapshot.get("runtime_scope", "") or ""),
         }
         signal_json = json.dumps(signal, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -25425,6 +25737,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             refresh_seconds = int(AI_TUTOR_AUTOPILOT_DECISION_REFRESH_SECONDS)
         refresh_seconds = max(45, min(1800, int(refresh_seconds)))
+        recent_log = self._sanitize_ai_tutor_recent_action_log(
+            getattr(self, "_ai_tutor_recent_action_log", []),
+            limit=5,
+        )
+        repeated_suggestions = [
+            row
+            for row in reversed(recent_log)
+            if str(row.get("outcome", "") or "").strip().lower().startswith("suggested")
+        ][:3]
+        if len(repeated_suggestions) >= 3:
+            repeated_actions = {
+                str(row.get("action", "") or "").strip().lower()
+                for row in repeated_suggestions
+                if str(row.get("action", "") or "").strip()
+            }
+            if len(repeated_actions) == 1 and last_decision_at > 0.0:
+                backoff_seconds = max(refresh_seconds, 600)
+                if (now_val - last_decision_at) < float(backoff_seconds):
+                    return False, "repeated_suggestion_backoff", event_sig
         if last_decision_at <= 0.0 or (now_val - last_decision_at) >= float(refresh_seconds):
             return True, "periodic_refresh", event_sig
         return False, "no_material_change", event_sig
@@ -25487,7 +25818,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ai_tutor_global_autopilot_busy = True
 
         def _worker() -> None:
-            mode = self._effective_ai_tutor_autonomy_mode()
+            mode = "suggest"
             snapshot: dict[str, Any] = {}
             decision: dict[str, Any] | None = None
             decision_err: str | None = None
@@ -25496,6 +25827,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             model_requested = False
             event_sig = ""
             try:
+                mode = self._effective_ai_tutor_autonomy_mode()
                 snapshot = self._build_ai_tutor_autopilot_snapshot()
                 should_request, gate_reason, event_sig = self._should_request_global_ai_tutor_decision(snapshot)
                 if self._ai_tutor_user_turn_busy():
@@ -25540,11 +25872,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         f"{must_due} must-review items are due. Consider a short review burst now.",
                     )
                 if isinstance(decision, dict):
+                    mode = self._effective_ai_tutor_autonomy_mode()
                     action = str(decision.get("action", "") or "").strip().lower()
                     requires_confirmation = bool(decision.get("requires_confirmation", False))
                     local_blocked = ""
                     if not bool(self._can_auto_execute_ai_tutor_action(action, mode, requires_confirmation)):
                         blocked_reason_local = "needs_confirmation_or_mode_block"
+                        self._set_ai_tutor_pending_suggestion(decision, source="autopilot")
                         reason = str(decision.get("reason", "") or "").strip()
                         if reason:
                             self._emit_global_ai_tutor_nudge("info", f"Suggested: {action} - {reason}")
@@ -25557,13 +25891,47 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         elif not self._consume_global_ai_tutor_action_budget(now_ts):
                             local_blocked = "action_rate_limit"
                         else:
-                            ok, msg = self._execute_ai_tutor_action(decision)
-                            action_message = str(msg or "").strip()
-                            executed = bool(ok)
-                            if executed:
-                                self._ai_tutor_global_autopilot_last_action_at = now_ts
+                            recent_log = self._sanitize_ai_tutor_recent_action_log(
+                                getattr(self, "_ai_tutor_recent_action_log", []),
+                                limit=10,
+                            )
+                            duplicate_recent = False
+                            for row in reversed(recent_log):
+                                if str(row.get("outcome", "") or "").strip().lower() != "executed":
+                                    continue
+                                if str(row.get("action", "") or "").strip().lower() != action:
+                                    continue
+                                if str(row.get("topic", "") or "").strip() != str(decision.get("topic", "") or "").strip():
+                                    continue
+                                try:
+                                    row_ts = float(row.get("monotonic_at", 0.0) or 0.0)
+                                except Exception:
+                                    row_ts = 0.0
+                                if row_ts > 0.0 and (now_ts - row_ts) < 60.0:
+                                    duplicate_recent = True
+                                    break
+                            if duplicate_recent:
+                                local_blocked = "action_duplicate_guard"
                             else:
-                                local_blocked = action_message or "action_failed"
+                                ok, msg = self._execute_ai_tutor_action(decision)
+                                action_message = str(msg or "").strip()
+                                executed = bool(ok)
+                                if executed:
+                                    self._ai_tutor_global_autopilot_last_action_at = now_ts
+                                    self._record_ai_tutor_action_budget_use(now_ts)
+                                    self._record_ai_tutor_recent_action(
+                                        decision,
+                                        outcome="executed",
+                                        source="autopilot",
+                                    )
+                                    pending = getattr(self, "_ai_tutor_pending_suggestion", None)
+                                    if (
+                                        isinstance(pending, dict)
+                                        and str(pending.get("action", "") or "").strip().lower() == action
+                                    ):
+                                        self._clear_ai_tutor_pending_suggestion()
+                                else:
+                                    local_blocked = action_message or "action_failed"
                     if not executed:
                         if local_blocked:
                             updates["autopilot_action_blocked_count"] = (
@@ -25621,6 +25989,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "autopilot_action_executed_count": 0,
                 "autopilot_action_blocked_count": 0,
                 "autopilot_last_block_reason": "",
+                "autopilot_suggestion_accepted_count": 0,
+                "autopilot_suggestion_dismissed_count": 0,
                 "nudge_info_count": 0,
                 "nudge_warning_count": 0,
                 "nudge_intervention_count": 0,
@@ -25665,6 +26035,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         stats["autopilot_mode"] = str(self._effective_ai_tutor_autonomy_mode())
         stats["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
         self._ai_tutor_autopilot_stats = stats
+        try:
+            self._refresh_ai_tutor_autopilot_surface()
+        except Exception:
+            pass
         if bool(persist):
             try:
                 self.save_preferences()
@@ -25723,6 +26097,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "tutor_popup_generation_active": bool(getattr(self, "_ai_tutor_popup_stream_active", False)),
             "allowed_actions": list(AI_TUTOR_ALLOWED_ACTIONS),
             "autonomy_mode": str(self._effective_ai_tutor_autonomy_mode()),
+            "recent_autopilot_actions": self._sanitize_ai_tutor_recent_action_log(
+                getattr(self, "_ai_tutor_recent_action_log", []),
+                limit=5,
+            ),
             "total_question_count": int(self._get_total_question_count()),
             "question_generation_cap": int(getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 1500) or 1500),
             "gap_generation_recommended": (
@@ -25963,9 +26341,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     ) -> dict[str, Any]:
         current_topic = str(snapshot.get("current_topic", "") or "").strip()
         must_review_due = int(snapshot.get("must_review_due", 0) or 0)
+        overdue_srs_count = int(snapshot.get("overdue_srs_count", 0) or 0)
+        weak_topics = [
+            row for row in list(snapshot.get("weak_topics_top3", []) or []) if isinstance(row, dict)
+        ]
         action = "focus_start"
-        if must_review_due > 0:
+        if must_review_due >= 3:
             action = "review_start"
+        elif overdue_srs_count > 0:
+            action = "leitner_drill_start"
+        elif weak_topics:
+            action = "weak_drill_start"
+            current_topic = str(weak_topics[0].get("chapter", "") or "").strip() or current_topic
         reason = "Fallback cockpit action from current due-review and focus signals."
         if issue:
             reason = f"{reason} ({issue})"
@@ -27039,6 +27426,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         safe = re.sub(r"[^a-z0-9_-]+", "_", mid) if mid else "default"
         return os.path.join(base, f"{safe}_section_c_attempts.jsonl")
 
+    def _section_c_archive_path(self) -> str:
+        raw = str(os.environ.get("STUDYPLAN_SECTION_C_ARCHIVE_PATH", "") or "").strip()
+        if raw:
+            return os.path.abspath(os.path.expanduser(raw))
+        base = Config.CONFIG_HOME
+        mid = str(getattr(self, "module_id", "") or "").strip().lower()
+        safe = re.sub(r"[^a-z0-9_-]+", "_", mid) if mid else "default"
+        return os.path.join(base, f"{safe}_section_c_archive.json")
+
     def _section_c_question_id(self, chapter: str, prompt: str) -> str:
         payload = json.dumps(
             {
@@ -27144,6 +27540,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     exhibits.append(block[:ex_cap])
         if scenario_text and not exhibits:
             exhibits = [scenario_text[:1200]]
+        # FR modules: enforce at least one exhibit with a numeric table.
+        # If no exhibit contains a pipe-table row (i.e. " | "), inject a placeholder so downstream
+        # evaluation prompt knows data was missing from generation.
+        if self._is_fr_financial_reporting_module() and exhibits:
+            has_table = any("|" in ex for ex in exhibits)
+            if not has_table:
+                exhibits[0] = exhibits[0] + "\n(Note: numeric data table required for FR question – see scenario)"
         tasks_raw = row.get("required_tasks", [])
         required_tasks: list[str] = []
         if requirements:
@@ -27383,6 +27786,65 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
+    def _load_section_c_archive(self) -> dict[str, list[dict[str, Any]]]:
+        path = self._section_c_archive_path()
+        if not os.path.isfile(path):
+            return {}
+        try:
+            raw = self._read_text_file(path)
+            data = json.loads(raw or "{}")
+            if not isinstance(data, dict):
+                return {}
+            return {str(k): list(v) for k, v in data.items() if isinstance(v, list)}
+        except Exception:
+            return {}
+
+    def _save_section_c_archive(self, archive: dict[str, list[dict[str, Any]]]) -> None:
+        path = self._section_c_archive_path()
+        payload = {"schema": "section_c_archive_v1", "updated_at": datetime.datetime.now().isoformat(timespec="seconds"), "questions": archive}
+        try:
+            self._atomic_write_text_file(path, json.dumps(payload, ensure_ascii=True, indent=2))
+            self._secure_user_path(path, 0o600)
+        except Exception:
+            pass
+
+    def _archive_section_c_question(self, chapter: str, question: dict[str, Any]) -> None:
+        """Move a question to the archive (called when the 64-cap evicts it)."""
+        if not isinstance(question, dict):
+            return
+        try:
+            archive = self._load_section_c_archive()
+        except Exception:
+            archive = {}
+        chapter_rows = list(archive.get(chapter, []) or [])
+        qid = str(question.get("id", "") or "")
+        # Deduplicate by id
+        chapter_rows = [r for r in chapter_rows if str(r.get("id", "") or "") != qid]
+        chapter_rows.append(dict(question))
+        archive[chapter] = chapter_rows[-256:]  # keep up to 256 archived per chapter
+        try:
+            self._save_section_c_archive(archive)
+        except Exception:
+            pass
+
+    def _get_section_c_archived_questions(self, chapter: str | None = None) -> list[tuple[str, int, dict[str, Any]]]:
+        """Return list of (chapter, index, question_dict) from archive, optionally filtered by chapter."""
+        try:
+            data = self._load_section_c_archive()
+        except Exception:
+            return []
+        archive = data if isinstance(data, dict) else {}
+        chapters = [str(ch) for ch in getattr(self.engine, "CHAPTERS", []) or [] if str(ch or "").strip()]
+        result: list[tuple[str, int, dict[str, Any]]] = []
+        for ch in chapters:
+            if chapter and ch != chapter:
+                continue
+            rows = list(archive.get(ch, []) or [])
+            for idx, row in enumerate(rows):
+                if isinstance(row, dict):
+                    result.append((ch, idx, dict(row)))
+        return result
+
     def _get_section_c_questions(self, chapter: str) -> list[dict[str, Any]]:
         chapter_name = str(chapter or "").strip()
         if chapter_name not in getattr(self.engine, "CHAPTERS", []):
@@ -27425,7 +27887,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 break
         if not replaced:
             chapter_rows.append(normalized)
-        bank[chapter_name] = chapter_rows[-64:]
+        if len(chapter_rows) > 64:
+            evicted = chapter_rows[:-64]
+            chapter_rows = chapter_rows[-64:]
+            for evicted_q in evicted:
+                try:
+                    self._archive_section_c_question(chapter_name, evicted_q)
+                except Exception:
+                    pass
+        bank[chapter_name] = chapter_rows
         self._section_c_question_bank = bank
         self._section_c_question_bank_loaded = True
         if bool(persist):
@@ -27659,6 +28129,88 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         parsed["source"] = "ai_generated"
         saved = self._upsert_section_c_question(chapter_name, parsed, persist=True)
         return (saved if isinstance(saved, dict) else parsed), None
+
+    def _build_section_c_keyword_checklist(
+        self,
+        question: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """
+        Build a per-requirement keyword checklist from model_answer_outline + requirements.
+        Used as a self-marking guide when Ollama is unavailable.
+        Returns list of {part, requirement_text, marks, keywords: list[str]}.
+        """
+        requirements = list(question.get("requirements", []) or [])
+        model_outline = list(question.get("model_answer_outline", []) or [])
+        exhibits = list(question.get("exhibits", []) or [])
+        exhibit_text = " ".join(str(e or "") for e in exhibits).lower()
+
+        stop = {
+            "the", "and", "for", "with", "that", "this", "from", "into", "your",
+            "should", "would", "could", "which", "their", "there", "about", "than",
+            "section", "question", "response", "finance", "financial", "answer",
+            "requirement", "case", "study", "using", "provide", "must", "will",
+        }
+
+        def _extract_keywords(text: str, cap: int = 12) -> list[str]:
+            tokens = re.findall(r"[A-Za-z]{4,}", str(text or "").lower())
+            seen: set[str] = set()
+            out: list[str] = []
+            for tok in tokens:
+                if tok in stop or tok in seen:
+                    continue
+                seen.add(tok)
+                out.append(tok)
+                if len(out) >= cap:
+                    break
+            return out
+
+        checklist: list[dict[str, Any]] = []
+        for i, req in enumerate(requirements):
+            if not isinstance(req, dict):
+                continue
+            part = str(req.get("part", "") or "").strip()
+            req_text = str(req.get("requirement_text", "") or "").strip()
+            marks = max(0, int(req.get("marks", 0) or 0))
+            outline_text = str(model_outline[i] if i < len(model_outline) else "").strip()
+            combined = f"{req_text} {outline_text} {exhibit_text}"
+            keywords = _extract_keywords(combined, cap=12)
+            if keywords:
+                checklist.append({
+                    "part": part,
+                    "requirement_text": req_text[:160],
+                    "marks": marks,
+                    "keywords": keywords,
+                })
+        return checklist
+
+    def _format_section_c_self_marking_guide(
+        self,
+        question: dict[str, Any],
+    ) -> str:
+        """
+        Format a self-marking keyword checklist guide for use when AI is unavailable.
+        Learner reads the checklist and self-assesses coverage.
+        """
+        checklist = self._build_section_c_keyword_checklist(question)
+        if not checklist:
+            return "AI feedback unavailable. Review your answer against the requirements and model_answer_outline manually."
+        lines = [
+            "AI unavailable – self-marking guide",
+            "Tick the concepts you covered in your answer:",
+            "",
+        ]
+        for item in checklist:
+            part = str(item.get("part", "") or "").upper()
+            req_text = str(item.get("requirement_text", "") or "")
+            marks = int(item.get("marks", 0) or 0)
+            keywords = list(item.get("keywords", []) or [])
+            lines.append(f"Part ({part}) – {marks} marks: {req_text[:80]}")
+            if keywords:
+                kw_line = "  Concepts to check: " + ", ".join(keywords[:10])
+                lines.append(kw_line)
+            lines.append("")
+        lines.append("Estimate your score based on how many key concepts you addressed.")
+        return "\n".join(lines).strip()
 
     def _evaluate_section_c_response_deterministic(
         self,
@@ -28023,6 +28575,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         question: dict[str, Any],
         response_text: str,
         evaluation: dict[str, Any],
+        time_taken_seconds: int | None = None,
     ) -> None:
         # Extra safety: only persist evaluation payloads that match the app's expected shape.
         # This prevents malformed AI outputs from polluting attempt logs.
@@ -28085,6 +28638,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "question_id": str(question.get("id", "") or ""),
             "prompt": str(question.get("prompt", "") or "")[:400],
             "response_chars": int(len(str(response_text or ""))),
+            "time_taken_seconds": int(time_taken_seconds) if time_taken_seconds is not None else None,
             "evaluation": dict(evaluation or {}),
         }
         path = self._section_c_attempts_log_path()
@@ -28506,10 +29060,41 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 lines.append(f"- {str(item.get('criterion', '') or '').strip()}: {int(item.get('max_marks', 0) or 0)}")
         return "\n".join(lines).strip()
 
-    def _format_section_c_feedback_text(self, evaluation: dict[str, Any]) -> str:
+    def _format_section_c_model_answer_text(self, question: dict[str, Any]) -> str:
+        """Format the model answer outline for reveal after evaluation."""
+        outline = list(question.get("model_answer_outline", []) or [])
+        requirements = list(question.get("requirements", []) or [])
+        if not outline:
+            return "No model answer outline available for this question."
+        lines = ["Model Answer Outline", "=" * 20, ""]
+        for i, bullet in enumerate(outline):
+            bullet_text = clean_ai_tutor_text(str(bullet or "").strip())
+            if not bullet_text:
+                continue
+            # Try to match with requirement part label
+            part_label = ""
+            if i < len(requirements) and isinstance(requirements[i], dict):
+                part = str(requirements[i].get("part", "") or "").strip().upper()
+                marks = int(requirements[i].get("marks", 0) or 0)
+                if part:
+                    part_label = f"Part ({part}) – {marks} marks: "
+            lines.append(f"{part_label}{bullet_text}")
+            lines.append("")
+        total_marks = sum(int(r.get("marks", 0) or 0) for r in requirements if isinstance(r, dict))
+        if total_marks:
+            lines.append(f"Total: {total_marks} marks")
+        return "\n".join(lines).strip()
+
+    def _format_section_c_feedback_text(self, evaluation: dict[str, Any], *, time_taken_seconds: int | None = None) -> str:
         total = int(evaluation.get("total_mark", 0) or 0)
         max_mark = int(evaluation.get("max_mark", 0) or 0)
         lines = [f"Score: {total}/{max_mark}", ""]
+        if time_taken_seconds is not None and time_taken_seconds > 0:
+            mins_taken = time_taken_seconds // 60
+            max_mark_val = max(1, int(max_mark))
+            suggested_mins = round(max_mark_val * 1.8)
+            lines.append(f"Time: {mins_taken} min taken (suggested ~{suggested_mins} min for {max_mark_val} marks)")
+            lines.append("")
         rows = list(evaluation.get("criterion_scores", []) or [])
         if rows:
             lines.append("By criterion:")
@@ -29453,6 +30038,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         feedback_scroll.set_child(feedback_view)
         content.append(feedback_scroll)
 
+        model_answer_btn = Gtk.Button(label="Show model answer")
+        model_answer_btn.set_tooltip_text("Reveal the model answer outline after evaluating your response.")
+        model_answer_btn.set_visible(False)
+        content.append(model_answer_btn)
+
+        model_answer_label = Gtk.Label(label="Model answer")
+        model_answer_label.set_halign(Gtk.Align.START)
+        model_answer_label.add_css_class("caption")
+        model_answer_label.set_visible(False)
+        content.append(model_answer_label)
+        model_answer_view = Gtk.TextView()
+        model_answer_view.set_editable(False)
+        model_answer_view.set_cursor_visible(False)
+        model_answer_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        model_answer_scroll = Gtk.ScrolledWindow()
+        model_answer_scroll.set_min_content_height(140)
+        model_answer_scroll.set_child(model_answer_view)
+        model_answer_scroll.set_visible(False)
+        content.append(model_answer_scroll)
+
         rewrite_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         rewrite_box.add_css_class("subtle-panel")
         rewrite_title = Gtk.Label(label="Rewrite Loop")
@@ -29484,6 +30089,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         rewrite_box.append(rewrite_controls)
         content.append(rewrite_box)
 
+        footer_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        section_c_analytics_btn = Gtk.Button(label="Progress dashboard")
+        section_c_analytics_btn.set_tooltip_text("View your Section C score trends and criterion performance.")
+        section_c_analytics_btn.connect("clicked", lambda *_: self._open_section_c_analytics_dialog())
+        footer_controls.append(section_c_analytics_btn)
+        content.append(footer_controls)
+
         state: dict[str, Any] = {
             "chapter": str(initial_chapter),
             "question": None,
@@ -29496,6 +30108,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "section_c_intelligence": None,
             "workflow_token": self._issue_workflow_token("section_c"),
             "evaluation_token": 0,
+            "answer_start_time": None,
         }
 
         # Cancellation support for non-streaming AI calls (generate/evaluate).
@@ -29508,7 +30121,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return
             if buf is None:
                 return
-            buf.set_text(str(text or ""))
+            try:
+                render_markdown_to_buffer(str(text or ""), buf)
+            except Exception:
+                buf.set_text(str(text or ""))
 
         def _get_view_text(view: Gtk.TextView) -> str:
             try:
@@ -29756,6 +30372,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     state["rewrite_baseline_response"] = ""
                     _set_view_text(question_view, self._format_section_c_question_text(case))
                     _set_view_text(feedback_view, "")
+                    model_answer_btn.set_visible(False)
+                    model_answer_scroll.set_visible(False)
+                    model_answer_label.set_visible(False)
+                    import time as _time
+                    state["answer_start_time"] = _time.monotonic()
                     _refresh_rewrite_panel()
                     if err:
                         _set_status(f"Generated fallback case: {err}")
@@ -29779,6 +30400,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if len(response) < 8:
                 _set_status("Write a response first, then evaluate.")
                 return
+            elapsed_seconds: int | None = None
+            t0 = state.get("answer_start_time")
+            if isinstance(t0, float):
+                import time as _time
+                elapsed_seconds = max(0, int(_time.monotonic() - t0))
             section_c_cancel_event.clear()
             workflow_token = int(state.get("workflow_token", 0) or 0)
             evaluation_token = _section_c_bump_evaluation_token()
@@ -29814,10 +30440,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             question=question,
                             response_text=response,
                             evaluation=evaluation,
+                            time_taken_seconds=elapsed_seconds,
                         )
                 except Exception as exc:
                     evaluation = self._evaluate_section_c_response_deterministic(question, response)
                     warn = f"Evaluation fallback: {exc}"
+                    # Append self-marking guide as a note in the evaluation
+                    try:
+                        guide = self._format_section_c_self_marking_guide(question)
+                        if guide and isinstance(evaluation, dict):
+                            evaluation = dict(evaluation)
+                            existing_rationale = str(evaluation.get("examiner_rationale", "") or "").strip()
+                            evaluation["examiner_rationale"] = (guide + ("\n\n" + existing_rationale if existing_rationale else "")).strip()
+                    except Exception:
+                        pass
 
                 def _finish() -> bool:
                     if _section_c_is_stale(workflow_token, evaluation_token):
@@ -29854,7 +30490,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             state["rewrite_delta"] = None
                     except Exception:
                         state["rewrite_delta"] = None
-                    _set_view_text(feedback_view, self._format_section_c_feedback_text(evaluation))
+                    _set_view_text(feedback_view, self._format_section_c_feedback_text(evaluation, time_taken_seconds=elapsed_seconds))
+                    model_answer_btn.set_visible(True)
                     _refresh_section_c_intelligence(str(state.get("chapter", "") or ""))
                     _refresh_rewrite_panel()
                     if warn:
@@ -29967,6 +30604,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         rewrite_btn.connect("clicked", _on_rewrite_weakest)
         rewrite_recheck_btn.connect("clicked", _on_recheck_rewrite)
 
+        def _on_show_model_answer(*_args: object) -> None:
+            question = state.get("question")
+            if not isinstance(question, dict):
+                return
+            currently_visible = bool(model_answer_scroll.get_visible())
+            if currently_visible:
+                model_answer_scroll.set_visible(False)
+                model_answer_label.set_visible(False)
+                model_answer_btn.set_label("Show model answer")
+            else:
+                text = self._format_section_c_model_answer_text(question)
+                _set_view_text(model_answer_view, text)
+                model_answer_scroll.set_visible(True)
+                model_answer_label.set_visible(True)
+                model_answer_btn.set_label("Hide model answer")
+
+        model_answer_btn.connect("clicked", _on_show_model_answer)
+
         def _on_clear_answer(*_args) -> None:
             _set_view_text(answer_view, "")
             state["rewrite_delta"] = None
@@ -30043,6 +30698,557 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         _load_saved_case(initial_chapter, question_index=initial_question_index)
         _refresh_rewrite_panel()
+        dialog.present()
+
+    def _open_section_c_analytics_dialog(self) -> None:
+        """Open a Section C analytics dashboard showing score trends and criterion performance."""
+        if not self._ensure_chapters_ready("Section C Analytics"):
+            return
+        try:
+            _cr_label = self._constructed_response_button_label()
+        except Exception:
+            _cr_label = "Section C"
+
+        # Read all attempts from the JSONL log
+        attempts: list[dict[str, Any]] = []
+        try:
+            raw = self._read_text_file(self._section_c_attempts_log_path())
+            for line in (raw or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                    if isinstance(payload, dict):
+                        attempts.append(payload)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        dialog = self._new_dialog(
+            title=f"{_cr_label} Progress Dashboard",
+            transient_for=self,
+            modal=False,
+        )
+        dialog.add_buttons("_Close", Gtk.ResponseType.CLOSE)
+        try:
+            dialog.set_default_size(720, 540)
+        except Exception:
+            pass
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+
+        header = Gtk.Label(label=f"{_cr_label} – Performance Analytics")
+        header.set_halign(Gtk.Align.START)
+        header.add_css_class("section-title")
+        content.append(header)
+
+        if not attempts:
+            empty_label = Gtk.Label(
+                label="No attempts recorded yet.\nComplete at least one Section C practice and evaluate your answer to see analytics here."
+            )
+            empty_label.set_halign(Gtk.Align.START)
+            empty_label.set_wrap(True)
+            empty_label.add_css_class("muted")
+            content.append(empty_label)
+            dialog.connect("response", lambda d, _r: d.destroy())
+            dialog.present()
+            return
+
+        # Compute aggregate stats
+        total_attempts = len(attempts)
+        score_pcts: list[float] = []
+        criterion_totals: dict[str, list[float]] = {}  # criterion -> [score_pct, ...]
+        chapters_attempted: set[str] = set()
+        all_chapters: set[str] = set(str(ch) for ch in getattr(self.engine, "CHAPTERS", []) or [])
+        times_taken: list[int] = []
+
+        for att in attempts:
+            ch = str(att.get("chapter", "") or "").strip()
+            if ch:
+                chapters_attempted.add(ch)
+            ev = att.get("evaluation")
+            if not isinstance(ev, dict):
+                continue
+            total_mark = int(ev.get("total_mark", 0) or 0)
+            max_mark = int(ev.get("max_mark", 0) or 0)
+            if max_mark > 0:
+                score_pcts.append(round(total_mark / max_mark * 100.0, 1))
+            t_secs = att.get("time_taken_seconds")
+            if t_secs is not None:
+                try:
+                    times_taken.append(max(0, int(t_secs)))
+                except Exception:
+                    pass
+            for row in list(ev.get("criterion_scores", []) or []):
+                if not isinstance(row, dict):
+                    continue
+                crit = str(row.get("criterion", "") or "").strip()
+                if not crit:
+                    continue
+                row_max = int(row.get("max_mark", 1) or 1)
+                row_score = int(row.get("score", 0) or 0)
+                if row_max > 0:
+                    criterion_totals.setdefault(crit, []).append(round(row_score / row_max * 100.0, 1))
+
+        # Build summary text
+        lines: list[str] = []
+        if score_pcts:
+            avg_pct = round(sum(score_pcts) / len(score_pcts), 1)
+            first_pct = score_pcts[0]
+            last_pct = score_pcts[-1]
+            best_pct = max(score_pcts)
+            lines.append(f"Total attempts: {total_attempts}")
+            lines.append(f"Average score: {avg_pct}%  |  First: {first_pct}%  |  Latest: {last_pct}%  |  Best: {best_pct}%")
+            improvement = round(last_pct - first_pct, 1)
+            direction = "▲" if improvement > 0 else ("▼" if improvement < 0 else "→")
+            lines.append(f"Improvement (first → latest): {direction} {abs(improvement)}%")
+            lines.append("")
+
+        if times_taken:
+            avg_secs = int(sum(times_taken) / len(times_taken))
+            lines.append(f"Average time per attempt: {avg_secs // 60} min {avg_secs % 60} sec")
+            lines.append("")
+
+        chapters_not_attempted = sorted(all_chapters - chapters_attempted)
+        lines.append(f"Chapters attempted: {len(chapters_attempted)} / {len(all_chapters)}")
+        if chapters_not_attempted:
+            not_att_str = ", ".join(list(chapters_not_attempted)[:5])
+            if len(chapters_not_attempted) > 5:
+                not_att_str += f" (+{len(chapters_not_attempted) - 5} more)"
+            lines.append(f"Not yet attempted: {not_att_str}")
+        lines.append("")
+
+        # Recent score trend (last 10)
+        if len(score_pcts) >= 2:
+            recent = score_pcts[-10:]
+            lines.append(f"Recent scores (last {len(recent)} attempts): {' → '.join(str(s) + '%' for s in recent)}")
+            lines.append("")
+
+        # Per-criterion analysis
+        if criterion_totals:
+            lines.append("By criterion (average % score across all attempts):")
+            sorted_criteria = sorted(criterion_totals.items(), key=lambda x: sum(x[1]) / len(x[1]))
+            for crit, pcts in sorted_criteria:
+                avg_c = round(sum(pcts) / len(pcts), 1)
+                count_c = len(pcts)
+                lines.append(f"  {crit[:60]}: {avg_c}% (over {count_c} evaluation{'s' if count_c != 1 else ''})")
+            lines.append("")
+            # Surface weak criteria
+            weak = [(crit, round(sum(pcts) / len(pcts), 1)) for crit, pcts in sorted_criteria if sum(pcts) / len(pcts) < 60.0]
+            if weak:
+                lines.append("⚠ Consistently weak criteria (below 60%):")
+                for crit, avg_c in weak[:3]:
+                    lines.append(f"  • {crit[:60]}: {avg_c}% average")
+
+        summary_text = "\n".join(lines)
+
+        analytics_view = Gtk.TextView()
+        analytics_view.set_editable(False)
+        analytics_view.set_cursor_visible(False)
+        analytics_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        analytics_view.set_monospace(False)
+        buf = analytics_view.get_buffer()
+        buf.set_text(summary_text)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_min_content_height(380)
+        scroll.set_child(analytics_view)
+        content.append(scroll)
+
+        dialog.connect("response", lambda d, _r: d.destroy())
+        dialog.present()
+
+    def _open_section_c_exam_simulation_dialog(self) -> None:
+        """
+        Full-exam simulation: 2 Section C questions (from different chapters), 81-minute shared timer.
+        After both answers are submitted, evaluates each and presents combined X/40 score.
+        Attempt is logged with mode='exam_simulation'.
+        """
+        if not self._ensure_chapters_ready("Section C Exam Simulation"):
+            return
+        chapters = [str(ch) for ch in list(getattr(self.engine, "CHAPTERS", []) or []) if str(ch or "").strip()]
+        if len(chapters) < 1:
+            self._show_text_dialog(
+                "Exam Simulation",
+                "No study content loaded. Add a module first.",
+                Gtk.MessageType.ERROR,
+            )
+            return
+
+        try:
+            _cr_label = self._constructed_response_button_label()
+        except Exception:
+            _cr_label = "Section C"
+
+        # Auto-select 2 chapters: weakest first (from intelligence), then a different one
+        try:
+            intel = self._build_section_c_intelligence_snapshot(chapters[0])
+            weakest_ch = str(intel.get("recent_section_c_weakest_criterion", "") or "").strip()
+        except Exception:
+            weakest_ch = ""
+
+        if not bool(getattr(self, "_section_c_question_bank_loaded", False)):
+            self._load_section_c_question_bank()
+
+        bank = getattr(self, "_section_c_question_bank", {}) or {}
+        chapters_with_questions = [ch for ch in chapters if bank.get(ch)]
+        if len(chapters_with_questions) < 2:
+            # Fewer than 2 chapters have banked questions – use any 2 chapter names for generation
+            selected_chapters = chapters[:2] if len(chapters) >= 2 else (chapters * 2)[:2]
+        else:
+            # Prefer weakest chapter first, then a different one
+            if weakest_ch and weakest_ch in chapters_with_questions:
+                ch1 = weakest_ch
+                remaining = [c for c in chapters_with_questions if c != ch1]
+                ch2 = remaining[0] if remaining else chapters_with_questions[-1]
+            else:
+                ch1, ch2 = chapters_with_questions[0], chapters_with_questions[1]
+            selected_chapters = [ch1, ch2]
+
+        EXAM_TOTAL_MINUTES = 81
+        EXAM_TOTAL_SECONDS = EXAM_TOTAL_MINUTES * 60
+
+        dialog = self._new_dialog(
+            title=f"{_cr_label} Exam Simulation (2 × 20 marks, {EXAM_TOTAL_MINUTES} min)",
+            transient_for=self,
+            modal=False,
+        )
+        dialog.add_buttons("_Close", Gtk.ResponseType.CLOSE)
+        try:
+            dialog.set_default_size(960, 800)
+        except Exception:
+            pass
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+
+        header = Gtk.Label(label=f"Exam Simulation – 2 Questions × 20 marks = 40 marks total ({EXAM_TOTAL_MINUTES} minutes)")
+        header.set_halign(Gtk.Align.START)
+        header.add_css_class("section-title")
+        content.append(header)
+
+        subtitle = Gtk.Label(
+            label="Load or generate both questions, write your answers under timed conditions, then submit all for combined feedback."
+        )
+        subtitle.set_halign(Gtk.Align.START)
+        subtitle.set_wrap(True)
+        subtitle.add_css_class("muted")
+        content.append(subtitle)
+
+        # Timer row
+        timer_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        timer_label = Gtk.Label(label=f"Time remaining: {EXAM_TOTAL_MINUTES}:00")
+        timer_label.set_halign(Gtk.Align.START)
+        timer_label.add_css_class("section-title")
+        start_timer_btn = Gtk.Button(label="Start exam timer")
+        stop_timer_btn = Gtk.Button(label="Stop timer")
+        stop_timer_btn.set_sensitive(False)
+        timer_row.append(timer_label)
+        timer_row.append(start_timer_btn)
+        timer_row.append(stop_timer_btn)
+        content.append(timer_row)
+
+        status_label = Gtk.Label(label="Load or generate both questions to begin.")
+        status_label.set_halign(Gtk.Align.START)
+        status_label.add_css_class("muted")
+        content.append(status_label)
+
+        sim_state: dict[str, Any] = {
+            "questions": [None, None],
+            "busy": False,
+            "timer_remaining": EXAM_TOTAL_SECONDS,
+            "timer_id": None,
+            "timer_running": False,
+            "evaluations": [None, None],
+            "workflow_token": self._issue_workflow_token("section_c_sim"),
+        }
+        sim_cancel_event = threading.Event()
+
+        def _set_status(text: str) -> None:
+            status_label.set_label(str(text or ""))
+
+        def _set_busy(val: bool) -> None:
+            sim_state["busy"] = bool(val)
+
+        def _update_timer_label() -> None:
+            remaining = max(0, int(sim_state.get("timer_remaining", 0) or 0))
+            mins = remaining // 60
+            secs = remaining % 60
+            timer_label.set_label(f"Time remaining: {mins}:{secs:02d}")
+            if remaining == 0:
+                timer_label.add_css_class("error-label")
+            else:
+                try:
+                    timer_label.remove_css_class("error-label")
+                except Exception:
+                    pass
+
+        def _tick_timer() -> bool:
+            if not bool(sim_state.get("timer_running", False)):
+                return False
+            remaining = int(sim_state.get("timer_remaining", 0) or 0)
+            remaining = max(0, remaining - 1)
+            sim_state["timer_remaining"] = remaining
+            _update_timer_label()
+            if remaining <= 0:
+                sim_state["timer_running"] = False
+                sim_state["timer_id"] = None
+                _set_status("Time is up! Submit your answers now.")
+                return False
+            return True
+
+        def _on_start_timer(*_args: object) -> None:
+            if bool(sim_state.get("timer_running", False)):
+                return
+            sim_state["timer_running"] = True
+            start_timer_btn.set_sensitive(False)
+            stop_timer_btn.set_sensitive(True)
+            tid = GLib.timeout_add(1000, _tick_timer)
+            sim_state["timer_id"] = tid
+
+        def _on_stop_timer(*_args: object) -> None:
+            sim_state["timer_running"] = False
+            tid = sim_state.get("timer_id")
+            if tid:
+                try:
+                    GLib.source_remove(int(tid))
+                except Exception:
+                    pass
+                sim_state["timer_id"] = None
+            start_timer_btn.set_sensitive(True)
+            stop_timer_btn.set_sensitive(False)
+
+        start_timer_btn.connect("clicked", _on_start_timer)
+        stop_timer_btn.connect("clicked", _on_stop_timer)
+
+        # Two question panels
+        panels_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+
+        question_views: list[Gtk.TextView] = []
+        answer_views: list[Gtk.TextView] = []
+        q_status_labels: list[Gtk.Label] = []
+        gen_btns: list[Gtk.Button] = []
+
+        def _set_view_text(view: Gtk.TextView, text: str) -> None:
+            try:
+                buf = view.get_buffer()
+                try:
+                    render_markdown_to_buffer(str(text or ""), buf)
+                except Exception:
+                    buf.set_text(str(text or ""))
+            except Exception:
+                pass
+
+        def _get_view_text(view: Gtk.TextView) -> str:
+            try:
+                buf = view.get_buffer()
+                start = buf.get_start_iter()
+                end = buf.get_end_iter()
+                return str(buf.get_text(start, end, True) or "")
+            except Exception:
+                return ""
+
+        for q_idx in range(2):
+            q_frame_label = Gtk.Label(label=f"Question {q_idx + 1} – {selected_chapters[q_idx]} (20 marks)")
+            q_frame_label.set_halign(Gtk.Align.START)
+            q_frame_label.add_css_class("caption")
+            panels_box.append(q_frame_label)
+
+            q_ctrl = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            gen_btn = Gtk.Button(label=f"Generate Q{q_idx + 1}")
+            q_status = Gtk.Label(label="Not loaded")
+            q_status.set_halign(Gtk.Align.START)
+            q_status.add_css_class("muted")
+            q_ctrl.append(gen_btn)
+            q_ctrl.append(q_status)
+            panels_box.append(q_ctrl)
+
+            q_view = Gtk.TextView()
+            q_view.set_editable(False)
+            q_view.set_cursor_visible(False)
+            q_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+            q_scroll = Gtk.ScrolledWindow()
+            q_scroll.set_min_content_height(120)
+            q_scroll.set_child(q_view)
+            panels_box.append(q_scroll)
+
+            a_label = Gtk.Label(label=f"Your answer to Q{q_idx + 1}")
+            a_label.set_halign(Gtk.Align.START)
+            a_label.add_css_class("caption")
+            panels_box.append(a_label)
+            a_view = Gtk.TextView()
+            a_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+            a_scroll = Gtk.ScrolledWindow()
+            a_scroll.set_min_content_height(120)
+            a_scroll.set_child(a_view)
+            panels_box.append(a_scroll)
+
+            question_views.append(q_view)
+            answer_views.append(a_view)
+            q_status_labels.append(q_status)
+            gen_btns.append(gen_btn)
+
+        content.append(panels_box)
+
+        # Submit all + results
+        submit_all_btn = Gtk.Button(label="Submit all answers for evaluation")
+        submit_all_btn.set_sensitive(False)
+        content.append(submit_all_btn)
+
+        results_label = Gtk.Label(label="Results")
+        results_label.set_halign(Gtk.Align.START)
+        results_label.add_css_class("caption")
+        results_label.set_visible(False)
+        content.append(results_label)
+        results_view = Gtk.TextView()
+        results_view.set_editable(False)
+        results_view.set_cursor_visible(False)
+        results_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        results_scroll = Gtk.ScrolledWindow()
+        results_scroll.set_min_content_height(160)
+        results_scroll.set_child(results_view)
+        results_scroll.set_visible(False)
+        content.append(results_scroll)
+
+        def _check_submit_ready() -> None:
+            q1_ready = isinstance(sim_state["questions"][0], dict)
+            q2_ready = isinstance(sim_state["questions"][1], dict)
+            submit_all_btn.set_sensitive(q1_ready and q2_ready and not bool(sim_state.get("busy", False)))
+
+        def _make_generate_handler(q_idx: int):  # type: ignore[return]
+            def _on_gen(*_args: object) -> None:
+                if bool(sim_state.get("busy", False)):
+                    return
+                chapter = selected_chapters[q_idx]
+                _set_busy(True)
+                gen_btns[q_idx].set_sensitive(False)
+                q_status_labels[q_idx].set_label("Generating…")
+                sim_cancel_event.clear()
+                workflow_token = int(sim_state.get("workflow_token", 0) or 0)
+
+                def _worker() -> None:
+                    try:
+                        case, err = self._generate_section_c_question(chapter, snapshot=None)
+                    except Exception as exc:
+                        case = self._default_section_c_question(chapter)
+                        err = str(exc)
+
+                    def _finish() -> bool:
+                        if int(sim_state.get("workflow_token", 0) or 0) != workflow_token:
+                            return False
+                        sim_state["questions"][q_idx] = self._snapshot_question_payload(case) or dict(case) if isinstance(case, dict) else None
+                        if isinstance(case, dict):
+                            _set_view_text(question_views[q_idx], self._format_section_c_question_text(case))
+                            q_status_labels[q_idx].set_label("Ready" + (f" ({err})" if err else ""))
+                        else:
+                            q_status_labels[q_idx].set_label("Generation failed")
+                        gen_btns[q_idx].set_sensitive(True)
+                        _set_busy(False)
+                        _check_submit_ready()
+                        return False
+
+                    GLib.idle_add(_finish)
+
+                StudyPlanGUI._start_managed_background_thread(self, _worker)
+
+            return _on_gen
+
+        for q_idx in range(2):
+            gen_btns[q_idx].connect("clicked", _make_generate_handler(q_idx))
+
+        def _on_submit_all(*_args: object) -> None:
+            if bool(sim_state.get("busy", False)):
+                return
+            q1 = sim_state["questions"][0]
+            q2 = sim_state["questions"][1]
+            if not (isinstance(q1, dict) and isinstance(q2, dict)):
+                _set_status("Generate both questions first.")
+                return
+            r1 = _get_view_text(answer_views[0]).strip()
+            r2 = _get_view_text(answer_views[1]).strip()
+            if not r1 or not r2:
+                _set_status("Write answers to both questions before submitting.")
+                return
+            _set_busy(True)
+            submit_all_btn.set_sensitive(False)
+            _set_status("Evaluating both answers…")
+            # Stop timer
+            _on_stop_timer()
+            elapsed_secs = EXAM_TOTAL_SECONDS - max(0, int(sim_state.get("timer_remaining", 0) or 0))
+            workflow_token = int(sim_state.get("workflow_token", 0) or 0)
+
+            def _worker() -> None:
+                results: list[dict[str, Any] | None] = [None, None]
+                for q_idx, (question, response) in enumerate([(q1, r1), (q2, r2)]):
+                    try:
+                        ev, _warn = self._evaluate_section_c_response(
+                            question,
+                            response,
+                            cancel_check=lambda: bool(sim_cancel_event.is_set()),
+                        )
+                        results[q_idx] = ev
+                        try:
+                            self._append_section_c_attempt(
+                                chapter=str(question.get("chapter", selected_chapters[q_idx]) or ""),
+                                question=question,
+                                response_text=response,
+                                evaluation=ev,
+                                time_taken_seconds=elapsed_secs // 2 if elapsed_secs else None,
+                            )
+                        except Exception:
+                            pass
+                    except Exception:
+                        results[q_idx] = self._evaluate_section_c_response_deterministic(question, response)
+
+                def _finish() -> bool:
+                    if int(sim_state.get("workflow_token", 0) or 0) != workflow_token:
+                        return False
+                    sim_state["evaluations"] = results
+                    ev1 = results[0]
+                    ev2 = results[1]
+                    m1 = int(ev1.get("total_mark", 0) or 0) if isinstance(ev1, dict) else 0
+                    x1 = int(ev1.get("max_mark", 20) or 20) if isinstance(ev1, dict) else 20
+                    m2 = int(ev2.get("total_mark", 0) or 0) if isinstance(ev2, dict) else 0
+                    x2 = int(ev2.get("max_mark", 20) or 20) if isinstance(ev2, dict) else 20
+                    combined_mark = m1 + m2
+                    combined_max = x1 + x2
+                    combined_pct = round(combined_mark / combined_max * 100.0, 1) if combined_max > 0 else 0.0
+                    pass_fail = "PASS" if combined_pct >= 50.0 else "FAIL"
+                    result_lines = [
+                        f"Combined score: {combined_mark}/{combined_max} ({combined_pct}%) – {pass_fail}",
+                        f"Time used: {elapsed_secs // 60} min {elapsed_secs % 60} sec of {EXAM_TOTAL_MINUTES} min",
+                        "",
+                        f"Q1 ({selected_chapters[0]}): {m1}/{x1}",
+                        self._format_section_c_feedback_text(ev1) if isinstance(ev1, dict) else "Evaluation unavailable",
+                        "",
+                        f"Q2 ({selected_chapters[1]}): {m2}/{x2}",
+                        self._format_section_c_feedback_text(ev2) if isinstance(ev2, dict) else "Evaluation unavailable",
+                    ]
+                    _set_view_text(results_view, "\n".join(result_lines))
+                    results_label.set_visible(True)
+                    results_scroll.set_visible(True)
+                    _set_status(f"Simulation complete. Combined: {combined_mark}/{combined_max} ({combined_pct}%) – {pass_fail}")
+                    _set_busy(False)
+                    return False
+
+                GLib.idle_add(_finish)
+
+            StudyPlanGUI._start_managed_background_thread(self, _worker)
+
+        submit_all_btn.connect("clicked", _on_submit_all)
+
+        def _on_sim_destroy(*_args: object) -> None:
+            sim_cancel_event.set()
+            try:
+                sim_state["timer_running"] = False
+                tid = sim_state.get("timer_id")
+                if tid:
+                    GLib.source_remove(int(tid))
+            except Exception:
+                pass
+
+        dialog.connect("destroy", _on_sim_destroy)
+        dialog.connect("response", lambda d, _r: d.destroy())
         dialog.present()
 
     def _open_section_c_browse_dialog(self) -> None:
@@ -30137,6 +31343,80 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         open_btn.connect("clicked", _on_open_clicked)
         content.append(open_btn)
+        archived_btn = Gtk.Button(label="Browse archived questions")
+        archived_btn.set_tooltip_text("View questions that were evicted from the main bank (max 64 per chapter). Opening one moves it back to the live bank.")
+
+        def _on_open_archived(*_args: object) -> None:
+            try:
+                archived_rows = self._get_section_c_archived_questions()
+            except Exception:
+                archived_rows = []
+            if not archived_rows:
+                self._show_text_dialog(
+                    "Archived Questions",
+                    "No archived questions found. Questions are archived when the bank reaches the 64-question cap per chapter.",
+                    Gtk.MessageType.INFO,
+                )
+                return
+            # Show a simple picker dialog
+            pick_dialog = self._new_dialog(title="Archived Section C Questions", transient_for=dialog, modal=True)
+            pick_dialog.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Restore & Open", Gtk.ResponseType.OK)
+            try:
+                pick_dialog.set_default_size(640, 360)
+            except Exception:
+                pass
+            pc = pick_dialog.get_content_area()
+            pc.set_spacing(6)
+            pc.append(Gtk.Label(label="Select an archived question to restore it to the live bank and open for practice."))
+            arc_scroll = Gtk.ScrolledWindow()
+            arc_scroll.set_min_content_height(240)
+            arc_listbox = Gtk.ListBox()
+            arc_listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+            for ch, idx, q_dict in archived_rows:
+                arc_row = Gtk.ListBoxRow()
+                arc_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+                ch_short = (ch[:40] + "…") if len(ch) > 40 else ch
+                arc_title = str(q_dict.get("prompt", "") or q_dict.get("scenario", "") or "Case")[:60]
+                arc_left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                arc_left.append(Gtk.Label(label=ch_short, xalign=0, halign=Gtk.Align.START))
+                arc_left.append(Gtk.Label(label=f"Q{idx + 1}: {arc_title}", xalign=0, halign=Gtk.Align.START))
+                arc_box.append(arc_left)
+                arc_row.set_child(arc_box)
+                arc_row._section_c_archived_data = (ch, idx, q_dict)  # type: ignore[attr-defined]
+                arc_listbox.append(arc_row)
+            arc_scroll.set_child(arc_listbox)
+            pc.append(arc_scroll)
+
+            def _on_arc_response(_d: object, response_id: int) -> None:
+                if response_id == Gtk.ResponseType.OK:
+                    sel = arc_listbox.get_selected_row()
+                    if sel is None:
+                        pick_dialog.destroy()
+                        return
+                    arc_data = getattr(sel, "_section_c_archived_data", None)
+                    if isinstance(arc_data, tuple) and len(arc_data) == 3:
+                        ch, _idx, q_dict = arc_data
+                        try:
+                            self._upsert_section_c_question(ch, q_dict, persist=True)
+                        except Exception:
+                            pass
+                        pick_dialog.destroy()
+                        dialog.destroy()
+                        self._open_section_c_practice_dialog(topic=ch)
+                    else:
+                        pick_dialog.destroy()
+                else:
+                    pick_dialog.destroy()
+
+            pick_dialog.connect("response", _on_arc_response)
+            pick_dialog.present()
+
+        archived_btn.connect("clicked", _on_open_archived)
+        content.append(archived_btn)
+        analytics_btn = Gtk.Button(label="View progress dashboard")
+        analytics_btn.set_tooltip_text("See score trends, per-criterion performance, and improvement rate.")
+        analytics_btn.connect("clicked", lambda *_: self._open_section_c_analytics_dialog())
+        content.append(analytics_btn)
         dialog.connect("response", lambda d, _r: d.destroy())
         dialog.present()
 
@@ -32571,13 +33851,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 setattr(self, "_coach_pick_topic", coach_topic)
             except Exception:
                 pass
-            current_topic = ""
+            # Always align current_topic with the coach pick so the tutor workspace
+            # reflects the recommended topic regardless of the previous selection.
+            self._set_current_topic(coach_topic, invalidate_snapshot=False)
+            # When no active quiz is guarding the cognitive state, also sync
+            # active_chapter so the tutor context label and status bar show the
+            # coach-recommended topic immediately.
             try:
-                current_topic = str(getattr(self, "current_topic", "") or "").strip()
+                cog = self._cognitive_state()
+                if isinstance(cog, CognitiveState) and not bool(getattr(cog, "quiz_active", False)):
+                    lock_fn = getattr(self, "_cognitive_state_lock_for", None)
+                    lock = lock_fn(cog) if callable(lock_fn) else None
+                    if lock is None:
+                        lock = threading.RLock()
+                    with locked_cognitive_state(cog, lock):
+                        cog.working_memory.active_chapter = coach_topic
             except Exception:
-                current_topic = ""
-            if bool(getattr(self, "coach_only_view", False)) or not current_topic:
-                self._set_current_topic(coach_topic, invalidate_snapshot=False)
+                pass
         except Exception:
             pass
 
@@ -42054,7 +43344,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         if getattr(self, "_dialog_smoke_mode", False):
             dialog = self._harden_window(
-                Gtk.FileChooserDialog(
+                Gtk.FileChooserDialog(  # gtk4_lint:ignore
                     title="Import Syllabus (JSON)",
                     transient_for=self,
                     action=Gtk.FileChooserAction.OPEN,
