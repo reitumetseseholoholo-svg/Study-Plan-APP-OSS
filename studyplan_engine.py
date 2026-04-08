@@ -13285,6 +13285,108 @@ class StudyPlanEngine:
             "output_path": output_path,
         }
 
+    def export_anki_note_tsv(self, output_path: str, *, chapters: list[str] | None = None) -> dict:
+        """Export question bank as Anki-importable tab-separated notes (Basic note type).
+
+        The output file uses Anki's plain-text import format:
+        - Tab-separated, no header row.
+        - Column 1 (Front): question text with lettered options appended.
+        - Column 2 (Back): correct answer letter + explanation.
+        - Column 3 (Tags): chapter name, FSRS stability bucket, and due-status tags.
+
+        Import into Anki via File → Import, selecting "Fields separated by: Tab" and
+        "Note Type: Basic".
+
+        Parameters
+        ----------
+        output_path:
+            Destination ``.tsv`` path.
+        chapters:
+            Optional list of chapter names.  Defaults to all chapters.
+
+        Returns
+        -------
+        dict with keys: ``rows_written``, ``chapters``, ``output_path``
+        """
+        target_chapters = chapters if isinstance(chapters, list) else self.CHAPTERS
+        rows_written = 0
+        chapters_included: list[str] = []
+        today = datetime.date.today()
+        tmp_path = output_path + ".tmp"
+        try:
+            with open(tmp_path, "w", newline="", encoding="utf-8") as fh:
+                for chapter in target_chapters:
+                    questions = self.QUESTIONS.get(chapter, [])
+                    srs_list = self.srs_data.get(chapter, [])
+                    if not isinstance(questions, list) or not questions:
+                        continue
+                    chapter_rows = 0
+                    # Build a safe tag from the chapter name (Anki tags cannot have spaces).
+                    chapter_tag = chapter.replace(" ", "_").replace(":", "").replace("/", "_")
+                    for idx, q in enumerate(questions):
+                        if not isinstance(q, dict):
+                            continue
+                        question_text = str(q.get("question", "") or "").strip()
+                        if not question_text:
+                            continue
+                        options: list[str] = list(q.get("options") or [])
+                        correct = str(q.get("correct", "") or "").strip()
+                        explanation = str(q.get("explanation", "") or "").strip()
+                        # Build front: question + lettered options.
+                        letter_map = {opt: chr(ord("A") + i) for i, opt in enumerate(options)}
+                        options_block = "\n".join(
+                            f"{chr(ord('A') + i)}. {opt}" for i, opt in enumerate(options)
+                        )
+                        front = f"{question_text}\n\n{options_block}" if options else question_text
+                        # Build back: correct answer + optional explanation.
+                        correct_letter = letter_map.get(correct, "?")
+                        back = f"{correct_letter}. {correct}"
+                        if explanation:
+                            back += f"\n\n{explanation}"
+                        # Build tags.
+                        tags_parts = [chapter_tag]
+                        srs: dict = srs_list[idx] if idx < len(srs_list) and isinstance(srs_list[idx], dict) else {}
+                        fsrs_stability = srs.get("fsrs_stability")
+                        if fsrs_stability is not None:
+                            try:
+                                s = float(fsrs_stability)
+                                if s < 7:
+                                    tags_parts.append("fsrs:fragile")
+                                elif s < 30:
+                                    tags_parts.append("fsrs:moderate")
+                                else:
+                                    tags_parts.append("fsrs:stable")
+                            except (TypeError, ValueError):
+                                pass
+                        if self.is_overdue(srs, today):
+                            tags_parts.append("due:overdue")
+                        elif srs.get("last_review") is None:
+                            tags_parts.append("due:new")
+                        tags_str = " ".join(tags_parts)
+                        # Escape tabs and newlines within fields (Anki TSV uses \n in fields as line breaks).
+                        def _esc(text: str) -> str:
+                            return text.replace("\t", " ").replace("\r", "")
+                        row = "\t".join([_esc(front), _esc(back), _esc(tags_str)])
+                        fh.write(row + "\n")
+                        chapter_rows += 1
+                    if chapter_rows:
+                        chapters_included.append(chapter)
+                        rows_written += chapter_rows
+            os.replace(tmp_path, output_path)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        return {
+            "rows_written": rows_written,
+            "chapters": chapters_included,
+            "output_path": output_path,
+        }
+
     # ------------------------------------------------------------------
     # Module versioning helpers
     # ------------------------------------------------------------------

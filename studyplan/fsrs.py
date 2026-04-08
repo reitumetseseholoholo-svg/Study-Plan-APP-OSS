@@ -394,3 +394,141 @@ def _safe_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+# ---------------------------------------------------------------------------
+# FSRS weight / retention optimizer
+# ---------------------------------------------------------------------------
+
+
+def optimize_desired_retention_from_history(
+    review_history: list[dict[str, Any]],
+    *,
+    scheduler: "FSRSScheduler | None" = None,
+    min_retention: float = 0.70,
+    max_retention: float = 0.99,
+    steps: int = 30,
+) -> dict[str, Any]:
+    """Suggest an optimal ``desired_retention`` target from the user's review history.
+
+    Each entry in *review_history* must contain:
+    - ``fsrs_stability`` (float): FSRS stability at the time of the review
+    - ``elapsed_days`` (int): days since last review
+    - ``recalled`` (bool): whether the user recalled the card (rating ≥ 2)
+
+    The function sweeps ``desired_retention`` across [min_retention, max_retention]
+    and finds the value that minimises binary-cross-entropy loss between predicted
+    retrievability and actual recall outcomes.  In other words: "what retention
+    target best matches how this specific learner actually forgets?"
+
+    Returns a dict with keys:
+    - ``suggested_retention`` (float): the best-fit target in [0.70, 0.99]
+    - ``current_avg_predicted_r`` (float): mean predicted R across all reviews
+    - ``actual_recall_rate`` (float): fraction of reviews where user recalled
+    - ``sample_count`` (int): number of usable review events
+    - ``loss_at_suggestion`` (float): BCE loss at the suggested retention
+    """
+    sched = scheduler or FSRSScheduler()
+
+    # Build a list of (stability, elapsed_days, recalled) triples.
+    usable: list[tuple[float, int, bool]] = []
+    for entry in review_history:
+        if not isinstance(entry, dict):
+            continue
+        s_raw = entry.get("fsrs_stability")
+        e_raw = entry.get("elapsed_days")
+        r_raw = entry.get("recalled")
+        if s_raw is None or e_raw is None or r_raw is None:
+            continue
+        try:
+            s = float(s_raw)
+            e = int(e_raw)
+        except (TypeError, ValueError):
+            continue
+        if s <= 0 or e < 0:
+            continue
+        usable.append((s, e, bool(r_raw)))
+
+    if not usable:
+        return {
+            "suggested_retention": DEFAULT_DESIRED_RETENTION,
+            "current_avg_predicted_r": 0.0,
+            "actual_recall_rate": 0.0,
+            "sample_count": 0,
+            "loss_at_suggestion": 0.0,
+        }
+
+    def _bce_loss(retention_target: float) -> float:
+        """Binary cross-entropy between predicted R(t) and actual recall."""
+        eps = 1e-9
+        total = 0.0
+        for s, e, recalled in usable:
+            r_pred = sched._retrievability(s, e)
+            r_pred = max(eps, min(1.0 - eps, r_pred))
+            if recalled:
+                total -= math.log(r_pred)
+            else:
+                total -= math.log(1.0 - r_pred)
+        return total / max(1, len(usable))
+
+    # Grid search over retention values.
+    step_size = (max_retention - min_retention) / max(1, steps - 1)
+    best_retention = float(DEFAULT_DESIRED_RETENTION)
+    best_loss = float("inf")
+    for i in range(steps):
+        candidate = min_retention + i * step_size
+        loss = _bce_loss(candidate)
+        if loss < best_loss:
+            best_loss = loss
+            best_retention = candidate
+
+    # Compute diagnostics.
+    total_r = sum(sched._retrievability(s, e) for s, e, _ in usable)
+    avg_predicted_r = total_r / max(1, len(usable))
+    actual_recall_rate = sum(1 for _, _, recalled in usable if recalled) / max(1, len(usable))
+
+    return {
+        "suggested_retention": round(best_retention, 3),
+        "current_avg_predicted_r": round(avg_predicted_r, 3),
+        "actual_recall_rate": round(actual_recall_rate, 3),
+        "sample_count": len(usable),
+        "loss_at_suggestion": round(best_loss, 6),
+    }
+
+
+def build_review_history_from_srs_data(
+    srs_data: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Convert engine ``srs_data`` dict to review-history entries for the optimizer.
+
+    For each SRS item that has been reviewed at least once under FSRS, emits a
+    ``{"fsrs_stability", "elapsed_days", "recalled"}`` record based on its current
+    state.  Items without FSRS state are skipped.
+    """
+    today = datetime.date.today()
+    result: list[dict[str, Any]] = []
+    for chapter_items in srs_data.values():
+        if not isinstance(chapter_items, list):
+            continue
+        for item in chapter_items:
+            if not isinstance(item, dict):
+                continue
+            stability = item.get("fsrs_stability")
+            last_review = item.get("fsrs_last_review") or item.get("last_review")
+            reps = item.get("fsrs_reps", 0)
+            if stability is None or not last_review or not reps:
+                continue
+            try:
+                lr_date = datetime.date.fromisoformat(str(last_review))
+                elapsed = max(0, (today - lr_date).days)
+            except (ValueError, TypeError):
+                continue
+            lapses = int(item.get("fsrs_lapses", 0) or 0)
+            result.append(
+                {
+                    "fsrs_stability": float(stability),
+                    "elapsed_days": elapsed,
+                    "recalled": lapses == 0 or int(reps) > lapses,
+                }
+            )
+    return result
