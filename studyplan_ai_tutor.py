@@ -1284,6 +1284,17 @@ def _latex_to_human_readable(text: str) -> str:
     return t
 
 
+def _normalise_math_spacing(cleaned: str) -> str:
+    """Shared numeric / operator spacing fix used by both clean_ai_tutor_text variants."""
+    cleaned = re.sub(r"(\d)\s*([=+\-])\s*(\d)", r"\1 \2 \3", cleaned)
+    cleaned = re.sub(r"([a-zA-Z0-9_)])\s*=\s*", r"\1 = ", cleaned)
+    # Fix missing spaces between words and numbers (e.g., "is30,000" -> "is 30,000").
+    cleaned = re.sub(r"([a-z])(\d)", r"\1 \2", cleaned)
+    cleaned = re.sub(r"([A-Z]{2,})(\d)", r"\1 \2", cleaned)
+    cleaned = re.sub(r"(\d)([a-z])", r"\1 \2", cleaned)
+    return cleaned
+
+
 def clean_ai_tutor_text(text: str) -> str:
     """Clean AI output to human-readable text: formulas as humans write them, no LaTeX/code noise."""
     cleaned = str(text or "")
@@ -1319,12 +1330,7 @@ def clean_ai_tutor_text(text: str) -> str:
 
     # Remove remaining $ and normalize spacing around = + - for readability.
     cleaned = cleaned.replace("$", "")
-    cleaned = re.sub(r"(\d)\s*([=+\-])\s*(\d)", r"\1 \2 \3", cleaned)
-    cleaned = re.sub(r"([a-zA-Z0-9_)])\s*=\s*", r"\1 = ", cleaned)
-    # Fix missing spaces between words and numbers (e.g., "is30,000" -> "is 30,000").
-    cleaned = re.sub(r"([a-z])(\d)", r"\1 \2", cleaned)
-    cleaned = re.sub(r"([A-Z]{2,})(\d)", r"\1 \2", cleaned)
-    cleaned = re.sub(r"(\d)([a-z])", r"\1 \2", cleaned)
+    cleaned = _normalise_math_spacing(cleaned)
 
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
@@ -1371,11 +1377,7 @@ def clean_ai_tutor_text_for_rich_display(text: str) -> str:
 
     # Remove remaining $ and normalise spacing around operators.
     cleaned = cleaned.replace("$", "")
-    cleaned = re.sub(r"(\d)\s*([=+\-])\s*(\d)", r"\1 \2 \3", cleaned)
-    cleaned = re.sub(r"([a-zA-Z0-9_)])\s*=\s*", r"\1 = ", cleaned)
-    cleaned = re.sub(r"([a-z])(\d)", r"\1 \2", cleaned)
-    cleaned = re.sub(r"([A-Z]{2,})(\d)", r"\1 \2", cleaned)
-    cleaned = re.sub(r"(\d)([a-z])", r"\1 \2", cleaned)
+    cleaned = _normalise_math_spacing(cleaned)
 
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)

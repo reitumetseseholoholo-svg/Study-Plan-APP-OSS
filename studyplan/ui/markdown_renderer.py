@@ -28,13 +28,13 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 # Map tag-name → dict of TextTag property overrides.
-# Values that reference Pango constants are resolved lazily on first use.
+# Numeric weight/style values map to Pango constants (BOLD=700, ITALIC=2).
 _TAG_SPECS: dict[str, dict[str, Any]] = {
-    "heading1": {"weight": 700, "scale": 1.44},   # Pango.Weight.BOLD = 700
+    "heading1": {"weight": 700, "scale": 1.44},
     "heading2": {"weight": 700, "scale": 1.22},
     "heading3": {"weight": 700, "scale": 1.10},
     "bold":     {"weight": 700},
-    "italic":   {"style": 2},                      # Pango.Style.ITALIC = 2
+    "italic":   {"style": 2},
     "bold_italic": {"weight": 700, "style": 2},
     "code_inline":  {"family": "monospace"},
     "code_block":   {"family": "monospace"},
@@ -163,7 +163,6 @@ def render_markdown_to_buffer(text: str, buf: Any) -> None:
     lines = text.split("\n")
     i = 0
     in_code_block = False
-    code_lang = ""
 
     while i < len(lines):
         raw = lines[i]
@@ -175,7 +174,8 @@ def render_markdown_to_buffer(text: str, buf: Any) -> None:
         if stripped.startswith("```"):
             if not in_code_block:
                 in_code_block = True
-                code_lang = stripped[3:].strip()
+                # language hint (e.g. ```python) is intentionally ignored;
+                # reserved for future syntax-highlight routing
                 i += 1
                 continue
             else:
