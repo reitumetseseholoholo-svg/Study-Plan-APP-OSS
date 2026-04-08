@@ -7158,12 +7158,16 @@ class StudyPlanEngine:
                 # Prefer FSRS due date when available.
                 fsrs_due = item.get("fsrs_due")
                 if fsrs_due:
+                    _fsrs_parsed = False
                     try:
-                        if datetime.date.fromisoformat(str(fsrs_due)) <= today:
-                            due_count += 1
-                        continue
+                        _fsrs_date = datetime.date.fromisoformat(str(fsrs_due))
+                        _fsrs_parsed = True
                     except Exception:
                         pass
+                    if _fsrs_parsed:
+                        if _fsrs_date <= today:
+                            due_count += 1
+                        continue  # FSRS owns this card's schedule; skip SM-2
                 # Fall back to SM-2 interval.
                 try:
                     last_date = datetime.date.fromisoformat(str(last))
@@ -11363,14 +11367,18 @@ class StudyPlanEngine:
             # due today (non-overdue but scheduled); prefer fsrs_due when available
             fsrs_due = srs.get("fsrs_due")
             if fsrs_due:
+                _fsrs_parsed = False
                 try:
-                    if datetime.date.fromisoformat(str(fsrs_due)) <= today:
+                    _fsrs_date = datetime.date.fromisoformat(str(fsrs_due))
+                    _fsrs_parsed = True
+                except Exception:
+                    pass
+                if _fsrs_parsed:
+                    if _fsrs_date <= today:
                         due_indices.append(idx)
                         due_kind_by_idx[idx] = 0
                         overdue_by_idx[idx] = 0
-                    continue
-                except Exception:
-                    pass
+                    continue  # FSRS owns this card's schedule; skip SM-2 check
             last = srs.get("last_review")
             if isinstance(last, str) and last:
                 try:
