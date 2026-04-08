@@ -197,6 +197,11 @@ class Config:
         min_value=1.0,
         max_value=60.0,
     )
+    # API key for the OpenAI-compatible cloud gateway.  When set, it is sent as
+    # an ``Authorization: Bearer`` header.  Equivalent to setting
+    # ``STUDYPLAN_LLM_GATEWAY_API_KEY`` or ``OPENAI_API_KEY`` in the environment
+    # (the llm_auth discovery module checks those vars automatically).
+    LLM_GATEWAY_API_KEY = _env_text("STUDYPLAN_LLM_GATEWAY_API_KEY", "")
 
     # Cloud-prefer mode: when `LLAMA_CPP_ENDPOINT` points to a non-local host,
     # try that endpoint first (so “internet available => cloud first”).

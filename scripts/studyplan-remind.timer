@@ -1,0 +1,13 @@
+# studyplan-remind.timer — runs the review reminder every 30 minutes.
+# Install to ~/.config/systemd/user/ alongside studyplan-remind.service.
+
+[Unit]
+Description=Study Plan — review reminder timer
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

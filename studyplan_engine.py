@@ -11116,7 +11116,11 @@ class StudyPlanEngine:
 
     def update_srs(self, chapter: str, question_index: int, is_correct: bool):
         """
-        Update SRS stats using improved SM-2 with capped growth.
+        Update SRS stats.  Uses FSRS-4.5 when enabled, otherwise improved SM-2.
+
+        FSRS can be enabled by setting the environment variable
+        ``STUDYPLAN_SRS_ALGORITHM=fsrs`` before launching the app.  The legacy
+        SM-2 path is the default for backwards compatibility.
 
         Args:
             chapter (str): The chapter name (e.g., "FM Function")
@@ -11143,38 +11147,65 @@ class StudyPlanEngine:
                     )
                     return
             srs = srs_data[question_index]
-            try:
-                efactor = float(srs.get('efactor', 2.5) or 2.5)
-            except Exception:
-                efactor = 2.5
-            try:
-                interval = float(srs.get('interval', 1) or 1)
-            except Exception:
-                interval = 1.0
-            srs['last_review'] = datetime.date.today().isoformat()
-            if is_correct:
-                # Clear must-review if answered correctly
-                if chapter in self.must_review:
-                    self.must_review[chapter].pop(str(question_index), None)
-                efactor = min(efactor + 0.1, 2.5)
-                sm2_interval = max(interval * min(efactor, 2.0), 3)
-                interval = sm2_interval
-                try:
-                    pred_interval = self.predict_interval_days(chapter, question_index, interval, efactor)
-                except Exception:
-                    pred_interval = None
-                if pred_interval is not None:
-                    # Blend ML prediction with SM-2, cap for stability.
-                    max_cap = 30.0
-                    blended = (0.6 * sm2_interval) + (0.4 * pred_interval)
-                    interval = max(3.0, min(max_cap, blended))
+
+            # Route to FSRS or SM-2 based on runtime flag.
+            use_fsrs = str(os.environ.get("STUDYPLAN_SRS_ALGORITHM", "") or "").strip().lower() == "fsrs"
+            if use_fsrs:
+                self._update_srs_fsrs(srs, chapter, question_index, is_correct)
             else:
-                efactor = max(efactor - 0.2, 1.3)
-                interval = 1.0
-            srs['efactor'] = efactor
-            srs['interval'] = interval
+                self._update_srs_sm2(srs, chapter, question_index, is_correct)
         except Exception as e:
             print(f"Error updating SRS for question {question_index} in chapter {chapter}: {e}", file=sys.stderr)
+
+    def _update_srs_fsrs(self, srs: dict, chapter: str, question_index: int, is_correct: bool) -> None:
+        """Update a single SRS item using the FSRS-4.5 algorithm."""
+        try:
+            from studyplan.fsrs import FSRSScheduler, fsrs_update_srs_item
+            scheduler = getattr(self, "_fsrs_scheduler", None)
+            if scheduler is None:
+                scheduler = FSRSScheduler()
+                self._fsrs_scheduler = scheduler
+            fsrs_update_srs_item(srs, is_correct, scheduler=scheduler)
+            if is_correct:
+                if chapter in self.must_review:
+                    self.must_review[chapter].pop(str(question_index), None)
+        except Exception as e:
+            # Degrade gracefully to SM-2 on any FSRS error.
+            print(f"FSRS update failed, falling back to SM-2: {e}", file=sys.stderr)
+            self._update_srs_sm2(srs, chapter, question_index, is_correct)
+
+    def _update_srs_sm2(self, srs: dict, chapter: str, question_index: int, is_correct: bool) -> None:
+        """Update a single SRS item using improved SM-2 with capped growth."""
+        try:
+            efactor = float(srs.get('efactor', 2.5) or 2.5)
+        except Exception:
+            efactor = 2.5
+        try:
+            interval = float(srs.get('interval', 1) or 1)
+        except Exception:
+            interval = 1.0
+        srs['last_review'] = datetime.date.today().isoformat()
+        if is_correct:
+            # Clear must-review if answered correctly
+            if chapter in self.must_review:
+                self.must_review[chapter].pop(str(question_index), None)
+            efactor = min(efactor + 0.1, 2.5)
+            sm2_interval = max(interval * min(efactor, 2.0), 3)
+            interval = sm2_interval
+            try:
+                pred_interval = self.predict_interval_days(chapter, question_index, interval, efactor)
+            except Exception:
+                pred_interval = None
+            if pred_interval is not None:
+                # Blend ML prediction with SM-2, cap for stability.
+                max_cap = 30.0
+                blended = (0.6 * sm2_interval) + (0.4 * pred_interval)
+                interval = max(3.0, min(max_cap, blended))
+        else:
+            efactor = max(efactor - 0.2, 1.3)
+            interval = 1.0
+        srs['efactor'] = efactor
+        srs['interval'] = interval
 
     def _leitner_box(self, srs_item: dict) -> int:
         """Map SRS item to a Leitner box (1-5)."""
@@ -13081,3 +13112,221 @@ class StudyPlanEngine:
             self.progress_log.append(entry)
 
         self.progress_log = self._coerce_progress_log(self.progress_log)
+
+    def export_flashcards_csv(self, output_path: str, *, chapters: list[str] | None = None) -> dict:
+        """Export the question bank with SRS state to a CSV file.
+
+        The output file is compatible with the ``_import_questions_csv`` format
+        so it can be re-imported after editing.  It also includes SRS-state
+        columns so third-party tools (e.g. Anki) can import due-date metadata.
+
+        Columns
+        -------
+        chapter, question, option1, option2, option3, option4, correct,
+        explanation, last_review, interval_days, efactor, due_date,
+        fsrs_stability, fsrs_difficulty, fsrs_reps, fsrs_lapses
+
+        Parameters
+        ----------
+        output_path:
+            Destination CSV path.  Parent directory must exist.
+        chapters:
+            Optional list of chapter names to include.  Defaults to all chapters.
+
+        Returns
+        -------
+        dict with keys: ``rows_written``, ``chapters``, ``output_path``
+        """
+        target_chapters = chapters if isinstance(chapters, list) else self.CHAPTERS
+        rows_written = 0
+        chapters_included: list[str] = []
+
+        fieldnames = [
+            "chapter",
+            "question",
+            "option1",
+            "option2",
+            "option3",
+            "option4",
+            "correct",
+            "explanation",
+            "last_review",
+            "interval_days",
+            "efactor",
+            "due_date",
+            "fsrs_stability",
+            "fsrs_difficulty",
+            "fsrs_reps",
+            "fsrs_lapses",
+        ]
+
+        today = datetime.date.today()
+        tmp_path = output_path + ".tmp"
+        try:
+            with open(tmp_path, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+                writer.writeheader()
+                for chapter in target_chapters:
+                    questions = self.QUESTIONS.get(chapter, [])
+                    srs_list = self.srs_data.get(chapter, [])
+                    if not isinstance(questions, list) or not questions:
+                        continue
+                    chapter_rows = 0
+                    for idx, q in enumerate(questions):
+                        if not isinstance(q, dict):
+                            continue
+                        srs: dict = srs_list[idx] if idx < len(srs_list) and isinstance(srs_list[idx], dict) else {}
+                        options = q.get("options") or []
+                        last_review = srs.get("last_review") or ""
+                        try:
+                            interval = float(srs.get("interval", 1) or 1)
+                        except (TypeError, ValueError):
+                            interval = 1.0
+                        try:
+                            efactor = float(srs.get("efactor", 2.5) or 2.5)
+                        except (TypeError, ValueError):
+                            efactor = 2.5
+                        # Compute due date from legacy interval.
+                        if last_review:
+                            try:
+                                lr = datetime.date.fromisoformat(str(last_review))
+                                due_date = (lr + datetime.timedelta(days=int(interval))).isoformat()
+                            except (ValueError, TypeError):
+                                due_date = today.isoformat()
+                        else:
+                            due_date = today.isoformat()
+                        row: dict = {
+                            "chapter": chapter,
+                            "question": str(q.get("question", "") or ""),
+                            "option1": str(options[0]) if len(options) > 0 else "",
+                            "option2": str(options[1]) if len(options) > 1 else "",
+                            "option3": str(options[2]) if len(options) > 2 else "",
+                            "option4": str(options[3]) if len(options) > 3 else "",
+                            "correct": str(q.get("correct", "") or ""),
+                            "explanation": str(q.get("explanation", "") or ""),
+                            "last_review": last_review,
+                            "interval_days": round(interval, 1),
+                            "efactor": round(efactor, 4),
+                            "due_date": due_date,
+                            "fsrs_stability": srs.get("fsrs_stability", ""),
+                            "fsrs_difficulty": srs.get("fsrs_difficulty", ""),
+                            "fsrs_reps": srs.get("fsrs_reps", ""),
+                            "fsrs_lapses": srs.get("fsrs_lapses", ""),
+                        }
+                        writer.writerow(row)
+                        chapter_rows += 1
+                    if chapter_rows:
+                        chapters_included.append(chapter)
+                        rows_written += chapter_rows
+            os.replace(tmp_path, output_path)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        return {
+            "rows_written": rows_written,
+            "chapters": chapters_included,
+            "output_path": output_path,
+        }
+
+    # ------------------------------------------------------------------
+    # Module versioning helpers
+    # ------------------------------------------------------------------
+
+    def compute_module_content_hash(self) -> str:
+        """Return a SHA-256 hex digest of the module's canonical content.
+
+        The hash covers ``chapters`` and ``syllabus_structure`` serialised in a
+        deterministic, sorted order.  It is stable across whitespace and key
+        ordering changes in the stored JSON, but changes whenever chapter names
+        or learning outcomes change.
+
+        Typical use: compare ``engine.compute_module_content_hash()`` against
+        the ``content_hash`` field stored in the module config JSON to detect
+        that the file has been edited externally.
+        """
+        payload = {
+            "chapters": sorted(self.CHAPTERS or []),
+            "syllabus_structure": {
+                ch: {
+                    "learning_outcomes": sorted(
+                        [
+                            {"id": lo.get("id", ""), "text": lo.get("text", ""), "level": lo.get("level", 0)}
+                            for lo in (section.get("learning_outcomes") or [])
+                            if isinstance(lo, dict)
+                        ],
+                        key=lambda lo: lo.get("id", ""),
+                    )
+                }
+                for ch, section in sorted((self.syllabus_structure or {}).items())
+                if isinstance(section, dict)
+            },
+        }
+        serialised = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+        return hashlib.sha256(serialised.encode("utf-8")).hexdigest()
+
+    def get_module_version_info(self) -> dict:
+        """Return version metadata for the currently loaded module.
+
+        Returns a dict with keys:
+        - ``module_version``: semver string from the config, or ``"0.0.0"`` if absent.
+        - ``content_hash``: current computed hash (see :meth:`compute_module_content_hash`).
+        - ``stored_hash``: the ``content_hash`` value saved in the config JSON, if any.
+        - ``hash_matches``: True when current hash equals the stored hash.
+        - ``registry_id``: value from config, or empty string.
+        - ``registry_url``: value from config, or empty string.
+        """
+        config_path = getattr(self, "_last_loaded_module_config_path", None)
+        stored_hash = ""
+        module_version = "0.0.0"
+        registry_id = ""
+        registry_url = ""
+        if config_path and os.path.exists(str(config_path)):
+            try:
+                with open(str(config_path), "r", encoding="utf-8") as fh:
+                    raw_config = json.load(fh)
+                if isinstance(raw_config, dict):
+                    stored_hash = str(raw_config.get("content_hash", "") or "")
+                    module_version = str(raw_config.get("module_version", "0.0.0") or "0.0.0")
+                    registry_id = str(raw_config.get("registry_id", "") or "")
+                    registry_url = str(raw_config.get("registry_url", "") or "")
+            except Exception:
+                pass
+        current_hash = self.compute_module_content_hash()
+        return {
+            "module_version": module_version,
+            "content_hash": current_hash,
+            "stored_hash": stored_hash,
+            "hash_matches": current_hash == stored_hash if stored_hash else None,
+            "registry_id": registry_id,
+            "registry_url": registry_url,
+        }
+
+    def stamp_module_content_hash(self) -> bool:
+        """Write the current content hash into the active module config JSON.
+
+        Returns True on success, False if the config path is unknown or cannot
+        be written.  Should be called after saving a module edit so the hash
+        stays fresh.
+        """
+        config_path = getattr(self, "_last_loaded_module_config_path", None)
+        if not config_path or not os.path.exists(str(config_path)):
+            return False
+        try:
+            with open(str(config_path), "r", encoding="utf-8") as fh:
+                raw_config = json.load(fh)
+            if not isinstance(raw_config, dict):
+                return False
+            raw_config["content_hash"] = self.compute_module_content_hash()
+            tmp_path = str(config_path) + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(raw_config, fh, indent=2, ensure_ascii=False)
+                fh.write("\n")
+            os.replace(tmp_path, str(config_path))
+            return True
+        except Exception:
+            return False
