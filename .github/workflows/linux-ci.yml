@@ -23,6 +23,7 @@ jobs:
       - name: Install test/lint deps
         run: |
           python -m pip install --upgrade pip
+          pip install -e .
           pip install pyright pytest
       - name: GTK lint
         run: python tools/gtk4_lint.py
@@ -43,6 +44,7 @@ jobs:
       - name: Install test deps
         run: |
           python -m pip install --upgrade pip
+          pip install -e .
           pip install pytest
       - name: Unit tests
         run: pytest -q

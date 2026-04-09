@@ -269,7 +269,9 @@ class FSRSScheduler:
         return max(0.1, raw)
 
     def _stability_after_lapse(self, s: float) -> float:
-        # S'_f = w_11 * d^(-w_12) * ((S+1)^(w_13) - 1) * e^(w_14*(1-r)) adjusted
+        # Simplified lapse formula: S'_f = w_11 * S^(-w_12)
+        # (difficulty and retrievability terms from the full FSRS-4.5 spec are omitted
+        # in this implementation; only stability decay is modelled.)
         return max(0.1, self.w[11] * math.pow(s, -self.w[12]))
 
     def _next_interval(self, stability: float) -> int:
@@ -458,7 +460,7 @@ def optimize_desired_retention_from_history(
             "loss_at_suggestion": 0.0,
         }
 
-    def _bce_loss(retention_target: float) -> float:
+    def _bce_loss() -> float:
         """Binary cross-entropy between predicted R(t) and actual recall."""
         eps = 1e-9
         total = 0.0
@@ -471,13 +473,18 @@ def optimize_desired_retention_from_history(
                 total -= math.log(1.0 - r_pred)
         return total / max(1, len(usable))
 
-    # Grid search over retention values.
+    # Compute actual recall rate first so the grid search can use it.
+    actual_recall_rate = sum(1 for _, _, recalled in usable if recalled) / max(1, len(usable))
+
+    # Grid search: find the candidate retention closest to the user's observed
+    # recall rate.  This is the retention target that "best matches how this
+    # specific learner actually forgets", as described in the docstring.
     step_size = (max_retention - min_retention) / max(1, steps - 1)
     best_retention = float(DEFAULT_DESIRED_RETENTION)
     best_loss = float("inf")
     for i in range(steps):
         candidate = min_retention + i * step_size
-        loss = _bce_loss(candidate)
+        loss = abs(candidate - actual_recall_rate)
         if loss < best_loss:
             best_loss = loss
             best_retention = candidate
@@ -485,14 +492,13 @@ def optimize_desired_retention_from_history(
     # Compute diagnostics.
     total_r = sum(sched._retrievability(s, e) for s, e, _ in usable)
     avg_predicted_r = total_r / max(1, len(usable))
-    actual_recall_rate = sum(1 for _, _, recalled in usable if recalled) / max(1, len(usable))
 
     return {
         "suggested_retention": round(best_retention, 3),
         "current_avg_predicted_r": round(avg_predicted_r, 3),
         "actual_recall_rate": round(actual_recall_rate, 3),
         "sample_count": len(usable),
-        "loss_at_suggestion": round(best_loss, 6),
+        "loss_at_suggestion": round(_bce_loss(), 6),
     }
 
 
