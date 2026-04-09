@@ -477,8 +477,12 @@ def optimize_desired_retention_from_history(
     actual_recall_rate = sum(1 for _, _, recalled in usable if recalled) / max(1, len(usable))
 
     # Grid search: find the candidate retention closest to the user's observed
-    # recall rate.  This is the retention target that "best matches how this
-    # specific learner actually forgets", as described in the docstring.
+    # recall rate.  We use absolute distance rather than BCE here because the
+    # BCE loss (computed by _bce_loss) is independent of the retention target —
+    # _retrievability depends only on stability and elapsed days, not on
+    # desired_retention.  The semantically correct objective is: "which
+    # retention target best matches how this learner actually performs?",
+    # which reduces to minimising |candidate - actual_recall_rate|.
     step_size = (max_retention - min_retention) / max(1, steps - 1)
     best_retention = float(DEFAULT_DESIRED_RETENTION)
     best_loss = float("inf")

@@ -359,7 +359,9 @@ def test_optimize_retention_suggestion_reflects_actual_recall():
     """Suggested retention should be close to the observed recall rate."""
     for recall in (0.75, 0.85, 0.92):
         result = optimize_desired_retention_from_history(_make_history(recall, n=40))
-        # Allow a tolerance of one grid step (≈0.01 for default 30 steps).
+        # Allow up to 5 percentage points: the grid has 30 steps over [0.70, 0.99]
+        # (step ≈ 0.01), and the discrete recall rate from n=40 samples may be
+        # slightly off from the nominal value, so a 0.05 tolerance is appropriate.
         assert abs(result["suggested_retention"] - recall) < 0.05, (
             f"recall={recall}: suggested={result['suggested_retention']}"
         )
