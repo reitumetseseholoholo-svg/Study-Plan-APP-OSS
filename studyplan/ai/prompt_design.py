@@ -47,6 +47,8 @@ RETRY_SUFFIX_FR_TABLES = (
     "GOOD (required): title line + statement body with at least 3 labelled line items and currency amounts. "
     "Regenerate the full case JSON now with exhibits that contain actual financial data."
 )
+# Alias kept for compatibility with code that uses the older name.
+FR_EXHIBIT_TABLE_RETRY_SUFFIX = RETRY_SUFFIX_FR_TABLES
 SYLLABUS_JSON_ONLY = "Return valid JSON only, no markdown or explanation."
 
 

@@ -28352,6 +28352,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             model_candidates = [selected]
         from studyplan.ai.prompt_design import (
+            FR_EXHIBIT_TABLE_RETRY_SUFFIX,
             RETRY_SUFFIX_FR_TABLES,
             RETRY_SUFFIX_ONE_CASE,
             append_retry_suffix,
@@ -50796,6 +50797,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 week_col.append(cell)
             grid_box.append(week_col)
 
+    def _revoke_streak_badges(self) -> None:
+        """Remove all streak milestone badges — called when the study streak is broken."""
+        streak_keys = {"streak_3", "streak_7", "streak_14", "streak_30"}
+        revoked = streak_keys & self.achievements
+        if revoked:
+            self.achievements -= revoked
+            self.update_badges_display()
+            self.save_preferences()
+
     def update_streak(self):
         today = datetime.date.today()
         previous = int(self.study_streak or 0)
@@ -50807,6 +50817,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         elif self.last_study_date == today - datetime.timedelta(days=1):
             self.study_streak += 1
         else:
+            # Missed at least one day — streak is broken
+            self._revoke_streak_badges()
             self.study_streak = 1
 
         self.last_study_date = today
@@ -50846,6 +50858,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 print(f"Invalid last_study_date format in {streak_file}")
                                 self.last_study_date = None
                         self.study_streak = data.get("study_streak", 0)
+                        # Reset streak if last study was more than 1 day ago (missed a day)
+                        today = datetime.date.today()
+                        if self.last_study_date is not None and (today - self.last_study_date).days > 1:
+                            self.study_streak = 0
                 except json.JSONDecodeError:
                     print(f"Load error: {self.__class__.__name__}.load_streak_data caught JSONDecodeError")
                     self.study_streak = 0
@@ -50855,6 +50871,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception as e:
             print(f"Load error: {e}")
             self.study_streak = 0
+
+        # If the last study was more than one day ago the streak is broken.
+        # Reset it to 0 and revoke streak badges so the user has to re-earn them.
+        today = datetime.date.today()
+        if (
+            self.last_study_date is not None
+            and self.last_study_date < today - datetime.timedelta(days=1)
+        ):
+            self.study_streak = 0
+            self._revoke_streak_badges()
 
 
 def _acquire_single_instance_lock(lock_path: str | None = None) -> bool:
