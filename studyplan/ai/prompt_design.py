@@ -37,6 +37,21 @@ RETRY_SUFFIX_ONE_ITEM = (
 RETRY_SUFFIX_ONE_CASE = (
     JSON_ONLY_NO_MARKDOWN + " Generate exactly one case."
 )
+RETRY_SUFFIX_FR_TABLES = (
+    "CRITICAL CORRECTION REQUIRED: your exhibits array is missing actual numeric pipe tables. "
+    "Each exhibit string MUST contain a title line followed by a pipe-table body with column headers "
+    "and at least 3 rows of currency figures. "
+    "BAD (rejected): 'Exhibit 1: Statement of Financial Position (pipe table)' — this has NO table data. "
+    "GOOD (required): 'Exhibit 1: Draft Statement of Financial Position\\n"
+    "| Item | £000 |\\n|------|------|\\n"
+    "| Property, plant and equipment | 5,200 |\\n"
+    "| Inventories | 1,800 |\\n"
+    "| Trade receivables | 2,100 |\\n"
+    "| Cash and cash equivalents | 400 |\\n"
+    "| Total assets | 9,500 |' "
+    "— real numbers, real headings, pipe-separated columns. "
+    "Regenerate the full case JSON now with all exhibits containing actual pipe-table data."
+)
 SYLLABUS_JSON_ONLY = "Return valid JSON only, no markdown or explanation."
 
 # --- Schema one-liners (economy: single source for generation prompts) ---
@@ -190,9 +205,12 @@ SECTION_C_FR_EXTRA_RULES = [
     "Marks split: When using preparation tasks, typical split is (a) main statement 10–14 marks, (b) second statement or detailed workings 4–8 marks, (c) short explanation, disclosure, or recommendation 2–6 marks; total must remain 20.",
     "model_answer_outline: For any part that asks to prepare or present a statement, the matching bullet must be a clear statement skeleton (key headings and line items, e.g. non-current assets, current assets, equity, subtotals), not only a generic narrative.",
     "Use IFRS/IAS terminology where the scenario implies a standard (e.g. IAS 1 presentation, IAS 7 cash flows, relevant recognition standards).",
-    "Exhibits: For FR questions, include at least one numerical pipe/ASCII table exhibit per statement required "
-    "(e.g. draft Statement of Financial Position with figures, trial balance extract, or note workings table). "
-    "Each table must have column headers and at least 3 data rows with currency figures.",
+    "Exhibits (MANDATORY pipe tables): every exhibit string MUST contain a title line followed immediately by a "
+    "pipe-table body with column headers and at least 3 rows of real currency figures — not just a title. "
+    "BAD (will be rejected): 'Exhibit 1: Statement of Financial Position (pipe table)' with no actual rows. "
+    "GOOD (required format): 'Exhibit 1: Draft SoFP\\n| Item | £000 |\\n|------|------|\\n"
+    "| Property, plant and equipment | 5,200 |\\n| Inventories | 1,800 |\\n| Total assets | 7,000 |'. "
+    "Include at least one such exhibit per statement required in the requirements.",
     "FR exhibit templates: preferred exhibit forms are (1) consolidated/single-entity SoFP with non-current assets, "
     "current assets, equity, and liabilities sections; (2) SoPL/SoCI with revenue, operating expenses, and tax; "
     "(3) SoCF with operating/investing/financing sections per IAS 7; "
