@@ -50718,6 +50718,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 print(f"Invalid last_study_date format in {streak_file}")
                                 self.last_study_date = None
                         self.study_streak = data.get("study_streak", 0)
+                        # Reset streak if last study was more than 1 day ago (missed a day)
+                        today = datetime.date.today()
+                        if self.last_study_date is not None and (today - self.last_study_date).days > 1:
+                            self.study_streak = 0
                 except json.JSONDecodeError:
                     print(f"Load error: {self.__class__.__name__}.load_streak_data caught JSONDecodeError")
                     self.study_streak = 0
