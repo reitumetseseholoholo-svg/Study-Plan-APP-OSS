@@ -4442,15 +4442,15 @@ def test_generate_section_c_question_failover_uses_second_model():
 
 
 def test_generate_section_c_question_fr_retries_when_exhibits_lack_tables():
-    """For FR modules, if the first valid parse has exhibits without pipe tables, a targeted
-    retry is made and the result with actual tables is used."""
+    """For FR modules, if the first valid parse has exhibits with no real financial figures,
+    a targeted retry is made and the result with actual data is used."""
     from studyplan.ai.prompt_design import RETRY_SUFFIX_FR_TABLES
 
     engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
 
-    # First call returns a valid case but exhibits have no '|' characters.
-    # Second call (FR table retry) returns a case with proper pipe-table exhibits.
-    no_table_case = {
+    # First call returns a valid case but exhibits have no numeric financial data.
+    # Second call (FR table retry) returns a case with real figures.
+    no_data_case = {
         "chapter": "Topic A",
         "scenario": "XYZ Corp scenario.",
         "prompt": "XYZ Corp scenario.",
@@ -4461,11 +4461,11 @@ def test_generate_section_c_question_fr_retries_when_exhibits_lack_tables():
         ],
         "model_answer_outline": ["a", "b", "c"],
         "time_budget_minutes": 45,
-        "exhibits": ["Exhibit 1: Statement of Financial Position (pipe table)"],
+        "exhibits": ["Exhibit 1: Statement of Financial Position (see scenario)"],
     }
-    table_case = dict(no_table_case)
-    table_case["exhibits"] = [
-        "Exhibit 1: Draft SoFP\n| Item | £000 |\n|------|------|\n| PPE | 5,200 |\n| Total | 5,200 |"
+    data_case = dict(no_data_case)
+    data_case["exhibits"] = [
+        "Exhibit 1: Draft SoFP\nPPE: 5,200\nInventories: 1,800\nTotal assets: 7,000"
     ]
 
     prompts_seen: list[str] = []
@@ -4473,8 +4473,8 @@ def test_generate_section_c_question_fr_retries_when_exhibits_lack_tables():
     def _ollama(model, prompt, **_kw):
         prompts_seen.append(prompt)
         if RETRY_SUFFIX_FR_TABLES in prompt:
-            return (json.dumps(table_case), None)
-        return (json.dumps(no_table_case), None)
+            return (json.dumps(data_case), None)
+        return (json.dumps(no_data_case), None)
 
     def _parse(text, chapter):
         try:
@@ -4501,18 +4501,20 @@ def test_generate_section_c_question_fr_retries_when_exhibits_lack_tables():
 
     assert isinstance(row, dict)
     exhibits = row.get("exhibits", [])
-    assert any("|" in str(ex) for ex in exhibits), "FR retry should have produced a case with pipe-table exhibits"
+    assert any(
+        StudyPlanGUI._exhibit_has_financial_data(ex) for ex in exhibits
+    ), "FR retry should have produced a case with exhibits containing real financial figures"
     assert any(RETRY_SUFFIX_FR_TABLES in p for p in prompts_seen), "FR table retry prompt should have been used"
     assert warn is None
 
 
-def test_generate_section_c_question_fr_keeps_initial_result_when_retry_has_no_table():
-    """If FR table retry also returns exhibits without pipe tables, the initial valid result is kept."""
+def test_generate_section_c_question_fr_keeps_initial_result_when_retry_has_no_data():
+    """If FR table retry also returns exhibits without financial figures, the initial valid result is kept."""
     from studyplan.ai.prompt_design import RETRY_SUFFIX_FR_TABLES
 
     engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
 
-    no_table_case = {
+    no_data_case = {
         "chapter": "Topic A",
         "scenario": "XYZ Corp scenario.",
         "prompt": "XYZ Corp scenario.",
@@ -4527,7 +4529,7 @@ def test_generate_section_c_question_fr_keeps_initial_result_when_retry_has_no_t
     }
 
     def _ollama(model, prompt, **_kw):
-        return (json.dumps(no_table_case), None)
+        return (json.dumps(no_data_case), None)
 
     def _parse(text, chapter):
         try:
@@ -4553,13 +4555,13 @@ def test_generate_section_c_question_fr_keeps_initial_result_when_retry_has_no_t
     row, warn = StudyPlanGUI._generate_section_c_question(dummy, "Topic A", snapshot={})
 
     assert isinstance(row, dict)
-    # Should still return the initial valid result (without table) rather than failing.
+    # Should still return the initial valid result (without data) rather than failing.
     assert row.get("scenario") == "XYZ Corp scenario."
     assert warn is None
 
 
 def test_normalize_section_c_question_fr_no_table_note_not_injected():
-    """FR questions with exhibits that lack pipe tables must NOT have a user-visible note injected."""
+    """FR questions with exhibits that lack financial figures must NOT have a user-visible note injected."""
     engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
     dummy = types.SimpleNamespace(engine=engine)
     dummy._section_c_question_id = types.MethodType(StudyPlanGUI._section_c_question_id, dummy)
@@ -4575,7 +4577,7 @@ def test_normalize_section_c_question_fr_no_table_note_not_injected():
         ],
         "model_answer_outline": ["a", "b", "c"],
         "time_budget_minutes": 45,
-        "exhibits": ["Exhibit 1: Statement of Financial Position (pipe table)"],
+        "exhibits": ["Exhibit 1: Statement of Financial Position (see scenario)"],
     }
     out = StudyPlanGUI._normalize_section_c_question(dummy, "Topic A", row)
     assert isinstance(out, dict)
@@ -4583,6 +4585,9 @@ def test_normalize_section_c_question_fr_no_table_note_not_injected():
         assert "Note: numeric data table required" not in str(ex), (
             "User-visible note must not be injected into exhibit text"
         )
+
+
+def test_build_ai_tutor_assistant_history_row_prefers_requested_model_for_ollama():
     """Stale global attribution must not override the failover-resolved tutor model."""
     app = types.SimpleNamespace(
         _last_llm_inference_backend="ollama",

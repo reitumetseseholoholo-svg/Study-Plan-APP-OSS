@@ -730,7 +730,7 @@ AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS = 3
 SECTION_C_DEFAULT_TIME_BUDGET_MINUTES = 45
 SECTION_C_MIN_TIME_BUDGET_MINUTES = 20
 SECTION_C_MAX_TIME_BUDGET_MINUTES = 90
-SECTION_C_EXHIBIT_MAX_CHARS = 1200
+SECTION_C_EXHIBIT_MAX_CHARS = 2400
 AI_CONTEXT_DEFAULT_HORIZON_DAYS = 14
 AI_CONTEXT_MIN_HORIZON_DAYS = 7
 AI_CONTEXT_MAX_HORIZON_DAYS = 30
@@ -28229,6 +28229,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         title = str(getattr(self, "module_title", "") or "").strip().lower()
         return "financial reporting" in title
 
+    @staticmethod
+    def _exhibit_has_financial_data(exhibit_text: str) -> bool:
+        """Return True when an exhibit string contains real numeric financial data."""
+        from studyplan.ai.prompt_design import exhibit_has_financial_data
+        return exhibit_has_financial_data(exhibit_text)
+
     def _build_section_c_generation_prompt(self, chapter: str, snapshot: dict[str, Any] | None = None) -> str:
         from studyplan.ai.prompt_design import (
             build_generation_prompt,
@@ -28393,10 +28399,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if isinstance(parsed2, dict):
                         parsed, parse_err = parsed2, None
             if isinstance(parsed, dict):
-                # FR-specific: retry if exhibits lack actual pipe-table rows.
+                # FR-specific: retry if exhibits lack actual financial data (format-agnostic check).
                 if self._is_fr_financial_reporting_module():
                     exhibits_check = list(parsed.get("exhibits") or [])
-                    if not any("|" in str(ex) for ex in exhibits_check):
+                    if not any(StudyPlanGUI._exhibit_has_financial_data(ex) for ex in exhibits_check):
                         fr_retry_prompt = append_retry_suffix(prompt, RETRY_SUFFIX_FR_TABLES)
                         if not (cancel_check and cancel_check()):
                             try:
@@ -28412,7 +28418,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 parsed_fr, _ = self._parse_generated_section_c_question(text_fr, chapter_name)
                                 if isinstance(parsed_fr, dict):
                                     exhibits_fr = list(parsed_fr.get("exhibits") or [])
-                                    if any("|" in str(ex) for ex in exhibits_fr):
+                                    if any(StudyPlanGUI._exhibit_has_financial_data(ex) for ex in exhibits_fr):
                                         parsed = parsed_fr
                 model_name = str(candidate or "").strip()
                 break
@@ -29316,7 +29322,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 avg_pct = float(intel.get("recent_section_c_avg_pct", 0.0) or 0.0)
             except Exception:
                 avg_pct = 0.0
-            bits.append(f"recent={attempts} avg {avg_pct:.0f}%")
+            try:
+                last_pct = float(intel.get("recent_section_c_last_pct", 0.0) or 0.0)
+            except Exception:
+                last_pct = 0.0
+            # Score trend arrow: compare last attempt to rolling average
+            if attempts >= 2 and last_pct > 0:
+                diff = last_pct - avg_pct
+                trend = "⬆" if diff >= 3 else ("⬇" if diff <= -3 else "→")
+                bits.append(f"recent={attempts} avg {avg_pct:.0f}% last {last_pct:.0f}%{trend}")
+            else:
+                bits.append(f"recent={attempts} avg {avg_pct:.0f}%")
+        elif attempts == 0:
+            bits.append("first attempt!")
         try:
             fragility = float(intel.get("fragility_score", 0.0) or 0.0)
         except Exception:
@@ -29327,7 +29345,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             bits.append("struggle")
         if not bits:
             bits.append("general exam-style targeting")
-        return "Section C intelligence: " + " • ".join(bits[:5])
+        return "Section C intelligence: " + " • ".join(bits[:6])
 
     def _format_section_c_question_text(self, question: dict[str, Any]) -> str:
         time_budget = int(
@@ -29484,6 +29502,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             lines.append("")
             lines.append("Examiner notes:")
             lines.append(rationale)
+        error_tags = [
+            clean_ai_tutor_text(str(t or "").strip())
+            for t in list(evaluation.get("error_tags", []) or [])
+            if str(t or "").strip()
+        ]
+        misconception_tags = [
+            clean_ai_tutor_text(str(t or "").strip())
+            for t in list(evaluation.get("misconception_tags", []) or [])
+            if str(t or "").strip()
+        ]
+        all_tags = list(dict.fromkeys(error_tags + misconception_tags))  # deduplicate, preserve order
+        if all_tags:
+            lines.append("")
+            lines.append("Identified gaps: " + " • ".join(all_tags[:6]))
         return "\n".join(lines).strip()
 
     def _plan_section_c_weakest_criterion_rewrite(
@@ -30305,6 +30337,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cancel_btn = Gtk.Button(label="Cancel AI")
         cancel_btn.set_sensitive(False)
         clear_btn = Gtk.Button(label="Clear answer")
+        structure_btn = Gtk.Button(label="(a)/(b)/(c) headers")
+        structure_btn.set_tooltip_text(
+            "Insert (a), (b), (c) section headers into your answer to structure your response."
+        )
         open_gnumeric_btn = Gtk.Button(label="Open in Gnumeric")
         open_gnumeric_btn.set_tooltip_text(
             "Open current answer in Gnumeric (spreadsheet). When done, use Import from file to bring content back."
@@ -30325,6 +30361,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         controls.append(timer_btn)
         controls.append(eval_btn)
         controls.append(clear_btn)
+        controls.append(structure_btn)
         controls.append(open_gnumeric_btn)
         controls.append(open_abiword_btn)
         controls.append(import_file_btn)
@@ -30351,7 +30388,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         question_view.set_monospace(False)
         question_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         question_scroll = Gtk.ScrolledWindow()
-        question_scroll.set_min_content_height(190)
+        question_scroll.set_min_content_height(250)
         question_scroll.set_child(question_view)
         content.append(question_scroll)
 
@@ -30365,6 +30402,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         answer_scroll.set_min_content_height(170)
         answer_scroll.set_child(answer_view)
         content.append(answer_scroll)
+
+        # Live word count label below answer box
+        word_count_label = Gtk.Label(label="0 words")
+        word_count_label.set_halign(Gtk.Align.END)
+        word_count_label.add_css_class("muted")
+        content.append(word_count_label)
 
         feedback_label = Gtk.Label(label="Feedback")
         feedback_label.set_halign(Gtk.Align.START)
@@ -30383,6 +30426,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         model_answer_btn.set_tooltip_text("Reveal the model answer outline after evaluating your response.")
         model_answer_btn.set_visible(False)
         content.append(model_answer_btn)
+
+        # Post-evaluation "Drill this topic" shortcut button
+        drill_weakest_btn = Gtk.Button(label="Drill weakest topic")
+        drill_weakest_btn.set_tooltip_text(
+            "Launch a focused drill on the chapter with the weakest Section C criterion to reinforce understanding."
+        )
+        drill_weakest_btn.set_visible(False)
+        content.append(drill_weakest_btn)
 
         model_answer_label = Gtk.Label(label="Model answer")
         model_answer_label.set_halign(Gtk.Align.START)
@@ -30672,7 +30723,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 _set_view_text(feedback_view, "")
             _refresh_section_c_intelligence(chapter_name)
             _refresh_rewrite_panel()
-            _set_status(f"Loaded Section C case for {chapter_name} ({len(rows)} saved).")
+            # Show last score hint in status if prior attempts exist
+            status_extra = ""
+            try:
+                summary = self._read_recent_section_c_attempts_summary(chapter_name, max_rows=3)
+                att = int(summary.get("attempts", 0) or 0)
+                last_pct = float(summary.get("last_score_pct", 0.0) or 0.0)
+                if att > 0:
+                    status_extra = f"  |  Last score: {last_pct:.0f}%  ({att} attempt{'s' if att != 1 else ''})"
+            except Exception:
+                pass
+            _set_status(f"Loaded Section C case for {chapter_name} ({len(rows)} saved).{status_extra}")
             return case
 
         def _on_generate_case(*_args) -> None:
@@ -30716,6 +30777,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     model_answer_btn.set_visible(False)
                     model_answer_scroll.set_visible(False)
                     model_answer_label.set_visible(False)
+                    drill_weakest_btn.set_visible(False)
                     import time as _time
                     state["answer_start_time"] = _time.monotonic()
                     _refresh_rewrite_panel()
@@ -30833,6 +30895,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         state["rewrite_delta"] = None
                     _set_view_text(feedback_view, self._format_section_c_feedback_text(evaluation, time_taken_seconds=elapsed_seconds))
                     model_answer_btn.set_visible(True)
+                    drill_weakest_btn.set_visible(True)
                     _refresh_section_c_intelligence(str(state.get("chapter", "") or ""))
                     _refresh_rewrite_panel()
                     if warn:
@@ -30963,12 +31026,78 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         model_answer_btn.connect("clicked", _on_show_model_answer)
 
+        def _on_drill_weakest(*_args: object) -> None:
+            chapter_name = str(state.get("chapter", "") or _selected_chapter())
+            try:
+                self._set_current_topic(chapter_name)
+                self.start_quiz_session(topic=chapter_name, total_override=8, kind="drill")
+                _set_status(f"Launched drill for '{chapter_name}'.")
+            except Exception as exc:
+                _set_status(f"Drill unavailable: {exc}")
+
+        drill_weakest_btn.connect("clicked", _on_drill_weakest)
+
         def _on_clear_answer(*_args) -> None:
             _set_view_text(answer_view, "")
             state["rewrite_delta"] = None
             state["rewrite_baseline_response"] = ""
             state["rewrite_baseline_evaluation"] = None
             _refresh_rewrite_panel()
+
+        def _on_structure_insert(*_args) -> None:
+            """Insert (a)/(b)/(c) requirement headers into the answer box."""
+            question = state.get("question")
+            requirements = list((question or {}).get("requirements", []) or []) if isinstance(question, dict) else []
+            buf = answer_view.get_buffer()
+            existing = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
+            if existing.strip():
+                # Insert at end of current text with a blank line separator
+                end_iter = buf.get_end_iter()
+                buf.insert(end_iter, "\n")
+            lines: list[str] = []
+            if requirements:
+                for r in requirements:
+                    if not isinstance(r, dict):
+                        continue
+                    part = str(r.get("part", "") or "").strip().upper()
+                    req_text = str(r.get("requirement_text", "") or "").strip()
+                    marks = int(r.get("marks", 0) or 0)
+                    if part:
+                        header = f"({part})"
+                        if req_text:
+                            header += f" {req_text[:60]}"
+                        if marks:
+                            header += f" [{marks} marks]"
+                        lines.append(header)
+                        lines.append("")
+                        lines.append("")
+            else:
+                for part_letter in ("a", "b", "c"):
+                    lines.append(f"({part_letter.upper()})")
+                    lines.append("")
+                    lines.append("")
+            if lines:
+                insert_iter = buf.get_end_iter()
+                buf.insert(insert_iter, "\n".join(lines))
+            try:
+                answer_view.grab_focus()
+            except Exception:
+                pass
+
+        structure_btn.connect("clicked", _on_structure_insert)
+
+        def _on_answer_buffer_changed(buf: object, *_args: object) -> None:
+            """Update live word count when the answer buffer changes."""
+            try:
+                start = buf.get_start_iter()  # type: ignore[union-attr]
+                end = buf.get_end_iter()  # type: ignore[union-attr]
+                text = str(buf.get_text(start, end, True) or "")  # type: ignore[union-attr]
+                count = len(text.split()) if text.strip() else 0
+                word_count_label.set_label(f"{count} words")
+            except Exception:
+                pass
+
+        answer_view.get_buffer().connect("changed", _on_answer_buffer_changed)
 
         clear_btn.connect("clicked", _on_clear_answer)
         open_gnumeric_btn.connect(
