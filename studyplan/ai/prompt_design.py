@@ -12,6 +12,7 @@ Design: DEVELOPER_DOC.md § "Prompt engineering design (3Es + fail-safe)".
 from __future__ import annotations
 
 import os
+import re
 
 from studyplan.question_quality import (
     MCQ_GAP_LONG_OUTLIER_VS_DISTRACTOR_MEAN,
@@ -37,16 +38,37 @@ RETRY_SUFFIX_ONE_ITEM = (
 RETRY_SUFFIX_ONE_CASE = (
     JSON_ONLY_NO_MARKDOWN + " Generate exactly one case."
 )
-# FR exhibit retry: used when a generated FR case has exhibits with no numeric pipe tables.
-FR_EXHIBIT_TABLE_RETRY_SUFFIX = (
-    "CRITICAL — exhibits are missing numeric pipe tables. "
-    "Every exhibit MUST contain an actual financial data table using pipe format: "
-    "| Line item | $000 |\n|---|---|\n| Revenue | 5,200 |\n| Cost of sales | (3,100) |. "
-    "Column headers and at least 3 rows of real currency figures are required. "
-    "Do NOT write placeholder notes or instructions instead of data. "
-    "Re-generate the complete JSON case now with proper numeric exhibits."
+RETRY_SUFFIX_FR_TABLES = (
+    "CRITICAL CORRECTION REQUIRED: your exhibits array is missing actual numeric financial data. "
+    "Each exhibit string MUST contain a title line followed by real currency figures. "
+    "Use whatever professional format best communicates the financial statements — "
+    "markdown headings, **bold** totals, indented line items, or pipe tables are all acceptable — "
+    "but exhibits MUST include real numbers (e.g. 5,200 / £1,800 / 12.5%). "
+    "BAD (rejected): 'Exhibit 1: Statement of Financial Position' with no actual figures. "
+    "GOOD (required): title line + statement body with at least 3 labelled line items and currency amounts. "
+    "Regenerate the full case JSON now with exhibits that contain actual financial data."
 )
+# Alias kept for compatibility with code that uses the older name.
+FR_EXHIBIT_TABLE_RETRY_SUFFIX = RETRY_SUFFIX_FR_TABLES
 SYLLABUS_JSON_ONLY = "Return valid JSON only, no markdown or explanation."
+
+# Compiled once at module level for use in exhibit_has_financial_data().
+_FIN_NUM_RE = re.compile(
+    r"(?:[£$€¥₹]|\bUSD\b|\bGBP\b)?\s*\d[\d,]*(?:\.\d+)?"
+    r"(?:\s*(?:%|m\b|bn\b|k\b|\([\d,.]+\)))?"
+)
+
+
+def exhibit_has_financial_data(exhibit_text: str) -> bool:
+    """Return True when an exhibit string contains real numeric financial data.
+
+    Accepts any professional format — pipe tables, indented line items, bold
+    headings, or plain labelled figures — as long as the text contains at least
+    one currency-style number (e.g. 5,200 / £1,800 / $12.5m / 12.5%).
+    A title-only string such as 'Exhibit 1: Statement of Financial Position'
+    with no actual figures returns False.
+    """
+    return bool(_FIN_NUM_RE.search(str(exhibit_text or "")))
 
 # --- Schema one-liners (economy: single source for generation prompts) ---
 
@@ -59,7 +81,8 @@ GAP_SCHEMA_ONE_LINE = (
 )
 SECTION_C_SCHEMA_ONE_LINE = (
     '{"chapter":"...","scenario":"Full case narrative (company, situation). 150-400 words. No placeholders.",'
-    '"exhibits":["1-4 strings. Each is Exhibit 1/2… with ALL numeric financial data (pipe/ASCII tables OK). '
+    '"exhibits":["1-4 strings. Each is Exhibit 1/2… with ALL numeric financial data. '
+    'Use any professional format: pipe tables, indented line items, **bold** headings, or labelled figures. '
     'If any requirement says information below/appendix/exhibit, exhibits MUST contain those numbers — never empty.",'
     '"requirements":[{"part":"a","requirement_text":"Requirement with command verb (e.g. Calculate, Evaluate, Recommend).","marks":8},'
     '{"part":"b","requirement_text":"...","marks":8},{"part":"c","requirement_text":"...","marks":4}],'
@@ -179,7 +202,8 @@ SECTION_C_ROLE_BASE = (
 )
 SECTION_C_RULES = [
     "scenario: Single narrative with case facts and context. Put every figure the candidate needs in exhibits (not only in prose).",
-    "exhibits: Non-empty array (1-4 strings). Each string is one exhibit: title line then pipe/ASCII table or bullet facts with currency/units. "
+    "exhibits: Non-empty array (1-4 strings). Each string is one exhibit: title line then financial data with currency/units. "
+    "Use any professional format — pipe tables, **bold** headings with indented line items, labelled key figures, or bullet facts. "
     "If you write 'using the information below', 'appendix', or 'financial statements provided', those numbers MUST appear verbatim in exhibits.",
     "Never reference exhibits, appendices, or 'data below' without including that data inside exhibits in this JSON.",
     "requirements: Exactly 3 parts (a), (b), (c). Each has part (a/b/c), requirement_text (one clear task with command verb), and marks. Total marks must equal 20.",
@@ -199,15 +223,18 @@ SECTION_C_FR_EXTRA_RULES = [
     "Marks split: When using preparation tasks, typical split is (a) main statement 10–14 marks, (b) second statement or detailed workings 4–8 marks, (c) short explanation, disclosure, or recommendation 2–6 marks; total must remain 20.",
     "model_answer_outline: For any part that asks to prepare or present a statement, the matching bullet must be a clear statement skeleton (key headings and line items, e.g. non-current assets, current assets, equity, subtotals), not only a generic narrative.",
     "Use IFRS/IAS terminology where the scenario implies a standard (e.g. IAS 1 presentation, IAS 7 cash flows, relevant recognition standards).",
-    "Exhibits: For FR questions, include at least one numerical pipe/ASCII table exhibit per statement required "
-    "(e.g. draft Statement of Financial Position with figures, trial balance extract, or note workings table). "
-    "Each table must have column headers and at least 3 data rows with currency figures.",
+    "Exhibits (MANDATORY real financial data): every exhibit string MUST contain a title line followed by actual currency figures — "
+    "not just a title or a label. Use whatever professional format best communicates the statement: "
+    "a pipe table, **bold** section headings with indented line items, or labelled key figures are all acceptable. "
+    "Each exhibit must have at least 3 labelled line items with currency amounts. "
+    "BAD (will be rejected): 'Exhibit 1: Statement of Financial Position' with no actual figures. "
+    "GOOD: title line + statement body showing material line items (e.g. PPE £5,200; Inventories £1,800; Total assets £9,500) with amounts.",
     "FR exhibit templates: preferred exhibit forms are (1) consolidated/single-entity SoFP with non-current assets, "
     "current assets, equity, and liabilities sections; (2) SoPL/SoCI with revenue, operating expenses, and tax; "
     "(3) SoCF with operating/investing/financing sections per IAS 7; "
     "(4) note disclosures for IAS 12 deferred tax, IFRS 9 classification, or IFRS 16 lease liabilities.",
     "Numeric completeness: every figure referenced in the scenario narrative or requirements (e.g. 'as per the "
-    "draft accounts', 'the information provided') must appear verbatim in an exhibit table—never omit data that "
+    "draft accounts', 'the information provided') must appear verbatim in an exhibit—never omit data that "
     "a candidate needs to calculate or prepare a statement.",
 ]
 
