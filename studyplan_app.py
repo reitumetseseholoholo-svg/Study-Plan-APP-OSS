@@ -26017,7 +26017,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "weak_topics_top3": list(snapshot.get("weak_topics_top3", []) or [])[:3],
             "risk_snapshot_top3": list(snapshot.get("risk_snapshot_top3", []) or [])[:2],
             "due_snapshot_top3": list(snapshot.get("due_snapshot_top3", []) or [])[:2],
-            "recent_autopilot_actions": list(snapshot.get("recent_autopilot_actions", []) or [])[:2],
             "gap_generation_recommended": bool(snapshot.get("gap_generation_recommended", False)),
             "runtime_scope": str(snapshot.get("runtime_scope", "") or ""),
         }
@@ -26236,7 +26235,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                     row_ts = float(row.get("monotonic_at", 0.0) or 0.0)
                                 except Exception:
                                     row_ts = 0.0
-                                if row_ts > 0.0 and (now_ts - row_ts) < 300.0:
+                                if row_ts > 0.0 and (now_ts - row_ts) < 60.0:
                                     duplicate_recent = True
                                     break
                             if duplicate_recent:
