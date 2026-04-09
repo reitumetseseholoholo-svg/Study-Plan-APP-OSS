@@ -5887,3 +5887,155 @@ def test_render_grounded_tutor_feedback_coerces_invalid_confidence_and_citations
     assert payload["evidence_confidence"] == 0.0
     assert payload["citations_count"] == 0
     assert "Evidence:" in str(payload["details_text"])
+
+
+# ---------------------------------------------------------------------------
+# Streak-break and badge-revocation tests
+# ---------------------------------------------------------------------------
+
+def _make_streak_dummy():
+    """Return a minimal SimpleNamespace wired up for streak/badge methods."""
+    dummy = types.SimpleNamespace(
+        achievements=set(),
+        study_streak=0,
+        last_study_date=None,
+        # UI stubs — badge_flow is None so update_badges_display is a no-op
+        badge_flow=None,
+    )
+    dummy.update_badges_display = lambda: None
+    dummy.save_preferences = lambda: None
+    dummy._revoke_streak_badges = types.MethodType(StudyPlanGUI._revoke_streak_badges, dummy)
+    dummy._check_streak_milestones = types.MethodType(StudyPlanGUI._check_streak_milestones, dummy)
+    dummy._unlock_achievement = types.MethodType(StudyPlanGUI._unlock_achievement, dummy)
+    dummy.send_notification = lambda *_a, **_kw: None
+    dummy._animate_badge_unlock = lambda *_a, **_kw: None
+    dummy.update_streak = types.MethodType(StudyPlanGUI.update_streak, dummy)
+    return dummy
+
+
+def test_revoke_streak_badges_removes_all_streak_keys():
+    dummy = _make_streak_dummy()
+    dummy.achievements = {"streak_3", "streak_7", "streak_14", "streak_30", "quiz_first"}
+    dummy._revoke_streak_badges()
+    assert "streak_3" not in dummy.achievements
+    assert "streak_7" not in dummy.achievements
+    assert "streak_14" not in dummy.achievements
+    assert "streak_30" not in dummy.achievements
+    # Unrelated badge must survive
+    assert "quiz_first" in dummy.achievements
+
+
+def test_revoke_streak_badges_is_noop_when_no_streak_badges():
+    dummy = _make_streak_dummy()
+    dummy.achievements = {"quiz_first", "pomodoro_4"}
+    dummy._revoke_streak_badges()
+    assert dummy.achievements == {"quiz_first", "pomodoro_4"}
+
+
+def test_update_streak_revokes_badges_when_day_skipped():
+    dummy = _make_streak_dummy()
+    dummy.study_streak = 7
+    dummy.last_study_date = datetime.date.today() - datetime.timedelta(days=3)
+    dummy.achievements = {"streak_3", "streak_7"}
+
+    revoked = []
+    original_revoke = dummy._revoke_streak_badges
+
+    def _spy_revoke():
+        revoked.append(True)
+        original_revoke()
+
+    dummy._revoke_streak_badges = _spy_revoke
+
+    # Stub save_streak_data so no file I/O is needed
+    dummy.save_streak_data = lambda: None
+
+    dummy.update_streak()
+
+    assert len(revoked) == 1, "expected _revoke_streak_badges to be called exactly once"
+    assert dummy.study_streak == 1
+    assert dummy.last_study_date == datetime.date.today()
+    assert "streak_3" not in dummy.achievements
+    assert "streak_7" not in dummy.achievements
+
+
+def test_update_streak_does_not_revoke_when_studied_yesterday():
+    dummy = _make_streak_dummy()
+    dummy.study_streak = 3
+    dummy.last_study_date = datetime.date.today() - datetime.timedelta(days=1)
+    dummy.achievements = {"streak_3"}
+
+    revoked = []
+    original_revoke = dummy._revoke_streak_badges
+
+    def _spy_revoke():
+        revoked.append(True)
+        original_revoke()
+
+    dummy._revoke_streak_badges = _spy_revoke
+    dummy.save_streak_data = lambda: None
+
+    dummy.update_streak()
+
+    assert len(revoked) == 0, "_revoke_streak_badges must NOT be called for a consecutive day"
+    assert dummy.study_streak == 4
+    assert "streak_3" in dummy.achievements
+
+
+def test_load_streak_data_resets_streak_and_badges_after_missed_day(tmp_path, monkeypatch):
+    import json as _json
+
+    streak_file = tmp_path / "streak.json"
+    two_days_ago = (datetime.date.today() - datetime.timedelta(days=2)).isoformat()
+    streak_file.write_text(_json.dumps({"last_study_date": two_days_ago, "study_streak": 14}))
+
+    monkeypatch.setattr("studyplan_app.Config.CONFIG_HOME", str(tmp_path))
+
+    dummy = _make_streak_dummy()
+    dummy.achievements = {"streak_3", "streak_7", "streak_14"}
+    dummy.load_streak_data = types.MethodType(StudyPlanGUI.load_streak_data, dummy)
+
+    dummy.load_streak_data()
+
+    assert dummy.study_streak == 0, "streak must be reset to 0 after a missed day"
+    assert "streak_3" not in dummy.achievements
+    assert "streak_7" not in dummy.achievements
+    assert "streak_14" not in dummy.achievements
+
+
+def test_load_streak_data_keeps_streak_when_studied_yesterday(tmp_path, monkeypatch):
+    import json as _json
+
+    streak_file = tmp_path / "streak.json"
+    yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    streak_file.write_text(_json.dumps({"last_study_date": yesterday, "study_streak": 5}))
+
+    monkeypatch.setattr("studyplan_app.Config.CONFIG_HOME", str(tmp_path))
+
+    dummy = _make_streak_dummy()
+    dummy.achievements = {"streak_3"}
+    dummy.load_streak_data = types.MethodType(StudyPlanGUI.load_streak_data, dummy)
+
+    dummy.load_streak_data()
+
+    assert dummy.study_streak == 5, "streak must be preserved when studied yesterday"
+    assert "streak_3" in dummy.achievements
+
+
+def test_load_streak_data_keeps_streak_when_studied_today(tmp_path, monkeypatch):
+    import json as _json
+
+    streak_file = tmp_path / "streak.json"
+    today = datetime.date.today().isoformat()
+    streak_file.write_text(_json.dumps({"last_study_date": today, "study_streak": 10}))
+
+    monkeypatch.setattr("studyplan_app.Config.CONFIG_HOME", str(tmp_path))
+
+    dummy = _make_streak_dummy()
+    dummy.achievements = {"streak_7"}
+    dummy.load_streak_data = types.MethodType(StudyPlanGUI.load_streak_data, dummy)
+
+    dummy.load_streak_data()
+
+    assert dummy.study_streak == 10, "streak must be preserved when studied today"
+    assert "streak_7" in dummy.achievements
