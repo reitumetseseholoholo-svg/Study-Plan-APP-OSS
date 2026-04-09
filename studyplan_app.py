@@ -4037,6 +4037,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pending = getattr(self, "_ai_tutor_pending_suggestion", None)
             if isinstance(pending, dict):
                 self._set_label_text_if_changed(next_label, f"Next: {self._describe_ai_tutor_action(pending)}")
+            elif mode == "cockpit":
+                self._set_label_text_if_changed(next_label, "Next: autopilot ready")
             else:
                 self._set_label_text_if_changed(next_label, "Next: evaluating…")
         # Update SRS debt label
@@ -26015,7 +26017,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "weak_topics_top3": list(snapshot.get("weak_topics_top3", []) or [])[:3],
             "risk_snapshot_top3": list(snapshot.get("risk_snapshot_top3", []) or [])[:2],
             "due_snapshot_top3": list(snapshot.get("due_snapshot_top3", []) or [])[:2],
-            "recent_autopilot_actions": list(snapshot.get("recent_autopilot_actions", []) or [])[:2],
+            "gap_generation_recommended": bool(snapshot.get("gap_generation_recommended", False)),
             "runtime_scope": str(snapshot.get("runtime_scope", "") or ""),
         }
         signal_json = json.dumps(signal, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -26425,7 +26427,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "autonomy_mode": str(self._effective_ai_tutor_autonomy_mode()),
             "recent_autopilot_actions": self._sanitize_ai_tutor_recent_action_log(
                 getattr(self, "_ai_tutor_recent_action_log", []),
-                limit=5,
+                limit=10,
             ),
             "total_question_count": int(self._get_total_question_count()),
             "question_generation_cap": int(getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 1500) or 1500),
@@ -26439,6 +26441,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         "coach_pick": str(packet.get("coach_pick", "") or ""),
                     }
                 )
+            ),
+            "actions_budget_remaining": max(
+                0,
+                int(AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW)
+                - len(
+                    [
+                        ts
+                        for ts in list(getattr(self, "_ai_tutor_global_autopilot_action_window", []) or [])
+                        if (time.monotonic() - float(ts)) <= float(AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS)
+                    ]
+                ),
             ),
             "capabilities": {
                 "can_control_focus_workflow": True,

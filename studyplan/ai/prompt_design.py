@@ -126,6 +126,9 @@ AUTOPILOT_RULES = [
     "Use tutor_open when opening/focusing the Tutor dialog would unblock the learner.",
     "Use coach_open when a coaching recommendation should be shown before further execution.",
     "If no action should run now, return action='focus_start' with a concise reason.",
+    "When gap_generation_recommended=true and capabilities.can_generate_gap_questions=true, consider gap_drill_generate for the current topic to grow the practice question bank before deeper drilling.",
+    "If actions_budget_remaining <= 1, reserve the budget for high-impact actions only (must_review_due >= 3 or weak-topic repair); avoid low-value or repeat actions.",
+    "Consult daily_plan_progress: if today's completion_pct >= 100, prefer consolidation (review_start or interleave_start) rather than starting new focus blocks.",
 ]
 
 # Coach: app injects runtime_contract and learning_context; same pattern as autopilot.
