@@ -26198,11 +26198,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         f"{must_due} must-review items are due. Consider a short review burst now.",
                     )
                 if isinstance(decision, dict):
-                    mode = self._effective_ai_tutor_autonomy_mode()
+                    current_mode = self._effective_ai_tutor_autonomy_mode()
                     action = str(decision.get("action", "") or "").strip().lower()
                     requires_confirmation = bool(decision.get("requires_confirmation", False))
                     local_blocked = ""
-                    if not bool(self._can_auto_execute_ai_tutor_action(action, mode, requires_confirmation)):
+                    if not bool(self._can_auto_execute_ai_tutor_action(action, current_mode, requires_confirmation)):
                         blocked_reason_local = "needs_confirmation_or_mode_block"
                         self._set_ai_tutor_pending_suggestion(decision, source="autopilot")
                         reason = str(decision.get("reason", "") or "").strip()
