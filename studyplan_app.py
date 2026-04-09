@@ -27866,13 +27866,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     exhibits.append(block[:ex_cap])
         if scenario_text and not exhibits:
             exhibits = [scenario_text[:1200]]
-        # FR modules: enforce at least one exhibit with a numeric table.
-        # If no exhibit contains a pipe-table row (i.e. " | "), inject a placeholder so downstream
-        # evaluation prompt knows data was missing from generation.
-        if self._is_fr_financial_reporting_module() and exhibits:
-            has_table = any("|" in ex for ex in exhibits)
-            if not has_table:
-                exhibits[0] = exhibits[0] + "\n(Note: numeric data table required for FR question – see scenario)"
         tasks_raw = row.get("required_tasks", [])
         required_tasks: list[str] = []
         if requirements:
@@ -28353,6 +28346,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             model_candidates = [selected]
         from studyplan.ai.prompt_design import (
+            FR_EXHIBIT_TABLE_RETRY_SUFFIX,
             RETRY_SUFFIX_ONE_CASE,
             append_retry_suffix,
         )
@@ -28421,6 +28415,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     attempted_models=attempted_models,
                 ),
             )
+        # FR modules: if exhibits lack numeric pipe tables, retry with a reinforced exhibit prompt.
+        # This replaces the old approach of appending a "(Note: …)" placeholder inside the exhibits.
+        if model_name and self._is_fr_financial_reporting_module():
+            _fr_exhibits = list(parsed.get("exhibits", []) or [])
+            if _fr_exhibits and not any("|" in ex for ex in _fr_exhibits):
+                if not (cancel_check and cancel_check()):
+                    _fr_retry_prompt = append_retry_suffix(prompt, FR_EXHIBIT_TABLE_RETRY_SUFFIX)
+                    try:
+                        _text_fr, _err_fr = self._ollama_generate_text(
+                            model_name,
+                            _fr_retry_prompt,
+                            cancel_check=cancel_check,
+                            inference_purpose="section_c_generation",
+                        )
+                    except TypeError:
+                        _text_fr, _err_fr = self._ollama_generate_text(model_name, _fr_retry_prompt)
+                    if not _err_fr:
+                        _parsed_fr, _ = self._parse_generated_section_c_question(_text_fr, chapter_name)
+                        if isinstance(_parsed_fr, dict):
+                            _fr_exhibits2 = list(_parsed_fr.get("exhibits", []) or [])
+                            if any("|" in ex for ex in _fr_exhibits2):
+                                parsed = _parsed_fr
         # Extra safety: lightweight schema guard before persistence.
         requirements = parsed.get("requirements")
         model_outline = parsed.get("model_answer_outline")
