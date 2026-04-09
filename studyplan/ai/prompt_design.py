@@ -37,6 +37,15 @@ RETRY_SUFFIX_ONE_ITEM = (
 RETRY_SUFFIX_ONE_CASE = (
     JSON_ONLY_NO_MARKDOWN + " Generate exactly one case."
 )
+# FR exhibit retry: used when a generated FR case has exhibits with no numeric pipe tables.
+FR_EXHIBIT_TABLE_RETRY_SUFFIX = (
+    "CRITICAL — exhibits are missing numeric pipe tables. "
+    "Every exhibit MUST contain an actual financial data table using pipe format: "
+    "| Line item | $000 |\n|---|---|\n| Revenue | 5,200 |\n| Cost of sales | (3,100) |. "
+    "Column headers and at least 3 rows of real currency figures are required. "
+    "Do NOT write placeholder notes or instructions instead of data. "
+    "Re-generate the complete JSON case now with proper numeric exhibits."
+)
 SYLLABUS_JSON_ONLY = "Return valid JSON only, no markdown or explanation."
 
 # --- Schema one-liners (economy: single source for generation prompts) ---
