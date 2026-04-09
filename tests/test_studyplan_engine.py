@@ -3737,3 +3737,26 @@ def test_import_questions_json_rejects_oversized_file(engine_no_io, tmp_path):
     path.write_text(json.dumps({"chapter": "FM Function", "questions": [{"question": "Q", "options": ["A"], "correct": "A"}] * 50}), encoding="utf-8")
     with pytest.raises(ValueError):
         eng.import_questions_json(str(path))
+
+
+# ---------------------------------------------------------------------------
+# is_overdue — regression for string-typed interval (BUG 3)
+# ---------------------------------------------------------------------------
+
+
+def test_is_overdue_handles_string_interval(engine_no_io):
+    """is_overdue must not raise TypeError when interval is stored as a string."""
+    today = datetime.date.today()
+    yesterday = (today - datetime.timedelta(days=1)).isoformat()
+    # Simulate a JSON round-trip that left interval as a string.
+    srs_item = {"last_review": yesterday, "interval": "1"}
+    # Should return True (1-day interval, reviewed yesterday → due today)
+    assert engine_no_io.is_overdue(srs_item, today) is True
+
+
+def test_is_overdue_handles_float_interval(engine_no_io):
+    """is_overdue must handle float interval values correctly."""
+    today = datetime.date.today()
+    long_ago = (today - datetime.timedelta(days=30)).isoformat()
+    srs_item = {"last_review": long_ago, "interval": 7.5}
+    assert engine_no_io.is_overdue(srs_item, today) is True

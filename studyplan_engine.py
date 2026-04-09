@@ -9913,7 +9913,7 @@ class StudyPlanEngine:
         except ValueError:
             return False
 
-        interval = srs_item.get("interval", 1)
+        interval = float(srs_item.get("interval", 1) or 1)
         next_review_date = last_review_date + datetime.timedelta(days=interval)
         return next_review_date <= today
 

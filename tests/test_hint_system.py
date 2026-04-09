@@ -65,13 +65,13 @@ def test_hint_levels_are_sequential(bank_short_answer):
 def test_hint_labels_are_non_empty(bank_short_answer):
     hints = bank_short_answer.generate_hints()
     for h in hints:
-        assert h.label.strip()
+        assert len(h.label.strip()) > 3, f"hint label too short: {h.label!r}"
 
 
 def test_hint_texts_are_non_empty(bank_short_answer):
     hints = bank_short_answer.generate_hints()
     for h in hints:
-        assert h.text.strip()
+        assert len(h.text.strip()) > 3, f"hint text too short: {h.text!r}"
 
 
 def test_solution_hint_contains_expected_answer(bank_short_answer):

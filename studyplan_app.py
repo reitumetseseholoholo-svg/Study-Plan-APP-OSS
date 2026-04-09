@@ -15644,7 +15644,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._ai_cache_suppressed_error_count = 0
         except Exception:
             pass
-        sql_hint = str(sql or "").strip().splitlines()[0][:120]
+        sql_hint = next(iter(str(sql or "").strip().splitlines()), "")[:120]
         suffix = f" (suppressed={suppressed})" if suppressed > 0 else ""
         if exc is None:
             log.warning(
@@ -50710,18 +50710,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return box
 
     def update_streak_display(self):
-        """
-        Updates the study streak display label with the latest streak data.
-
-        Raises:
-            AttributeError: If self.streak_label or self.study_streak is None.
-            Exception: If an unexpected error occurs during update.
-        """
+        """Updates the study streak display label with the latest streak data."""
         try:
-            if self.streak_label is None:
-                raise AttributeError("self.streak_label is None")
-            if self.study_streak is None:
-                raise AttributeError("self.study_streak is None")
+            if self.streak_label is None or self.study_streak is None:
+                return
             streak = int(self.study_streak or 0)
             if streak >= 30:
                 flame = "🔥🔥🔥"
@@ -50734,8 +50726,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             streak_text = f"Study Streak: {streak} days{' ' + flame if flame else ''}"
             self.streak_label.set_markup(streak_text)
             self.update_xp_display()
-        except AttributeError as e:
-            print(f"AttributeError: {e}")
         except Exception as e:
             print(f"Exception: {e}")
         try:

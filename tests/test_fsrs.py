@@ -13,6 +13,7 @@ from studyplan.fsrs import (
     _safe_float,
     _safe_int,
     fsrs_update_srs_item,
+    optimize_desired_retention_from_history,
 )
 
 
@@ -314,3 +315,58 @@ def test_safe_int_returns_default_for_string():
 
 def test_safe_int_converts_valid_value():
     assert _safe_int("7", 0) == 7
+
+
+# ---------------------------------------------------------------------------
+# optimize_desired_retention_from_history
+# ---------------------------------------------------------------------------
+
+
+def _make_history(recall_rate: float, n: int = 20) -> list[dict]:
+    """Build a synthetic review history with the given recall rate."""
+    records = []
+    for i in range(n):
+        records.append(
+            {
+                "fsrs_stability": 5.0,
+                "elapsed_days": 7,
+                "recalled": i < int(n * recall_rate),
+            }
+        )
+    return records
+
+
+def test_optimize_retention_returns_all_expected_keys():
+    result = optimize_desired_retention_from_history(_make_history(0.85))
+    for key in ("suggested_retention", "current_avg_predicted_r", "actual_recall_rate", "sample_count", "loss_at_suggestion"):
+        assert key in result, f"missing key: {key}"
+
+
+def test_optimize_retention_empty_history_returns_default():
+    result = optimize_desired_retention_from_history([])
+    assert result["suggested_retention"] == DEFAULT_DESIRED_RETENTION
+    assert result["sample_count"] == 0
+
+
+def test_optimize_retention_varies_with_different_histories():
+    """Suggested retention must differ when actual recall rates differ."""
+    result_high = optimize_desired_retention_from_history(_make_history(0.95, n=30))
+    result_low = optimize_desired_retention_from_history(_make_history(0.72, n=30))
+    assert result_high["suggested_retention"] != result_low["suggested_retention"]
+
+
+def test_optimize_retention_suggestion_reflects_actual_recall():
+    """Suggested retention should be close to the observed recall rate."""
+    for recall in (0.75, 0.85, 0.92):
+        result = optimize_desired_retention_from_history(_make_history(recall, n=40))
+        # Allow up to 5 percentage points: the grid has 30 steps over [0.70, 0.99]
+        # (step ≈ 0.01), and the discrete recall rate from n=40 samples may be
+        # slightly off from the nominal value, so a 0.05 tolerance is appropriate.
+        assert abs(result["suggested_retention"] - recall) < 0.05, (
+            f"recall={recall}: suggested={result['suggested_retention']}"
+        )
+
+
+def test_optimize_retention_suggestion_stays_within_bounds():
+    result = optimize_desired_retention_from_history(_make_history(0.50, n=20))
+    assert 0.70 <= result["suggested_retention"] <= 0.99
