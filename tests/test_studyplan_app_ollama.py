@@ -4465,7 +4465,7 @@ def test_generate_section_c_question_fr_retries_when_exhibits_lack_tables():
     }
     data_case = dict(no_data_case)
     data_case["exhibits"] = [
-        "Exhibit 1: Draft SoFP\nPPE: 5,200\nInventories: 1,800\nTotal assets: 7,000"
+        "Exhibit 1: Draft SoFP\nPPE: £5,200\nInventories: £1,800\nTotal assets: £7,000"
     ]
 
     prompts_seen: list[str] = []

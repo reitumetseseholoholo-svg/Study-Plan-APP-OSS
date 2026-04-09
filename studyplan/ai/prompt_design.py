@@ -12,6 +12,7 @@ Design: DEVELOPER_DOC.md § "Prompt engineering design (3Es + fail-safe)".
 from __future__ import annotations
 
 import os
+import re
 
 from studyplan.question_quality import (
     MCQ_GAP_LONG_OUTLIER_VS_DISTRACTOR_MEAN,
@@ -51,6 +52,12 @@ RETRY_SUFFIX_FR_TABLES = (
 FR_EXHIBIT_TABLE_RETRY_SUFFIX = RETRY_SUFFIX_FR_TABLES
 SYLLABUS_JSON_ONLY = "Return valid JSON only, no markdown or explanation."
 
+# Compiled once at module level for use in exhibit_has_financial_data().
+_FIN_NUM_RE = re.compile(
+    r"(?:[£$€¥₹]|\bUSD\b|\bGBP\b)?\s*\d[\d,]*(?:\.\d+)?"
+    r"(?:\s*(?:%|m\b|bn\b|k\b|\([\d,.]+\)))?"
+)
+
 
 def exhibit_has_financial_data(exhibit_text: str) -> bool:
     """Return True when an exhibit string contains real numeric financial data.
@@ -61,11 +68,6 @@ def exhibit_has_financial_data(exhibit_text: str) -> bool:
     A title-only string such as 'Exhibit 1: Statement of Financial Position'
     with no actual figures returns False.
     """
-    import re as _re
-    _FIN_NUM_RE = _re.compile(
-        r"(?:[£$€¥₹]|\bUSD\b|\bGBP\b)?\s*\d[\d,]*(?:\.\d+)?"
-        r"(?:\s*(?:%|m\b|bn\b|k\b|\([\d,.]+\)))?"
-    )
     return bool(_FIN_NUM_RE.search(str(exhibit_text or "")))
 
 # --- Schema one-liners (economy: single source for generation prompts) ---
