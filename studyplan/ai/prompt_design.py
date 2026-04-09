@@ -38,19 +38,14 @@ RETRY_SUFFIX_ONE_CASE = (
     JSON_ONLY_NO_MARKDOWN + " Generate exactly one case."
 )
 RETRY_SUFFIX_FR_TABLES = (
-    "CRITICAL CORRECTION REQUIRED: your exhibits array is missing actual numeric pipe tables. "
-    "Each exhibit string MUST contain a title line followed by a pipe-table body with column headers "
-    "and at least 3 rows of currency figures. "
-    "BAD (rejected): 'Exhibit 1: Statement of Financial Position (pipe table)' — this has NO table data. "
-    "GOOD (required): 'Exhibit 1: Draft Statement of Financial Position\\n"
-    "| Item | £000 |\\n|------|------|\\n"
-    "| Property, plant and equipment | 5,200 |\\n"
-    "| Inventories | 1,800 |\\n"
-    "| Trade receivables | 2,100 |\\n"
-    "| Cash and cash equivalents | 400 |\\n"
-    "| Total assets | 9,500 |' "
-    "— real numbers, real headings, pipe-separated columns. "
-    "Regenerate the full case JSON now with all exhibits containing actual pipe-table data."
+    "CRITICAL CORRECTION REQUIRED: your exhibits array is missing actual numeric financial data. "
+    "Each exhibit string MUST contain a title line followed by real currency figures. "
+    "Use whatever professional format best communicates the financial statements — "
+    "markdown headings, **bold** totals, indented line items, or pipe tables are all acceptable — "
+    "but exhibits MUST include real numbers (e.g. 5,200 / £1,800 / 12.5%). "
+    "BAD (rejected): 'Exhibit 1: Statement of Financial Position' with no actual figures. "
+    "GOOD (required): title line + statement body with at least 3 labelled line items and currency amounts. "
+    "Regenerate the full case JSON now with exhibits that contain actual financial data."
 )
 SYLLABUS_JSON_ONLY = "Return valid JSON only, no markdown or explanation."
 
