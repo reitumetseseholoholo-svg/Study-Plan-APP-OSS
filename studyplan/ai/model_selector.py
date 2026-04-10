@@ -130,7 +130,7 @@ class ModelSelector:
             "samples": len(samples),
             "success_rate": len(successes) / len(samples) if samples else 0.0,
             "avg_latency_ms": sum(latencies) / len(latencies) if latencies else 0,
-            "p90_latency_ms": sorted(latencies)[int(len(latencies) * 0.9)] if latencies else 0,
+            "p90_latency_ms": sorted(latencies)[max(0, int(len(latencies) * 0.9) - 1)] if latencies else 0,
         }
 
     # ------------------------------------------------------------------

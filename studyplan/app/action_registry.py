@@ -29,6 +29,7 @@ DEFAULT_UI_ACTION_BINDINGS: tuple[ActionBinding, ...] = (
     ActionBinding("export_csv", "on_menu_export_csv"),
     ActionBinding("export_template", "on_menu_export_template"),
     ActionBinding("export_question_stats", "on_menu_export_question_stats"),
+    ActionBinding("export_anki_tsv", "on_menu_export_anki_tsv"),
     ActionBinding("weekly_report", "on_view_weekly_report"),
     ActionBinding("reset_data", "on_menu_reset_data"),
     ActionBinding("preferences", "on_open_preferences"),

@@ -7155,6 +7155,20 @@ class StudyPlanEngine:
                 if last is None:
                     due_count += 1
                     continue
+                # Prefer FSRS due date when available.
+                fsrs_due = item.get("fsrs_due")
+                if fsrs_due:
+                    _fsrs_parsed = False
+                    try:
+                        _fsrs_date = datetime.date.fromisoformat(str(fsrs_due))
+                        _fsrs_parsed = True
+                    except Exception:
+                        pass
+                    if _fsrs_parsed:
+                        if _fsrs_date <= today:
+                            due_count += 1
+                        continue  # FSRS owns this card's schedule; skip SM-2
+                # Fall back to SM-2 interval.
                 try:
                     last_date = datetime.date.fromisoformat(str(last))
                 except Exception:
@@ -9869,15 +9883,28 @@ class StudyPlanEngine:
     def is_overdue(self, srs_item, today):
         """Check if an SRS item is overdue for review.
 
-        If the SRS item is None or missing 'last_review', returns False.
-        If the last review date is None (never reviewed), returns False.
-        If the last review date is invalid (not a valid date string), raises ValueError.
-        If the last review date is valid, compares it with the current date and returns True if the next review date has passed, False otherwise.
+        Prefers the FSRS ``fsrs_due`` date when available (set by the default
+        FSRS scheduler).  Falls back to the SM-2 ``last_review`` + ``interval``
+        calculation for legacy items that have not yet been processed by FSRS.
+
+        Returns False when the item is None or has never been reviewed.
         """
-        if srs_item is None or 'last_review' not in srs_item:
+        if srs_item is None:
             return False
 
-        last_review = srs_item.get('last_review')
+        # Prefer the FSRS due date when the card has been scheduled by FSRS.
+        fsrs_due = srs_item.get("fsrs_due")
+        if fsrs_due:
+            try:
+                return datetime.date.fromisoformat(str(fsrs_due)) <= today
+            except (ValueError, TypeError):
+                pass
+
+        # Legacy SM-2 fallback.
+        if "last_review" not in srs_item:
+            return False
+
+        last_review = srs_item.get("last_review")
         if last_review is None:
             return False
 
@@ -9886,7 +9913,7 @@ class StudyPlanEngine:
         except ValueError:
             return False
 
-        interval = srs_item.get('interval', 1)
+        interval = float(srs_item.get("interval", 1) or 1)
         next_review_date = last_review_date + datetime.timedelta(days=interval)
         return next_review_date <= today
 
@@ -11098,16 +11125,27 @@ class StudyPlanEngine:
 
     def get_retention_probability(self, chapter, idx):
         srs_list = self.srs_data.get(chapter, [])
-        if idx >= len(srs_list): return 0.0
+        if idx >= len(srs_list):
+            return 0.0
         srs = srs_list[idx]
-        if srs.get('last_review') is None:
+        last_review = srs.get("fsrs_last_review") or srs.get("last_review")
+        if last_review is None:
             return 0.0
         try:
-            days_since = (datetime.date.today() - datetime.date.fromisoformat(srs['last_review'])).days
+            days_since = (datetime.date.today() - datetime.date.fromisoformat(str(last_review))).days
         except (ValueError, TypeError):
             return 0.0
+        # Use FSRS stability when available: R(t) = 0.9^(t/S)
+        fsrs_stability = srs.get("fsrs_stability")
+        if fsrs_stability is not None:
+            try:
+                s = max(0.1, float(fsrs_stability))
+                return math.pow(0.9, days_since / s)
+            except Exception:
+                pass
+        # Fall back to SM-2 interval-based estimate.
         try:
-            interval = int(srs.get('interval', 1) or 1)
+            interval = int(srs.get("interval", 1) or 1)
         except Exception:
             interval = 1
         interval = max(1, interval)
@@ -11116,7 +11154,10 @@ class StudyPlanEngine:
 
     def update_srs(self, chapter: str, question_index: int, is_correct: bool):
         """
-        Update SRS stats using improved SM-2 with capped growth.
+        Update SRS stats.  Uses FSRS-4.5 by default, falling back to SM-2.
+
+        FSRS is the default algorithm.  Set ``STUDYPLAN_SRS_ALGORITHM=sm2``
+        (or ``legacy``) to force the legacy SM-2 path instead.
 
         Args:
             chapter (str): The chapter name (e.g., "FM Function")
@@ -11143,38 +11184,66 @@ class StudyPlanEngine:
                     )
                     return
             srs = srs_data[question_index]
-            try:
-                efactor = float(srs.get('efactor', 2.5) or 2.5)
-            except Exception:
-                efactor = 2.5
-            try:
-                interval = float(srs.get('interval', 1) or 1)
-            except Exception:
-                interval = 1.0
-            srs['last_review'] = datetime.date.today().isoformat()
-            if is_correct:
-                # Clear must-review if answered correctly
-                if chapter in self.must_review:
-                    self.must_review[chapter].pop(str(question_index), None)
-                efactor = min(efactor + 0.1, 2.5)
-                sm2_interval = max(interval * min(efactor, 2.0), 3)
-                interval = sm2_interval
-                try:
-                    pred_interval = self.predict_interval_days(chapter, question_index, interval, efactor)
-                except Exception:
-                    pred_interval = None
-                if pred_interval is not None:
-                    # Blend ML prediction with SM-2, cap for stability.
-                    max_cap = 30.0
-                    blended = (0.6 * sm2_interval) + (0.4 * pred_interval)
-                    interval = max(3.0, min(max_cap, blended))
+
+            # Route to SM-2 only when explicitly requested; FSRS is the default.
+            _algo = str(os.environ.get("STUDYPLAN_SRS_ALGORITHM", "") or "").strip().lower()
+            use_sm2 = _algo in ("sm2", "legacy")
+            if use_sm2:
+                self._update_srs_sm2(srs, chapter, question_index, is_correct)
             else:
-                efactor = max(efactor - 0.2, 1.3)
-                interval = 1.0
-            srs['efactor'] = efactor
-            srs['interval'] = interval
+                self._update_srs_fsrs(srs, chapter, question_index, is_correct)
         except Exception as e:
             print(f"Error updating SRS for question {question_index} in chapter {chapter}: {e}", file=sys.stderr)
+
+    def _update_srs_fsrs(self, srs: dict, chapter: str, question_index: int, is_correct: bool) -> None:
+        """Update a single SRS item using the FSRS-4.5 algorithm."""
+        try:
+            from studyplan.fsrs import FSRSScheduler, fsrs_update_srs_item
+            scheduler = getattr(self, "_fsrs_scheduler", None)
+            if scheduler is None:
+                scheduler = FSRSScheduler()
+                self._fsrs_scheduler = scheduler
+            fsrs_update_srs_item(srs, is_correct, scheduler=scheduler)
+            if is_correct:
+                if chapter in self.must_review:
+                    self.must_review[chapter].pop(str(question_index), None)
+        except Exception as e:
+            # Degrade gracefully to SM-2 on any FSRS error.
+            print(f"FSRS update failed, falling back to SM-2: {e}", file=sys.stderr)
+            self._update_srs_sm2(srs, chapter, question_index, is_correct)
+
+    def _update_srs_sm2(self, srs: dict, chapter: str, question_index: int, is_correct: bool) -> None:
+        """Update a single SRS item using improved SM-2 with capped growth."""
+        try:
+            efactor = float(srs.get('efactor', 2.5) or 2.5)
+        except Exception:
+            efactor = 2.5
+        try:
+            interval = float(srs.get('interval', 1) or 1)
+        except Exception:
+            interval = 1.0
+        srs['last_review'] = datetime.date.today().isoformat()
+        if is_correct:
+            # Clear must-review if answered correctly
+            if chapter in self.must_review:
+                self.must_review[chapter].pop(str(question_index), None)
+            efactor = min(efactor + 0.1, 2.5)
+            sm2_interval = max(interval * min(efactor, 2.0), 3)
+            interval = sm2_interval
+            try:
+                pred_interval = self.predict_interval_days(chapter, question_index, interval, efactor)
+            except Exception:
+                pred_interval = None
+            if pred_interval is not None:
+                # Blend ML prediction with SM-2, cap for stability.
+                max_cap = 30.0
+                blended = (0.6 * sm2_interval) + (0.4 * pred_interval)
+                interval = max(3.0, min(max_cap, blended))
+        else:
+            efactor = max(efactor - 0.2, 1.3)
+            interval = 1.0
+        srs['efactor'] = efactor
+        srs['interval'] = interval
 
     def _leitner_box(self, srs_item: dict) -> int:
         """Map SRS item to a Leitner box (1-5)."""
@@ -11295,7 +11364,21 @@ class StudyPlanEngine:
                 due_kind_by_idx[idx] = 1
                 overdue_by_idx[idx] = 1
                 continue
-            # due today (non-overdue but scheduled)
+            # due today (non-overdue but scheduled); prefer fsrs_due when available
+            fsrs_due = srs.get("fsrs_due")
+            if fsrs_due:
+                _fsrs_parsed = False
+                try:
+                    _fsrs_date = datetime.date.fromisoformat(str(fsrs_due))
+                    _fsrs_parsed = True
+                except Exception:
+                    pass
+                if _fsrs_parsed:
+                    if _fsrs_date <= today:
+                        due_indices.append(idx)
+                        due_kind_by_idx[idx] = 0
+                        overdue_by_idx[idx] = 0
+                    continue  # FSRS owns this card's schedule; skip SM-2 check
             last = srs.get("last_review")
             if isinstance(last, str) and last:
                 try:
@@ -13081,3 +13164,323 @@ class StudyPlanEngine:
             self.progress_log.append(entry)
 
         self.progress_log = self._coerce_progress_log(self.progress_log)
+
+    def export_flashcards_csv(self, output_path: str, *, chapters: list[str] | None = None) -> dict:
+        """Export the question bank with SRS state to a CSV file.
+
+        The output file is compatible with the ``_import_questions_csv`` format
+        so it can be re-imported after editing.  It also includes SRS-state
+        columns so third-party tools (e.g. Anki) can import due-date metadata.
+
+        Columns
+        -------
+        chapter, question, option1, option2, option3, option4, correct,
+        explanation, last_review, interval_days, efactor, due_date,
+        fsrs_stability, fsrs_difficulty, fsrs_reps, fsrs_lapses
+
+        Parameters
+        ----------
+        output_path:
+            Destination CSV path.  Parent directory must exist.
+        chapters:
+            Optional list of chapter names to include.  Defaults to all chapters.
+
+        Returns
+        -------
+        dict with keys: ``rows_written``, ``chapters``, ``output_path``
+        """
+        target_chapters = chapters if isinstance(chapters, list) else self.CHAPTERS
+        rows_written = 0
+        chapters_included: list[str] = []
+
+        fieldnames = [
+            "chapter",
+            "question",
+            "option1",
+            "option2",
+            "option3",
+            "option4",
+            "correct",
+            "explanation",
+            "last_review",
+            "interval_days",
+            "efactor",
+            "due_date",
+            "fsrs_stability",
+            "fsrs_difficulty",
+            "fsrs_reps",
+            "fsrs_lapses",
+        ]
+
+        today = datetime.date.today()
+        tmp_path = output_path + ".tmp"
+        try:
+            with open(tmp_path, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+                writer.writeheader()
+                for chapter in target_chapters:
+                    questions = self.QUESTIONS.get(chapter, [])
+                    srs_list = self.srs_data.get(chapter, [])
+                    if not isinstance(questions, list) or not questions:
+                        continue
+                    chapter_rows = 0
+                    for idx, q in enumerate(questions):
+                        if not isinstance(q, dict):
+                            continue
+                        srs: dict = srs_list[idx] if idx < len(srs_list) and isinstance(srs_list[idx], dict) else {}
+                        options = q.get("options") or []
+                        last_review = srs.get("last_review") or ""
+                        try:
+                            interval = float(srs.get("interval", 1) or 1)
+                        except (TypeError, ValueError):
+                            interval = 1.0
+                        try:
+                            efactor = float(srs.get("efactor", 2.5) or 2.5)
+                        except (TypeError, ValueError):
+                            efactor = 2.5
+                        # Compute due date from legacy interval.
+                        if last_review:
+                            try:
+                                lr = datetime.date.fromisoformat(str(last_review))
+                                due_date = (lr + datetime.timedelta(days=int(interval))).isoformat()
+                            except (ValueError, TypeError):
+                                due_date = today.isoformat()
+                        else:
+                            due_date = today.isoformat()
+                        row: dict = {
+                            "chapter": chapter,
+                            "question": str(q.get("question", "") or ""),
+                            "option1": str(options[0]) if len(options) > 0 else "",
+                            "option2": str(options[1]) if len(options) > 1 else "",
+                            "option3": str(options[2]) if len(options) > 2 else "",
+                            "option4": str(options[3]) if len(options) > 3 else "",
+                            "correct": str(q.get("correct", "") or ""),
+                            "explanation": str(q.get("explanation", "") or ""),
+                            "last_review": last_review,
+                            "interval_days": round(interval, 1),
+                            "efactor": round(efactor, 4),
+                            "due_date": due_date,
+                            "fsrs_stability": srs.get("fsrs_stability", ""),
+                            "fsrs_difficulty": srs.get("fsrs_difficulty", ""),
+                            "fsrs_reps": srs.get("fsrs_reps", ""),
+                            "fsrs_lapses": srs.get("fsrs_lapses", ""),
+                        }
+                        writer.writerow(row)
+                        chapter_rows += 1
+                    if chapter_rows:
+                        chapters_included.append(chapter)
+                        rows_written += chapter_rows
+            os.replace(tmp_path, output_path)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        return {
+            "rows_written": rows_written,
+            "chapters": chapters_included,
+            "output_path": output_path,
+        }
+
+    def export_anki_note_tsv(self, output_path: str, *, chapters: list[str] | None = None) -> dict:
+        """Export question bank as Anki-importable tab-separated notes (Basic note type).
+
+        The output file uses Anki's plain-text import format:
+        - Tab-separated, no header row.
+        - Column 1 (Front): question text with lettered options appended.
+        - Column 2 (Back): correct answer letter + explanation.
+        - Column 3 (Tags): chapter name, FSRS stability bucket, and due-status tags.
+
+        Import into Anki via File → Import, selecting "Fields separated by: Tab" and
+        "Note Type: Basic".
+
+        Parameters
+        ----------
+        output_path:
+            Destination ``.tsv`` path.
+        chapters:
+            Optional list of chapter names.  Defaults to all chapters.
+
+        Returns
+        -------
+        dict with keys: ``rows_written``, ``chapters``, ``output_path``
+        """
+        target_chapters = chapters if isinstance(chapters, list) else self.CHAPTERS
+        rows_written = 0
+        chapters_included: list[str] = []
+        today = datetime.date.today()
+        tmp_path = output_path + ".tmp"
+        try:
+            with open(tmp_path, "w", newline="", encoding="utf-8") as fh:
+                for chapter in target_chapters:
+                    questions = self.QUESTIONS.get(chapter, [])
+                    srs_list = self.srs_data.get(chapter, [])
+                    if not isinstance(questions, list) or not questions:
+                        continue
+                    chapter_rows = 0
+                    # Build a safe tag from the chapter name (Anki tags cannot have spaces).
+                    chapter_tag = chapter.replace(" ", "_").replace(":", "").replace("/", "_")
+                    for idx, q in enumerate(questions):
+                        if not isinstance(q, dict):
+                            continue
+                        question_text = str(q.get("question", "") or "").strip()
+                        if not question_text:
+                            continue
+                        options: list[str] = list(q.get("options") or [])
+                        correct = str(q.get("correct", "") or "").strip()
+                        explanation = str(q.get("explanation", "") or "").strip()
+                        # Build front: question + lettered options.
+                        letter_map = {opt: chr(ord("A") + i) for i, opt in enumerate(options)}
+                        options_block = "\n".join(
+                            f"{chr(ord('A') + i)}. {opt}" for i, opt in enumerate(options)
+                        )
+                        front = f"{question_text}\n\n{options_block}" if options else question_text
+                        # Build back: correct answer + optional explanation.
+                        correct_letter = letter_map.get(correct, "?")
+                        back = f"{correct_letter}. {correct}"
+                        if explanation:
+                            back += f"\n\n{explanation}"
+                        # Build tags.
+                        tags_parts = [chapter_tag]
+                        srs: dict = srs_list[idx] if idx < len(srs_list) and isinstance(srs_list[idx], dict) else {}
+                        fsrs_stability = srs.get("fsrs_stability")
+                        if fsrs_stability is not None:
+                            try:
+                                s = float(fsrs_stability)
+                                if s < 7:
+                                    tags_parts.append("fsrs:fragile")
+                                elif s < 30:
+                                    tags_parts.append("fsrs:moderate")
+                                else:
+                                    tags_parts.append("fsrs:stable")
+                            except (TypeError, ValueError):
+                                pass
+                        if self.is_overdue(srs, today):
+                            tags_parts.append("due:overdue")
+                        elif srs.get("last_review") is None:
+                            tags_parts.append("due:new")
+                        tags_str = " ".join(tags_parts)
+                        # Escape tabs and newlines within fields (Anki TSV uses \n in fields as line breaks).
+                        def _esc(text: str) -> str:
+                            return text.replace("\t", " ").replace("\r", "")
+                        row = "\t".join([_esc(front), _esc(back), _esc(tags_str)])
+                        fh.write(row + "\n")
+                        chapter_rows += 1
+                    if chapter_rows:
+                        chapters_included.append(chapter)
+                        rows_written += chapter_rows
+            os.replace(tmp_path, output_path)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        return {
+            "rows_written": rows_written,
+            "chapters": chapters_included,
+            "output_path": output_path,
+        }
+
+    # ------------------------------------------------------------------
+    # Module versioning helpers
+    # ------------------------------------------------------------------
+
+    def compute_module_content_hash(self) -> str:
+        """Return a SHA-256 hex digest of the module's canonical content.
+
+        The hash covers ``chapters`` and ``syllabus_structure`` serialised in a
+        deterministic, sorted order.  It is stable across whitespace and key
+        ordering changes in the stored JSON, but changes whenever chapter names
+        or learning outcomes change.
+
+        Typical use: compare ``engine.compute_module_content_hash()`` against
+        the ``content_hash`` field stored in the module config JSON to detect
+        that the file has been edited externally.
+        """
+        payload = {
+            "chapters": sorted(self.CHAPTERS or []),
+            "syllabus_structure": {
+                ch: {
+                    "learning_outcomes": sorted(
+                        [
+                            {"id": lo.get("id", ""), "text": lo.get("text", ""), "level": lo.get("level", 0)}
+                            for lo in (section.get("learning_outcomes") or [])
+                            if isinstance(lo, dict)
+                        ],
+                        key=lambda lo: lo.get("id", ""),
+                    )
+                }
+                for ch, section in sorted((self.syllabus_structure or {}).items())
+                if isinstance(section, dict)
+            },
+        }
+        serialised = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+        return hashlib.sha256(serialised.encode("utf-8")).hexdigest()
+
+    def get_module_version_info(self) -> dict:
+        """Return version metadata for the currently loaded module.
+
+        Returns a dict with keys:
+        - ``module_version``: semver string from the config, or ``"0.0.0"`` if absent.
+        - ``content_hash``: current computed hash (see :meth:`compute_module_content_hash`).
+        - ``stored_hash``: the ``content_hash`` value saved in the config JSON, if any.
+        - ``hash_matches``: True when current hash equals the stored hash.
+        - ``registry_id``: value from config, or empty string.
+        - ``registry_url``: value from config, or empty string.
+        """
+        config_path = getattr(self, "_last_loaded_module_config_path", None)
+        stored_hash = ""
+        module_version = "0.0.0"
+        registry_id = ""
+        registry_url = ""
+        if config_path and os.path.exists(str(config_path)):
+            try:
+                with open(str(config_path), "r", encoding="utf-8") as fh:
+                    raw_config = json.load(fh)
+                if isinstance(raw_config, dict):
+                    stored_hash = str(raw_config.get("content_hash", "") or "")
+                    module_version = str(raw_config.get("module_version", "0.0.0") or "0.0.0")
+                    registry_id = str(raw_config.get("registry_id", "") or "")
+                    registry_url = str(raw_config.get("registry_url", "") or "")
+            except Exception:
+                pass
+        current_hash = self.compute_module_content_hash()
+        return {
+            "module_version": module_version,
+            "content_hash": current_hash,
+            "stored_hash": stored_hash,
+            "hash_matches": current_hash == stored_hash if stored_hash else None,
+            "registry_id": registry_id,
+            "registry_url": registry_url,
+        }
+
+    def stamp_module_content_hash(self) -> bool:
+        """Write the current content hash into the active module config JSON.
+
+        Returns True on success, False if the config path is unknown or cannot
+        be written.  Should be called after saving a module edit so the hash
+        stays fresh.
+        """
+        config_path = getattr(self, "_last_loaded_module_config_path", None)
+        if not config_path or not os.path.exists(str(config_path)):
+            return False
+        try:
+            with open(str(config_path), "r", encoding="utf-8") as fh:
+                raw_config = json.load(fh)
+            if not isinstance(raw_config, dict):
+                return False
+            raw_config["content_hash"] = self.compute_module_content_hash()
+            tmp_path = str(config_path) + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(raw_config, fh, indent=2, ensure_ascii=False)
+                fh.write("\n")
+            os.replace(tmp_path, str(config_path))
+            return True
+        except Exception:
+            return False

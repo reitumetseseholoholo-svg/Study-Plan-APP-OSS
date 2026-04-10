@@ -1041,6 +1041,51 @@ textview:focus-visible {
     background: alpha(@theme_selected_bg_color, 0.055);
     letter-spacing: 0.18px;
 }
+/* Activity heatmap squares */
+.heatmap-active {
+    background-color: mix(@theme_selected_bg_color, green, 0.6);
+    border-radius: 2px;
+    min-width: 10px;
+    min-height: 10px;
+}
+.heatmap-inactive {
+    background-color: alpha(@theme_fg_color, 0.10);
+    border-radius: 2px;
+    min-width: 10px;
+    min-height: 10px;
+}
+.heatmap-future {
+    background-color: alpha(@theme_fg_color, 0.04);
+    border-radius: 2px;
+    min-width: 10px;
+    min-height: 10px;
+}
+
+/* Exam countdown urgency */
+.exam-urgent {
+    color: #cc0000;
+    font-weight: bold;
+}
+.exam-warning {
+    color: #cc6600;
+    font-weight: bold;
+}
+
+/* Badge unlock pulse animation */
+@keyframes badge-unlock-pulse {
+    0%   { box-shadow: 0 0 0 0 alpha(@theme_selected_bg_color, 0.8); transform: scale(1.0); }
+    40%  { box-shadow: 0 0 0 8px alpha(@theme_selected_bg_color, 0.0); transform: scale(1.15); }
+    70%  { transform: scale(0.96); }
+    100% { transform: scale(1.0); }
+}
+.badge-unlock {
+    animation: badge-unlock-pulse 600ms ease-out;
+}
+
+/* AI Cockpit live card */
+.cockpit-live-card {
+    border-left: 4px solid alpha(@theme_selected_bg_color, 0.85);
+}
 """
 
 COACH_THEME_CSS = """
@@ -2133,6 +2178,51 @@ textview:focus-visible {
 .panel-left .section-title {
     border-bottom: 1px solid rgba(139, 175, 255, 0.22);
     color: #90a8cc;
+}
+/* Activity heatmap squares */
+.heatmap-active {
+    background-color: #3dba73;
+    border-radius: 2px;
+    min-width: 10px;
+    min-height: 10px;
+}
+.heatmap-inactive {
+    background-color: rgba(255, 255, 255, 0.10);
+    border-radius: 2px;
+    min-width: 10px;
+    min-height: 10px;
+}
+.heatmap-future {
+    background-color: rgba(255, 255, 255, 0.04);
+    border-radius: 2px;
+    min-width: 10px;
+    min-height: 10px;
+}
+
+/* Exam countdown urgency */
+.exam-urgent {
+    color: #ff4444;
+    font-weight: bold;
+}
+.exam-warning {
+    color: #ff9900;
+    font-weight: bold;
+}
+
+/* Badge unlock pulse animation */
+@keyframes badge-unlock-pulse {
+    0%   { box-shadow: 0 0 0 0 alpha(@theme_selected_bg_color, 0.8); transform: scale(1.0); }
+    40%  { box-shadow: 0 0 0 8px alpha(@theme_selected_bg_color, 0.0); transform: scale(1.15); }
+    70%  { transform: scale(0.96); }
+    100% { transform: scale(1.0); }
+}
+.badge-unlock {
+    animation: badge-unlock-pulse 600ms ease-out;
+}
+
+/* AI Cockpit live card */
+.cockpit-live-card {
+    border-left: 4px solid alpha(#4dabf7, 0.85);
 }
 """
 
