@@ -6449,7 +6449,7 @@ def test_nudge_key_times_pruned_on_emit():
 # Fix 5 / edge case #4: fallback topic validated against CHAPTERS.
 # ------------------------------------------------------------------
 
-def _make_fallback_dummy(chapters: list[str], current_topic: str = ""):
+def _make_fallback_dummy(chapters: list[str]):
     import types as _types
 
     engine = _types.SimpleNamespace(CHAPTERS=chapters)
@@ -6460,7 +6460,7 @@ def _make_fallback_dummy(chapters: list[str], current_topic: str = ""):
 
 def test_fallback_action_rejects_invalid_current_topic():
     """_build_ai_tutor_fallback_action must clear current_topic if not in CHAPTERS."""
-    dummy = _make_fallback_dummy(chapters=["Valid Chapter"], current_topic="Stale Bad Topic")
+    dummy = _make_fallback_dummy(chapters=["Valid Chapter"])
     snapshot = {"current_topic": "Stale Bad Topic", "must_review_due": 0, "overdue_srs_count": 0, "weak_topics_top3": []}
     result = StudyPlanGUI._build_ai_tutor_fallback_action(dummy, snapshot)
     assert result["topic"] == "", "invalid topic must be cleared"
