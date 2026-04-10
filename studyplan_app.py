@@ -28281,7 +28281,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 try:
                     self._archive_section_c_question(chapter_name, evicted_q)
                 except Exception:
-                    pass
+                    log.info("Section C question archival failed for chapter %s", chapter_name, exc_info=True)
         bank[chapter_name] = chapter_rows
         self._section_c_question_bank = bank
         self._section_c_question_bank_loaded = True
@@ -30029,7 +30029,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         rubric_rows = [row for row in list(question.get("marking_rubric", []) or []) if isinstance(row, dict)]
         if not rubric_rows:
-            rubric_rows = [{"criterion": "Overall quality", "max_marks": 10}]
+            rubric_rows = [
+                {"criterion": "Technical application to case facts", "max_marks": 8},
+                {"criterion": "Method, workings, and assumptions", "max_marks": 5},
+                {"criterion": "Evaluation and recommendation", "max_marks": 4},
+                {"criterion": "Structure and exam communication", "max_marks": 3},
+            ]
         rubric_max_by_name: dict[str, int] = {}
         rubric_total = 0
         rubric_names: list[str] = []
@@ -30098,11 +30103,32 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     pick_index = ridx
                     break
             if pick_index < 0:
+                best_ridx = -1
+                best_overlap = 0.0
                 for ridx, row in enumerate(remaining):
                     row_key = str(row.get("criterion", "") or "").strip().lower()
-                    if rubric_key and row_key and (rubric_key in row_key or row_key in rubric_key):
-                        pick_index = ridx
-                        break
+                    if not rubric_key or not row_key:
+                        continue
+                    # Require the shorter string to be a substantial part of the longer
+                    shorter, longer = (rubric_key, row_key) if len(rubric_key) <= len(row_key) else (row_key, rubric_key)
+                    if shorter in longer:
+                        overlap = len(shorter) / max(1, len(longer))
+                        if overlap >= 0.35 and overlap > best_overlap:
+                            best_overlap = overlap
+                            best_ridx = ridx
+                    else:
+                        # Word-level overlap fallback: match when most words are shared
+                        rubric_words = set(rubric_key.split())
+                        row_words = set(row_key.split())
+                        common = rubric_words & row_words
+                        union = rubric_words | row_words
+                        if union and len(common) >= 2:
+                            word_overlap = len(common) / max(1, len(union))
+                            if word_overlap >= 0.40 and word_overlap > best_overlap:
+                                best_overlap = word_overlap
+                                best_ridx = ridx
+                if best_ridx >= 0:
+                    pick_index = best_ridx
             if pick_index >= 0:
                 picked = dict(remaining.pop(pick_index))
                 try:
