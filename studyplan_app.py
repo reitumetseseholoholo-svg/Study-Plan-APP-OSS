@@ -682,6 +682,8 @@ AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS = 90
 AI_TUTOR_AUTOPILOT_ACTION_COOLDOWN_SECONDS = 20
 AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW = 6
 AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS = 600
+AI_TUTOR_AUTOPILOT_DUPLICATE_GUARD_SECONDS = 60
+AI_TUTOR_AUTOPILOT_QUIET_AFTER_FAILURE_SECONDS = 30
 AI_TUTOR_NUDGE_COOLDOWN_SECONDS = {
     "minimal": 240,
     "moderate": 120,
@@ -2251,6 +2253,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.ai_tutor_suppress_load_notice = False
         self.ai_tutor_autopilot_tick_seconds = int(AI_TUTOR_AUTOPILOT_TICK_DEFAULT_SECONDS)
         self._ai_tutor_global_autopilot_id = 0
+        self._ai_tutor_autopilot_lock = threading.Lock()
         self._ai_tutor_global_autopilot_busy = False
         self._ai_tutor_global_autopilot_last_action_at = 0.0
         self._ai_tutor_global_autopilot_action_window: list[float] = []
@@ -25916,7 +25919,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if not bool(getattr(self, "ai_tutor_autopilot_enabled", True)):
             return
         self.ai_tutor_autopilot_paused = not bool(getattr(self, "ai_tutor_autopilot_paused", False))
-        self._ai_tutor_global_autopilot_busy = False
+        # NOTE: Do NOT forcibly reset _ai_tutor_global_autopilot_busy here.
+        # A worker may be in-flight; let it finish and clear the flag itself
+        # via the _finish() callback. Forcible reset causes race conditions
+        # where a second worker is spawned while the first is still running.
         if not bool(self.ai_tutor_autopilot_paused):
             self._restart_ai_tutor_global_autopilot_timer()
         self._refresh_ai_tutor_autopilot_surface()
@@ -25935,7 +25941,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if new_mode == str(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE) or ""):
             return
         self.ai_tutor_autonomy_mode = new_mode
-        self._ai_tutor_global_autopilot_busy = False
+        # NOTE: Do NOT forcibly reset _ai_tutor_global_autopilot_busy here.
+        # A worker may be in-flight; let it finish via _finish().
         if bool(getattr(self, "ai_tutor_autopilot_enabled", True)) and not bool(
             getattr(self, "ai_tutor_autopilot_paused", False)
         ):
@@ -26009,25 +26016,45 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _consume_global_ai_tutor_action_budget(self, now_ts: float) -> bool:
         """Check if action budget allows execution. Only records the timestamp
         if budget is available (caller must call _record_ai_tutor_action_budget_use
-        after confirming execution succeeded)."""
-        window: list[float] = []
-        for ts in list(getattr(self, "_ai_tutor_global_autopilot_action_window", []) or []):
-            try:
-                value = float(ts)
-            except Exception:
-                continue
-            if (now_ts - value) <= float(AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS):
-                window.append(value)
-        self._ai_tutor_global_autopilot_action_window = window
-        if len(window) >= int(max(1, AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW)):
-            return False
-        return True
+        after confirming execution succeeded).
+
+        Thread-safe: protected by ``_ai_tutor_autopilot_lock``.
+        """
+        lock = getattr(self, "_ai_tutor_autopilot_lock", None)
+        if lock is not None:
+            lock.acquire()
+        try:
+            window: list[float] = []
+            for ts in list(getattr(self, "_ai_tutor_global_autopilot_action_window", []) or []):
+                try:
+                    value = float(ts)
+                except Exception:
+                    continue
+                if (now_ts - value) < float(AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS):
+                    window.append(value)
+            self._ai_tutor_global_autopilot_action_window = window
+            if len(window) >= int(max(1, AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW)):
+                return False
+            return True
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _record_ai_tutor_action_budget_use(self, now_ts: float) -> None:
-        """Record a successful action execution in the rate-limit window."""
-        window = list(getattr(self, "_ai_tutor_global_autopilot_action_window", []) or [])
-        window.append(float(now_ts))
-        self._ai_tutor_global_autopilot_action_window = window
+        """Record a successful action execution in the rate-limit window.
+
+        Thread-safe: protected by ``_ai_tutor_autopilot_lock``.
+        """
+        lock = getattr(self, "_ai_tutor_autopilot_lock", None)
+        if lock is not None:
+            lock.acquire()
+        try:
+            window = list(getattr(self, "_ai_tutor_global_autopilot_action_window", []) or [])
+            window.append(float(now_ts))
+            self._ai_tutor_global_autopilot_action_window = window
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _build_ai_tutor_autopilot_event_signature(self, snapshot: dict[str, Any]) -> str:
         focus_info = (
@@ -26190,9 +26217,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return True
         if bool(getattr(self, "_dialog_smoke_mode", False)):
             return True
-        if bool(getattr(self, "_ai_tutor_global_autopilot_busy", False)):
-            return True
-        self._ai_tutor_global_autopilot_busy = True
+        # Atomic check-and-set of the busy flag to prevent concurrent workers.
+        lock = getattr(self, "_ai_tutor_autopilot_lock", None)
+        if lock is not None:
+            lock.acquire()
+        try:
+            if bool(getattr(self, "_ai_tutor_global_autopilot_busy", False)):
+                return True
+            self._ai_tutor_global_autopilot_busy = True
+        finally:
+            if lock is not None:
+                lock.release()
 
         def _worker() -> None:
             mode = "suggest"
@@ -26285,7 +26320,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                     row_ts = float(row.get("monotonic_at", 0.0) or 0.0)
                                 except Exception:
                                     row_ts = 0.0
-                                if row_ts > 0.0 and (now_ts - row_ts) < 60.0:
+                                if row_ts > 0.0 and (now_ts - row_ts) < float(AI_TUTOR_AUTOPILOT_DUPLICATE_GUARD_SECONDS):
                                     duplicate_recent = True
                                     break
                             if duplicate_recent:
@@ -26316,6 +26351,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 int(stats.get("autopilot_action_blocked_count", 0) or 0) + 1
                             )
                             updates["autopilot_last_block_reason"] = str(local_blocked)[:200]
+                            # Failure backoff for action-level failures (e.g.
+                            # action_failed, action_duplicate_guard) so the
+                            # autopilot doesn't immediately retry the same thing.
+                            if local_blocked in ("action_failed", "action_duplicate_guard"):
+                                try:
+                                    failure_quiet = max(15, int(AI_TUTOR_AUTOPILOT_QUIET_AFTER_FAILURE_SECONDS))
+                                except Exception:
+                                    failure_quiet = 30
+                                now_mono = float(time.monotonic())
+                                current_quiet = float(getattr(self, "_ai_tutor_global_quiet_until", 0.0) or 0.0)
+                                proposed_quiet = now_mono + float(failure_quiet)
+                                if proposed_quiet > current_quiet:
+                                    self._ai_tutor_global_quiet_until = proposed_quiet
                 else:
                     if model_requested:
                         if blocked_reason:
@@ -26348,6 +26396,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         pass
                 elif decision_skip_reason and decision_skip_reason != "no_material_change":
                     updates["autopilot_last_block_reason"] = str(decision_skip_reason)[:200]
+                # Failure backoff: set a shorter quiet window so the autopilot
+                # doesn't hot-loop when the AI keeps producing invalid actions
+                # or execution fails repeatedly.
+                if not executed and model_requested and (blocked_reason or decision_err):
+                    try:
+                        failure_quiet = max(15, int(AI_TUTOR_AUTOPILOT_QUIET_AFTER_FAILURE_SECONDS))
+                    except Exception:
+                        failure_quiet = 30
+                    now_mono = float(time.monotonic())
+                    current_quiet = float(getattr(self, "_ai_tutor_global_quiet_until", 0.0) or 0.0)
+                    proposed_quiet = now_mono + float(failure_quiet)
+                    if proposed_quiet > current_quiet:
+                        self._ai_tutor_global_quiet_until = proposed_quiet
                 self._record_ai_tutor_autopilot_metrics(updates, persist=False)
                 return False
 
@@ -32338,7 +32399,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             try:
                 self._set_current_topic(topic)
             except Exception:
-                pass
+                log.debug("autopilot: _set_current_topic(%r) failed", topic)
+        elif topic:
+            # Topic suggested by AI is not in CHAPTERS — clear it so actions
+            # fall back to current_topic / engine recommendation instead of
+            # operating on an invalid chapter.
+            topic = ""
         if action == "focus_start":
             self.on_focus_now(None)
             return True, "Started focus block."
@@ -32381,8 +32447,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.start_quiz_session(topic=quiz_topic, total_override=8, kind="quiz")
             return True, f"Started quiz on {quiz_topic}."
         if action == "quick_quiz_start":
+            # Replicate quick_quiz preconditions to detect when handler exits early.
+            self._ensure_coach_selection()
+            pick_topic, _pick_src = self._get_coach_pick_snapshot(force=True)
+            if not pick_topic:
+                return False, "No quiz topic available from coach."
             self.on_quick_quiz(None)
-            return True, "Started quick quiz flow."
+            return True, f"Started quick quiz on {pick_topic}."
         if action == "drill_start":
             drill_topic = topic if self._topic_has_questions(topic) else self._get_drill_topic()
             if not drill_topic:
@@ -32390,24 +32461,64 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.start_quiz_session(topic=drill_topic, total_override=8, kind="drill")
             return True, f"Started drill on {drill_topic}."
         if action == "weak_drill_start":
+            self._ensure_coach_selection()
+            drill_topic = self._get_drill_topic()
+            if not drill_topic:
+                return False, "No weak-drill topic available."
             self.on_drill_weak(None)
-            return True, "Started weak-drill flow."
+            return True, f"Started weak-drill on {drill_topic}."
         if action == "leitner_drill_start":
+            leitner_topic = self.current_topic or self._get_recommended_topic()
+            if not leitner_topic:
+                return False, "No topic available for Leitner drill."
             self.on_leitner_drill(None)
-            return True, "Started Leitner drill."
+            return True, f"Started Leitner drill on {leitner_topic}."
         if action == "error_drill_start":
+            err_topic = self.current_topic or self._get_recommended_topic()
+            if not err_topic:
+                return False, "No topic available for error drill."
+            try:
+                err_indices = (
+                    self.engine.get_error_indices(err_topic, max_count=8)
+                    if hasattr(self.engine, "get_error_indices")
+                    else []
+                )
+            except Exception:
+                err_indices = []
+            if not err_indices:
+                return False, "No wrong answers recorded for this topic yet."
             self.on_error_drill(None)
-            return True, "Started error drill flow."
+            return True, f"Started error drill on {err_topic}."
         if action == "leech_drill_start":
+            leech_topic = self.current_topic or self._get_recommended_topic()
+            if not leech_topic:
+                return False, "No topic available for leech drill."
+            try:
+                leech_indices = (
+                    self.engine.select_leech_questions(leech_topic, count=8)
+                    if hasattr(self.engine, "select_leech_questions")
+                    else []
+                )
+            except Exception:
+                leech_indices = []
+            if not leech_indices:
+                return False, "No leech items for this topic yet."
             self.on_leech_drill(None)
-            return True, "Started leech drill flow."
+            return True, f"Started leech drill on {leech_topic}."
         if action == "review_start":
+            # Pre-check: verify there are actually due reviews before calling
+            # the handler, so we don't report success on a no-op.
+            self._ensure_coach_selection()
+            preferred = self._get_drill_topic() or self.current_topic or self._get_recommended_topic()
+            review_topic, _due_total, _must_due = self._find_due_review_topic(preferred)
+            if not review_topic:
+                return False, "No items due for review right now."
             before_topic = str(self.current_topic or "")
             self.on_clear_must_review(None)
             after_topic = str(self.current_topic or "")
             if after_topic and after_topic != before_topic:
                 return True, f"Started due review on {after_topic}."
-            return True, "Triggered due review action."
+            return True, f"Triggered due review on {review_topic}."
         if action == "interleave_start":
             interleave_topic = self._get_interleave_topic()
             if not interleave_topic:
