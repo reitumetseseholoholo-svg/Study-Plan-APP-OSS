@@ -43281,8 +43281,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.quiz_status_label.set_markup(f"<b>Question {pos}/{total}</b>   Score: {score}")
 
         self.engine.save_data()
-        self.update_streak()
-        self.update_streak_display()
 
         self.quiz_confirm_btn.set_sensitive(False)
         self.quiz_next_btn.set_sensitive(True)
