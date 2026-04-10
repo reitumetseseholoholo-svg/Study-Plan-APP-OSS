@@ -217,3 +217,148 @@ def test_stamp_content_hash_writes_hash_to_file(engine_no_io, tmp_path):
         updated = json.load(fh)
     assert "content_hash" in updated
     assert updated["content_hash"] == engine_no_io.compute_module_content_hash()
+
+
+# ---------------------------------------------------------------------------
+# get_accuracy_by_chapter
+# ---------------------------------------------------------------------------
+
+
+def _seed_question_stats(eng, chapter, entries):
+    """Seed question_stats[chapter] with a list of (key, attempts, correct) tuples."""
+    stats_by_ch = {}
+    for key, attempts, correct in entries:
+        stats_by_ch[str(key)] = {"attempts": attempts, "correct": correct, "streak": 0}
+    eng.question_stats[chapter] = stats_by_ch
+
+
+def test_get_accuracy_by_chapter_empty_returns_empty(engine_no_io):
+    result = engine_no_io.get_accuracy_by_chapter()
+    assert isinstance(result, dict)
+    assert result == {}
+
+
+def test_get_accuracy_by_chapter_basic(engine_no_io):
+    chapter = engine_no_io.CHAPTERS[0]
+    _seed_question_stats(engine_no_io, chapter, [("0", 4, 3), ("1", 2, 1)])
+    result = engine_no_io.get_accuracy_by_chapter()
+    assert chapter in result
+    row = result[chapter]
+    assert row["attempts"] == 6
+    assert row["correct"] == 4
+    assert abs(row["accuracy"] - round(4 / 6, 4)) < 1e-9
+    assert row["questions_practiced"] == 2
+
+
+def test_get_accuracy_by_chapter_excludes_zero_attempt_entries(engine_no_io):
+    chapter = engine_no_io.CHAPTERS[0]
+    _seed_question_stats(engine_no_io, chapter, [("0", 0, 0), ("1", 5, 5)])
+    result = engine_no_io.get_accuracy_by_chapter()
+    row = result[chapter]
+    assert row["attempts"] == 5
+    assert row["questions_practiced"] == 1
+
+
+def test_get_accuracy_by_chapter_omits_chapters_with_no_attempts(engine_no_io):
+    chapter = engine_no_io.CHAPTERS[0]
+    engine_no_io.question_stats[chapter] = {"0": {"attempts": 0, "correct": 0}}
+    result = engine_no_io.get_accuracy_by_chapter()
+    assert chapter not in result
+
+
+def test_get_accuracy_by_chapter_perfect_accuracy(engine_no_io):
+    chapter = engine_no_io.CHAPTERS[0]
+    _seed_question_stats(engine_no_io, chapter, [("0", 3, 3), ("1", 7, 7)])
+    result = engine_no_io.get_accuracy_by_chapter()
+    assert result[chapter]["accuracy"] == 1.0
+
+
+def test_get_accuracy_by_chapter_multiple_chapters(engine_no_io):
+    if len(engine_no_io.CHAPTERS) < 2:
+        pytest.skip("Need at least 2 chapters")
+    ch1, ch2 = engine_no_io.CHAPTERS[0], engine_no_io.CHAPTERS[1]
+    _seed_question_stats(engine_no_io, ch1, [("0", 10, 8)])
+    _seed_question_stats(engine_no_io, ch2, [("0", 5, 2)])
+    result = engine_no_io.get_accuracy_by_chapter()
+    assert ch1 in result and ch2 in result
+    assert result[ch1]["accuracy"] > result[ch2]["accuracy"]
+
+
+# ---------------------------------------------------------------------------
+# get_weakest_questions
+# ---------------------------------------------------------------------------
+
+
+def test_get_weakest_questions_empty_returns_empty(engine_no_io):
+    result = engine_no_io.get_weakest_questions()
+    assert isinstance(result, list)
+    assert result == []
+
+
+def test_get_weakest_questions_respects_min_attempts(engine_no_io):
+    chapter = engine_no_io.CHAPTERS[0]
+    _seed_question_stats(engine_no_io, chapter, [("0", 1, 0)])  # 1 attempt < default min 2
+    result = engine_no_io.get_weakest_questions(min_attempts=2)
+    assert result == []
+
+
+def test_get_weakest_questions_includes_at_min_attempts(engine_no_io):
+    chapter = engine_no_io.CHAPTERS[0]
+    _seed_question_stats(engine_no_io, chapter, [("0", 2, 0)])
+    result = engine_no_io.get_weakest_questions(min_attempts=2)
+    assert len(result) == 1
+    assert result[0]["accuracy"] == 0.0
+    assert result[0]["chapter"] == chapter
+
+
+def test_get_weakest_questions_sorted_worst_first(engine_no_io):
+    chapter = engine_no_io.CHAPTERS[0]
+    engine_no_io.question_stats[chapter] = {
+        "0": {"attempts": 4, "correct": 3},  # 75%
+        "1": {"attempts": 4, "correct": 1},  # 25%  ← worst
+        "2": {"attempts": 4, "correct": 2},  # 50%
+    }
+    result = engine_no_io.get_weakest_questions(n=3, min_attempts=1)
+    accuracies = [r["accuracy"] for r in result]
+    assert accuracies == sorted(accuracies)
+    assert result[0]["accuracy"] == pytest.approx(0.25)
+
+
+def test_get_weakest_questions_respects_n_limit(engine_no_io):
+    chapter = engine_no_io.CHAPTERS[0]
+    engine_no_io.question_stats[chapter] = {
+        str(i): {"attempts": 3, "correct": i % 3} for i in range(10)
+    }
+    result = engine_no_io.get_weakest_questions(n=3, min_attempts=1)
+    assert len(result) <= 3
+
+
+def test_get_weakest_questions_row_keys(engine_no_io):
+    chapter = engine_no_io.CHAPTERS[0]
+    _seed_question_stats(engine_no_io, chapter, [("0", 5, 2)])
+    result = engine_no_io.get_weakest_questions(min_attempts=1)
+    assert len(result) == 1
+    row = result[0]
+    assert set(row.keys()) >= {"chapter", "index", "question", "attempts", "correct", "accuracy"}
+
+
+def test_get_weakest_questions_includes_question_text(engine_no_io):
+    chapter = engine_no_io.CHAPTERS[0]
+    engine_no_io.QUESTIONS[chapter] = [
+        {"question": "What is WACC?", "options": ["A", "B"], "correct": "A", "explanation": ""},
+    ]
+    _seed_question_stats(engine_no_io, chapter, [("0", 3, 1)])
+    result = engine_no_io.get_weakest_questions(min_attempts=1)
+    assert result[0]["question"] == "What is WACC?"
+    assert result[0]["index"] == 0
+
+
+def test_get_weakest_questions_tie_broken_by_attempts_descending(engine_no_io):
+    chapter = engine_no_io.CHAPTERS[0]
+    # Both 0% accuracy; higher attempts should come first on ties.
+    engine_no_io.question_stats[chapter] = {
+        "0": {"attempts": 2, "correct": 0},
+        "1": {"attempts": 5, "correct": 0},
+    }
+    result = engine_no_io.get_weakest_questions(n=2, min_attempts=1)
+    assert result[0]["attempts"] >= result[1]["attempts"]

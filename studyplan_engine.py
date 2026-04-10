@@ -8525,6 +8525,141 @@ class StudyPlanEngine:
 
         return (total_mastered / total_questions * 100) if total_questions else 0
 
+    def get_accuracy_by_chapter(self) -> dict[str, dict[str, Any]]:
+        """Return per-chapter accuracy statistics derived from ``question_stats``.
+
+        Only questions that have been attempted at least once are counted.
+
+        Returns a dict mapping each chapter name to::
+
+            {
+                "attempts":           int,   # total answer attempts across all questions
+                "correct":            int,   # total correct answers
+                "accuracy":           float, # correct / attempts (0.0 when attempts == 0)
+                "questions_practiced":int,   # number of distinct questions attempted
+            }
+
+        Chapters with no recorded attempts are omitted from the result.
+        """
+        result: dict[str, dict[str, Any]] = {}
+        qs: dict[str, Any] = self.question_stats if isinstance(self.question_stats, dict) else {}
+        for chapter, stats_by_ch in qs.items():
+            if not isinstance(stats_by_ch, dict):
+                continue
+            ch_attempts = 0
+            ch_correct = 0
+            ch_practiced = 0
+            # Prefer qid-keyed entries when present; fall back to index-keyed.
+            has_qid = any(
+                isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX)
+                for k in stats_by_ch
+            )
+            for key, entry in stats_by_ch.items():
+                if has_qid and isinstance(key, str) and not key.startswith(self.QUESTION_ID_PREFIX):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    a = max(0, int(entry.get("attempts", 0) or 0))
+                except Exception:
+                    a = 0
+                try:
+                    c = max(0, int(entry.get("correct", 0) or 0))
+                except Exception:
+                    c = 0
+                c = min(c, a)
+                if a > 0:
+                    ch_attempts += a
+                    ch_correct += c
+                    ch_practiced += 1
+            if ch_attempts > 0:
+                result[chapter] = {
+                    "attempts": ch_attempts,
+                    "correct": ch_correct,
+                    "accuracy": round(ch_correct / ch_attempts, 4),
+                    "questions_practiced": ch_practiced,
+                }
+        return result
+
+    def get_weakest_questions(
+        self,
+        n: int = 10,
+        min_attempts: int = 2,
+    ) -> list[dict[str, Any]]:
+        """Return the *n* questions with the lowest accuracy rate.
+
+        Only questions with at least *min_attempts* recorded attempts are
+        considered, so newly-seen cards are not unfairly surfaced.
+
+        Each entry in the returned list contains::
+
+            {
+                "chapter":   str,   # chapter name
+                "index":     int,   # 0-based question index in QUESTIONS[chapter]
+                "question":  str,   # question text (first 120 chars)
+                "attempts":  int,
+                "correct":   int,
+                "accuracy":  float, # 0.0 – 1.0
+            }
+
+        The list is sorted ascending by *accuracy* (worst first), with ties
+        broken by descending *attempts* (most-practiced first).
+        """
+        n = max(1, int(n))
+        min_attempts = max(1, int(min_attempts))
+        rows: list[dict[str, Any]] = []
+        qs: dict[str, Any] = self.question_stats if isinstance(self.question_stats, dict) else {}
+        for chapter, stats_by_ch in qs.items():
+            if not isinstance(stats_by_ch, dict):
+                continue
+            questions_in_ch: list[dict[str, Any]] = self.QUESTIONS.get(chapter) or []
+            has_qid = any(
+                isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX)
+                for k in stats_by_ch
+            )
+            for key, entry in stats_by_ch.items():
+                if has_qid and isinstance(key, str) and not key.startswith(self.QUESTION_ID_PREFIX):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    a = max(0, int(entry.get("attempts", 0) or 0))
+                except Exception:
+                    a = 0
+                if a < min_attempts:
+                    continue
+                try:
+                    c = max(0, min(a, int(entry.get("correct", 0) or 0)))
+                except Exception:
+                    c = 0
+                # Resolve question index from key (may be a qid string or str(int)).
+                q_idx: int | None = None
+                if isinstance(key, str) and key.startswith(self.QUESTION_ID_PREFIX):
+                    # Search questions for matching qid.
+                    for qi, qrow in enumerate(questions_in_ch):
+                        if isinstance(qrow, dict) and self._question_qid(chapter, qi) == key:
+                            q_idx = qi
+                            break
+                else:
+                    try:
+                        q_idx = int(key)
+                    except Exception:
+                        pass
+                q_text = ""
+                if q_idx is not None and 0 <= q_idx < len(questions_in_ch):
+                    qrow = questions_in_ch[q_idx]
+                    if isinstance(qrow, dict):
+                        q_text = str(qrow.get("question", "") or "")[:120]
+                rows.append({
+                    "chapter": chapter,
+                    "index": q_idx if q_idx is not None else -1,
+                    "question": q_text,
+                    "attempts": a,
+                    "correct": c,
+                    "accuracy": round(c / a, 4),
+                })
+        rows.sort(key=lambda r: (r["accuracy"], -r["attempts"]))
+        return rows[:n]
 
     def get_days_remaining(self):
         """
