@@ -2256,6 +2256,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ai_tutor_global_autopilot_action_window: list[float] = []
         self._ai_tutor_global_autopilot_last_nudge_at = 0.0
         self._ai_tutor_global_autopilot_last_nudge_key = ""
+        self._ai_tutor_global_nudge_key_times: dict[str, float] = {}
         self._ai_tutor_global_last_event_sig = ""
         self._ai_tutor_global_last_decision_at = 0.0
         self._ai_tutor_global_quiet_until = 0.0
@@ -3782,7 +3783,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             model_label = "Auto-select"
         autopilot_enabled = bool(getattr(self, "ai_tutor_autopilot_enabled", True))
         autopilot_paused = bool(getattr(self, "ai_tutor_autopilot_paused", False))
-        autopilot_mode = self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", "assist"))
+        autopilot_mode = self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))
         semantic_enabled = bool(getattr(self, "semantic_enabled", False))
         if bool(getattr(self, "_sidebar_auto_hidden", False)):
             sidebar_state = "auto-hidden"
@@ -25719,8 +25720,40 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if not isinstance(pending, dict):
             return
         action_plan = dict(pending)
-        ok, message = self._execute_ai_tutor_action(action_plan)
         source = str(action_plan.get("source", "manual") or "manual")
+        action = str(action_plan.get("action", "") or "").strip().lower()
+        now_ts = float(time.monotonic())
+        # Apply the same 20 s cooldown guard used by the autopilot tick path.
+        last_action = float(getattr(self, "_ai_tutor_global_autopilot_last_action_at", 0.0) or 0.0)
+        if (now_ts - last_action) < float(AI_TUTOR_AUTOPILOT_ACTION_COOLDOWN_SECONDS):
+            self._record_ai_tutor_autopilot_metrics(
+                {"autopilot_last_block_reason": "action_cooldown"},
+                persist=False,
+            )
+            return
+        # Apply the same 60 s duplicate guard used by the autopilot tick path.
+        recent_log = self._sanitize_ai_tutor_recent_action_log(
+            getattr(self, "_ai_tutor_recent_action_log", []),
+            limit=10,
+        )
+        for row in reversed(recent_log):
+            if str(row.get("outcome", "") or "").strip().lower() != "executed":
+                continue
+            if str(row.get("action", "") or "").strip().lower() != action:
+                continue
+            if str(row.get("topic", "") or "").strip() != str(action_plan.get("topic", "") or "").strip():
+                continue
+            try:
+                row_ts = float(row.get("monotonic_at", 0.0) or 0.0)
+            except Exception:
+                row_ts = 0.0
+            if row_ts > 0.0 and (now_ts - row_ts) < 60.0:
+                self._record_ai_tutor_autopilot_metrics(
+                    {"autopilot_last_block_reason": "action_duplicate_guard"},
+                    persist=False,
+                )
+                return
+        ok, message = self._execute_ai_tutor_action(action_plan)
         if ok:
             now_ts = float(time.monotonic())
             self._record_ai_tutor_recent_action(action_plan, outcome="suggested_accepted", source=source)
@@ -25742,7 +25775,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
             self._ai_tutor_global_autopilot_last_action_at = now_ts
             self._record_ai_tutor_action_budget_use(now_ts)
-            quiet_seconds = max(30, min(900, int(AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS)))
+            # Use the env-var override for quiet period, matching the autopilot tick path.
+            quiet_raw = os.environ.get(
+                "STUDYPLAN_AI_TUTOR_AUTOPILOT_QUIET_SECONDS",
+                AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS,
+            )
+            try:
+                quiet_seconds = int(quiet_raw)
+            except Exception:
+                quiet_seconds = int(AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS)
+            quiet_seconds = max(30, min(900, int(quiet_seconds)))
             self._ai_tutor_global_quiet_until = float(time.monotonic()) + float(quiet_seconds)
             try:
                 self.send_notification("Tutor autopilot", str(message or "Action executed.").strip()[:220])
@@ -26072,7 +26114,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         repeated_suggestions = [
             row
             for row in reversed(recent_log)
-            if str(row.get("outcome", "") or "").strip().lower().startswith("suggested")
+            if str(row.get("outcome", "") or "").strip().lower() == "suggested"
         ][:3]
         if len(repeated_suggestions) >= 3:
             repeated_actions = {
@@ -26097,10 +26139,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         cooldown = int(AI_TUTOR_NUDGE_COOLDOWN_SECONDS.get(policy, 120))
         key = f"{str(severity or 'info').strip().lower()}:{str(message or '').strip()[:80]}"
-        last_at = float(getattr(self, "_ai_tutor_global_autopilot_last_nudge_at", 0.0) or 0.0)
-        last_key = str(getattr(self, "_ai_tutor_global_autopilot_last_nudge_key", "") or "")
-        if key == last_key and (now_ts - last_at) < float(cooldown):
+        # Per-key cooldown: each unique nudge key gets its own independent cooldown timer.
+        key_times: dict[str, float] = dict(getattr(self, "_ai_tutor_global_nudge_key_times", {}) or {})
+        last_at = float(key_times.get(key, 0.0) or 0.0)
+        if (now_ts - last_at) < float(cooldown):
             return
+        # Prune stale keys (older than max cooldown) to bound memory usage.
+        max_cooldown = float(max(AI_TUTOR_NUDGE_COOLDOWN_SECONDS.values(), default=240))
+        key_times = {k: v for k, v in key_times.items() if (now_ts - v) < max_cooldown}
+        key_times[key] = now_ts
+        self._ai_tutor_global_nudge_key_times = key_times
+        # Keep the legacy scalar attrs in sync for any external readers.
         self._ai_tutor_global_autopilot_last_nudge_at = now_ts
         self._ai_tutor_global_autopilot_last_nudge_key = key
         metric_key = "nudge_info_count"
@@ -26678,7 +26727,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         snapshot: dict[str, Any],
         issue: str = "",
     ) -> dict[str, Any]:
+        chapters = set(ch for ch in list(getattr(self.engine, "CHAPTERS", []) or []) if isinstance(ch, str) and ch)
         current_topic = str(snapshot.get("current_topic", "") or "").strip()
+        if current_topic not in chapters:
+            current_topic = ""
         must_review_due = int(snapshot.get("must_review_due", 0) or 0)
         overdue_srs_count = int(snapshot.get("overdue_srs_count", 0) or 0)
         weak_topics = [
@@ -26691,7 +26743,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             action = "leitner_drill_start"
         elif weak_topics:
             action = "weak_drill_start"
-            current_topic = str(weak_topics[0].get("chapter", "") or "").strip() or current_topic
+            weak_chapter = str(weak_topics[0].get("chapter", "") or "").strip()
+            if weak_chapter in chapters:
+                current_topic = weak_chapter
         reason = "Fallback cockpit action from current due-review and focus signals."
         if issue:
             reason = f"{reason} ({issue})"
