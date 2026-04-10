@@ -42792,6 +42792,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 message = "Correct! ✓" if is_correct else f"Incorrect. ✗  Correct: {question['correct']}"
                 if "explanation" in question:
                     message += f"\n\n💡{question['explanation']}"
+                try:
+                    topic = str(self.quiz_session.get("topic") or self.current_topic or "").strip()
+                    r_idx = answer_state.get("resolved_index")
+                    if r_idx is None:
+                        r_idx = idx
+                    if topic and r_idx is not None:
+                        srs_list = self.engine.srs_data.get(topic, [])
+                        if 0 <= r_idx < len(srs_list):
+                            srs_interval = max(1, round(float(srs_list[r_idx].get("interval", 1) or 1)))
+                            next_review = "tomorrow" if srs_interval <= 1 else f"in {srs_interval} days"
+                            message += f"\n🔁 Next review: {next_review}"
+                except Exception:
+                    pass
                 self.quiz_feedback.set_label(message)
                 for btn in self.quiz_option_buttons.values():
                     btn.set_sensitive(False)
@@ -43198,6 +43211,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "selected": self.selected_option,
             "confirmed": True,
             "is_correct": bool(is_correct),
+            "resolved_index": resolved_index,
         }
         try:
             self._increment_quiz_questions_today(1)
@@ -43291,13 +43305,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         message = "Correct! ✓" if is_correct else f"Incorrect. ✗  Correct: {question['correct']}"
         if "explanation" in question:
             message += f"\n\n💡{question['explanation']}"
-        # FSRS retention badge: show current retrievability probability after the update.
         try:
             if resolved_index is not None:
-                r = float(self.engine.get_retention_probability(session_topic, resolved_index))
-                if r > 0.0:
-                    badge = "🟢" if r >= 0.80 else "🟡" if r >= 0.50 else "🔴"
-                    message += f"\n\n{badge} Retention: {r:.0%}"
+                srs_list = self.engine.srs_data.get(session_topic, [])
+                if 0 <= resolved_index < len(srs_list):
+                    srs_interval = max(1, round(float(srs_list[resolved_index].get("interval", 1) or 1)))
+                    next_review = "tomorrow" if srs_interval <= 1 else f"in {srs_interval} days"
+                    message += f"\n🔁 Next review: {next_review}"
         except Exception:
             pass
         self.quiz_feedback.set_label(message)
