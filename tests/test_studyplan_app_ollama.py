@@ -6188,6 +6188,338 @@ def test_load_streak_data_keeps_streak_when_studied_today(tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# Edge-case fix tests (autopilot)
+# ---------------------------------------------------------------------------
+
+# Helper: import the module-level constants we need from studyplan_app.
+try:
+    from studyplan_app import (
+        AI_TUTOR_AUTOPILOT_ACTION_COOLDOWN_SECONDS,
+        AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS,
+        AI_TUTOR_DEFAULT_AUTONOMY_MODE,
+        AI_TUTOR_NUDGE_COOLDOWN_SECONDS,
+    )
+except Exception:  # pragma: no cover
+    pass
+
+
+# ------------------------------------------------------------------
+# Fix 1 / edge case #12–13: _accept_ai_tutor_pending_suggestion
+# must enforce the 20 s cooldown and 60 s duplicate guard.
+# ------------------------------------------------------------------
+
+def _make_accept_dummy(*, last_action_offset: float = 0.0, executed_topic: str = "", executed_action: str = ""):
+    """Build a minimal dummy with the accept method bound."""
+    executed: list[bool] = []
+    now_base = float(time.monotonic())
+
+    def _fake_execute(action_plan):
+        executed.append(True)
+        return True, "done"
+
+    recent_log: list[dict] = []
+    if executed_action:
+        recent_log.append(
+            {
+                "action": executed_action,
+                "topic": executed_topic,
+                "outcome": "executed",
+                "monotonic_at": now_base - 5.0,  # 5 s ago — within the 60 s guard
+                "source": "autopilot",
+                "reason": "",
+                "at": "",
+            }
+        )
+
+    metrics_calls: list[dict] = []
+
+    dummy = types.SimpleNamespace(
+        _ai_tutor_pending_suggestion={"action": "focus_start", "topic": executed_topic, "source": "autopilot"},
+        _ai_tutor_global_autopilot_last_action_at=now_base - last_action_offset,
+        _ai_tutor_recent_action_log=recent_log,
+        _ai_tutor_autopilot_stats={},
+        _ai_tutor_global_autopilot_action_window=[],
+        _ai_tutor_global_quiet_until=0.0,
+        _executed=executed,
+        _metrics_calls=metrics_calls,
+    )
+    dummy._execute_ai_tutor_action = _fake_execute
+    dummy._record_ai_tutor_recent_action = lambda *_a, **_kw: None
+    dummy._record_ai_tutor_action_budget_use = lambda _ts: None
+    dummy._clear_ai_tutor_pending_suggestion = lambda: None
+    dummy.send_notification = lambda *_a, **_kw: None
+    dummy._refresh_ai_tutor_autopilot_surface = lambda: None
+
+    def _record_metrics(updates, persist=False):
+        metrics_calls.append(dict(updates or {}))
+
+    dummy._record_ai_tutor_autopilot_metrics = _record_metrics
+
+    def _sanitize(rows, limit=10):
+        return list(rows or [])[-limit:]
+
+    dummy._sanitize_ai_tutor_recent_action_log = _sanitize
+    return dummy
+
+
+def test_accept_suggestion_blocked_by_cooldown():
+    """Accept must be silently skipped when still within the 20 s cooldown."""
+    dummy = _make_accept_dummy(last_action_offset=5.0)  # only 5 s since last action
+    StudyPlanGUI._accept_ai_tutor_pending_suggestion(dummy)
+    assert not dummy._executed, "execution must be blocked by cooldown"
+    reasons = [m.get("autopilot_last_block_reason") for m in dummy._metrics_calls]
+    assert "action_cooldown" in reasons
+
+
+def test_accept_suggestion_blocked_by_duplicate_guard():
+    """Accept must be skipped when the same action+topic was executed < 60 s ago."""
+    dummy = _make_accept_dummy(
+        last_action_offset=30.0,  # cooldown has passed (> 20 s)
+        executed_action="focus_start",
+        executed_topic="",
+    )
+    StudyPlanGUI._accept_ai_tutor_pending_suggestion(dummy)
+    assert not dummy._executed, "execution must be blocked by duplicate guard"
+    reasons = [m.get("autopilot_last_block_reason") for m in dummy._metrics_calls]
+    assert "action_duplicate_guard" in reasons
+
+
+def test_accept_suggestion_proceeds_when_guards_pass():
+    """Accept must execute when both cooldown and duplicate guard allow it."""
+    dummy = _make_accept_dummy(
+        last_action_offset=30.0,  # cooldown cleared
+        executed_action="drill_start",  # different action → duplicate guard won't fire
+        executed_topic="",
+    )
+    StudyPlanGUI._accept_ai_tutor_pending_suggestion(dummy)
+    assert dummy._executed, "execution must proceed when guards pass"
+
+
+# ------------------------------------------------------------------
+# Fix 1 / edge case #18: accept must use the env-var quiet period.
+# ------------------------------------------------------------------
+
+def test_accept_suggestion_respects_quiet_env_var(monkeypatch):
+    """The quiet period set by _accept must honour STUDYPLAN_AI_TUTOR_AUTOPILOT_QUIET_SECONDS."""
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_AUTOPILOT_QUIET_SECONDS", "300")
+    dummy = _make_accept_dummy(last_action_offset=30.0)
+    before = float(time.monotonic())
+    StudyPlanGUI._accept_ai_tutor_pending_suggestion(dummy)
+    after = float(time.monotonic())
+    quiet_until = float(getattr(dummy, "_ai_tutor_global_quiet_until", 0.0))
+    # quiet_until should be approximately now + 300 s
+    assert quiet_until >= before + 290.0, "quiet period must reflect env-var value"
+    assert quiet_until <= after + 310.0
+
+
+# ------------------------------------------------------------------
+# Fix 2 / edge cases #14 & #17: repeated-suggestion backoff must
+# only count entries with outcome exactly == "suggested".
+# ------------------------------------------------------------------
+
+def _make_backoff_dummy(outcomes: list[str]):
+    """Return a dummy with a recent-action log containing the given outcomes."""
+    now_base = float(time.monotonic())
+    log = [
+        {
+            "action": "focus_start",
+            "topic": "",
+            "outcome": o,
+            "monotonic_at": now_base - float(i * 30),
+            "source": "autopilot",
+            "reason": "",
+            "at": "",
+        }
+        for i, o in enumerate(outcomes)
+    ]
+    dummy = types.SimpleNamespace(
+        _ai_tutor_global_last_event_sig="",
+        _ai_tutor_global_last_decision_at=now_base - 10.0,
+        _ai_tutor_global_quiet_until=0.0,
+        _ai_tutor_recent_action_log=log,
+    )
+    dummy._ai_cache_sha1 = types.MethodType(StudyPlanGUI._ai_cache_sha1, dummy)
+    dummy._build_ai_tutor_autopilot_event_signature = types.MethodType(
+        StudyPlanGUI._build_ai_tutor_autopilot_event_signature, dummy
+    )
+
+    def _sanitize(rows, limit=10):
+        return list(rows or [])[-max(1, limit):]
+
+    dummy._sanitize_ai_tutor_recent_action_log = _sanitize
+
+    snapshot = {
+        "current_topic": "Topic A",
+        "coach_pick": "",
+        "must_review_due": 2,
+        "overdue_srs_count": 0,
+        "new_srs_count": 0,
+        "tutor_dialog_open": False,
+        "pomodoro_active": False,
+        "pomodoro_paused": False,
+        "pomodoro_remaining_sec": 0,
+        "focus_trend_14d": {},
+        "weak_topics_top3": [],
+        "risk_snapshot_top3": [],
+        "due_snapshot_top3": [],
+        "gap_generation_recommended": False,
+        "runtime_scope": "app_wide",
+    }
+    return dummy, snapshot
+
+
+def test_backoff_only_fires_for_pending_suggested_outcomes():
+    """Backoff must NOT fire when the three recent outcomes are suggested_accepted/dismissed."""
+    dummy, snapshot = _make_backoff_dummy(
+        ["suggested_accepted", "suggested_dismissed", "suggested_accepted"]
+    )
+    sig = StudyPlanGUI._build_ai_tutor_autopilot_event_signature(dummy, snapshot)
+    dummy._ai_tutor_global_last_event_sig = sig
+
+    should, reason, _ = StudyPlanGUI._should_request_global_ai_tutor_decision(
+        dummy, snapshot, now_ts=float(time.monotonic()) + 200.0
+    )
+    assert reason != "repeated_suggestion_backoff", (
+        "accepted/dismissed entries must not trigger backoff"
+    )
+
+
+def test_backoff_fires_for_three_pending_suggested():
+    """Backoff must fire when three consecutive unresolved 'suggested' entries exist."""
+    dummy, snapshot = _make_backoff_dummy(["suggested", "suggested", "suggested"])
+    sig = StudyPlanGUI._build_ai_tutor_autopilot_event_signature(dummy, snapshot)
+    dummy._ai_tutor_global_last_event_sig = sig
+
+    should, reason, _ = StudyPlanGUI._should_request_global_ai_tutor_decision(
+        dummy, snapshot, now_ts=float(time.monotonic()) + 10.0
+    )
+    assert reason == "repeated_suggestion_backoff"
+
+
+# ------------------------------------------------------------------
+# Fix 4 / edge case #9: nudge per-key cooldown.
+# ------------------------------------------------------------------
+
+def _make_nudge_dummy_perkey(policy: str = "moderate"):
+    """Nudge dummy for the per-key cooldown edge-case tests (fix 4)."""
+    notifications: list[str] = []
+    dummy = types.SimpleNamespace(
+        ai_tutor_nudges_enabled=True,
+        ai_tutor_nudge_policy=policy,
+        _ai_tutor_global_autopilot_last_nudge_at=0.0,
+        _ai_tutor_global_autopilot_last_nudge_key="",
+        _ai_tutor_global_nudge_key_times={},
+        _ai_tutor_autopilot_stats={},
+        _notifications=notifications,
+    )
+    dummy._coerce_ai_tutor_nudge_policy = types.MethodType(StudyPlanGUI._coerce_ai_tutor_nudge_policy, dummy)
+    dummy._record_ai_tutor_autopilot_metrics = lambda *_a, **_kw: None
+    dummy.send_notification = lambda _title, msg: notifications.append(msg)
+    dummy._emit_global_ai_tutor_nudge = types.MethodType(StudyPlanGUI._emit_global_ai_tutor_nudge, dummy)
+    return dummy
+
+
+def test_nudge_different_messages_each_get_own_cooldown():
+    """Two different nudge messages must each fire even if the first is still in cooldown."""
+    dummy = _make_nudge_dummy_perkey(policy="moderate")  # 120 s cooldown
+    dummy._emit_global_ai_tutor_nudge("info", "message one")
+    dummy._emit_global_ai_tutor_nudge("info", "message two")  # different key
+    assert len(dummy._notifications) == 2, "both distinct nudges must be delivered"
+
+
+def test_nudge_same_message_blocked_by_cooldown():
+    """The same nudge message must be suppressed if it fires again within the cooldown."""
+    dummy = _make_nudge_dummy_perkey(policy="moderate")
+    dummy._emit_global_ai_tutor_nudge("info", "steady message")
+    dummy._emit_global_ai_tutor_nudge("info", "steady message")  # same key, immediate re-fire
+    assert len(dummy._notifications) == 1, "duplicate nudge within cooldown must be suppressed"
+
+
+def test_nudge_key_times_pruned_on_emit():
+    """Stale nudge keys older than the max cooldown must be pruned from the tracking dict."""
+    dummy = _make_nudge_dummy_perkey(policy="moderate")
+    max_cooldown = float(max(AI_TUTOR_NUDGE_COOLDOWN_SECONDS.values()))
+    # Manually plant a stale entry
+    dummy._ai_tutor_global_nudge_key_times = {"info:old_message": float(time.monotonic()) - max_cooldown - 10.0}
+    dummy._emit_global_ai_tutor_nudge("info", "new message")
+    remaining = dict(dummy._ai_tutor_global_nudge_key_times)
+    assert "info:old_message" not in remaining, "stale entry must have been pruned"
+
+
+# ------------------------------------------------------------------
+# Fix 5 / edge case #4: fallback topic validated against CHAPTERS.
+# ------------------------------------------------------------------
+
+def _make_fallback_dummy(chapters: list[str]):
+    import types as _types
+
+    engine = _types.SimpleNamespace(CHAPTERS=chapters)
+    dummy = _types.SimpleNamespace(engine=engine)
+    dummy._derive_ai_tutor_action_evidence = None
+    return dummy
+
+
+def test_fallback_action_rejects_invalid_current_topic():
+    """_build_ai_tutor_fallback_action must clear current_topic if not in CHAPTERS."""
+    dummy = _make_fallback_dummy(chapters=["Valid Chapter"])
+    snapshot = {"current_topic": "Stale Bad Topic", "must_review_due": 0, "overdue_srs_count": 0, "weak_topics_top3": []}
+    result = StudyPlanGUI._build_ai_tutor_fallback_action(dummy, snapshot)
+    assert result["topic"] == "", "invalid topic must be cleared"
+
+
+def test_fallback_action_keeps_valid_current_topic():
+    """_build_ai_tutor_fallback_action must keep current_topic if it exists in CHAPTERS."""
+    dummy = _make_fallback_dummy(chapters=["Valid Chapter"])
+    snapshot = {"current_topic": "Valid Chapter", "must_review_due": 0, "overdue_srs_count": 0, "weak_topics_top3": []}
+    result = StudyPlanGUI._build_ai_tutor_fallback_action(dummy, snapshot)
+    assert result["topic"] == "Valid Chapter"
+
+
+def test_fallback_action_rejects_invalid_weak_topic_chapter():
+    """weak_topics[0].chapter that is not in CHAPTERS must be ignored."""
+    dummy = _make_fallback_dummy(chapters=["Valid Chapter"])
+    snapshot = {
+        "current_topic": "Valid Chapter",
+        "must_review_due": 0,
+        "overdue_srs_count": 0,
+        "weak_topics_top3": [{"chapter": "Ghost Chapter", "score": 0.2}],
+    }
+    result = StudyPlanGUI._build_ai_tutor_fallback_action(dummy, snapshot)
+    # The weak_drill_start path must fall back to current_topic, not Ghost Chapter
+    assert result["topic"] == "Valid Chapter"
+
+
+def test_fallback_action_uses_valid_weak_topic_chapter():
+    """weak_topics[0].chapter in CHAPTERS must be used as the topic."""
+    dummy = _make_fallback_dummy(chapters=["Valid Chapter", "Weak Chapter"])
+    snapshot = {
+        "current_topic": "Valid Chapter",
+        "must_review_due": 0,
+        "overdue_srs_count": 0,
+        "weak_topics_top3": [{"chapter": "Weak Chapter", "score": 0.1}],
+    }
+    result = StudyPlanGUI._build_ai_tutor_fallback_action(dummy, snapshot)
+    assert result["topic"] == "Weak Chapter"
+    assert result["action"] == "weak_drill_start"
+
+
+# ------------------------------------------------------------------
+# Fix 3 / edge case #3: status-bar default mode must match the
+# module-level AI_TUTOR_DEFAULT_AUTONOMY_MODE, not "assist".
+# ------------------------------------------------------------------
+
+def test_effective_autonomy_mode_matches_module_default():
+    """_effective_ai_tutor_autonomy_mode must return the module default when unset."""
+    dummy = types.SimpleNamespace()
+    dummy._coerce_ai_tutor_autonomy_mode = types.MethodType(StudyPlanGUI._coerce_ai_tutor_autonomy_mode, dummy)
+    dummy._effective_ai_tutor_autonomy_mode = types.MethodType(StudyPlanGUI._effective_ai_tutor_autonomy_mode, dummy)
+    mode = dummy._effective_ai_tutor_autonomy_mode()
+    assert mode == AI_TUTOR_DEFAULT_AUTONOMY_MODE, (
+        f"default mode must be {AI_TUTOR_DEFAULT_AUTONOMY_MODE!r}, got {mode!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Gap-closing tests: action budget, nudge, duplicate guard, execute dispatcher,
 # restart timer, and worker exception logging.
 # ---------------------------------------------------------------------------
@@ -6256,6 +6588,7 @@ def _make_nudge_dummy(*, enabled=True, policy="moderate"):
         ai_tutor_nudge_policy=policy,
         _ai_tutor_global_autopilot_last_nudge_at=0.0,
         _ai_tutor_global_autopilot_last_nudge_key="",
+        _ai_tutor_global_nudge_key_times={},
         _ai_tutor_autopilot_stats=stats,
         send_notification=lambda title, msg: notifications.append((title, msg)),
         _notifications=notifications,
@@ -6282,7 +6615,6 @@ def test_emit_global_ai_tutor_nudge_disabled_does_nothing():
 
 def test_emit_global_ai_tutor_nudge_deduplicates_within_cooldown():
     dummy, notifications, stats = _make_nudge_dummy(policy="moderate")
-    cooldown = AI_TUTOR_NUDGE_COOLDOWN_SECONDS["moderate"]
     StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Repeat me")
     # Simulate immediate second call (same message, within cooldown).
     dummy._ai_tutor_global_autopilot_last_nudge_at = time.monotonic()
