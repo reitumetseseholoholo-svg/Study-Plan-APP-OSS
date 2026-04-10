@@ -6578,7 +6578,7 @@ def test_record_ai_tutor_action_budget_use_initialises_missing_window():
     assert dummy._ai_tutor_global_autopilot_action_window == [500.0]
 
 
-# --- _emit_global_ai_tutor_nudge (gap-closing) --------------------------------
+# --- _emit_global_ai_tutor_nudge ---------------------------------------------
 
 def _make_nudge_dummy(*, enabled=True, policy="moderate"):
     notifications = []
