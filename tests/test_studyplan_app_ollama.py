@@ -3907,7 +3907,74 @@ def test_parse_section_c_evaluation_payload_backfills_missing_rubric_rows():
     assert rows[2]["score"] == 0
 
 
-def test_section_c_deterministic_examiner_style_rewards_applied_answer():
+def test_parse_section_c_evaluation_payload_fallback_rubric_sums_to_20():
+    """When question has no marking_rubric, fallback uses 4-criterion 20-mark rubric."""
+    dummy = types.SimpleNamespace()
+    dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
+    question: dict = {}  # no marking_rubric at all
+    payload = json.dumps(
+        {
+            "total_mark": 12,
+            "criterion_scores": [
+                {"criterion": "Technical application to case facts", "score": 6, "max_mark": 8, "feedback": "Ok."},
+                {"criterion": "Method, workings, and assumptions", "score": 3, "max_mark": 5, "feedback": "Fair."},
+                {"criterion": "Evaluation and recommendation", "score": 2, "max_mark": 4, "feedback": "Partial."},
+                {"criterion": "Structure and exam communication", "score": 1, "max_mark": 3, "feedback": "Brief."},
+            ],
+            "strengths": ["Some relevant points"],
+            "improvements": ["More structure needed"],
+            "next_drill": "Restructure your answer.",
+        },
+        ensure_ascii=True,
+    )
+    parsed, err = StudyPlanGUI._parse_section_c_evaluation_payload(dummy, payload, question)
+    assert err is None
+    assert isinstance(parsed, dict)
+    assert parsed["max_mark"] == 20
+    assert parsed["total_mark"] == 12
+    rows = list(parsed.get("criterion_scores", []) or [])
+    assert len(rows) == 4
+    assert rows[0]["max_mark"] == 8
+    assert rows[1]["max_mark"] == 5
+    assert rows[2]["max_mark"] == 4
+    assert rows[3]["max_mark"] == 3
+
+
+def test_parse_section_c_evaluation_criterion_fuzzy_match_prefers_best_overlap():
+    """Fuzzy matching picks the candidate whose name has the best overlap ratio."""
+    dummy = types.SimpleNamespace()
+    dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
+    question = {
+        "marking_rubric": [
+            {"criterion": "Technical application to case facts", "max_marks": 8},
+            {"criterion": "Method, workings, and assumptions", "max_marks": 5},
+        ]
+    }
+    payload = json.dumps(
+        {
+            "total_mark": 10,
+            "criterion_scores": [
+                {"criterion": "Technical application", "score": 6, "max_mark": 8, "feedback": "Good."},
+                {"criterion": "Method and workings", "score": 4, "max_mark": 5, "feedback": "Solid."},
+            ],
+            "strengths": ["Clear"],
+            "improvements": ["More detail"],
+            "next_drill": "Improve workings.",
+        },
+        ensure_ascii=True,
+    )
+    parsed, err = StudyPlanGUI._parse_section_c_evaluation_payload(dummy, payload, question)
+    assert err is None
+    assert isinstance(parsed, dict)
+    rows = list(parsed.get("criterion_scores", []) or [])
+    assert len(rows) == 2
+    # "Technical application" should match "Technical application to case facts" (overlap 24/40 = 0.60 > 0.35)
+    assert rows[0]["score"] == 6
+    assert rows[0]["criterion"] == "Technical application to case facts"
+    # "Method and workings" should match "Method, workings, and assumptions" (not exact but substring)
+    assert rows[1]["score"] <= 5
+
+
     dummy = types.SimpleNamespace()
     dummy._evaluate_section_c_response_deterministic = types.MethodType(
         StudyPlanGUI._evaluate_section_c_response_deterministic,
