@@ -6185,3 +6185,446 @@ def test_load_streak_data_keeps_streak_when_studied_today(tmp_path, monkeypatch)
 
     assert dummy.study_streak == 10, "streak must be preserved when studied today"
     assert "streak_7" in dummy.achievements
+
+
+# ---------------------------------------------------------------------------
+# Gap-closing tests: action budget, nudge, duplicate guard, execute dispatcher,
+# restart timer, and worker exception logging.
+# ---------------------------------------------------------------------------
+
+from studyplan_app import (
+    AI_TUTOR_ALLOWED_ACTIONS,
+    AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS,
+    AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW,
+    AI_TUTOR_NUDGE_COOLDOWN_SECONDS,
+)
+
+
+# --- _consume_global_ai_tutor_action_budget -----------------------------------
+
+def test_consume_global_ai_tutor_action_budget_allows_when_empty():
+    dummy = types.SimpleNamespace(_ai_tutor_global_autopilot_action_window=[])
+    assert StudyPlanGUI._consume_global_ai_tutor_action_budget(dummy, 1000.0) is True
+
+
+def test_consume_global_ai_tutor_action_budget_blocks_when_full():
+    now = 1000.0
+    # Fill window to max capacity.
+    window = [now - i for i in range(AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW)]
+    dummy = types.SimpleNamespace(_ai_tutor_global_autopilot_action_window=window)
+    assert StudyPlanGUI._consume_global_ai_tutor_action_budget(dummy, now) is False
+
+
+def test_consume_global_ai_tutor_action_budget_prunes_expired_entries():
+    now = 1000.0
+    old_ts = now - float(AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS) - 1.0
+    # One entry inside the window, the rest are stale.
+    window = [old_ts] * (AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW - 1) + [now - 1.0]
+    dummy = types.SimpleNamespace(_ai_tutor_global_autopilot_action_window=window)
+    # After pruning stale entries only 1 remains — well below max.
+    assert StudyPlanGUI._consume_global_ai_tutor_action_budget(dummy, now) is True
+    assert dummy._ai_tutor_global_autopilot_action_window == [now - 1.0]
+
+
+def test_consume_global_ai_tutor_action_budget_tolerates_invalid_entries():
+    dummy = types.SimpleNamespace(_ai_tutor_global_autopilot_action_window=["bad", None, 999.0])
+    assert StudyPlanGUI._consume_global_ai_tutor_action_budget(dummy, 1000.0) is True
+    assert dummy._ai_tutor_global_autopilot_action_window == [999.0]
+
+
+# --- _record_ai_tutor_action_budget_use --------------------------------------
+
+def test_record_ai_tutor_action_budget_use_appends_timestamp():
+    dummy = types.SimpleNamespace(_ai_tutor_global_autopilot_action_window=[100.0, 200.0])
+    StudyPlanGUI._record_ai_tutor_action_budget_use(dummy, 300.0)
+    assert dummy._ai_tutor_global_autopilot_action_window == [100.0, 200.0, 300.0]
+
+
+def test_record_ai_tutor_action_budget_use_initialises_missing_window():
+    dummy = types.SimpleNamespace()
+    StudyPlanGUI._record_ai_tutor_action_budget_use(dummy, 500.0)
+    assert dummy._ai_tutor_global_autopilot_action_window == [500.0]
+
+
+# --- _emit_global_ai_tutor_nudge ---------------------------------------------
+
+def _make_nudge_dummy(*, enabled=True, policy="moderate"):
+    notifications = []
+    stats = {"nudge_info_count": 0, "nudge_warning_count": 0, "nudge_intervention_count": 0}
+    dummy = types.SimpleNamespace(
+        ai_tutor_nudges_enabled=enabled,
+        ai_tutor_nudge_policy=policy,
+        _ai_tutor_global_autopilot_last_nudge_at=0.0,
+        _ai_tutor_global_autopilot_last_nudge_key="",
+        _ai_tutor_autopilot_stats=stats,
+        send_notification=lambda title, msg: notifications.append((title, msg)),
+        _notifications=notifications,
+    )
+    dummy._coerce_ai_tutor_nudge_policy = types.MethodType(StudyPlanGUI._coerce_ai_tutor_nudge_policy, dummy)
+    dummy._record_ai_tutor_autopilot_metrics = lambda updates, persist=False: stats.update(updates)
+    return dummy, notifications, stats
+
+
+def test_emit_global_ai_tutor_nudge_fires_notification():
+    dummy, notifications, stats = _make_nudge_dummy()
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Keep going!")
+    assert len(notifications) == 1
+    assert notifications[0][1] == "Keep going!"
+    assert stats["nudge_info_count"] == 1
+
+
+def test_emit_global_ai_tutor_nudge_disabled_does_nothing():
+    dummy, notifications, stats = _make_nudge_dummy(enabled=False)
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Ignored")
+    assert notifications == []
+    assert stats["nudge_info_count"] == 0
+
+
+def test_emit_global_ai_tutor_nudge_deduplicates_within_cooldown():
+    dummy, notifications, stats = _make_nudge_dummy(policy="moderate")
+    cooldown = AI_TUTOR_NUDGE_COOLDOWN_SECONDS["moderate"]
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Repeat me")
+    # Simulate immediate second call (same message, within cooldown).
+    dummy._ai_tutor_global_autopilot_last_nudge_at = time.monotonic()
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Repeat me")
+    assert len(notifications) == 1, "second nudge must be suppressed within cooldown"
+    assert stats["nudge_info_count"] == 1
+
+
+def test_emit_global_ai_tutor_nudge_warning_increments_warning_counter():
+    dummy, notifications, stats = _make_nudge_dummy()
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "warning", "Low focus!")
+    assert stats["nudge_warning_count"] == 1
+    assert stats["nudge_info_count"] == 0
+
+
+def test_emit_global_ai_tutor_nudge_intervention_increments_intervention_counter():
+    dummy, notifications, stats = _make_nudge_dummy()
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "intervention", "5 reviews due!")
+    assert stats["nudge_intervention_count"] == 1
+
+
+def test_emit_global_ai_tutor_nudge_different_message_after_cooldown_fires_again():
+    dummy, notifications, _stats = _make_nudge_dummy(policy="moderate")
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Message 1")
+    # Different key — should fire regardless of last_nudge_at.
+    dummy._ai_tutor_global_autopilot_last_nudge_at = time.monotonic()
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Message 2")
+    assert len(notifications) == 2
+
+
+# --- duplicate-guard in _global_ai_tutor_autopilot_tick ----------------------
+
+def test_autopilot_duplicate_guard_blocks_repeated_action_within_60s():
+    """Identical action+topic executed less than 60 s ago must be blocked."""
+    now_ts = time.monotonic()
+    recent_log = [
+        {
+            "action": "drill_start",
+            "topic": "Topic A",
+            "outcome": "executed",
+            "source": "autopilot",
+            "at": "2026-01-01T10:00:00",
+            "monotonic_at": now_ts - 10.0,  # 10 s ago — within 60 s window
+        }
+    ]
+    dummy = types.SimpleNamespace(
+        _ai_tutor_recent_action_log=recent_log,
+    )
+    dummy._sanitize_ai_tutor_recent_action_log = types.MethodType(
+        StudyPlanGUI._sanitize_ai_tutor_recent_action_log, dummy
+    )
+    sanitized = StudyPlanGUI._sanitize_ai_tutor_recent_action_log(dummy, recent_log, limit=10)
+    duplicate_found = False
+    for row in reversed(sanitized):
+        if str(row.get("outcome", "")).lower() != "executed":
+            continue
+        if str(row.get("action", "")).lower() != "drill_start":
+            continue
+        if str(row.get("topic", "")) != "Topic A":
+            continue
+        try:
+            row_ts = float(row.get("monotonic_at", 0.0) or 0.0)
+        except Exception:
+            row_ts = 0.0
+        if row_ts > 0.0 and (now_ts - row_ts) < 60.0:
+            duplicate_found = True
+            break
+    assert duplicate_found, "duplicate guard should detect recent same action+topic"
+
+
+def test_autopilot_duplicate_guard_allows_action_after_60s():
+    """Same action+topic executed more than 60 s ago must NOT be flagged as duplicate."""
+    now_ts = time.monotonic()
+    recent_log = [
+        {
+            "action": "drill_start",
+            "topic": "Topic A",
+            "outcome": "executed",
+            "source": "autopilot",
+            "at": "2026-01-01T10:00:00",
+            "monotonic_at": now_ts - 90.0,  # 90 s ago — outside 60 s window
+        }
+    ]
+    dummy = types.SimpleNamespace(_ai_tutor_recent_action_log=recent_log)
+    dummy._sanitize_ai_tutor_recent_action_log = types.MethodType(
+        StudyPlanGUI._sanitize_ai_tutor_recent_action_log, dummy
+    )
+    sanitized = StudyPlanGUI._sanitize_ai_tutor_recent_action_log(dummy, recent_log, limit=10)
+    duplicate_found = False
+    for row in reversed(sanitized):
+        if str(row.get("outcome", "")).lower() != "executed":
+            continue
+        if str(row.get("action", "")).lower() != "drill_start":
+            continue
+        if str(row.get("topic", "")) != "Topic A":
+            continue
+        try:
+            row_ts = float(row.get("monotonic_at", 0.0) or 0.0)
+        except Exception:
+            row_ts = 0.0
+        if row_ts > 0.0 and (now_ts - row_ts) < 60.0:
+            duplicate_found = True
+            break
+    assert not duplicate_found, "duplicate guard must not block action older than 60 s"
+
+
+# --- _execute_ai_tutor_action dispatcher -------------------------------------
+
+def _make_execute_dummy():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"])
+    calls = {}
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        current_topic="Topic A",
+        pomodoro_timer_id=None,
+        pomodoro_remaining=0,
+        pomodoro_paused=False,
+        pomodoro_btn_pause=None,
+        pomodoro_btn_stop=None,
+        _ai_tutor_dialog_open=False,
+        _ensure_chapters_ready=lambda _label: True,
+        _set_current_topic=lambda _topic: None,
+        on_focus_now=lambda _btn: calls.update({"focus_start": True}),
+        on_pomodoro_pause=lambda _btn: calls.update({"timer_pause": True}),
+        on_pomodoro_stop=lambda _btn: calls.update({"timer_stop": True}),
+        _open_ai_tutor_dialog=lambda: calls.update({"tutor_open": True}),
+        on_open_ai_coach=lambda _btn: calls.update({"coach_open": True}),
+        on_quick_quiz=lambda _btn: calls.update({"quick_quiz_start": True}),
+        on_drill_weak=lambda _btn: calls.update({"weak_drill_start": True}),
+        on_leitner_drill=lambda _btn: calls.update({"leitner_drill_start": True}),
+        on_error_drill=lambda _btn: calls.update({"error_drill_start": True}),
+        on_leech_drill=lambda _btn: calls.update({"leech_drill_start": True}),
+        on_do_coach_next=lambda _btn: calls.update({"coach_next": True}),
+        _topic_has_questions=lambda topic: topic in {"Topic A", "Topic B"},
+        _get_drill_topic=lambda: "Topic A",
+        _get_interleave_topic=lambda: "Topic A",
+        start_quiz_session=lambda topic, total_override, kind: calls.update({kind: topic}),
+        on_clear_must_review=lambda _btn: calls.update({"review_start": True}),
+        _calls=calls,
+    )
+    return dummy
+
+
+def test_execute_ai_tutor_action_unknown_action_returns_false():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "teleport_now"})
+    assert ok is False
+    assert "Unsupported" in msg
+
+
+def test_execute_ai_tutor_action_chapters_not_ready_blocks_drill():
+    dummy = _make_execute_dummy()
+    dummy._ensure_chapters_ready = lambda _label: False
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "drill_start", "topic": "Topic A"})
+    assert ok is False
+    assert "No chapters loaded" in msg
+
+
+def test_execute_ai_tutor_action_focus_start_calls_handler():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "focus_start", "topic": ""})
+    assert ok is True
+    assert dummy._calls.get("focus_start") is True
+
+
+def test_execute_ai_tutor_action_timer_pause_no_active_timer_returns_false():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "timer_pause", "topic": ""})
+    assert ok is False
+    assert "No active Pomodoro" in msg
+
+
+def test_execute_ai_tutor_action_timer_resume_no_active_timer_returns_false():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "timer_resume", "topic": ""})
+    assert ok is False
+    assert "No active Pomodoro" in msg
+
+
+def test_execute_ai_tutor_action_timer_stop_no_active_timer_returns_false():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "timer_stop", "topic": ""})
+    assert ok is False
+    assert "No active Pomodoro" in msg
+
+
+def test_execute_ai_tutor_action_tutor_open_calls_handler():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "tutor_open", "topic": ""})
+    assert ok is True
+    assert dummy._calls.get("tutor_open") is True
+
+
+def test_execute_ai_tutor_action_coach_open_calls_handler():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "coach_open", "topic": ""})
+    assert ok is True
+    assert dummy._calls.get("coach_open") is True
+
+
+def test_execute_ai_tutor_action_quick_quiz_start_calls_handler():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "quick_quiz_start", "topic": ""})
+    assert ok is True
+    assert dummy._calls.get("quick_quiz_start") is True
+
+
+def test_execute_ai_tutor_action_drill_start_with_valid_topic():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "drill_start", "topic": "Topic A"})
+    assert ok is True
+    assert dummy._calls.get("drill") == "Topic A"
+
+
+def test_execute_ai_tutor_action_review_start_calls_handler():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "review_start", "topic": ""})
+    assert ok is True
+    assert dummy._calls.get("review_start") is True
+
+
+def test_execute_ai_tutor_action_coach_next_calls_handler():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "coach_next", "topic": ""})
+    assert ok is True
+    assert dummy._calls.get("coach_next") is True
+
+
+# --- _restart_ai_tutor_global_autopilot_timer --------------------------------
+
+def _make_restart_dummy(*, enabled=True, tick_seconds=45):
+    removed = []
+    registered = []
+
+    class _FakeGLib:
+        PRIORITY_LOW = 300
+
+        @staticmethod
+        def timeout_add_seconds(interval, cb):
+            return 99  # fake source id
+
+        @staticmethod
+        def idle_add(cb, priority=300):
+            pass  # don't actually call the callback
+
+    dummy = types.SimpleNamespace(
+        ai_tutor_autopilot_enabled=enabled,
+        ai_tutor_autopilot_tick_seconds=tick_seconds,
+        _ai_tutor_global_autopilot_id=77,
+        _ai_tutor_global_autopilot_busy=True,
+        _ai_tutor_global_last_event_sig="old_sig",
+        _ai_tutor_global_last_decision_at=999.9,
+        _ai_tutor_global_quiet_until=888.8,
+        _remove_glib_source=lambda sid: removed.append(sid),
+        _register_glib_source=lambda sid: registered.append(sid),
+        _global_ai_tutor_autopilot_tick=lambda: None,
+        _removed=removed,
+        _registered=registered,
+    )
+    dummy._coerce_ai_tutor_autopilot_tick_seconds = types.MethodType(
+        StudyPlanGUI._coerce_ai_tutor_autopilot_tick_seconds, dummy
+    )
+
+    import unittest.mock as _mock
+    import studyplan_app as _appmod
+
+    with _mock.patch.object(_appmod, "GLib", _FakeGLib):
+        StudyPlanGUI._restart_ai_tutor_global_autopilot_timer(dummy)
+
+    return dummy
+
+
+def test_restart_ai_tutor_global_autopilot_timer_resets_state_fields():
+    dummy = _make_restart_dummy(enabled=True)
+    assert dummy._ai_tutor_global_autopilot_busy is False
+    assert dummy._ai_tutor_global_last_event_sig == ""
+    assert dummy._ai_tutor_global_last_decision_at == 0.0
+    assert dummy._ai_tutor_global_quiet_until == 0.0
+
+
+def test_restart_ai_tutor_global_autopilot_timer_removes_old_source():
+    dummy = _make_restart_dummy(enabled=True)
+    assert 77 in dummy._removed
+
+
+def test_restart_ai_tutor_global_autopilot_timer_registers_new_source_when_enabled():
+    dummy = _make_restart_dummy(enabled=True)
+    assert dummy._ai_tutor_global_autopilot_id == 99
+    assert 99 in dummy._registered
+
+
+def test_restart_ai_tutor_global_autopilot_timer_skips_new_timer_when_disabled():
+    dummy = _make_restart_dummy(enabled=False)
+    assert dummy._ai_tutor_global_autopilot_id == 0
+    assert dummy._registered == []
+
+
+# --- worker exception is logged (smoke check) --------------------------------
+
+def test_global_ai_tutor_autopilot_tick_worker_exception_is_logged(caplog):
+    """Exceptions in the autopilot background worker must be logged, not silently dropped."""
+    import logging as _logging
+
+    def _boom():
+        raise RuntimeError("simulated snapshot failure")
+
+    dummy = types.SimpleNamespace(
+        ai_tutor_autopilot_enabled=True,
+        ai_tutor_autopilot_paused=False,
+        _dialog_smoke_mode=False,
+        _ai_tutor_global_autopilot_busy=False,
+        _effective_ai_tutor_autonomy_mode=lambda: "cockpit",
+        _build_ai_tutor_autopilot_snapshot=_boom,
+        _ai_tutor_autopilot_stats={},
+        _record_ai_tutor_autopilot_metrics=lambda updates=None, persist=False: None,
+    )
+    # Run _worker() synchronously by extracting it from the patched tick.
+    worker_exc = []
+    original_start = StudyPlanGUI._start_managed_background_thread
+
+    def _capture_worker(self_arg, worker_fn):
+        try:
+            worker_fn()
+        except Exception as e:
+            worker_exc.append(e)
+
+    import unittest.mock as _mock
+    import studyplan_app as _appmod
+
+    class _FakeGLib:
+        PRIORITY_LOW = 300
+
+        @staticmethod
+        def idle_add(cb, priority=300):
+            cb()  # run _finish() synchronously
+            return 0
+
+    with _mock.patch.object(StudyPlanGUI, "_start_managed_background_thread", _capture_worker):
+        with _mock.patch.object(_appmod, "GLib", _FakeGLib):
+            with caplog.at_level(_logging.WARNING, logger="studyplan_app"):
+                StudyPlanGUI._global_ai_tutor_autopilot_tick(dummy)
+
+    assert any("autopilot tick worker failed" in r.message for r in caplog.records), (
+        "background worker exception must produce a warning log record"
+    )

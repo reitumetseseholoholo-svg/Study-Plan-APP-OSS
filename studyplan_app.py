@@ -26173,6 +26173,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     decision_skip_reason = str(gate_reason or "no_material_change")
             except Exception as exc:
                 blocked_reason = str(exc)
+                log.warning("autopilot tick worker failed", exc_info=True)
 
             def _finish() -> bool:
                 self._ai_tutor_global_autopilot_busy = False
