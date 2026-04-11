@@ -6328,6 +6328,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception as exc:
                 _set_status(f"Assessment error: {exc}")
                 return
+            try:
+                if isinstance(session_state, TutorSessionState) and isinstance(learner_profile, TutorLearnerProfileSnapshot):
+                    loop_state = self._build_practice_loop_runtime_state(
+                        session_state=session_state,
+                        learner_profile=learner_profile,
+                        app_snapshot=_build_tutor_loop_app_snapshot(),
+                        item=item_snapshot,
+                    )
+                    if loop_state is not None:
+                        self._get_practice_loop_controller().note_submission_received(
+                            loop_state,
+                            item_snapshot,
+                            source="studyplan_app_submit_click",
+                        )
+                        run_state.set_practice_session_state(loop_state.session_state)
+            except Exception:
+                pass
 
             def _finish_assessment(result_raw: Any = None, error: str = "") -> bool:
                 applied = self._apply_tutor_practice_assessment_result(
@@ -6364,7 +6381,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                     increment_streak=True,
                                 ),
                             )
-                            session_state_live = session_state_updated
+                            if isinstance(session_state_updated, TutorSessionState):
+                                try:
+                                    existing_meta = dict(getattr(session_state_live, "meta", {}) or {})
+                                except Exception:
+                                    existing_meta = {}
+                                payload = session_state_updated.to_dict()
+                                payload["meta"] = {**dict(payload.get("meta", {}) or {}), **existing_meta}
+                                session_state_live = TutorSessionState.from_dict(payload)
+                            else:
+                                session_state_live = session_state_updated
                             run_state.set_practice_session_state(session_state_live)
                     except Exception:
                         pass
@@ -6649,6 +6675,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     except Exception:
                         run_state["practice_hint_use_count"] = 1
             try:
+                session_state = run_state.practice_session_state()
+                learner_profile = run_state.practice_learner_profile()
+                if isinstance(session_state, TutorSessionState) and isinstance(
+                    learner_profile, TutorLearnerProfileSnapshot
+                ):
+                    loop_state = self._build_practice_loop_runtime_state(
+                        session_state=session_state,
+                        learner_profile=learner_profile,
+                        app_snapshot=_build_tutor_loop_app_snapshot(),
+                        item=item,
+                        result=run_state.practice_result(),
+                    )
+                    if loop_state is not None:
+                        self._get_practice_loop_controller().note_hint_request(
+                            loop_state,
+                            item,
+                            source="studyplan_app_hint_click",
+                        )
+                        run_state.set_practice_session_state(loop_state.session_state)
+            except Exception:
+                pass
+            try:
                 hints_raw = getattr(item, "rubric_hints", ()) or ()
                 hints = tuple(hints_raw) if isinstance(hints_raw, (list, tuple)) else ()
             except Exception:
@@ -6710,6 +6758,37 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 _set_status("No deterministic variant available for this item yet.")
                 return
             run_state.activate_variant(variant_item)
+            try:
+                session_state = run_state.practice_session_state()
+                learner_profile = run_state.practice_learner_profile()
+                if isinstance(session_state, TutorSessionState) and isinstance(
+                    learner_profile, TutorLearnerProfileSnapshot
+                ):
+                    loop_state = self._build_practice_loop_runtime_state(
+                        session_state=session_state,
+                        learner_profile=learner_profile,
+                        app_snapshot=_build_tutor_loop_app_snapshot(),
+                        item=variant_item,
+                    )
+                    if loop_state is not None:
+                        ctrl = self._get_practice_loop_controller()
+                        variant_meta_for_fsm = dict(getattr(variant_item, "meta", {}) or {})
+                        if bool(variant_meta_for_fsm.get("transfer_variant", False)):
+                            ctrl.begin_transfer_variant(
+                                loop_state,
+                                variant_item,
+                                source="studyplan_app_activate_transfer_variant",
+                            )
+                        else:
+                            ctrl.present_practice_item(
+                                loop_state,
+                                variant_item,
+                                restart=True,
+                                source="studyplan_app_activate_variant",
+                            )
+                        run_state.set_practice_session_state(loop_state.session_state)
+            except Exception:
+                pass
             _reset_practice_answer_box()
             _refresh_practice_panel()
             try:
@@ -23761,6 +23840,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             action_plan=result.action_intent,
             plan_token=plan_token,
         )
+        if session_state is not None and learner_profile is not None and practice_items:
+            try:
+                loop_state = self._build_practice_loop_runtime_state(
+                    session_state=session_state,
+                    learner_profile=learner_profile,
+                    item=practice_items[0],
+                )
+                if loop_state is not None:
+                    self._get_practice_loop_controller().present_practice_item(
+                        loop_state,
+                        practice_items[0],
+                        restart=True,
+                        source="studyplan_app_plan_apply",
+                    )
+                    run_state.set_practice_session_state(loop_state.session_state)
+            except Exception:
+                pass
         return result
 
     def _apply_tutor_practice_assessment_result(
@@ -23796,6 +23892,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         learner_profile = self._snapshot_tutor_learner_profile(learner_profile_fallback)
         run_state.record_practice_result(result, assessment_token=assessment_token)
         if session_state is not None:
+            learner_live = learner_profile if learner_profile is not None else run_state.practice_learner_profile()
+            item_live = current_item if isinstance(current_item, TutorPracticeItem) else item
+            try:
+                loop_state = self._build_practice_loop_runtime_state(
+                    session_state=session_state,
+                    learner_profile=learner_live,
+                    item=item_live,
+                    result=result,
+                )
+                if loop_state is not None and item_live is not None:
+                    self._get_practice_loop_controller().note_assessment_result(
+                        loop_state,
+                        item_live,
+                        result,
+                        source="studyplan_app_assessment_apply",
+                    )
+                    session_state = loop_state.session_state
+            except Exception:
+                pass
             run_state.set_practice_session_state(session_state)
         if learner_profile is not None:
             run_state.set_practice_learner_profile(learner_profile)
@@ -24049,6 +24164,62 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         ctrl = PracticeLoopController(assess_svc=assess_svc)
         self._practice_loop_controller = ctrl
         return ctrl
+
+    def _default_practice_loop_app_snapshot(
+        self,
+        session_state: TutorSessionState | None = None,
+    ) -> AppStateSnapshot:
+        topic = ""
+        module_name = ""
+        if isinstance(session_state, TutorSessionState):
+            topic = str(getattr(session_state, "topic", "") or "").strip()
+            module_name = str(getattr(session_state, "module", "") or "").strip()
+        if not topic:
+            topic = str(getattr(self, "current_topic", "") or getattr(self, "_coach_pick_topic", "") or "").strip()
+        if not topic:
+            topic = "General"
+        if not module_name:
+            module_name = str(getattr(self, "module_title", "") or "module").strip()
+        days_to_exam = None
+        try:
+            exam_date_obj = getattr(getattr(self, "engine", None), "exam_date", None)
+            if isinstance(exam_date_obj, datetime.date):
+                days_to_exam = int((exam_date_obj - datetime.date.today()).days)
+        except Exception:
+            days_to_exam = None
+        return AppStateSnapshot(
+            module=module_name,
+            current_topic=topic,
+            coach_pick=str(getattr(self, "_coach_pick_topic", "") or topic),
+            days_to_exam=days_to_exam,
+            must_review_due=0,
+            overdue_srs_count=0,
+        )
+
+    def _build_practice_loop_runtime_state(
+        self,
+        *,
+        session_state: TutorSessionState | None,
+        learner_profile: TutorLearnerProfileSnapshot | None,
+        app_snapshot: AppStateSnapshot | None = None,
+        item: TutorPracticeItem | None = None,
+        result: TutorAssessmentResult | None = None,
+    ) -> PracticeLoopSessionState | None:
+        cog_state = self._cognitive_state()
+        if (
+            cog_state is None
+            or not isinstance(session_state, TutorSessionState)
+            or not isinstance(learner_profile, TutorLearnerProfileSnapshot)
+        ):
+            return None
+        return PracticeLoopSessionState(
+            cognitive_state=cog_state,
+            session_state=session_state,
+            learner_profile=learner_profile,
+            app_snapshot=app_snapshot or self._default_practice_loop_app_snapshot(session_state),
+            current_item=item,
+            current_result=result,
+        )
 
     def _build_practice_next_action_guidance(
         self,

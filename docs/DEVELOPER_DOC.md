@@ -91,7 +91,7 @@ Per-turn telemetry fields and the golden prompt fixture are documented in **[doc
 ### Practice loop: two complementary models
 
 - **`PracticeLoopSessionState`** (`studyplan/practice_loop_controller.py`) — dataclass holding cognitive state, session, learner profile, and current item/result for the live tutor/practice path.
-- **`PracticeLoopFsmState` + `PracticeLoopFSM`** (`studyplan/practice_loop_fsm.py`) — explicit quiz lifecycle states (`idle`, `presenting`, `assessing`, …) and a transition table. Covered by `studyplan/testing/test_practice_loop_fsm.py`; **not** wired into the GTK app today. Runtime step transitions in the app go through **`SocraticFSM`** via `PracticeLoopController.advance_state`.
+- **`PracticeLoopFsmState` + `PracticeLoopFSM`** (`studyplan/practice_loop_fsm.py`) — explicit quiz lifecycle states (`idle`, `presenting`, `assessing`, …) and a transition table. Covered by `studyplan/testing/test_practice_loop_fsm.py`; GTK runtime practice flows now route item presentation, submission, hint, scoring, transfer, and session-end transitions through the table while retaining **`SocraticFSM`** fallback behavior in `PracticeLoopController.advance_state`.
 - **`recommend_action_policy`** in the same FSM module *is* used by the controller for next-step hints.
 
 ## Data and paths (one-page reference)

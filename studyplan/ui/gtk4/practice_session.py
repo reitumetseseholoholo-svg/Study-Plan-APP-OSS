@@ -41,6 +41,7 @@ class PracticeSessionWindow(Gtk.Box):
         self.item_index = 0
         self.correct_count = 0
         self.total_attempts = 0
+        self.loop_state = None
         
         # Performance monitoring
         self.performance_monitor = main_window.get_performance_monitor()
@@ -58,8 +59,8 @@ class PracticeSessionWindow(Gtk.Box):
         """Start a new practice session."""
         with self.performance_monitor.context("session_start"):
             # Build practice items
-            loop_state = self._create_loop_state()
-            self.session_items = self.practice_controller.build_practice_items(loop_state, max_items=5)
+            self.loop_state = self._create_loop_state()
+            self.session_items = self.practice_controller.build_practice_items(self.loop_state, max_items=5)
             
             if not self.session_items:
                 self._show_error("No practice items available")
@@ -115,7 +116,14 @@ class PracticeSessionWindow(Gtk.Box):
             return
             
         self.current_item = self.session_items[self.item_index]
-        
+        if self.loop_state is not None:
+            self.practice_controller.present_practice_item(
+                self.loop_state,
+                self.current_item,
+                restart=self.item_index == 0,
+                source="gtk_practice_session_display",
+            )
+
         # Update question display
         question_text = f"<b>Question {self.item_index + 1}:</b>\n\n{self.current_item.prompt}"
         self.question_display.set_markup(question_text)
@@ -156,8 +164,9 @@ class PracticeSessionWindow(Gtk.Box):
             )
             
             # Submit attempt
-            loop_state = self._create_loop_state()
-            result = self.practice_controller.submit_attempt(loop_state, self.current_item, submission)
+            if self.loop_state is None:
+                self.loop_state = self._create_loop_state()
+            result = self.practice_controller.submit_attempt(self.loop_state, self.current_item, submission)
             
             self.current_result = result
             self.total_attempts += 1
@@ -188,6 +197,10 @@ class PracticeSessionWindow(Gtk.Box):
             
         with self.performance_monitor.context("hint_request"):
             loop_state = self._create_loop_state()
+            if self.loop_state is None:
+                self.loop_state = loop_state
+            else:
+                loop_state = self.loop_state
             
             # Get progressive hint
             hint = self.practice_controller.get_next_hint(
@@ -227,7 +240,7 @@ class PracticeSessionWindow(Gtk.Box):
         was_correct = result.outcome == "correct"
         
         self.practice_controller.track_confidence_and_calibrate(
-            loop_state=self._create_loop_state(),
+            loop_state=self.loop_state or self._create_loop_state(),
             predicted_confidence=predicted_confidence,
             was_correct=was_correct,
             topic=topic
@@ -265,6 +278,8 @@ class PracticeSessionWindow(Gtk.Box):
             
     def _end_session(self):
         """End the practice session and show summary."""
+        if self.loop_state is not None:
+            self.practice_controller.complete_practice_session(self.loop_state, source="gtk_practice_session_end")
         accuracy = (self.correct_count / self.total_attempts * 100) if self.total_attempts > 0 else 0
         
         summary = f"""

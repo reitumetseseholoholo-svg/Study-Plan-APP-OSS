@@ -32,19 +32,20 @@ Order is chosen by impact first, then implementation safety.
 
 ---
 
-## 2) Wire `PracticeLoopFSM` into GTK runtime transitions
+## 2) Wire `PracticeLoopFSM` into GTK runtime transitions ✅
 
 **Why second**
 - Largest user-facing behavior win among currently documented gaps.
 - Improves consistency and debuggability of tutor/practice state transitions.
 
-**Current gap**
-- `DEVELOPER_DOC.md` notes `PracticeLoopFSM` is implemented/tested but not wired into GTK runtime flow.
+**Status**
+- Implemented in `studyplan/practice_loop_controller.py`, `studyplan/ui/gtk4/practice_session.py`, and `studyplan_app.py`.
+- GTK/runtime practice flows now record item presentation, submission, hint, assessment, transfer, and session-end transitions through `PracticeLoopFSM` with existing `SocraticFSM` fallback retained.
 
-**Scope**
-- Route runtime step transitions through `PracticeLoopFSM` state transitions for the tutor/practice loop.
-- Keep existing fallback behavior where needed to avoid regressions.
-- Add transition logging hooks (lightweight) to simplify diagnosis when state changes fail.
+**Result**
+- Practice-loop lifecycle changes now use the table-driven FSM in both the GTK4 practice session and tutor workspace runtime.
+- Session metadata persists the current FSM state for recreated runtime loop objects.
+- Transition logging and integration coverage make state mismatches easier to diagnose.
 
 **Acceptance criteria**
 - Practice loop transitions are driven by the FSM table (not ad-hoc state branching).

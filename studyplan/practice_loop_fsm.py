@@ -45,6 +45,14 @@ class PracticeLoopFsmState(str, Enum):
     ERROR = "error"
 
 
+def coerce_practice_loop_state(value: Any) -> PracticeLoopFsmState:
+    normalized = _coerce_text(value, PracticeLoopFsmState.IDLE.value).lower()
+    for candidate in PracticeLoopFsmState:
+        if candidate.value == normalized:
+            return candidate
+    return PracticeLoopFsmState.IDLE
+
+
 @dataclass
 class StateTransition:
     from_state: PracticeLoopFsmState
@@ -161,12 +169,12 @@ PRACTICE_LOOP_TRANSITIONS = [
 class PracticeLoopFSM:
     """Deterministic practice loop state machine: no hidden transitions."""
 
-    def __init__(self):
+    def __init__(self, initial_state: Any = PracticeLoopFsmState.IDLE):
         self._transition_map = {}
         for t in PRACTICE_LOOP_TRANSITIONS:
             key = (t.from_state, t.event)
             self._transition_map[key] = t
-        self._current_state = PracticeLoopFsmState.IDLE
+        self._current_state = coerce_practice_loop_state(initial_state)
 
     @property
     def current_state(self) -> PracticeLoopFsmState:

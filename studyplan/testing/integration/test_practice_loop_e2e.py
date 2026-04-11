@@ -7,8 +7,10 @@ from studyplan.contracts import (
     AppStateSnapshot,
     TutorAssessmentSubmission,
     TutorAssessmentResult,
+    TutorPracticeItem,
 )
 from studyplan.practice_loop_controller import PracticeLoopController, PracticeLoopSessionState
+from studyplan.practice_loop_fsm import PracticeLoopFsmState
 from studyplan.cognitive_state import CognitiveState
 from studyplan.performance_monitor import PerformanceMonitor
 
@@ -133,6 +135,74 @@ def test_practice_loop_error_recovery():
     # Posterior should be updated (beta incremented)
     posteriors_after = loop.cognitive_state.posteriors.get(item.topic)
     assert posteriors_after is not None
+
+
+def test_practice_loop_runtime_fsm_tracks_present_submit_score_and_end():
+    controller = PracticeLoopController(perf_monitor=PerformanceMonitor(enabled=True))
+    cog_state = CognitiveState()
+    session = TutorSessionState(session_id="s-fsm-1", module="m", topic="T1", mode="guided_practice")
+    learner = TutorLearnerProfileSnapshot(learner_id="u-fsm-1", module="m")
+    app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
+    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+
+    item = controller.build_practice_items(loop, max_items=1)[0]
+    controller.present_practice_item(loop, item, restart=True, source="test_present")
+    assert loop.practice_fsm_state == PracticeLoopFsmState.AWAITING_SUBMISSION.value
+    assert loop.session_state.meta["practice_loop_fsm_state"] == PracticeLoopFsmState.AWAITING_SUBMISSION.value
+
+    controller.get_next_hint(loop, item, has_attempted=False)
+    assert loop.practice_fsm_state == PracticeLoopFsmState.AWAITING_SUBMISSION.value
+
+    answer = item.meta.get("correct_option", "A") if item.item_type == "mcq" else " ".join(item.meta.get("keywords", []))
+    result = controller.submit_attempt(loop, item, TutorAssessmentSubmission(item_id=item.item_id, answer_text=answer))
+    assert result.outcome in {"correct", "partial"}
+    assert loop.practice_fsm_state == PracticeLoopFsmState.SCORED.value
+    assert loop.session_state.meta["practice_loop_fsm_state"] == PracticeLoopFsmState.SCORED.value
+
+    controller.complete_practice_session(loop, source="test_end")
+    assert loop.practice_fsm_state == PracticeLoopFsmState.IDLE.value
+    assert loop.session_state.meta["practice_loop_fsm_state"] == PracticeLoopFsmState.IDLE.value
+
+
+def test_practice_loop_runtime_fsm_tracks_transfer_variant_path():
+    controller = PracticeLoopController(perf_monitor=PerformanceMonitor(enabled=True))
+    cog_state = CognitiveState()
+    session = TutorSessionState(session_id="s-fsm-2", module="m", topic="T1", mode="guided_practice")
+    learner = TutorLearnerProfileSnapshot(learner_id="u-fsm-2", module="m")
+    app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
+    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+
+    base_item = controller.build_practice_items(loop, max_items=1)[0]
+    controller.present_practice_item(loop, base_item, restart=True, source="test_base_present")
+    controller.note_submission_received(loop, base_item, source="test_base_submit")
+    base_result = TutorAssessmentResult(
+        item_id=base_item.item_id,
+        outcome="correct",
+        marks_awarded=1.0,
+        marks_max=1.0,
+        feedback="Base item correct.",
+    )
+    controller.note_assessment_result(loop, base_item, base_result, source="test_base_score")
+
+    transfer_item = TutorPracticeItem.from_dict(
+        {
+            **base_item.to_dict(),
+            "item_id": f"{base_item.item_id}-transfer",
+            "meta": {**dict(base_item.meta or {}), "transfer_variant": True},
+        }
+    )
+    controller.begin_transfer_variant(loop, transfer_item, source="test_transfer_start")
+    assert loop.practice_fsm_state == PracticeLoopFsmState.TRANSFER_TESTING.value
+
+    transfer_result = TutorAssessmentResult(
+        item_id=transfer_item.item_id,
+        outcome="correct",
+        marks_awarded=1.0,
+        marks_max=1.0,
+        feedback="Transfer successful.",
+    )
+    controller.note_assessment_result(loop, transfer_item, transfer_result, source="test_transfer_result")
+    assert loop.practice_fsm_state == PracticeLoopFsmState.SCORED.value
 
 
 def test_practice_loop_tutor_gating():

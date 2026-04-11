@@ -4,6 +4,7 @@ from studyplan.practice_loop_fsm import (
     PracticeLoopFSM,
     PracticeLoopEvent,
     PracticeLoopFsmState,
+    coerce_practice_loop_state,
     normalize_assessment_outcome,
     recommend_action_policy,
 )
@@ -20,6 +21,17 @@ def test_fsm_valid_transition():
     next_state, action = fsm.transition(PracticeLoopEvent.QUIZ_START)
     assert next_state == PracticeLoopFsmState.PRESENTING
     assert fsm.current_state == PracticeLoopFsmState.PRESENTING
+
+
+def test_fsm_accepts_initial_state_string():
+    fsm = PracticeLoopFSM("awaiting_submission")
+    assert fsm.current_state == PracticeLoopFsmState.AWAITING_SUBMISSION
+    next_state, _action = fsm.transition(PracticeLoopEvent.SUBMISSION_RECEIVED)
+    assert next_state == PracticeLoopFsmState.ASSESSING
+
+
+def test_coerce_practice_loop_state_defaults_to_idle_for_unknown_value():
+    assert coerce_practice_loop_state("mystery") == PracticeLoopFsmState.IDLE
 
 
 def test_fsm_invalid_transition():
