@@ -7,7 +7,10 @@ venv/
 env/
 *.egg-info/
 .eggs/
-build/
+build/*
+!build/windows/
+build/windows/*
+!build/windows/installer.iss
 dist/
 
 # Test / lint / type-check
