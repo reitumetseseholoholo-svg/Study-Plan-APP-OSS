@@ -82,10 +82,10 @@ Scope: (1) PDF RAG, (2) canonical structure / reconfig, (3) module switching and
 | Single engine, paths from `module_id` in `__init__` | **OK** | No path swap without new engine. |
 | Preferences before engine: matching `module_id` | **Done** | After `StudyPlanEngine` construction, **`studyplan_app.py`** raises **`RuntimeError`** if `engine.module_id` ≠ GUI `module_id` (module isolation guard). |
 | Save on shutdown uses engine paths | **OK** | Deferred restart keeps old engine → saves old module (intended). |
-| `_assert_data_paths_under_module` helper | **Open** | Not present; could live in engine `__init__` or tests only. |
-| Dedicated test: acca_f9 paths under module dir when dir exists | **Open** | Worth adding if not already covered elsewhere. |
+| `_assert_data_paths_under_module` helper | **Done** | Engine init now asserts resolved `data.json` / `questions.json` stay under the active module dir outside the intended legacy `acca_f9` migration case. |
+| Dedicated test: acca_f9 paths under module dir when dir exists | **Done** | Targeted engine test locks legacy `acca_f9` preference to module-dir files once module-scoped files exist. |
 
-**Suggested order (remaining):** (1) Optional `_assert_data_paths_under_module` in tests or debug builds. (2) Optional targeted test for legacy path resolution.
+**Suggested order (remaining):** Module-path isolation items are complete; any future work here should focus on new migration scenarios only if they appear in the wild.
 
 ---
 
@@ -96,6 +96,6 @@ Scope: (1) PDF RAG, (2) canonical structure / reconfig, (3) module switching and
 | **Pyright** | Excludes + YAML ignore | Re-expand scope only if desired. |
 | **RAG** | Syllabus-aware chunking & reconfig retrieval, pre-chunked reconfig, presets & char caps, per-doc `max_chunks` | Global RAG LRU; snippet-level dedupe; `module_id` cache namespace if chunking splits per module. |
 | **Canonical mapping** | Stable ids, confidence + validation gate, schema + `validate_module_config` | Post-LLM chapter repair; canonical-chapter LLM pass; richer batch logging. |
-| **Module switch** | Runtime guard `engine.module_id == app.module_id` | Path assertion helper; explicit legacy path test. |
+| **Module switch** | Runtime guard `engine.module_id == app.module_id`; path assertion helper; explicit legacy path test | Additional migration-only hardening if new edge cases appear. |
 
 This file is the **status ledger** for the above themes; prefer **`FEATURES.md`** / **`DEVELOPER_DOC.md`** for user-facing and general architecture detail.

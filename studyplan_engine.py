@@ -2725,7 +2725,10 @@ class StudyPlanEngine:
         # Other modules must stay isolated by module_id to avoid cross-module state bleed.
         if safe_id != "acca_f9":
             return module_data, module_questions
-        if os.path.isdir(module_dir):
+        has_module_files = os.path.exists(module_data) or os.path.exists(module_questions)
+        has_legacy_files = os.path.exists(self.DEFAULT_DATA_FILE) or os.path.exists(self.DEFAULT_QUESTIONS_FILE)
+        should_use_module_dir = os.path.isdir(module_dir) and (has_module_files or not has_legacy_files)
+        if should_use_module_dir:
             return module_data, module_questions
         legacy_data = self.DEFAULT_DATA_FILE
         legacy_questions = self.DEFAULT_QUESTIONS_FILE
@@ -2744,6 +2747,13 @@ class StudyPlanEngine:
         module_dir = os.path.realpath(os.path.join(self.DEFAULT_DATA_DIR, safe_id))
         if not os.path.isdir(module_dir):
             return
+        module_data = os.path.join(module_dir, "data.json")
+        module_questions = os.path.join(module_dir, "questions.json")
+        if safe_id == "acca_f9":
+            has_module_files = os.path.exists(module_data) or os.path.exists(module_questions)
+            has_legacy_files = os.path.exists(self.DEFAULT_DATA_FILE) or os.path.exists(self.DEFAULT_QUESTIONS_FILE)
+            if not has_module_files and has_legacy_files:
+                return
         expected_paths = {
             "data.json": os.path.realpath(data_path),
             "questions.json": os.path.realpath(questions_path),
@@ -2751,8 +2761,11 @@ class StudyPlanEngine:
         for label, resolved_path in expected_paths.items():
             try:
                 common_root = os.path.commonpath([module_dir, resolved_path])
-            except ValueError:
-                common_root = ""
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Could not validate {label} path for '{safe_id}' because the paths are incompatible: "
+                    f"{resolved_path} vs {module_dir}"
+                ) from exc
             if common_root != module_dir:
                 raise RuntimeError(
                     f"Resolved {label} path escaped active module directory for '{safe_id}': "

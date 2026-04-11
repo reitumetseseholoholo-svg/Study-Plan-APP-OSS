@@ -5,15 +5,15 @@ Order is chosen by impact first, then implementation safety.
 
 ---
 
-## 1) Add module path safety assertion + targeted legacy path test
+## 1) Add module path safety assertion + targeted legacy path test ✅
 
 **Why this first**
 - Prevents silent cross-module or legacy-path drift in the core data layer.
 - Fast to implement and high confidence from deterministic tests.
 
-**Current gap**
-- `RAG_AND_MODULE_IMPROVEMENTS.md` still marks `_assert_data_paths_under_module` as open.
-- A dedicated test for legacy `acca_f9` path behavior is also marked open.
+**Status**
+- Implemented in `studyplan_engine.py` with `_assert_data_paths_under_module(...)`.
+- Covered by targeted engine tests, including legacy `acca_f9` module-directory preference when module-scoped files are present.
 
 **Scope**
 - Add a small helper in engine init path checks (debug-safe, deterministic):
@@ -21,10 +21,10 @@ Order is chosen by impact first, then implementation safety.
   - Preserve intended legacy behavior where explicitly required (do not break migration).
 - Add a focused test that validates `acca_f9` resolves to module directory files when present.
 
-**Acceptance criteria**
-- Engine raises a clear error when active module paths escape expected module dir constraints.
-- Legacy fallback still works only in intended conditions.
-- New tests pass alongside existing path tests.
+**Result**
+- Engine now raises a clear error when active module paths escape expected module dir constraints.
+- Legacy fallback remains limited to intended `acca_f9` migration conditions.
+- Targeted regression tests pass.
 
 **Suggested tests**
 - `tests/test_studyplan_app_paths.py`
