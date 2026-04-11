@@ -40,7 +40,14 @@ class SpacedRetrievalSchedule:
     
     @property
     def next_retest_days(self) -> int:
-        """Days until optimal retest (2^n spacing)."""
+        """Days until optimal retest (2^n spacing).
+
+        Returns the next scheduled interval length for this card based on
+        how long ago it was last reviewed.  The schedule doubles:
+        1, 2, 4, 8, 16 … The returned value is the smallest power-of-two
+        that is **strictly greater** than *days_since* (i.e. the next
+        interval boundary the card must reach before it's due again).
+        """
         if not self.last_correct_date:
             return 1  # First practice: tomorrow
         
@@ -58,14 +65,31 @@ class SpacedRetrievalSchedule:
         return max(1, spacing)
     
     def should_retest_now(self) -> bool:
-        """Check if retest is due or overdue."""
+        """Check if retest is due or overdue.
+
+        A card is due when the elapsed time since its last correct answer
+        meets or exceeds the *current* spaced-repetition interval.  The
+        interval schedule doubles: 1 → 2 → 4 → 8 → 16 days …
+
+        Since this class does not track the number of successful reviews,
+        the current interval is the largest power-of-two that is **less than
+        or equal to** ``next_retest_days``.  Concretely the card becomes due
+        at the **midpoint** of the current spacing window: once ``days_since``
+        reaches ``next_retest_days // 2`` (min 1), the card is due.
+        """
         if not self.last_correct_date:
             return True
         try:
             last = datetime.fromisoformat(self.last_correct_date)
             now = datetime.now(timezone.utc)
             days_since = (now - last).days
-            return days_since >= self.next_retest_days
+            if days_since <= 0:
+                return False
+            # next_retest_days is the next power-of-2 > days_since.
+            # The card is due once it reaches half that window (which equals
+            # the previous power-of-2, i.e. the *current* interval).
+            threshold = max(1, self.next_retest_days // 2)
+            return days_since >= threshold
         except Exception:
             return False
 

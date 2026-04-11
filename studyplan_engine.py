@@ -2520,7 +2520,15 @@ class StudyPlanEngine:
         if isinstance(payload.get("chapter_flow"), dict):
             merged["chapter_flow"] = dict(payload["chapter_flow"])
         if isinstance(payload.get("importance_weights"), dict):
-            merged["importance_weights"] = {str(k): int(v) for k, v in payload["importance_weights"].items() if str(k).strip()}
+            safe_weights = {}
+            for k, v in payload["importance_weights"].items():
+                if not str(k).strip():
+                    continue
+                try:
+                    safe_weights[str(k)] = int(v)
+                except (TypeError, ValueError):
+                    pass
+            merged["importance_weights"] = safe_weights
         if isinstance(payload.get("capabilities"), dict):
             merged["capabilities"] = {str(k).strip().upper(): str(v).strip() for k, v in payload["capabilities"].items() if str(k).strip() and str(v).strip()}
         if isinstance(payload.get("aliases"), dict):
@@ -6503,7 +6511,8 @@ class StudyPlanEngine:
             if ranked_outcomes:
                 normalized_targets.append(ranked_outcomes[0][3])
         if not normalized_targets:
-            normalized_targets = [outcome_order[0]]
+            if outcome_order:
+                normalized_targets = [outcome_order[0]]
         return normalized_targets
 
     def _adaptive_interleave_ratios(self, chapter: str) -> tuple[float, float, float, str]:
