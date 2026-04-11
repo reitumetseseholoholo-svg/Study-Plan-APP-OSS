@@ -406,7 +406,7 @@ class StudyPlanEngine:
                     prior_los = existing_info.get("learning_outcomes") or []
                     if isinstance(prior_los, list) and prior_los:
                         prior_by_id: Dict[str, Dict[str, Any]] = {}
-                        prior_norm_texts: set[str] = set()
+                        prior_norm_texts: Set[str] = set()
                         for o in prior_los:
                             if isinstance(o, dict):
                                 oid = str(o.get("id", "") or "").strip()
@@ -416,7 +416,7 @@ class StudyPlanEngine:
                                 if ntxt:
                                     prior_norm_texts.add(ntxt)
                         # Start with all prior outcomes (preserving order and IDs).
-                        merged_outcomes: list[Dict[str, Any]] = list(prior_los)
+                        merged_outcomes: List[Dict[str, Any]] = list(prior_los)
                         merged_ids = set(prior_by_id.keys())
                         for incoming in cleaned_outcomes:
                             inc_id = str(incoming.get("id", "") or "").strip()
@@ -430,9 +430,7 @@ class StudyPlanEngine:
                                             existing_text = str(mo.get("text", "") or "").strip()
                                             # Only update text if the incoming is longer/better (not a truncation).
                                             if len(inc_text) >= len(existing_text):
-                                                merged_outcomes[mi] = dict(mo)
-                                                merged_outcomes[mi]["text"] = inc_text
-                                                merged_outcomes[mi]["level"] = incoming.get("level", mo.get("level", 2))
+                                                merged_outcomes[mi] = {**mo, "text": inc_text, "level": incoming.get("level", mo.get("level", 2))}
                                             break
                                 continue
                             if inc_norm and inc_norm in prior_norm_texts:
