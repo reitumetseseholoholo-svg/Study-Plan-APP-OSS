@@ -399,6 +399,49 @@ class StudyPlanEngine:
                         row = {"id": outcome_id, "text": text, "level": level_int}
                         row.update(self._coerce_learning_outcome_optional_fields(item))
                         cleaned_outcomes.append(row)
+                # Additive merge: never remove existing outcomes already in the structure.
+                # Preserve all prior outcomes; only append genuinely new ones from the incoming config.
+                existing_info = (getattr(self, "syllabus_structure", None) or {}).get(key)
+                if isinstance(existing_info, dict):
+                    prior_los = existing_info.get("learning_outcomes") or []
+                    if isinstance(prior_los, list) and prior_los:
+                        prior_by_id: Dict[str, Dict[str, Any]] = {}
+                        prior_norm_texts: Set[str] = set()
+                        for o in prior_los:
+                            if isinstance(o, dict):
+                                oid = str(o.get("id", "") or "").strip()
+                                if oid:
+                                    prior_by_id[oid] = o
+                                ntxt = re.sub(r"\s+", " ", str(o.get("text", "") or "").lower()).strip()
+                                if ntxt:
+                                    prior_norm_texts.add(ntxt)
+                        # Start with all prior outcomes (preserving order and IDs).
+                        merged_outcomes: List[Dict[str, Any]] = list(prior_los)
+                        merged_ids = set(prior_by_id.keys())
+                        for incoming in cleaned_outcomes:
+                            inc_id = str(incoming.get("id", "") or "").strip()
+                            inc_norm = re.sub(r"\s+", " ", str(incoming.get("text", "") or "").lower()).strip()
+                            if inc_id and inc_id in merged_ids:
+                                # Allow text corrections on existing outcomes (fix malformed text) but keep the ID.
+                                if inc_norm and inc_norm not in prior_norm_texts:
+                                    for mi, mo in enumerate(merged_outcomes):
+                                        if isinstance(mo, dict) and str(mo.get("id", "") or "").strip() == inc_id:
+                                            inc_text = str(incoming.get("text", "") or "").strip()
+                                            existing_text = str(mo.get("text", "") or "").strip()
+                                            # Only update text if the incoming is longer/better (not a truncation).
+                                            if len(inc_text) >= len(existing_text):
+                                                merged_outcomes[mi] = {**mo, "text": inc_text, "level": incoming.get("level", mo.get("level", 2))}
+                                            break
+                                continue
+                            if inc_norm and inc_norm in prior_norm_texts:
+                                continue
+                            # Genuinely new outcome: append it.
+                            merged_outcomes.append(incoming)
+                            if inc_id:
+                                merged_ids.add(inc_id)
+                            if inc_norm:
+                                prior_norm_texts.add(inc_norm)
+                        cleaned_outcomes = merged_outcomes
                 info["learning_outcomes"] = cleaned_outcomes
                 mix = info.get("intellectual_level_mix")
                 if not isinstance(mix, dict):
@@ -411,10 +454,7 @@ class StudyPlanEngine:
                     }
                 except (TypeError, ValueError):
                     info["intellectual_level_mix"] = {"level_1": 0, "level_2": 0, "level_3": 0}
-                try:
-                    info["outcome_count"] = int(info.get("outcome_count", len(cleaned_outcomes)) or 0)
-                except (TypeError, ValueError):
-                    info["outcome_count"] = len(cleaned_outcomes)
+                info["outcome_count"] = len(cleaned_outcomes)
                 normalized[key] = info
             self.syllabus_structure = normalized
             syllabus_structure_updated = True
@@ -4053,40 +4093,28 @@ class StudyPlanEngine:
     def _reconcile_outcome_stats_to_syllabus(
         self, outcome_stats_raw: Dict[str, Dict[str, Dict[str, Any]]]
     ) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """Keep only outcome_ids that exist in current syllabus_structure; drop stale ids (syllabus ingest Phase 3)."""
+        """Preserve all existing outcome_stats — never drop already-counted outcomes.
+
+        Previously this method pruned stats for outcome IDs not in the current
+        syllabus_structure. This caused outcome count regressions when the
+        syllabus was re-parsed with fewer outcomes (e.g. by a local model).
+        Now we keep every stat entry: outcomes still in the syllabus are kept as-is,
+        and orphaned stats (IDs no longer in syllabus) are also preserved so they
+        survive until the syllabus is re-enriched and the IDs reappear.
+        """
         if not isinstance(outcome_stats_raw, dict):
             return {}
-        structure = getattr(self, "syllabus_structure", {}) or {}
-        if not isinstance(structure, dict):
-            return outcome_stats_raw
-        valid_ids_by_ch: Dict[str, Set[str]] = {}
-        for ch, info in structure.items():
-            if not isinstance(info, dict):
-                continue
-            los = info.get("learning_outcomes") or []
-            if not isinstance(los, list):
-                continue
-            valid_ids_by_ch[str(ch).strip()] = {
-                str(o.get("id", "") or "").strip()
-                for o in los
-                if isinstance(o, dict) and str(o.get("id", "") or "").strip()
-            }
         reconciled: Dict[str, Dict[str, Dict[str, Any]]] = {}
         for ch, items in outcome_stats_raw.items():
             if not isinstance(ch, str) or not isinstance(items, dict):
                 continue
-            valid = valid_ids_by_ch.get(ch)
-            if valid is None:
-                valid = valid_ids_by_ch.get(self._try_match_chapter(ch) or ch, set())
-            if not valid:
-                continue
             inner = {
                 oid: stats
                 for oid, stats in items.items()
-                if str(oid).strip() in valid and isinstance(stats, dict)
+                if isinstance(stats, dict) and str(oid).strip()
             }
             if inner:
-                reconciled[ch] = inner
+                reconciled[str(ch).strip()] = inner
         return reconciled
 
     def _question_id(self, question: Dict[str, Any]) -> str | None:

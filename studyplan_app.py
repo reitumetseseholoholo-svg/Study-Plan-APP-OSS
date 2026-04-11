@@ -10852,6 +10852,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             or os.environ.get("STUDYPLAN_AUTO_RECONFIGURE_RAG", "").strip() in ("1", "true", "yes")
         ):
             return
+        # Skip auto-reconfig when only local models are available — local LLMs tend to
+        # under-count outcomes, which can reduce the outcome total and cause regressions.
+        _cloud_enabled = bool(getattr(self, "cloud_ai_enabled", False))
+        _local_only = bool(getattr(self, "local_llm_enabled", False)) and not _cloud_enabled
+        if _local_only:
+            return
         if getattr(self, "_auto_reconfig_in_progress", False):
             return
         module_id = getattr(self, "module_id", "") or ""
@@ -44070,8 +44076,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     "true",
                     "yes",
                 )
+                # Skip auto-improve when only local models are available — local LLMs tend
+                # to under-count outcomes, which can reduce the outcome total.
+                _cloud_ai_on = bool(getattr(self, "cloud_ai_enabled", False))
+                _local_only_import = bool(getattr(self, "local_llm_enabled", False)) and not _cloud_ai_on
                 if (
                     auto_improve
+                    and not _local_only_import
                     and confidence < 0.75
                     and getattr(self, "local_llm_enabled", False)
                     and isinstance(chapters, list)
