@@ -46,6 +46,8 @@ class PracticeLoopFsmState(str, Enum):
 
 
 def coerce_practice_loop_state(value: Any) -> PracticeLoopFsmState:
+    if isinstance(value, PracticeLoopFsmState):
+        return value
     normalized = _coerce_text(value, PracticeLoopFsmState.IDLE.value).lower()
     for candidate in PracticeLoopFsmState:
         if candidate.value == normalized:
