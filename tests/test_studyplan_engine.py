@@ -2200,7 +2200,160 @@ def test_build_module_config_merges_outcomes_by_id_and_text(engine_no_io):
     assert int(ch1.get("outcome_count", 0)) == 3
 
 
-def test_validate_module_config_returns_warnings_for_invalid_config(engine_no_io):
+def test_apply_module_config_additive_merge_never_removes_outcomes(engine_no_io):
+    """_apply_module_config must never reduce outcome count when updating syllabus_structure.
+
+    Simulates the scenario where a local model re-parses the syllabus and produces
+    fewer outcomes (e.g. 2 instead of 5). Existing outcomes must be preserved.
+    """
+    eng = engine_no_io
+    eng.CHAPTERS = ["Ch1"]
+    eng.syllabus_structure = {
+        "Ch1": {
+            "capability": "A",
+            "subtopics": [],
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Explain financial reporting.", "level": 1},
+                {"id": "A.2", "text": "Discuss IFRS standards.", "level": 2},
+                {"id": "A.3", "text": "Apply IAS 16.", "level": 2},
+                {"id": "A.4", "text": "Evaluate investment decisions.", "level": 3},
+                {"id": "A.5", "text": "Prepare consolidated statements.", "level": 3},
+            ],
+            "outcome_count": 5,
+            "intellectual_level_mix": {"level_1": 1, "level_2": 2, "level_3": 2},
+        }
+    }
+    # Incoming config has only 2 outcomes (simulating local model under-count).
+    incoming = {
+        "chapters": ["Ch1"],
+        "syllabus_structure": {
+            "Ch1": {
+                "capability": "A",
+                "subtopics": [],
+                "learning_outcomes": [
+                    {"id": "A.1", "text": "Explain financial reporting.", "level": 1},
+                    {"id": "A.2", "text": "Discuss IFRS standards.", "level": 2},
+                ],
+                "outcome_count": 2,
+                "intellectual_level_mix": {"level_1": 1, "level_2": 1, "level_3": 0},
+            }
+        },
+    }
+    eng._apply_module_config(incoming)
+    ch1 = eng.syllabus_structure.get("Ch1") or {}
+    los = ch1.get("learning_outcomes") or []
+    # All 5 original outcomes must survive.
+    assert len(los) >= 5, f"Expected >=5 outcomes but got {len(los)}"
+    ids = {str(o.get("id", "")).strip() for o in los}
+    assert {"A.1", "A.2", "A.3", "A.4", "A.5"}.issubset(ids)
+    assert ch1.get("outcome_count") == len(los)
+
+
+def test_apply_module_config_additive_merge_adds_new_outcomes(engine_no_io):
+    """_apply_module_config should add genuinely new outcomes from the incoming config."""
+    eng = engine_no_io
+    eng.CHAPTERS = ["Ch1"]
+    eng.syllabus_structure = {
+        "Ch1": {
+            "capability": "A",
+            "subtopics": [],
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Explain financial reporting.", "level": 1},
+            ],
+            "outcome_count": 1,
+            "intellectual_level_mix": {"level_1": 1, "level_2": 0, "level_3": 0},
+        }
+    }
+    incoming = {
+        "chapters": ["Ch1"],
+        "syllabus_structure": {
+            "Ch1": {
+                "capability": "A",
+                "subtopics": [],
+                "learning_outcomes": [
+                    {"id": "A.1", "text": "Explain financial reporting.", "level": 1},
+                    {"id": "A.2", "text": "Brand new outcome.", "level": 2},
+                ],
+                "outcome_count": 2,
+                "intellectual_level_mix": {"level_1": 1, "level_2": 1, "level_3": 0},
+            }
+        },
+    }
+    eng._apply_module_config(incoming)
+    ch1 = eng.syllabus_structure.get("Ch1") or {}
+    los = ch1.get("learning_outcomes") or []
+    assert len(los) == 2
+    ids = {str(o.get("id", "")).strip() for o in los}
+    assert "A.1" in ids
+    assert "A.2" in ids
+
+
+def test_apply_module_config_additive_merge_corrects_text(engine_no_io):
+    """_apply_module_config should correct malformed/truncated outcome text (if new text is longer)."""
+    eng = engine_no_io
+    eng.CHAPTERS = ["Ch1"]
+    eng.syllabus_structure = {
+        "Ch1": {
+            "capability": "A",
+            "subtopics": [],
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Explain the concept of...", "level": 1},
+            ],
+            "outcome_count": 1,
+            "intellectual_level_mix": {"level_1": 1, "level_2": 0, "level_3": 0},
+        }
+    }
+    incoming = {
+        "chapters": ["Ch1"],
+        "syllabus_structure": {
+            "Ch1": {
+                "capability": "A",
+                "subtopics": [],
+                "learning_outcomes": [
+                    {"id": "A.1", "text": "Explain the concept of double-entry bookkeeping.", "level": 2},
+                ],
+                "outcome_count": 1,
+                "intellectual_level_mix": {"level_1": 0, "level_2": 1, "level_3": 0},
+            }
+        },
+    }
+    eng._apply_module_config(incoming)
+    ch1 = eng.syllabus_structure.get("Ch1") or {}
+    los = ch1.get("learning_outcomes") or []
+    assert len(los) == 1
+    assert los[0]["text"] == "Explain the concept of double-entry bookkeeping."
+
+
+def test_reconcile_outcome_stats_preserves_all_stats(engine_no_io):
+    """_reconcile_outcome_stats_to_syllabus must never drop already-counted outcome stats."""
+    eng = engine_no_io
+    eng.CHAPTERS = ["Ch1"]
+    # Syllabus only has 1 outcome (simulating under-count).
+    eng.syllabus_structure = {
+        "Ch1": {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Only this one.", "level": 1},
+            ],
+            "outcome_count": 1,
+        }
+    }
+    # Stats have 3 outcomes (from a previous richer syllabus).
+    stats = {
+        "Ch1": {
+            "A.1": {"attempts": 5, "correct": 4, "streak": 2, "last_seen": "2026-04-01"},
+            "A.2": {"attempts": 3, "correct": 2, "streak": 1, "last_seen": "2026-04-01"},
+            "A.3": {"attempts": 10, "correct": 8, "streak": 5, "last_seen": "2026-04-02"},
+        }
+    }
+    result = eng._reconcile_outcome_stats_to_syllabus(stats)
+    # All 3 stats must be preserved, even A.2 and A.3 which are not in current syllabus.
+    assert "Ch1" in result
+    assert "A.1" in result["Ch1"]
+    assert "A.2" in result["Ch1"]
+    assert "A.3" in result["Ch1"]
+    assert result["Ch1"]["A.1"]["attempts"] == 5
+    assert result["Ch1"]["A.3"]["attempts"] == 10
     eng = engine_no_io
     assert eng.validate_module_config(None) == ["Module config is missing or not a dict."]
     assert eng.validate_module_config({}) == ["chapters must be a non-empty list."]
