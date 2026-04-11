@@ -158,6 +158,60 @@ def test_constructor_sets_today_and_initial_structures(monkeypatch):
     assert eng.pomodoro_log.get("by_chapter") == {}
 
 
+def test_engine_init_raises_when_module_paths_escape_active_module_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+
+    config_home = tmp_path / "config"
+    module_dir = config_home / "safety_mod"
+    module_dir.mkdir(parents=True)
+    legacy_data = config_home / "data.json"
+    legacy_questions = config_home / "questions.json"
+
+    monkeypatch.setattr(StudyPlanEngine, "DEFAULT_DATA_DIR", str(config_home), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "DEFAULT_DATA_FILE", str(legacy_data), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "DEFAULT_QUESTIONS_FILE", str(legacy_questions), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(legacy_data), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "QUESTIONS_FILE", str(legacy_questions), raising=True)
+    monkeypatch.setattr(
+        StudyPlanEngine,
+        "_resolve_module_paths",
+        lambda self, module_id: (str(legacy_data), str(legacy_questions)),
+        raising=True,
+    )
+
+    with pytest.raises(RuntimeError, match="escaped active module directory"):
+        StudyPlanEngine(module_id="safety_mod")
+
+
+def test_acca_f9_prefers_module_dir_paths_when_module_dir_exists(tmp_path, monkeypatch):
+    monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+
+    config_home = tmp_path / "config"
+    module_dir = config_home / "acca_f9"
+    module_dir.mkdir(parents=True)
+    legacy_data = config_home / "data.json"
+    legacy_questions = config_home / "questions.json"
+    module_data = module_dir / "data.json"
+    module_questions = module_dir / "questions.json"
+    legacy_data.write_text('{"legacy": true}', encoding="utf-8")
+    legacy_questions.write_text('{"legacy": true}', encoding="utf-8")
+    module_data.write_text('{"module": true}', encoding="utf-8")
+    module_questions.write_text('{"module": true}', encoding="utf-8")
+
+    monkeypatch.setattr(StudyPlanEngine, "DEFAULT_DATA_DIR", str(config_home), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "DEFAULT_DATA_FILE", str(legacy_data), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "DEFAULT_QUESTIONS_FILE", str(legacy_questions), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(legacy_data), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "QUESTIONS_FILE", str(legacy_questions), raising=True)
+
+    eng = StudyPlanEngine(module_id="acca_f9")
+
+    assert eng.DATA_FILE == str(module_data)
+    assert eng.QUESTIONS_FILE == str(module_questions)
+
+
 def test_engine_initializes_cognitive_runtime_wrapper(engine_no_io):
     eng = engine_no_io
     assert isinstance(getattr(eng, "cognitive_state", None), CognitiveState)
