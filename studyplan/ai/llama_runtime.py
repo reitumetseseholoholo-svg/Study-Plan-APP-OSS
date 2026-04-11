@@ -266,6 +266,21 @@ class LlamaRuntime:
             if len(attempts) >= 6:
                 break
 
+        if not attempts:
+            log.warning("No unique model candidates after deduplication")
+            if self.ollama_fallback_enabled:
+                return self._try_ollama_fallback(purpose)
+            return RuntimeStatus(
+                backend="none",
+                model_name="",
+                model_path="",
+                endpoint="",
+                healthy=False,
+                startup_latency_ms=0,
+                catalog_size=len(catalog),
+                error="No unique model candidates",
+            )
+
         first = attempts[0]
         if self.server.is_running and self.server.current_model == first.name:
             return RuntimeStatus(

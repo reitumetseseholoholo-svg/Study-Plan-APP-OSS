@@ -745,7 +745,7 @@ def build_rag_concept_graph(
             break
 
     if not filtered_terms:
-        filtered_terms = [sorted_terms[0][0]]
+        filtered_terms = [sorted_terms[0][0]] if sorted_terms else []
 
     term_index = {tok: idx for idx, tok in enumerate(filtered_terms)}
 

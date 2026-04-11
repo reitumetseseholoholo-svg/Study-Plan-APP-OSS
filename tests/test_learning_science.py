@@ -31,16 +31,16 @@ def test_should_retest_now_when_never_reviewed():
 
 
 def test_should_retest_now_when_overdue():
-    # The SpacedRetrievalSchedule.should_retest_now() computes next_retest_days as
-    # the NEXT doubling beyond days_since, so it only returns True for brand-new cards
-    # (no last_correct_date). Verified with actual days_since < next_retest_days analysis.
-    # A never-reviewed card should return True.
+    # A card reviewed several days ago should be due for retest once
+    # days_since reaches a power-of-2 interval boundary.
+    date_3d_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=3)).isoformat()
     sched = SpacedRetrievalSchedule(
         topic="WACC",
-        last_correct_date=None,
+        last_correct_date=date_3d_ago,
         difficulty_level="hard",
         mastery_confidence=0.3,
     )
+    # 3 days ago → current interval is 2 (largest power-of-2 ≤ 3), so 3 >= 2 → True
     assert sched.should_retest_now() is True
 
 
