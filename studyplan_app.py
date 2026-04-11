@@ -48,7 +48,15 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 import csv
 import datetime
-import fcntl
+from studyplan.platform_compat import (
+    lock_file_exclusive_nb as _lock_file_exclusive_nb,
+    unlock_file as _unlock_file,
+    truncate_fd as _truncate_fd,
+    open_path_in_os as _open_path_in_os,
+    open_path_in_os_sync as _open_path_in_os_sync,
+    is_focus_tracking_available as _plat_focus_tracking_available,
+    IS_WINDOWS as _IS_WINDOWS,
+)
 import hashlib
 import importlib
 import io
@@ -2111,7 +2119,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.last_weekly_summary_week = None
         self.focus_tracking_enabled = True
         self.focus_allowlist = list(DEFAULT_FOCUS_ALLOWLIST)
-        self._focus_tracking_available = bool(shutil.which("hyprctl"))
+        self._focus_tracking_available = _plat_focus_tracking_available()
         self._focus_timer_id = None
         self._focus_active_seconds = 0
         self._focus_distract_seconds = 0
@@ -10011,6 +10019,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._apply_sidebar_visibility(persist=persist, announce=False)
 
     def _detect_tiling_wm_hint(self) -> bool:
+        if _IS_WINDOWS:
+            return False
         markers = ("HYPRLAND_INSTANCE_SIGNATURE", "SWAYSOCK", "I3SOCK")
         for name in markers:
             if str(os.environ.get(name, "") or "").strip():
@@ -11954,7 +11964,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if not path:
                     return
                 try:
-                    subprocess.Popen(["xdg-open", path])
+                    _open_path_in_os(path)
                 except Exception:
                     pass
 
@@ -12458,7 +12468,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return
             try:
                 os.makedirs(folder, exist_ok=True)
-                subprocess.Popen(["xdg-open", folder])
+                _open_path_in_os(folder)
             except Exception:
                 pass
 
@@ -13713,11 +13723,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         reset_pomodoro_btn = Gtk.Button(label="Reset Pomodoro Defaults")
         content.append(reset_pomodoro_btn)
 
-        focus_title = Gtk.Label(label="Focus Tracking (Hyprland)")
+        if _IS_WINDOWS:
+            _focus_section_label = "Focus Tracking"
+            _focus_note_label = "Focus tracking is not yet available on Windows."
+        else:
+            _focus_section_label = "Focus Tracking (Hyprland)"
+            _focus_note_label = "Focus tracking is unavailable (requires Hyprland + hyprctl)."
+        focus_title = Gtk.Label(label=_focus_section_label)
         focus_title.set_halign(Gtk.Align.START)
         focus_title.add_css_class("section-title")
         content.append(focus_title)
-        focus_note_primary = Gtk.Label(label="Auto-pause is based on your allowlist and idle time. Requires Hyprland.")
+        _focus_note_primary_text = (
+            "Focus tracking is not yet supported on Windows."
+            if _IS_WINDOWS
+            else "Auto-pause is based on your allowlist and idle time. Requires Hyprland."
+        )
+        focus_note_primary = Gtk.Label(label=_focus_note_primary_text)
         focus_note_primary.set_halign(Gtk.Align.START)
         focus_note_primary.set_wrap(True)
         focus_note_primary.add_css_class("muted")
@@ -13729,7 +13750,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             focus_tracking.set_sensitive(False)
         focus_note = None
         if not self._focus_tracking_available:
-            focus_note = Gtk.Label(label="Focus tracking is unavailable (requires Hyprland + hyprctl).")
+            focus_note = Gtk.Label(label=_focus_note_label)
             focus_note.set_halign(Gtk.Align.START)
             focus_note.set_wrap(True)
             focus_note.add_css_class("muted")
@@ -35779,7 +35800,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self._focus_tracking_warning_shown = True
                 self.send_notification(
                     "Focus Tracking Unavailable",
-                    "hyprctl not found. Install Hyprland tools to enable focus verification.",
+                    "Focus tracking is not available on this platform."
+                    if _IS_WINDOWS
+                    else "hyprctl not found. Install Hyprland tools to enable focus verification.",
                 )
             return
         if self._focus_timer_id:
@@ -38116,7 +38139,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 import subprocess
 
                 if os.path.isdir(config_home):
-                    subprocess.run(["xdg-open", config_home], check=False, timeout=5)
+                    _open_path_in_os_sync(config_home)
             except Exception:
                 pass
             try:
@@ -51105,7 +51128,7 @@ def _acquire_single_instance_lock(lock_path: str | None = None) -> bool:
         print(f"Warning: single-instance lock unavailable: {exc}")
         return True
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_file_exclusive_nb(fd)
     except OSError:
         try:
             os.close(fd)
@@ -51114,7 +51137,7 @@ def _acquire_single_instance_lock(lock_path: str | None = None) -> bool:
         return False
     try:
         payload = f"{os.getpid()} {datetime.datetime.now().isoformat(timespec='seconds')}\n".encode("utf-8", "ignore")
-        os.ftruncate(fd, 0)
+        _truncate_fd(fd, 0)
         os.write(fd, payload)
         os.fsync(fd)
     except Exception:
@@ -51130,7 +51153,7 @@ def _release_single_instance_lock() -> None:
     if not isinstance(fd, int) or fd <= 0:
         return
     try:
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        _unlock_file(fd)
     except Exception:
         pass
     try:

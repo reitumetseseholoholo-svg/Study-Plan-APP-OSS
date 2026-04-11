@@ -54,12 +54,22 @@ jobs:
             mingw-w64-x86_64-python-wheel
             mingw-w64-x86_64-python-gobject
             mingw-w64-x86_64-gtk4
+            mingw-w64-x86_64-python-cairo
+            mingw-w64-x86_64-libadwaita
 
-      - name: Install PyInstaller
+      - name: Install Python Dependencies
         shell: msys2 {0}
         run: |
           python -m pip install --upgrade pip
           python -m pip install pyinstaller
+
+      - name: Compile Check
+        shell: msys2 {0}
+        run: |
+          python -m py_compile studyplan_app.py
+          python -m py_compile studyplan_engine.py
+          python -m py_compile studyplan_ai_tutor.py
+          python -m py_compile studyplan/platform_compat.py
 
       - name: Build App (PyInstaller)
         shell: msys2 {0}
@@ -67,11 +77,28 @@ jobs:
           pyinstaller --noconfirm --clean --windowed \
             --name "$APP_NAME" \
             --add-data "modules;modules" \
+            --add-data "studyplan;studyplan" \
+            --add-data "acca_f7_500_questions.json;." \
+            --add-data "module_schema.json;." \
+            --hidden-import studyplan \
+            --hidden-import studyplan.platform_compat \
+            --hidden-import studyplan.config \
+            --hidden-import studyplan.contracts \
+            --hidden-import studyplan.services \
+            --hidden-import studyplan.fsrs \
+            --hidden-import studyplan.ai \
+            --hidden-import studyplan.data \
+            --hidden-import studyplan.domain \
+            --hidden-import studyplan_engine \
+            --hidden-import studyplan_ai_tutor \
+            --hidden-import studyplan_app_path_utils \
+            --hidden-import studyplan_app_kpi_routing \
+            --hidden-import studyplan_app_runtime_helpers \
+            --hidden-import studyplan_file_safety \
+            --hidden-import studyplan_theme \
+            --hidden-import studyplan_ui_runtime \
+            --hidden-import studyplan_ui_state_store \
             --collect-all gi \
-            --collect-all Gtk \
-            --collect-all Gdk \
-            --collect-all Gio \
-            --collect-all GLib \
             studyplan_app.py
 
       - name: Install Inno Setup
