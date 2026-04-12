@@ -1,3 +1,4 @@
+import copy
 import datetime
 import hashlib
 import types
