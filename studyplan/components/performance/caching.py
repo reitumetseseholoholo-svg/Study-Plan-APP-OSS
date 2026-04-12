@@ -245,7 +245,8 @@ class PerformanceCacheService:
                 ttl_seconds = self._get_ttl(key)
 
             # Replacement updates should not artificially consume capacity.
-            self._remove_cache_key(key, count_eviction=False)
+            if key in self._cache:
+                self._remove_cache_key(key, count_eviction=False)
             
             # Evict if necessary
             if len(self._cache) >= self.max_size:
