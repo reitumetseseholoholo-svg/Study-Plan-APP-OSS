@@ -5,15 +5,15 @@ Order is chosen by impact first, then implementation safety.
 
 ---
 
-## 1) Add module path safety assertion + targeted legacy path test
+## 1) Add module path safety assertion + targeted legacy path test ✅
 
 **Why this first**
 - Prevents silent cross-module or legacy-path drift in the core data layer.
 - Fast to implement and high confidence from deterministic tests.
 
-**Current gap**
-- `RAG_AND_MODULE_IMPROVEMENTS.md` still marks `_assert_data_paths_under_module` as open.
-- A dedicated test for legacy `acca_f9` path behavior is also marked open.
+**Status**
+- Implemented in `studyplan_engine.py` with `_assert_data_paths_under_module(...)`.
+- Covered by targeted engine tests, including legacy `acca_f9` module-directory preference when module-scoped files are present.
 
 **Scope**
 - Add a small helper in engine init path checks (debug-safe, deterministic):
@@ -21,10 +21,10 @@ Order is chosen by impact first, then implementation safety.
   - Preserve intended legacy behavior where explicitly required (do not break migration).
 - Add a focused test that validates `acca_f9` resolves to module directory files when present.
 
-**Acceptance criteria**
-- Engine raises a clear error when active module paths escape expected module dir constraints.
-- Legacy fallback still works only in intended conditions.
-- New tests pass alongside existing path tests.
+**Result**
+- Engine now raises a clear error when active module paths escape expected module dir constraints.
+- Legacy fallback remains limited to intended `acca_f9` migration conditions.
+- Targeted regression tests pass.
 
 **Suggested tests**
 - `tests/test_studyplan_app_paths.py`
@@ -32,19 +32,20 @@ Order is chosen by impact first, then implementation safety.
 
 ---
 
-## 2) Wire `PracticeLoopFSM` into GTK runtime transitions
+## 2) Wire `PracticeLoopFSM` into GTK runtime transitions ✅
 
 **Why second**
 - Largest user-facing behavior win among currently documented gaps.
 - Improves consistency and debuggability of tutor/practice state transitions.
 
-**Current gap**
-- `DEVELOPER_DOC.md` notes `PracticeLoopFSM` is implemented/tested but not wired into GTK runtime flow.
+**Status**
+- Implemented in `studyplan/practice_loop_controller.py`, `studyplan/ui/gtk4/practice_session.py`, and `studyplan_app.py`.
+- GTK/runtime practice flows now record item presentation, submission, hint, assessment, transfer, and session-end transitions through `PracticeLoopFSM` with existing `SocraticFSM` fallback retained.
 
-**Scope**
-- Route runtime step transitions through `PracticeLoopFSM` state transitions for the tutor/practice loop.
-- Keep existing fallback behavior where needed to avoid regressions.
-- Add transition logging hooks (lightweight) to simplify diagnosis when state changes fail.
+**Result**
+- Practice-loop lifecycle changes now use the table-driven FSM in both the GTK4 practice session and tutor workspace runtime.
+- Session metadata persists the current FSM state for recreated runtime loop objects.
+- Transition logging and integration coverage make state mismatches easier to diagnose.
 
 **Acceptance criteria**
 - Practice loop transitions are driven by the FSM table (not ad-hoc state branching).

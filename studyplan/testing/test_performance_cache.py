@@ -75,6 +75,7 @@ class TestPerformanceCacheService:
         assert cache_service.ttl_config['hint_strategy'] == 600
         assert cache_service.ttl_config['ui_render'] == 30
         assert getattr(cache_service, "rag_doc_memory_max", 0) == 32
+        assert getattr(cache_service, "rag_doc_chunk_budget", 0) == 3600
         assert len(cache_service._cache) == 0
         assert len(cache_service._access_order) == 0
     
@@ -452,3 +453,44 @@ class TestPerformanceCacheServiceEdgeCases:
         assert svc.get("rag_doc:1") is None
         assert svc.get("rag_doc:2") is not None
         assert svc.get("rag_doc:3") is not None
+
+    def test_rag_doc_chunk_budget_evicts_lru_payloads(self):
+        """Global rag_doc chunk budget should evict the least recently used payloads."""
+        config = {
+            "cache_max_size": 200,
+            "default_ttl_seconds": 300,
+            "rag_doc_memory_max": 10,
+            "rag_doc_chunk_budget": 4,
+        }
+        svc = PerformanceCacheService(config)
+        svc.set("rag_doc:a", {"chunks": [{"text": "a1"}, {"text": "a2"}]})
+        svc.set("rag_doc:b", {"chunks": [{"text": "b1"}]})
+        assert svc.get("rag_doc:a") is not None  # refresh recency
+        svc.set("rag_doc:c", {"chunks": [{"text": "c1"}, {"text": "c2"}]})
+
+        assert svc.get("rag_doc:b") is None
+        assert svc.get("rag_doc:a") is not None
+        assert svc.get("rag_doc:c") is not None
+
+        stats = svc.get_stats()
+        assert stats["rag_doc_chunks"] == 4
+        assert stats["rag_doc_chunk_budget"] == 4
+        assert stats["rag_doc_evictions"] >= 1
+        assert stats["rag_doc_chunk_budget_evictions"] >= 1
+        assert stats["rag_doc_evicted_chunks"] >= 1
+
+    def test_rag_doc_chunk_budget_evicts_oversized_single_doc(self):
+        """A single oversized rag_doc payload should be dropped to keep the cache bounded."""
+        config = {
+            "cache_max_size": 50,
+            "default_ttl_seconds": 300,
+            "rag_doc_memory_max": 10,
+            "rag_doc_chunk_budget": 2,
+        }
+        svc = PerformanceCacheService(config)
+        svc.set("rag_doc:huge", {"chunks": [{"text": "x1"}, {"text": "x2"}, {"text": "x3"}]})
+
+        assert svc.get("rag_doc:huge") is None
+        stats = svc.get_stats()
+        assert stats["rag_doc_chunks"] == 0
+        assert stats["rag_doc_chunk_budget_evictions"] >= 1

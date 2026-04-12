@@ -2506,12 +2506,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except ValueError:
                 rag_doc_cap = 32
             rag_doc_cap = max(0, min(512, rag_doc_cap))
+            try:
+                rag_chunk_cap = int(
+                    str(os.environ.get("STUDYPLAN_RAG_MEMORY_CHUNK_CAP", "") or "3600").strip() or "3600"
+                )
+            except ValueError:
+                rag_chunk_cap = 3600
+            rag_chunk_cap = max(0, min(50000, rag_chunk_cap))
             self._perf_cache = PerformanceCacheService(
                 {
                     "cache_max_size": 500,
                     "default_ttl_seconds": 300,
                     "cache_ttl": {},
                     "rag_doc_memory_max": rag_doc_cap,
+                    "rag_doc_chunk_budget": rag_chunk_cap,
                 }
             )
 
@@ -6328,6 +6336,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception as exc:
                 _set_status(f"Assessment error: {exc}")
                 return
+            try:
+                if isinstance(session_state, TutorSessionState) and isinstance(learner_profile, TutorLearnerProfileSnapshot):
+                    loop_state = self._build_practice_loop_runtime_state(
+                        session_state=session_state,
+                        learner_profile=learner_profile,
+                        app_snapshot=_build_tutor_loop_app_snapshot(),
+                        item=item_snapshot,
+                    )
+                    if loop_state is not None:
+                        self._get_practice_loop_controller().note_submission_received(
+                            loop_state,
+                            item_snapshot,
+                            source="studyplan_app_submit_click",
+                        )
+                        run_state.set_practice_session_state(loop_state.session_state)
+            except Exception:
+                pass
 
             def _finish_assessment(result_raw: Any = None, error: str = "") -> bool:
                 applied = self._apply_tutor_practice_assessment_result(
@@ -6364,7 +6389,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                     increment_streak=True,
                                 ),
                             )
-                            session_state_live = session_state_updated
+                            if isinstance(session_state_updated, TutorSessionState):
+                                try:
+                                    existing_meta = dict(getattr(session_state_live, "meta", {}) or {})
+                                except Exception:
+                                    existing_meta = {}
+                                payload = session_state_updated.to_dict()
+                                payload["meta"] = {**dict(payload.get("meta", {}) or {}), **existing_meta}
+                                session_state_live = TutorSessionState.from_dict(payload)
+                            else:
+                                session_state_live = session_state_updated
                             run_state.set_practice_session_state(session_state_live)
                     except Exception:
                         pass
@@ -6649,6 +6683,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     except Exception:
                         run_state["practice_hint_use_count"] = 1
             try:
+                session_state = run_state.practice_session_state()
+                learner_profile = run_state.practice_learner_profile()
+                if isinstance(session_state, TutorSessionState) and isinstance(
+                    learner_profile, TutorLearnerProfileSnapshot
+                ):
+                    loop_state = self._build_practice_loop_runtime_state(
+                        session_state=session_state,
+                        learner_profile=learner_profile,
+                        app_snapshot=_build_tutor_loop_app_snapshot(),
+                        item=item,
+                        result=run_state.practice_result(),
+                    )
+                    if loop_state is not None:
+                        self._get_practice_loop_controller().note_hint_request(
+                            loop_state,
+                            item,
+                            source="studyplan_app_hint_click",
+                        )
+                        run_state.set_practice_session_state(loop_state.session_state)
+            except Exception:
+                pass
+            try:
                 hints_raw = getattr(item, "rubric_hints", ()) or ()
                 hints = tuple(hints_raw) if isinstance(hints_raw, (list, tuple)) else ()
             except Exception:
@@ -6710,6 +6766,37 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 _set_status("No deterministic variant available for this item yet.")
                 return
             run_state.activate_variant(variant_item)
+            try:
+                session_state = run_state.practice_session_state()
+                learner_profile = run_state.practice_learner_profile()
+                if isinstance(session_state, TutorSessionState) and isinstance(
+                    learner_profile, TutorLearnerProfileSnapshot
+                ):
+                    loop_state = self._build_practice_loop_runtime_state(
+                        session_state=session_state,
+                        learner_profile=learner_profile,
+                        app_snapshot=_build_tutor_loop_app_snapshot(),
+                        item=variant_item,
+                    )
+                    if loop_state is not None:
+                        ctrl = self._get_practice_loop_controller()
+                        variant_meta_for_fsm = dict(getattr(variant_item, "meta", {}) or {})
+                        if bool(variant_meta_for_fsm.get("transfer_variant", False)):
+                            ctrl.begin_transfer_variant(
+                                loop_state,
+                                variant_item,
+                                source="studyplan_app_activate_transfer_variant",
+                            )
+                        else:
+                            ctrl.present_practice_item(
+                                loop_state,
+                                variant_item,
+                                restart=True,
+                                source="studyplan_app_activate_variant",
+                            )
+                        run_state.set_practice_session_state(loop_state.session_state)
+            except Exception:
+                pass
             _reset_practice_answer_box()
             _refresh_practice_panel()
             try:
@@ -14258,6 +14345,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "cache_db_path": "",
             "memory_rag_docs": 0,
             "memory_rag_chunks": 0,
+            "memory_rag_chunk_cap": 0,
+            "memory_rag_chunk_usage_pct": 0.0,
             "disk_rag_docs": 0,
             "disk_rag_chunks": 0,
             "disk_postings": 0,
@@ -14274,6 +14363,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "cache_debug_rag_query_hit": 0,
             "cache_debug_embedding_hits": 0,
             "cache_debug_embedding_misses": 0,
+            "cache_debug_rag_doc_evictions": 0,
+            "cache_debug_rag_doc_chunk_budget_evictions": 0,
+            "cache_debug_rag_doc_cache_max_evictions": 0,
+            "cache_debug_rag_doc_evicted_chunks": 0,
         }
         get_sources = getattr(self, "_get_ai_tutor_rag_source_pdfs", None)
         if callable(get_sources):
@@ -14383,6 +14476,42 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         mem_chunk_count = sum(int(d.get("memory_chunks", 0) or 0) for d in source_details)
         info["memory_rag_docs"] = mem_doc_count
         info["memory_rag_chunks"] = mem_chunk_count
+        _pc = getattr(self, "_perf_cache", None)
+        perf_cache_stats = _pc.get_stats() if _pc is not None and callable(getattr(_pc, "get_stats", None)) else {}
+        if isinstance(perf_cache_stats, dict):
+            try:
+                info["memory_rag_chunk_cap"] = int(max(0, int(perf_cache_stats.get("rag_doc_chunk_budget", 0) or 0)))
+            except Exception:
+                info["memory_rag_chunk_cap"] = 0
+            try:
+                info["cache_debug_rag_doc_evictions"] = int(
+                    max(0, int(perf_cache_stats.get("rag_doc_evictions", 0) or 0))
+                )
+            except Exception:
+                info["cache_debug_rag_doc_evictions"] = 0
+            try:
+                info["cache_debug_rag_doc_chunk_budget_evictions"] = int(
+                    max(0, int(perf_cache_stats.get("rag_doc_chunk_budget_evictions", 0) or 0))
+                )
+            except Exception:
+                info["cache_debug_rag_doc_chunk_budget_evictions"] = 0
+            try:
+                info["cache_debug_rag_doc_cache_max_evictions"] = int(
+                    max(0, int(perf_cache_stats.get("rag_doc_cache_max_evictions", 0) or 0))
+                )
+            except Exception:
+                info["cache_debug_rag_doc_cache_max_evictions"] = 0
+            try:
+                info["cache_debug_rag_doc_evicted_chunks"] = int(
+                    max(0, int(perf_cache_stats.get("rag_doc_evicted_chunks", 0) or 0))
+                )
+            except Exception:
+                info["cache_debug_rag_doc_evicted_chunks"] = 0
+        chunk_cap = int(info.get("memory_rag_chunk_cap", 0) or 0)
+        if chunk_cap > 0:
+            info["memory_rag_chunk_usage_pct"] = float((100.0 * mem_chunk_count) / float(max(1, chunk_cap)))
+        else:
+            info["memory_rag_chunk_usage_pct"] = 0.0
         cache_enabled_reader = getattr(self, "_ai_cache_enabled", None)
         cache_enabled = bool(callable(cache_enabled_reader) and cache_enabled_reader())
         info["cache_enabled"] = bool(cache_enabled)
@@ -14910,6 +15039,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         rag_mem_docs = max(0, int(rag_info.get("memory_rag_docs", 0) or 0))
         rag_mem_chunks = max(0, int(rag_info.get("memory_rag_chunks", 0) or 0))
+        rag_mem_chunk_cap = max(0, int(rag_info.get("memory_rag_chunk_cap", 0) or 0))
+        rag_mem_chunk_usage_pct = max(0.0, min(1000.0, float(rag_info.get("memory_rag_chunk_usage_pct", 0.0) or 0.0)))
         rag_disk_docs = max(0, int(rag_info.get("disk_rag_docs", 0) or 0))
         rag_disk_chunks = max(0, int(rag_info.get("disk_rag_chunks", 0) or 0))
         rag_disk_postings = max(0, int(rag_info.get("disk_postings", 0) or 0))
@@ -14933,6 +15064,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         rag_debug_query_hit = max(0, int(rag_info.get("cache_debug_rag_query_hit", 0) or 0))
         rag_debug_emb_hit = max(0, int(rag_info.get("cache_debug_embedding_hits", 0) or 0))
         rag_debug_emb_miss = max(0, int(rag_info.get("cache_debug_embedding_misses", 0) or 0))
+        rag_debug_doc_evictions = max(0, int(rag_info.get("cache_debug_rag_doc_evictions", 0) or 0))
+        rag_debug_doc_chunk_cap_evictions = max(
+            0, int(rag_info.get("cache_debug_rag_doc_chunk_budget_evictions", 0) or 0)
+        )
+        rag_debug_doc_cache_max_evictions = max(
+            0, int(rag_info.get("cache_debug_rag_doc_cache_max_evictions", 0) or 0)
+        )
+        rag_debug_doc_evicted_chunks = max(0, int(rag_info.get("cache_debug_rag_doc_evicted_chunks", 0) or 0))
         rag_pdf_names = [
             str(item or "").strip()
             for item in list(rag_info.get("active_pdf_names", []) or [])
@@ -15087,6 +15226,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             f"{rag_pdf_detail_sample_line}"
             f"RAG cache enabled/db: {rag_cache_enabled} ({rag_cache_db_name})\n"
             f"RAG docs/chunks memory: {rag_mem_docs}/{rag_mem_chunks}\n"
+            f"RAG chunk cap usage/evictions: {rag_mem_chunks}/{rag_mem_chunk_cap} ({rag_mem_chunk_usage_pct:.1f}%) • "
+            f"evict {rag_debug_doc_evictions} docs/{rag_debug_doc_evicted_chunks} chunks "
+            f"(chunk-cap {rag_debug_doc_chunk_cap_evictions}, cache-max {rag_debug_doc_cache_max_evictions})\n"
             f"RAG docs/chunks disk: {rag_disk_docs}/{rag_disk_chunks} • postings {rag_disk_postings} • query rows {rag_disk_query_rows}\n"
             f"Embeddings rows total/model: {rag_disk_embedding_rows}/{rag_model_embedding_rows} ({rag_semantic_model})\n"
             f"Embeddings coverage active chunks: {rag_covered_chunk_hashes}/{rag_total_chunk_hashes} ({rag_coverage_pct:.1f}%)\n"
@@ -23761,6 +23903,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             action_plan=result.action_intent,
             plan_token=plan_token,
         )
+        if session_state is not None and learner_profile is not None and practice_items:
+            try:
+                loop_state = self._build_practice_loop_runtime_state(
+                    session_state=session_state,
+                    learner_profile=learner_profile,
+                    item=practice_items[0],
+                )
+                if loop_state is not None:
+                    self._get_practice_loop_controller().present_practice_item(
+                        loop_state,
+                        practice_items[0],
+                        restart=True,
+                        source="studyplan_app_plan_apply",
+                    )
+                    run_state.set_practice_session_state(loop_state.session_state)
+            except Exception:
+                pass
         return result
 
     def _apply_tutor_practice_assessment_result(
@@ -23796,6 +23955,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         learner_profile = self._snapshot_tutor_learner_profile(learner_profile_fallback)
         run_state.record_practice_result(result, assessment_token=assessment_token)
         if session_state is not None:
+            learner_live = learner_profile if learner_profile is not None else run_state.practice_learner_profile()
+            item_live = current_item if isinstance(current_item, TutorPracticeItem) else item
+            try:
+                loop_state = self._build_practice_loop_runtime_state(
+                    session_state=session_state,
+                    learner_profile=learner_live,
+                    item=item_live,
+                    result=result,
+                )
+                if loop_state is not None and item_live is not None:
+                    self._get_practice_loop_controller().note_assessment_result(
+                        loop_state,
+                        item_live,
+                        result,
+                        source="studyplan_app_assessment_apply",
+                    )
+                    session_state = loop_state.session_state
+            except Exception:
+                pass
             run_state.set_practice_session_state(session_state)
         if learner_profile is not None:
             run_state.set_practice_learner_profile(learner_profile)
@@ -24049,6 +24227,62 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         ctrl = PracticeLoopController(assess_svc=assess_svc)
         self._practice_loop_controller = ctrl
         return ctrl
+
+    def _default_practice_loop_app_snapshot(
+        self,
+        session_state: TutorSessionState | None = None,
+    ) -> AppStateSnapshot:
+        topic = ""
+        module_name = ""
+        if isinstance(session_state, TutorSessionState):
+            topic = str(getattr(session_state, "topic", "") or "").strip()
+            module_name = str(getattr(session_state, "module", "") or "").strip()
+        if not topic:
+            topic = str(getattr(self, "current_topic", "") or getattr(self, "_coach_pick_topic", "") or "").strip()
+        if not topic:
+            topic = "General"
+        if not module_name:
+            module_name = str(getattr(self, "module_title", "") or "module").strip()
+        days_to_exam = None
+        try:
+            exam_date_obj = getattr(getattr(self, "engine", None), "exam_date", None)
+            if isinstance(exam_date_obj, datetime.date):
+                days_to_exam = int((exam_date_obj - datetime.date.today()).days)
+        except Exception:
+            days_to_exam = None
+        return AppStateSnapshot(
+            module=module_name,
+            current_topic=topic,
+            coach_pick=str(getattr(self, "_coach_pick_topic", "") or topic),
+            days_to_exam=days_to_exam,
+            must_review_due=0,
+            overdue_srs_count=0,
+        )
+
+    def _build_practice_loop_runtime_state(
+        self,
+        *,
+        session_state: TutorSessionState | None,
+        learner_profile: TutorLearnerProfileSnapshot | None,
+        app_snapshot: AppStateSnapshot | None = None,
+        item: TutorPracticeItem | None = None,
+        result: TutorAssessmentResult | None = None,
+    ) -> PracticeLoopSessionState | None:
+        cog_state = self._cognitive_state()
+        if (
+            cog_state is None
+            or not isinstance(session_state, TutorSessionState)
+            or not isinstance(learner_profile, TutorLearnerProfileSnapshot)
+        ):
+            return None
+        return PracticeLoopSessionState(
+            cognitive_state=cog_state,
+            session_state=session_state,
+            learner_profile=learner_profile,
+            app_snapshot=app_snapshot or self._default_practice_loop_app_snapshot(session_state),
+            current_item=item,
+            current_result=result,
+        )
 
     def _build_practice_next_action_guidance(
         self,

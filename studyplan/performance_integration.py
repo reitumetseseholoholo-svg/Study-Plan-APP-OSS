@@ -46,11 +46,19 @@ class PerformanceIntegration:
                 except ValueError:
                     rag_cap = 32
                 rag_cap = max(0, min(512, rag_cap))
+                try:
+                    rag_chunk_cap = int(
+                        str(os.environ.get("STUDYPLAN_RAG_MEMORY_CHUNK_CAP", "") or "3600").strip() or "3600"
+                    )
+                except ValueError:
+                    rag_chunk_cap = 3600
+                rag_chunk_cap = max(0, min(50000, rag_chunk_cap))
                 cache_config = {
                     'cache_max_size': Config.PERFORMANCE_CACHE_MAX_SIZE,
                     'default_ttl_seconds': Config.PERFORMANCE_CACHE_DEFAULT_TTL_SECONDS,
                     'cache_ttl': Config.PERFORMANCE_CACHE_TTL_CONFIG,
                     'rag_doc_memory_max': rag_cap,
+                    'rag_doc_chunk_budget': rag_chunk_cap,
                 }
                 self._cache_service = create_performance_cache_service(cache_config)
                 logger.info("Performance cache service initialized")

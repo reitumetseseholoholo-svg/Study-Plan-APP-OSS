@@ -48,6 +48,11 @@ class PerformanceCacheService:
             self.rag_doc_memory_max = max(0, int(_rag_cap))
         except (TypeError, ValueError):
             self.rag_doc_memory_max = 32
+        _rag_chunk_cap = config.get('rag_doc_chunk_budget', 3600)
+        try:
+            self.rag_doc_chunk_budget = max(0, int(_rag_chunk_cap))
+        except (TypeError, ValueError):
+            self.rag_doc_chunk_budget = 3600
         
         # Thread-safe cache storage
         self._cache: Dict[str, CacheEntry[Any]] = {}
@@ -59,8 +64,68 @@ class PerformanceCacheService:
             'hits': 0,
             'misses': 0,
             'evictions': 0,
-            'total_requests': 0
+            'total_requests': 0,
+            'rag_doc_evictions': 0,
+            'rag_doc_doc_cap_evictions': 0,
+            'rag_doc_chunk_budget_evictions': 0,
+            'rag_doc_cache_max_evictions': 0,
+            'rag_doc_evicted_chunks': 0,
+            'rag_doc_evicted_bytes': 0,
         }
+
+    def _estimate_rag_doc_payload(self, value: Any) -> tuple[int, int]:
+        """Return approximate (chunk_count, byte_count) for in-memory rag_doc payloads."""
+        if not isinstance(value, dict):
+            return 0, 0
+        rows = value.get("chunks", [])
+        if not isinstance(rows, list) or not rows:
+            return 0, 0
+        byte_count = 0
+        for row in rows:
+            if isinstance(row, dict):
+                text = str(row.get("text", "") or "")
+            else:
+                text = str(row or "")
+            byte_count += len(text.encode("utf-8", errors="ignore"))
+        return len(rows), byte_count
+
+    def _rag_doc_live_totals(self) -> tuple[int, int, int]:
+        """Return current (entry_count, chunk_count, byte_count) for in-memory rag_doc payloads."""
+        rag_entry_count = 0
+        rag_chunk_count = 0
+        rag_byte_count = 0
+        for key in self._access_order:
+            if not key.startswith("rag_doc:"):
+                continue
+            entry = self._cache.get(key)
+            if entry is None:
+                continue
+            rag_entry_count += 1
+            chunks, bytes_count = self._estimate_rag_doc_payload(entry.value)
+            rag_chunk_count += int(chunks)
+            rag_byte_count += int(bytes_count)
+        return rag_entry_count, rag_chunk_count, rag_byte_count
+
+    def _remove_cache_key(self, key: str, *, count_eviction: bool = False, reason: str = "") -> bool:
+        """Remove a cache key and optionally attribute eviction metrics."""
+        entry = self._cache.pop(key, None)
+        self._access_order.pop(key, None)
+        if entry is None:
+            return False
+        if count_eviction:
+            self._stats['evictions'] += 1
+            if key.startswith("rag_doc:"):
+                chunks, bytes_count = self._estimate_rag_doc_payload(entry.value)
+                self._stats['rag_doc_evictions'] += 1
+                self._stats['rag_doc_evicted_chunks'] += int(chunks)
+                self._stats['rag_doc_evicted_bytes'] += int(bytes_count)
+                if reason == "doc_cap":
+                    self._stats['rag_doc_doc_cap_evictions'] += 1
+                elif reason == "chunk_budget":
+                    self._stats['rag_doc_chunk_budget_evictions'] += 1
+                elif reason == "cache_max":
+                    self._stats['rag_doc_cache_max_evictions'] += 1
+        return True
     
     def _get_ttl(self, key: str) -> float:
         """Get TTL for a specific cache key"""
@@ -86,12 +151,14 @@ class PerformanceCacheService:
                 self._access_order.pop(key, None)
     
     def _evict_excess_rag_docs(self) -> None:
-        """Remove oldest rag_doc:* entries until at or below rag_doc_memory_max."""
-        if self.rag_doc_memory_max <= 0:
-            return
+        """Remove oldest rag_doc:* entries until doc-count and chunk-budget caps are satisfied."""
         with self._lock:
-            rag_keys = [k for k in self._access_order if k.startswith("rag_doc:")]
-            while len(rag_keys) > self.rag_doc_memory_max:
+            while True:
+                rag_doc_count, rag_chunk_count, _rag_byte_count = self._rag_doc_live_totals()
+                over_doc_cap = self.rag_doc_memory_max > 0 and rag_doc_count > self.rag_doc_memory_max
+                over_chunk_cap = self.rag_doc_chunk_budget > 0 and rag_chunk_count > self.rag_doc_chunk_budget
+                if not (over_doc_cap or over_chunk_cap):
+                    break
                 victim = None
                 for k in self._access_order:
                     if k.startswith("rag_doc:"):
@@ -99,10 +166,8 @@ class PerformanceCacheService:
                         break
                 if victim is None:
                     break
-                self._cache.pop(victim, None)
-                self._access_order.pop(victim, None)
-                self._stats['evictions'] += 1
-                rag_keys = [k for k in self._access_order if k.startswith("rag_doc:")]
+                reason = "chunk_budget" if over_chunk_cap else "doc_cap"
+                self._remove_cache_key(victim, count_eviction=True, reason=reason)
 
     def _evict_lru(self) -> None:
         """Evict least recently used entries when cache is full"""
@@ -110,9 +175,10 @@ class PerformanceCacheService:
             # Handle zero-size cache case
             if self.max_size <= 0:
                 # Clear all entries immediately
+                count = len(self._cache)
                 self._cache.clear()
                 self._access_order.clear()
-                self._stats['evictions'] += len(self._cache)
+                self._stats['evictions'] += count
                 return
             
             while len(self._cache) >= self.max_size:
@@ -120,9 +186,7 @@ class PerformanceCacheService:
                     break
                 # Remove least recently used entry (first item in OrderedDict)
                 lru_key = next(iter(self._access_order))
-                del self._cache[lru_key]
-                self._access_order.pop(lru_key, None)
-                self._stats['evictions'] += 1
+                self._remove_cache_key(lru_key, count_eviction=True, reason="cache_max")
     
     def get(self, key: str) -> Optional[Any]:
         """
@@ -179,6 +243,10 @@ class PerformanceCacheService:
             
             if ttl_seconds is None:
                 ttl_seconds = self._get_ttl(key)
+
+            # Replacement updates should not artificially consume capacity.
+            if key in self._cache:
+                self._remove_cache_key(key, count_eviction=False)
             
             # Evict if necessary
             if len(self._cache) >= self.max_size:
@@ -200,11 +268,7 @@ class PerformanceCacheService:
     def delete(self, key: str) -> bool:
         """Delete entry from cache"""
         with self._lock:
-            if key in self._cache:
-                del self._cache[key]
-                self._access_order.pop(key, None)
-                return True
-            return False
+            return self._remove_cache_key(key, count_eviction=False)
     
     def clear(self) -> None:
         """Clear all cache entries"""
@@ -228,6 +292,7 @@ class PerformanceCacheService:
         """Get cache statistics"""
         with self._lock:
             hit_rate = self._stats['hits'] / max(1, self._stats['total_requests'])
+            rag_doc_entries, rag_doc_chunks, rag_doc_bytes = self._rag_doc_live_totals()
             return {
                 'size': len(self._cache),
                 'max_size': self.max_size,
@@ -235,7 +300,18 @@ class PerformanceCacheService:
                 'misses': self._stats['misses'],
                 'evictions': self._stats['evictions'],
                 'hit_rate': hit_rate,
-                'total_requests': self._stats['total_requests']
+                'total_requests': self._stats['total_requests'],
+                'rag_doc_memory_max': self.rag_doc_memory_max,
+                'rag_doc_chunk_budget': self.rag_doc_chunk_budget,
+                'rag_doc_entries': rag_doc_entries,
+                'rag_doc_chunks': rag_doc_chunks,
+                'rag_doc_bytes': rag_doc_bytes,
+                'rag_doc_evictions': self._stats['rag_doc_evictions'],
+                'rag_doc_doc_cap_evictions': self._stats['rag_doc_doc_cap_evictions'],
+                'rag_doc_chunk_budget_evictions': self._stats['rag_doc_chunk_budget_evictions'],
+                'rag_doc_cache_max_evictions': self._stats['rag_doc_cache_max_evictions'],
+                'rag_doc_evicted_chunks': self._stats['rag_doc_evicted_chunks'],
+                'rag_doc_evicted_bytes': self._stats['rag_doc_evicted_bytes'],
             }
     
     # Cognitive State specific methods
@@ -301,5 +377,10 @@ PERFORMANCE_CACHE_CONFIG_SCHEMA = {
         'type': 'integer',
         'default': 32,
         'description': 'Max in-memory rag_doc:* entries (large PDF chunk payloads); 0 = no separate cap',
+    },
+    'rag_doc_chunk_budget': {
+        'type': 'integer',
+        'default': 3600,
+        'description': 'Global in-memory rag_doc:* chunk budget across cached PDFs; 0 = no separate cap',
     },
 }

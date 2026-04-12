@@ -2725,11 +2725,52 @@ class StudyPlanEngine:
         # Other modules must stay isolated by module_id to avoid cross-module state bleed.
         if safe_id != "acca_f9":
             return module_data, module_questions
+        has_module_files = os.path.exists(module_data) or os.path.exists(module_questions)
+        has_legacy_files = os.path.exists(self.DEFAULT_DATA_FILE) or os.path.exists(self.DEFAULT_QUESTIONS_FILE)
+        should_use_module_dir = os.path.isdir(module_dir) and (has_module_files or not has_legacy_files)
+        if should_use_module_dir:
+            return module_data, module_questions
         legacy_data = self.DEFAULT_DATA_FILE
         legacy_questions = self.DEFAULT_QUESTIONS_FILE
         data_path = legacy_data if os.path.exists(legacy_data) and not os.path.exists(module_data) else module_data
         questions_path = legacy_questions if os.path.exists(legacy_questions) and not os.path.exists(module_questions) else module_questions
         return data_path, questions_path
+
+    def _assert_data_paths_under_module(self, module_id: str, data_path: str, questions_path: str) -> None:
+        class_data = getattr(self.__class__, "DATA_FILE", self.DEFAULT_DATA_FILE)
+        class_questions = getattr(self.__class__, "QUESTIONS_FILE", self.DEFAULT_QUESTIONS_FILE)
+        if class_data != self.DEFAULT_DATA_FILE or class_questions != self.DEFAULT_QUESTIONS_FILE:
+            return
+        safe_id = self._sanitize_module_id(module_id)
+        if not safe_id:
+            return
+        module_dir = os.path.realpath(os.path.join(self.DEFAULT_DATA_DIR, safe_id))
+        if not os.path.isdir(module_dir):
+            return
+        module_data = os.path.join(module_dir, "data.json")
+        module_questions = os.path.join(module_dir, "questions.json")
+        if safe_id == "acca_f9":
+            has_module_files = os.path.exists(module_data) or os.path.exists(module_questions)
+            has_legacy_files = os.path.exists(self.DEFAULT_DATA_FILE) or os.path.exists(self.DEFAULT_QUESTIONS_FILE)
+            if not has_module_files and has_legacy_files:
+                return
+        expected_paths = {
+            "data.json": os.path.realpath(data_path),
+            "questions.json": os.path.realpath(questions_path),
+        }
+        for label, resolved_path in expected_paths.items():
+            try:
+                common_root = os.path.commonpath([module_dir, resolved_path])
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Could not validate {label} path for '{safe_id}' because the paths are incompatible: "
+                    f"{resolved_path} vs {module_dir}"
+                ) from exc
+            if common_root != module_dir:
+                raise RuntimeError(
+                    f"Resolved {label} path escaped active module directory for '{safe_id}': "
+                    f"{resolved_path} (expected under {module_dir})"
+                )
 
     def _question_quality_meta_path(self) -> str:
         """Per-module sidecar for lazy question quality (quarantine, error streak)."""
@@ -2958,6 +2999,7 @@ class StudyPlanEngine:
             for ch in self.CHAPTERS:
                 self.importance_weights.setdefault(ch, 10)
         self.DATA_FILE, self.QUESTIONS_FILE = self._resolve_module_paths(self.module_id)
+        self._assert_data_paths_under_module(self.module_id, self.DATA_FILE, self.QUESTIONS_FILE)
         data_dir_for_module = os.path.dirname(self.DATA_FILE) or self.DEFAULT_DATA_DIR
         self.COGNITIVE_STATE_FILE = os.path.join(data_dir_for_module, "cognitive_state.json")
         if exam_date is None:

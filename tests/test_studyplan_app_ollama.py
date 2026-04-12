@@ -2120,6 +2120,8 @@ def test_build_debug_info_message_includes_rag_embedding_insights_lines():
             "cache_db_path": "/tmp/ai_runtime_cache_v1.sqlite3",
             "memory_rag_docs": 2,
             "memory_rag_chunks": 244,
+            "memory_rag_chunk_cap": 360,
+            "memory_rag_chunk_usage_pct": 67.8,
             "disk_rag_docs": 2,
             "disk_rag_chunks": 244,
             "disk_postings": 5000,
@@ -2134,6 +2136,10 @@ def test_build_debug_info_message_includes_rag_embedding_insights_lines():
             "cache_debug_rag_query_hit": 2,
             "cache_debug_embedding_hits": 31,
             "cache_debug_embedding_misses": 5,
+            "cache_debug_rag_doc_evictions": 3,
+            "cache_debug_rag_doc_chunk_budget_evictions": 2,
+            "cache_debug_rag_doc_cache_max_evictions": 1,
+            "cache_debug_rag_doc_evicted_chunks": 77,
         },
     )
     msg = StudyPlanGUI._build_debug_info_message(
@@ -2153,6 +2159,7 @@ def test_build_debug_info_message_includes_rag_embedding_insights_lines():
     assert "RAG PDF tiers: syllabus:1 | notes:1" in msg
     assert "RAG PDF details:" in msg
     assert "RAG cache enabled/db: True (ai_runtime_cache_v1.sqlite3)" in msg
+    assert "RAG chunk cap usage/evictions: 244/360 (67.8%) • evict 3 docs/77 chunks (chunk-cap 2, cache-max 1)" in msg
     assert "Embeddings rows total/model: 320/240 (all-minilm)" in msg
     assert "Embeddings coverage active chunks: 180/244 (73.8%)" in msg
     assert "Cache debug doc/query/emb-hit/emb-miss: 4/2/31/5" in msg
@@ -2221,7 +2228,14 @@ def test_get_rag_embedding_insights_includes_per_pdf_details_and_tiers(tmp_path)
 
     dummy = types.SimpleNamespace(
         engine=types.SimpleNamespace(SEMANTIC_MODEL_NAME="all-minilm"),
-        _perf_cache=PerformanceCacheService({"cache_max_size": 100, "default_ttl_seconds": 300, "cache_ttl": {}}),
+        _perf_cache=PerformanceCacheService(
+            {
+                "cache_max_size": 100,
+                "default_ttl_seconds": 300,
+                "cache_ttl": {},
+                "rag_doc_chunk_budget": 10,
+            }
+        ),
         _ai_cache_debug_last={},
         ai_tutor_rag_max_sources=6,
     )
@@ -2235,6 +2249,9 @@ def test_get_rag_embedding_insights_includes_per_pdf_details_and_tiers(tmp_path)
     assert insights["active_pdf_count"] == 2
     assert insights["active_pdf_tier_counts"]["syllabus"] == 1
     assert insights["active_pdf_tier_counts"]["notes"] == 1
+    assert insights["memory_rag_chunk_cap"] == 10
+    assert insights["memory_rag_chunks"] == 0
+    assert insights["cache_debug_rag_doc_evictions"] == 0
     assert len(details) == 2
     assert {row["tier"] for row in details} == {"syllabus", "notes"}
     assert all("memory_loaded" in row for row in details)
