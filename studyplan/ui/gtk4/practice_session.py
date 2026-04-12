@@ -196,11 +196,9 @@ class PracticeSessionWindow(Gtk.Box):
             return
             
         with self.performance_monitor.context("hint_request"):
-            loop_state = self._create_loop_state()
+            loop_state = self.loop_state if self.loop_state is not None else self._create_loop_state()
             if self.loop_state is None:
                 self.loop_state = loop_state
-            else:
-                loop_state = self.loop_state
             
             # Get progressive hint
             hint = self.practice_controller.get_next_hint(

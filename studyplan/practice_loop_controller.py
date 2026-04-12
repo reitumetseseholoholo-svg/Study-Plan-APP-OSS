@@ -48,6 +48,7 @@ from .confidence_tracking import (
 
 logger = get_logger(__name__)
 RECOVERABLE_LOOP_ERRORS = (AttributeError, RuntimeError, TypeError, ValueError, KeyError)
+MAX_TRANSITION_LOG_ENTRIES = 25
 
 
 @dataclass
@@ -60,7 +61,7 @@ class PracticeLoopSessionState:
     app_snapshot: AppStateSnapshot
     current_item: TutorPracticeItem | None = None
     current_result: TutorAssessmentResult | None = None
-    practice_fsm_state: PracticeLoopFsmState | str = PracticeLoopFsmState.IDLE
+    practice_fsm_state: str = PracticeLoopFsmState.IDLE.value
     transition_log: list[dict[str, Any]] = field(default_factory=list)
     
     # Tutor improvement tracking
@@ -244,8 +245,8 @@ class PracticeLoopController:
             "source": self._coerce_str(source),
         }
         loop_state.transition_log.append(entry)
-        if len(loop_state.transition_log) > 25:
-            del loop_state.transition_log[:-25]
+        if len(loop_state.transition_log) > MAX_TRANSITION_LOG_ENTRIES:
+            del loop_state.transition_log[:-MAX_TRANSITION_LOG_ENTRIES]
         payload = loop_state.session_state.to_dict()
         meta = dict(payload.get("meta", {}) or {})
         transition_count = self._coerce_int(meta.get("practice_loop_transition_count"), 0, min_value=0)
