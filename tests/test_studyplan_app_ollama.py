@@ -3039,6 +3039,20 @@ def test_validate_generated_gap_questions_uses_engine_sanitizer_for_placeholder_
     assert "placeholder_options_only" in reasons
 
 
+def test_format_gap_question_reject_summary_includes_specific_reasons():
+    dummy = types.SimpleNamespace()
+    msg = StudyPlanGUI._format_gap_question_reject_summary(
+        dummy,
+        ["duplicate_or_near_duplicate", "question_too_short", "explanation_too_short"],
+        strict_gate_enabled=True,
+        generated_count=3,
+    )
+    assert "Generated 3 question(s), but none were kept." in msg
+    assert "duplicated existing ones" in msg
+    assert "too short" in msg
+    assert "disable strict validation" in msg
+
+
 def test_parse_generated_gap_questions_normalizes_common_schema_variants():
     dummy = types.SimpleNamespace()
     dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
@@ -3238,6 +3252,44 @@ def test_generate_gap_drill_questions_shows_storage_error_when_save_fails():
     ok, msg = StudyPlanGUI._generate_gap_drill_questions(dummy, "Topic A", snapshot={})
     assert ok is False
     assert "could not be saved" in msg or "storage error" in msg.lower()
+
+
+def test_generate_gap_drill_questions_surfaces_validation_reasons():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    valid_json = json.dumps(
+        {
+            "chapter": "Topic A",
+            "questions": [
+                {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."},
+            ],
+        }
+    )
+    row = {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."}
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        ai_tutor_gap_generation_enabled=True,
+        local_llm_enabled=True,
+        ai_tutor_gap_autosave_strict_gate=True,
+        ai_tutor_gap_autosave_enabled=True,
+        _build_local_llm_model_failover_sequence=lambda **_kw: (["model-a"], None),
+        _build_gap_generation_prompt=lambda chapter, count, snapshot: "prompt",
+        _ollama_generate_text=lambda model, prompt: (valid_json, None),
+        _parse_generated_gap_questions=lambda text: ("Topic A", [row], None),
+        _validate_generated_gap_questions=lambda ch, q, **kw: ([], ["duplicate_or_near_duplicate", "question_too_short"]),
+        _append_gap_question_quarantine=lambda *_args, **_kw: None,
+        _record_ai_tutor_autopilot_metrics=lambda *_args, **_kw: None,
+        _ai_tutor_autopilot_stats={},
+    )
+    dummy._format_gap_question_reject_summary = types.MethodType(
+        StudyPlanGUI._format_gap_question_reject_summary,
+        dummy,
+    )
+
+    ok, msg = StudyPlanGUI._generate_gap_drill_questions(dummy, "Topic A", snapshot={})
+
+    assert ok is False
+    assert "duplicated existing ones" in msg
+    assert "too short" in msg
 
 
 def test_generate_gap_drill_questions_rejects_stale_workflow_token_before_save():

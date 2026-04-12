@@ -21,7 +21,7 @@ Prioritized list of small-to-medium improvements. Implemented items are marked [
 12. [done] USER_GUIDE: add "Outcome coverage" subsection under Module/syllabus
 13. [ ] Standardize dialog titles (e.g. "Reconfigure from RAG" vs "Module" for success)
 14. [ ] Add tooltip to "View Module Metadata" button/menu: "See module config, paths, and outcome–question linking stats"
-15. [ ] Add tooltip to "Import Syllabus (JSON)": "Seed syllabus_meta from a JSON file to reduce AI work in Reconfigure from RAG"
+15. [done] Add tooltip to "Import Syllabus (JSON)": "Seed syllabus_meta from a JSON file to reduce AI work in Reconfigure from RAG"
 16. [done] Empty state when no RAG PDFs: suggest "Add PDFs in Preferences → AI Tutor → Tutor RAG PDFs"
 17. [done] Coach Pick empty state: more specific "Set exam date and load questions" when both missing
 18. [done] Replace "(none)" with "(not set)" in metadata views for consistency
@@ -75,9 +75,9 @@ Prioritized list of small-to-medium improvements. Implemented items are marked [
 51. [done] Validate outcome_ids in question bank against syllabus_structure on load (warn only; health check reports invalid count)
 52. [done] Module Editor: show "Unmapped chapters" from syllabus_meta when present (View Module Metadata)
 53. [done] Reconfigure from RAG: show unmapped_chapters in success dialog
-54. [ ] Allow syllabus_meta.reference_pdfs to be editable in Module Editor (read-only display first)
+54. [done] Allow syllabus_meta.reference_pdfs to be editable in Module Editor (read-only display first)
 55. [ ] Export module config to include unmapped_chapters in JSON
-56. [ ] Import Syllabus JSON: option to "Merge with current" vs "Replace" for syllabus_meta
+56. [done] Import Syllabus JSON: option to "Merge with current" vs "Replace" for syllabus_meta
 57. [done] Document expected shape of Import Syllabus JSON (one example in USER_GUIDE)
 58. [done] Reconfig: log confidence and outcome count to app log when below threshold
 59. [done] Add "Copy module path" button in View Module Metadata
@@ -86,7 +86,7 @@ Prioritized list of small-to-medium improvements. Implemented items are marked [
 ## Tutor & AI
 
 61. [done] Tutor: when no model selected, show "Choose a model in Preferences → AI Tutor"
-62. [ ] Gap questions: show "0 questions" reason when quarantine or limit hit
+62. [done] Gap questions: show "0 questions" reason when quarantine or limit hit
 63. [done] Section C: add tooltip to "Use in prompt" explaining what gets pasted
 64. [done] Coach: if no recommendation, show "Complete a quiz or set exam date to get recommendations"
 65. [ ] RAG diagnostics: show "Chunks from syllabus vs other" split

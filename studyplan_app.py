@@ -12351,10 +12351,29 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         content.append(json_label)
         content.append(json_scroll)
 
+        syllabus_sources_label = Gtk.Label(label="Syllabus source PDFs (read-only)")
+        syllabus_sources_label.set_halign(Gtk.Align.START)
+        syllabus_sources_label.set_tooltip_text("Shows source_pdf and reference_pdfs from the loaded module config.")
+        syllabus_sources_view = Gtk.TextView()
+        syllabus_sources_view.set_editable(False)
+        syllabus_sources_view.set_cursor_visible(False)
+        syllabus_sources_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        syllabus_sources_scroll = Gtk.ScrolledWindow()
+        syllabus_sources_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        syllabus_sources_scroll.set_min_content_height(92)
+        syllabus_sources_scroll.add_css_class("card")
+        syllabus_sources_scroll.set_child(syllabus_sources_view)
+        content.append(syllabus_sources_label)
+        content.append(syllabus_sources_scroll)
+
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         to_json_btn = Gtk.Button(label="Update JSON from Form")
         from_json_btn = Gtk.Button(label="Update Form from JSON")
         import_syllabus_btn = Gtk.Button(label="Import Syllabus PDF…")
+        import_syllabus_json_btn = Gtk.Button(label="Import Syllabus JSON…")
+        import_syllabus_json_btn.set_tooltip_text(
+            "Seed syllabus_meta from a JSON file to reduce AI work in Reconfigure from RAG."
+        )
         reconfigure_rag_btn = Gtk.Button(label="Reconfigure from RAG…")
         link_outcomes_btn = Gtk.Button(label="Link question outcomes…")
         link_outcomes_btn.set_tooltip_text(
@@ -12364,6 +12383,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         btn_row.append(to_json_btn)
         btn_row.append(from_json_btn)
         btn_row.append(import_syllabus_btn)
+        btn_row.append(import_syllabus_json_btn)
         btn_row.append(reconfigure_rag_btn)
         btn_row.append(link_outcomes_btn)
         btn_row.append(open_folder_btn)
@@ -12403,6 +12423,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 _set_text(flow_view, "\n".join(lines))
             if isinstance(config, dict):
                 _set_text(json_view, json.dumps(config, indent=2, ensure_ascii=True))
+            syllabus_meta = config.get("syllabus_meta") if isinstance(config, dict) else None
+            source_lines: list[str] = []
+            if isinstance(syllabus_meta, dict):
+                source_pdf = str(syllabus_meta.get("source_pdf", "") or "").strip()
+                if source_pdf:
+                    source_lines.append(f"source_pdf: {source_pdf}")
+                refs = syllabus_meta.get("reference_pdfs")
+                if isinstance(refs, list):
+                    ref_paths = [str(path or "").strip() for path in refs if str(path or "").strip()]
+                    if ref_paths:
+                        source_lines.append("reference_pdfs:")
+                        source_lines.extend(f"  - {path}" for path in ref_paths)
+            _set_text(syllabus_sources_view, "\n".join(source_lines) if source_lines else "(not set)")
 
         def _build_config_from_form() -> dict:
             config = {}
@@ -12581,6 +12614,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         to_json_btn.connect("clicked", _to_json)
         from_json_btn.connect("clicked", _from_json)
         import_syllabus_btn.connect("clicked", _import_syllabus_into_editor)
+        import_syllabus_json_btn.connect("clicked", lambda _btn: self.on_import_syllabus_json(None))
         reconfigure_rag_btn.connect("clicked", lambda _: self.on_reconfigure_from_rag(None))
         link_outcomes_btn.connect(
             "clicked",
@@ -27764,6 +27798,52 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
         return validated, sorted(set(reasons))
 
+    def _format_gap_question_reject_summary(
+        self,
+        reasons: list[str],
+        *,
+        strict_gate_enabled: bool,
+        generated_count: int = 0,
+    ) -> str:
+        reason_map = {
+            "duplicate_options": "answer options were duplicated",
+            "duplicate_or_near_duplicate": "generated questions duplicated existing ones",
+            "question_too_short": "question text was too short",
+            "options_not_four": "questions did not have four options",
+            "empty_option": "at least one answer option was empty",
+            "correct_not_in_options": "the correct answer did not match an option",
+            "explanation_too_short": "explanations were too short",
+            "placeholder_options": "placeholder answer options were returned",
+            "placeholder_options_only": "placeholder answer options were returned",
+            "invalid_chapter": "the selected topic was not valid for this module",
+            "non_object_row": "some generated rows were malformed",
+            "cached_reject": "the result matched a recently rejected payload",
+        }
+        normalized = [str(reason or "").strip() for reason in list(reasons or []) if str(reason or "").strip()]
+        detail_parts: list[str] = []
+        seen_parts: set[str] = set()
+        for reason in normalized:
+            label = reason_map.get(reason)
+            if label is None:
+                label = str(reason).replace("_", " ")
+            if label in seen_parts:
+                continue
+            seen_parts.add(label)
+            detail_parts.append(label)
+        if generated_count > 0:
+            base = f"Generated {generated_count} question(s), but none were kept."
+        else:
+            base = "No gap questions were kept."
+        if detail_parts:
+            base += f" Reasons: {'; '.join(detail_parts[:3])}."
+            if len(detail_parts) > 3:
+                base += " More issues were recorded in quarantine."
+        else:
+            base += " Validation rejected the generated questions."
+        if strict_gate_enabled:
+            return f"{base} Try again or disable strict validation in Preferences."
+        return f"{base} Try again or review the quarantined output for fixes."
+
     def _append_gap_question_quarantine(
         self,
         chapter: str,
@@ -32582,14 +32662,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 },
                 persist=False,
             )
-            if strict_gate_enabled:
-                return (
-                    False,
-                    "Generated questions failed strict validation (e.g. too short, missing explanation). Try again or disable strict validation in Preferences.",
-                )
             return (
                 False,
-                "Generated questions failed basic validation and were quarantined.",
+                self._format_gap_question_reject_summary(
+                    reasons,
+                    strict_gate_enabled=strict_gate_enabled,
+                    generated_count=generated_count,
+                ),
             )
         if not bool(getattr(self, "ai_tutor_gap_autosave_enabled", True)):
             if strict_gate_enabled:
@@ -44444,6 +44523,105 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         dialog.connect("response", lambda *_args: setattr(self, "_active_native_dialog", None))
         dialog.show()
 
+    def _apply_import_syllabus_json_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        module_id: str,
+        merge_syllabus_meta: bool,
+    ) -> None:
+        engine = getattr(self, "engine", None)
+        if not engine:
+            self._show_text_dialog("Import Syllabus (JSON)", "Engine not available.", Gtk.MessageType.ERROR)
+            return
+        try:
+            result = engine.import_syllabus_meta_from_json(
+                payload,
+                module_id=module_id or None,
+                merge_syllabus_meta=merge_syllabus_meta,
+            )
+        except Exception as exc:
+            self._show_text_dialog("Import Syllabus (JSON)", f"Import failed: {exc}", Gtk.MessageType.ERROR)
+            return
+        if not isinstance(result, dict) or not result.get("applied"):
+            self._show_text_dialog(
+                "Import Syllabus (JSON)",
+                "Import did not apply.",
+                Gtk.MessageType.WARNING,
+            )
+            return
+        warnings = result.get("warnings") or []
+        lines = ["Syllabus JSON imported successfully."]
+        lines.append(
+            "Mode: merged with current syllabus metadata."
+            if merge_syllabus_meta
+            else "Mode: replaced existing syllabus metadata."
+        )
+        if result.get("module_id"):
+            lines.append(f"Module: {result['module_id']}")
+        if warnings:
+            lines.append("")
+            lines.append("Warnings:")
+            for w in warnings[:10]:
+                lines.append(f"- {w}")
+            if len(warnings) > 10:
+                lines.append(f"- … and {len(warnings) - 10} more")
+        self._show_text_dialog("Import Syllabus (JSON)", "\n".join(lines), Gtk.MessageType.INFO)
+        config = result.get("config")
+        if isinstance(config, dict):
+            folder = getattr(engine, "MODULES_DIR", None) or ""
+            if not folder:
+                folder = os.path.join(Config.CONFIG_HOME, "modules")
+            if folder and os.path.isdir(folder):
+                ok, _ = self._validate_module_id_for_save(module_id)
+                if ok:
+                    save_path = os.path.join(folder, f"{module_id}.json")
+                    try:
+                        self._atomic_write_text_file(
+                            save_path,
+                            json.dumps(config, indent=2, ensure_ascii=False),
+                            mode=0o600,
+                        )
+                        self.send_notification("Syllabus", f"Config saved to {os.path.basename(save_path)}")
+                    except Exception:
+                        pass
+
+    def _prompt_import_syllabus_json_mode(self, payload: dict[str, Any], *, module_id: str) -> None:
+        if not isinstance(payload.get("syllabus_meta"), dict) or getattr(self, "_dialog_smoke_mode", False):
+            self._apply_import_syllabus_json_payload(payload, module_id=module_id, merge_syllabus_meta=True)
+            return
+        dialog = self._new_message_dialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text="How should syllabus metadata be imported?",
+            secondary_text=(
+                "Merge keeps existing syllabus_meta keys and updates them with values from the JSON file.\n\n"
+                "Replace overwrites the current syllabus_meta block with the JSON file's syllabus_meta block.\n\n"
+                "Other imported fields (for example chapters or syllabus_structure) are still applied from the file."
+            ),
+        )
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Replace syllabus meta", Gtk.ResponseType.APPLY)
+        dialog.add_button("Merge with current", Gtk.ResponseType.YES)
+
+        def _on_response(_dlg, response):
+            try:
+                _dlg.destroy()
+            except Exception:
+                pass
+            if response == Gtk.ResponseType.CANCEL:
+                return
+            self._apply_import_syllabus_json_payload(
+                payload,
+                module_id=module_id,
+                merge_syllabus_meta=response != Gtk.ResponseType.APPLY,
+            )
+
+        dialog.connect("response", _on_response)
+        dialog.present()
+
     def on_import_syllabus_json_response(self, dialog, response) -> None:
         if response != Gtk.ResponseType.ACCEPT:
             try:
@@ -44482,49 +44660,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._show_text_dialog("Import Syllabus (JSON)", "Engine not available.", Gtk.MessageType.ERROR)
             return
         module_id = getattr(self, "module_id", "") or ""
-        try:
-            result = engine.import_syllabus_meta_from_json(payload, module_id=module_id or None)
-        except Exception as exc:
-            self._show_text_dialog("Import Syllabus (JSON)", f"Import failed: {exc}", Gtk.MessageType.ERROR)
-            return
-        if not isinstance(result, dict) or not result.get("applied"):
-            self._show_text_dialog(
-                "Import Syllabus (JSON)",
-                "Import did not apply.",
-                Gtk.MessageType.WARNING,
-            )
-            return
-        warnings = result.get("warnings") or []
-        lines = ["Syllabus meta imported successfully."]
-        if result.get("module_id"):
-            lines.append(f"Module: {result['module_id']}")
-        if warnings:
-            lines.append("")
-            lines.append("Warnings:")
-            for w in warnings[:10]:
-                lines.append(f"- {w}")
-            if len(warnings) > 10:
-                lines.append(f"- … and {len(warnings) - 10} more")
-        self._show_text_dialog("Import Syllabus (JSON)", "\n".join(lines), Gtk.MessageType.INFO)
-        # Optionally save to module file so the import persists
-        config = result.get("config")
-        if isinstance(config, dict):
-            folder = getattr(engine, "MODULES_DIR", None) or ""
-            if not folder:
-                folder = os.path.join(Config.CONFIG_HOME, "modules")
-            if folder and os.path.isdir(folder):
-                ok, _ = self._validate_module_id_for_save(module_id)
-                if ok:
-                    save_path = os.path.join(folder, f"{module_id}.json")
-                    try:
-                        self._atomic_write_text_file(
-                            save_path,
-                            json.dumps(config, indent=2, ensure_ascii=False),
-                            mode=0o600,
-                        )
-                        self.send_notification("Syllabus", f"Config saved to {os.path.basename(save_path)}")
-                    except Exception:
-                        pass
+        self._prompt_import_syllabus_json_mode(payload, module_id=module_id)
 
     def on_import_pdf(self, button):
         dialog = self._new_dialog(title="Select PDF File", transient_for=self, modal=True)
