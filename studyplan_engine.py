@@ -391,7 +391,7 @@ class StudyPlanEngine:
                             try:
                                 level_int = int(level)
                             except Exception as exc:
-                                logger.debug("failed to coerce syllabus outcome level", exc_info=exc)
+                                logger.debug("Failed to coerce syllabus outcome level.", exc_info=exc)
                                 level_int = None
                         if not text:
                             continue
@@ -562,7 +562,7 @@ class StudyPlanEngine:
                 try:
                     keys = sorted(str(k) for k in stats_by_ch.keys())
                 except Exception as exc:
-                    logger.debug("failed to sort outcome coverage stats keys", exc_info=exc)
+                    logger.debug("Failed to sort outcome coverage stats keys.", exc_info=exc)
                     keys = []
                 h.update(b"stats:")
                 for key in keys:
@@ -777,7 +777,7 @@ class StudyPlanEngine:
                     try:
                         outcome_level = int(lev_m.group(1))
                     except Exception as exc:
-                        logger.debug("failed to parse generic syllabus outcome level", exc_info=exc)
+                        logger.debug("Failed to parse generic syllabus outcome level.", exc_info=exc)
                         outcome_level = 2
                     outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", outcome_text).strip()
                     flush_outcome()
@@ -940,7 +940,7 @@ class StudyPlanEngine:
                     try:
                         current_level = int(m_level.group(1))
                     except Exception as exc:
-                        logger.debug("failed to parse syllabus outcome level", exc_info=exc)
+                        logger.debug("Failed to parse syllabus outcome level.", exc_info=exc)
                         current_level = 2
                     current_outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", current_outcome_text).strip()
                     _flush_outcome()
@@ -998,7 +998,7 @@ class StudyPlanEngine:
                         try:
                             current_level = int(m_level.group(1))
                         except Exception as exc:
-                            logger.debug("failed to parse fallback syllabus outcome level", exc_info=exc)
+                            logger.debug("Failed to parse fallback syllabus outcome level.", exc_info=exc)
                             current_level = 2
                         current_outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", current_outcome_text).strip()
                         _flush_fallback()
@@ -1054,7 +1054,7 @@ class StudyPlanEngine:
                 try:
                     level = int(outcome.get("level", 2) or 2)
                 except Exception as exc:
-                    logger.debug("failed to normalize syllabus outcome level", exc_info=exc)
+                    logger.debug("Failed to normalize syllabus outcome level.", exc_info=exc)
                     level = 2
                 level = 1 if level < 1 else 3 if level > 3 else level
                 normalized_outcomes.append(
