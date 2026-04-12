@@ -2506,12 +2506,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except ValueError:
                 rag_doc_cap = 32
             rag_doc_cap = max(0, min(512, rag_doc_cap))
+            try:
+                rag_chunk_cap = int(
+                    str(os.environ.get("STUDYPLAN_RAG_MEMORY_CHUNK_CAP", "") or "3600").strip() or "3600"
+                )
+            except ValueError:
+                rag_chunk_cap = 3600
+            rag_chunk_cap = max(0, min(50000, rag_chunk_cap))
             self._perf_cache = PerformanceCacheService(
                 {
                     "cache_max_size": 500,
                     "default_ttl_seconds": 300,
                     "cache_ttl": {},
                     "rag_doc_memory_max": rag_doc_cap,
+                    "rag_doc_chunk_budget": rag_chunk_cap,
                 }
             )
 
@@ -14337,6 +14345,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "cache_db_path": "",
             "memory_rag_docs": 0,
             "memory_rag_chunks": 0,
+            "memory_rag_chunk_cap": 0,
+            "memory_rag_chunk_usage_pct": 0.0,
             "disk_rag_docs": 0,
             "disk_rag_chunks": 0,
             "disk_postings": 0,
@@ -14353,6 +14363,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "cache_debug_rag_query_hit": 0,
             "cache_debug_embedding_hits": 0,
             "cache_debug_embedding_misses": 0,
+            "cache_debug_rag_doc_evictions": 0,
+            "cache_debug_rag_doc_chunk_budget_evictions": 0,
+            "cache_debug_rag_doc_cache_max_evictions": 0,
+            "cache_debug_rag_doc_evicted_chunks": 0,
         }
         get_sources = getattr(self, "_get_ai_tutor_rag_source_pdfs", None)
         if callable(get_sources):
@@ -14462,6 +14476,42 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         mem_chunk_count = sum(int(d.get("memory_chunks", 0) or 0) for d in source_details)
         info["memory_rag_docs"] = mem_doc_count
         info["memory_rag_chunks"] = mem_chunk_count
+        _pc = getattr(self, "_perf_cache", None)
+        perf_cache_stats = _pc.get_stats() if _pc is not None and callable(getattr(_pc, "get_stats", None)) else {}
+        if isinstance(perf_cache_stats, dict):
+            try:
+                info["memory_rag_chunk_cap"] = int(max(0, int(perf_cache_stats.get("rag_doc_chunk_budget", 0) or 0)))
+            except Exception:
+                info["memory_rag_chunk_cap"] = 0
+            try:
+                info["cache_debug_rag_doc_evictions"] = int(
+                    max(0, int(perf_cache_stats.get("rag_doc_evictions", 0) or 0))
+                )
+            except Exception:
+                info["cache_debug_rag_doc_evictions"] = 0
+            try:
+                info["cache_debug_rag_doc_chunk_budget_evictions"] = int(
+                    max(0, int(perf_cache_stats.get("rag_doc_chunk_budget_evictions", 0) or 0))
+                )
+            except Exception:
+                info["cache_debug_rag_doc_chunk_budget_evictions"] = 0
+            try:
+                info["cache_debug_rag_doc_cache_max_evictions"] = int(
+                    max(0, int(perf_cache_stats.get("rag_doc_cache_max_evictions", 0) or 0))
+                )
+            except Exception:
+                info["cache_debug_rag_doc_cache_max_evictions"] = 0
+            try:
+                info["cache_debug_rag_doc_evicted_chunks"] = int(
+                    max(0, int(perf_cache_stats.get("rag_doc_evicted_chunks", 0) or 0))
+                )
+            except Exception:
+                info["cache_debug_rag_doc_evicted_chunks"] = 0
+        chunk_cap = int(info.get("memory_rag_chunk_cap", 0) or 0)
+        if chunk_cap > 0:
+            info["memory_rag_chunk_usage_pct"] = float((100.0 * mem_chunk_count) / float(max(1, chunk_cap)))
+        else:
+            info["memory_rag_chunk_usage_pct"] = 0.0
         cache_enabled_reader = getattr(self, "_ai_cache_enabled", None)
         cache_enabled = bool(callable(cache_enabled_reader) and cache_enabled_reader())
         info["cache_enabled"] = bool(cache_enabled)
@@ -14989,6 +15039,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         rag_mem_docs = max(0, int(rag_info.get("memory_rag_docs", 0) or 0))
         rag_mem_chunks = max(0, int(rag_info.get("memory_rag_chunks", 0) or 0))
+        rag_mem_chunk_cap = max(0, int(rag_info.get("memory_rag_chunk_cap", 0) or 0))
+        rag_mem_chunk_usage_pct = max(0.0, min(1000.0, float(rag_info.get("memory_rag_chunk_usage_pct", 0.0) or 0.0)))
         rag_disk_docs = max(0, int(rag_info.get("disk_rag_docs", 0) or 0))
         rag_disk_chunks = max(0, int(rag_info.get("disk_rag_chunks", 0) or 0))
         rag_disk_postings = max(0, int(rag_info.get("disk_postings", 0) or 0))
@@ -15012,6 +15064,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         rag_debug_query_hit = max(0, int(rag_info.get("cache_debug_rag_query_hit", 0) or 0))
         rag_debug_emb_hit = max(0, int(rag_info.get("cache_debug_embedding_hits", 0) or 0))
         rag_debug_emb_miss = max(0, int(rag_info.get("cache_debug_embedding_misses", 0) or 0))
+        rag_debug_doc_evictions = max(0, int(rag_info.get("cache_debug_rag_doc_evictions", 0) or 0))
+        rag_debug_doc_chunk_cap_evictions = max(
+            0, int(rag_info.get("cache_debug_rag_doc_chunk_budget_evictions", 0) or 0)
+        )
+        rag_debug_doc_cache_max_evictions = max(
+            0, int(rag_info.get("cache_debug_rag_doc_cache_max_evictions", 0) or 0)
+        )
+        rag_debug_doc_evicted_chunks = max(0, int(rag_info.get("cache_debug_rag_doc_evicted_chunks", 0) or 0))
         rag_pdf_names = [
             str(item or "").strip()
             for item in list(rag_info.get("active_pdf_names", []) or [])
@@ -15166,6 +15226,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             f"{rag_pdf_detail_sample_line}"
             f"RAG cache enabled/db: {rag_cache_enabled} ({rag_cache_db_name})\n"
             f"RAG docs/chunks memory: {rag_mem_docs}/{rag_mem_chunks}\n"
+            f"RAG chunk cap usage/evictions: {rag_mem_chunks}/{rag_mem_chunk_cap} ({rag_mem_chunk_usage_pct:.1f}%) • "
+            f"evict {rag_debug_doc_evictions} docs/{rag_debug_doc_evicted_chunks} chunks "
+            f"(chunk-cap {rag_debug_doc_chunk_cap_evictions}, cache-max {rag_debug_doc_cache_max_evictions})\n"
             f"RAG docs/chunks disk: {rag_disk_docs}/{rag_disk_chunks} • postings {rag_disk_postings} • query rows {rag_disk_query_rows}\n"
             f"Embeddings rows total/model: {rag_disk_embedding_rows}/{rag_model_embedding_rows} ({rag_semantic_model})\n"
             f"Embeddings coverage active chunks: {rag_covered_chunk_hashes}/{rag_total_chunk_hashes} ({rag_coverage_pct:.1f}%)\n"
