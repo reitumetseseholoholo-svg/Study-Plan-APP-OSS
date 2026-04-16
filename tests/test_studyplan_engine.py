@@ -1,3 +1,4 @@
+import copy
 import datetime
 import hashlib
 import types
@@ -3407,6 +3408,52 @@ def test_import_syllabus_meta_from_json_only_syllabus_meta(engine_no_io):
     assert result.get("applied") is True
     assert (eng.syllabus_meta or {}).get("exam_code") == "FR"
     assert (eng.syllabus_meta or {}).get("effective_window") == "June 2024"
+
+
+def test_import_syllabus_meta_from_json_merge_preserves_existing_keys(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    base = {
+        "title": "Module",
+        "chapters": list(getattr(eng, "CHAPTERS", []) or []),
+        "syllabus_meta": {
+            "exam_code": "TX",
+            "effective_window": "June 2024",
+            "reference_pdfs": ["/tmp/original.pdf"],
+        },
+    }
+    monkeypatch.setattr(eng, "_load_module_config", lambda _mid: copy.deepcopy(base))
+    result = eng.import_syllabus_meta_from_json(
+        {"syllabus_meta": {"effective_window": "December 2025"}},
+        module_id=eng.module_id,
+        merge_syllabus_meta=True,
+    )
+    assert result.get("applied") is True
+    assert (eng.syllabus_meta or {}).get("exam_code") == "TX"
+    assert (eng.syllabus_meta or {}).get("effective_window") == "December 2025"
+    assert (eng.syllabus_meta or {}).get("reference_pdfs") == ["/tmp/original.pdf"]
+
+
+def test_import_syllabus_meta_from_json_replace_overwrites_existing_keys(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    base = {
+        "title": "Module",
+        "chapters": list(getattr(eng, "CHAPTERS", []) or []),
+        "syllabus_meta": {
+            "exam_code": "TX",
+            "effective_window": "June 2024",
+            "reference_pdfs": ["/tmp/original.pdf"],
+        },
+    }
+    monkeypatch.setattr(eng, "_load_module_config", lambda _mid: copy.deepcopy(base))
+    result = eng.import_syllabus_meta_from_json(
+        {"syllabus_meta": {"effective_window": "December 2025"}},
+        module_id=eng.module_id,
+        merge_syllabus_meta=False,
+    )
+    assert result.get("applied") is True
+    assert (eng.syllabus_meta or {}).get("exam_code") is None
+    assert (eng.syllabus_meta or {}).get("reference_pdfs") in (None, [])
+    assert (eng.syllabus_meta or {}).get("effective_window") == "December 2025"
 
 
 def test_select_outcome_gap_questions_returns_uncovered_only(engine_no_io, monkeypatch):

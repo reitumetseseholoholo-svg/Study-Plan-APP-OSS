@@ -10,6 +10,7 @@ import difflib
 import hashlib
 import io
 import json
+import logging
 import math
 import os
 import random
@@ -41,6 +42,8 @@ from studyplan.syllabus_fr import (
 )
 from studyplan.syllabus_f7 import get_f7_syllabus_structure
 from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
+
+logger = logging.getLogger(__name__)
 
 class StudyPlanEngine:
 
@@ -387,7 +390,8 @@ class StudyPlanEngine:
                         if level is not None:
                             try:
                                 level_int = int(level)
-                            except Exception:
+                            except Exception as exc:
+                                logger.debug("Failed to coerce syllabus outcome level.", exc_info=exc)
                                 level_int = None
                         if not text:
                             continue
@@ -557,7 +561,8 @@ class StudyPlanEngine:
             if isinstance(stats_by_ch, dict):
                 try:
                     keys = sorted(str(k) for k in stats_by_ch.keys())
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Failed to sort outcome coverage stats keys.", exc_info=exc)
                     keys = []
                 h.update(b"stats:")
                 for key in keys:
@@ -771,7 +776,8 @@ class StudyPlanEngine:
                 if lev_m:
                     try:
                         outcome_level = int(lev_m.group(1))
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug("Failed to parse generic syllabus outcome level.", exc_info=exc)
                         outcome_level = 2
                     outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", outcome_text).strip()
                     flush_outcome()
@@ -933,7 +939,8 @@ class StudyPlanEngine:
                 if m_level:
                     try:
                         current_level = int(m_level.group(1))
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug("Failed to parse syllabus outcome level.", exc_info=exc)
                         current_level = 2
                     current_outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", current_outcome_text).strip()
                     _flush_outcome()
@@ -990,7 +997,8 @@ class StudyPlanEngine:
                     if m_level:
                         try:
                             current_level = int(m_level.group(1))
-                        except Exception:
+                        except Exception as exc:
+                            logger.debug("Failed to parse fallback syllabus outcome level.", exc_info=exc)
                             current_level = 2
                         current_outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", current_outcome_text).strip()
                         _flush_fallback()
@@ -1045,7 +1053,8 @@ class StudyPlanEngine:
                     continue
                 try:
                     level = int(outcome.get("level", 2) or 2)
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Failed to normalize syllabus outcome level.", exc_info=exc)
                     level = 2
                 level = 1 if level < 1 else 3 if level > 3 else level
                 normalized_outcomes.append(
@@ -2534,7 +2543,11 @@ class StudyPlanEngine:
         return result
 
     def import_syllabus_meta_from_json(
-        self, payload: Dict[str, Any], module_id: str | None = None
+        self,
+        payload: Dict[str, Any],
+        module_id: str | None = None,
+        *,
+        merge_syllabus_meta: bool = True,
     ) -> Dict[str, Any]:
         """Merge syllabus_meta (and optionally syllabus_structure, chapters, etc.) from a JSON payload
         into the current module config and apply to the engine. No AI or PDF parsing.
@@ -2543,6 +2556,9 @@ class StudyPlanEngine:
         :param payload: Dict with any of: syllabus_meta, syllabus_structure, chapters,
             chapter_flow, importance_weights, capabilities, aliases, title.
         :param module_id: Target module (default: current self.module_id).
+        :param merge_syllabus_meta: When True (default), overlay incoming syllabus_meta keys
+            onto the existing block. When False, replace the existing syllabus_meta block
+            with the JSON payload's syllabus_meta block.
         :return: Summary dict with keys: applied, warnings, config (validated merged config).
         """
         target_id = self._sanitize_module_id(module_id or self.module_id)
@@ -2552,7 +2568,11 @@ class StudyPlanEngine:
         merged = copy.deepcopy(base)
         warnings: List[str] = []
         if isinstance(payload.get("syllabus_meta"), dict):
-            merged["syllabus_meta"] = {**merged.get("syllabus_meta", {}), **payload["syllabus_meta"]}
+            incoming_syllabus_meta = dict(payload["syllabus_meta"])
+            if merge_syllabus_meta:
+                merged["syllabus_meta"] = {**merged.get("syllabus_meta", {}), **incoming_syllabus_meta}
+            else:
+                merged["syllabus_meta"] = incoming_syllabus_meta
         if isinstance(payload.get("syllabus_structure"), dict):
             merged["syllabus_structure"] = dict(payload["syllabus_structure"])
         if isinstance(payload.get("chapters"), list) and payload["chapters"]:

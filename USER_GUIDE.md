@@ -302,6 +302,8 @@ If you already have a structured JSON file:
 
 1. **Module → Import Syllabus (JSON)…**
 2. Select the file — it seeds `syllabus_meta` directly, bypassing PDF parsing
+3. Choose **Merge with current** to keep existing `syllabus_meta` keys, or **Replace syllabus meta** to overwrite the current block from the JSON file
+4. The same import is also available from **Module Editor → Import Syllabus JSON…**, which shows current `source_pdf` / `reference_pdfs` values in a read-only panel
 
 ### Auto-improve on low confidence
 
