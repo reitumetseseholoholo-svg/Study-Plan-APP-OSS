@@ -1,0 +1,1420 @@
+{
+  "Chapter 1: International Financial Reporting Standards": [
+    {
+      "question": "The IASB replaced which body when it was established in 2001?",
+      "options": [
+        "The International Auditing and Assurance Standards Board",
+        "The International Accounting Standards Committee",
+        "The International Federation of Accountants",
+        "The Monitoring Board"
+      ],
+      "correct": "The International Accounting Standards Committee",
+      "explanation": "The IASB was formed in 2001 to replace the IASC. It adopted the existing IASs and now issues IFRS Standards."
+    },
+    {
+      "question": "Under the IFRS Foundation structure, the body responsible for appointing IASB members and providing oversight is:",
+      "options": [
+        "The Monitoring Board",
+        "The IFRS Foundation Trustees",
+        "The IFRS Advisory Council",
+        "The IFRS Interpretations Committee"
+      ],
+      "correct": "The IFRS Foundation Trustees",
+      "explanation": "The Trustees appoint IASB members and oversee the standard-setting process while maintaining independence."
+    },
+    {
+      "question": "A final IFRS standard is ready for issue after the public consultation process. Which body develops and issues the technical standard itself, rather than overseeing governance?",
+      "options": [
+        "The IASB",
+        "The IFRS Foundation Trustees",
+        "The Monitoring Board",
+        "The IFRS Interpretations Committee"
+      ],
+      "correct": "The IASB",
+      "explanation": "The IASB develops and issues IFRS Standards; the Trustees and Monitoring Board provide oversight, not technical drafting."
+    },
+    {
+      "question": "A regulator asks who should set the technical recognition rule for a new IFRS issue, while a separate body handles appointments and oversight. Which body is responsible for the technical standard?",
+      "options": [
+        "The IASB",
+        "The IFRS Foundation Trustees",
+        "The Monitoring Board",
+        "The IFRS Advisory Council"
+      ],
+      "correct": "The IASB",
+      "explanation": "The IASB develops and issues the technical content of IFRS Standards; the Trustees and Monitoring Board provide governance and oversight."
+    }
+  ],
+  "Chapter 2: Conceptual Framework": [
+    {
+      "question": "The two fundamental qualitative characteristics of useful financial information according to the Conceptual Framework are:",
+      "options": [
+        "Comparability and verifiability",
+        "Relevance and faithful representation",
+        "Timeliness and understandability",
+        "Prudence and neutrality"
+      ],
+      "correct": "Relevance and faithful representation",
+      "explanation": "Relevance and faithful representation are the fundamental characteristics; the others are enhancing."
+    },
+    {
+      "question": "Prudence in the 2018 Conceptual Framework is described as:",
+      "options": [
+        "The exercise of caution when making judgements under conditions of uncertainty so that assets or income are not overstated and liabilities or expenses are not understated",
+        "The deliberate understatement of assets to create hidden reserves",
+        "The consistent application of accounting policies across periods",
+        "The use of historical cost for all measurements"
+      ],
+      "correct": "The exercise of caution when making judgements under conditions of uncertainty so that assets or income are not overstated and liabilities or expenses are not understated",
+      "explanation": "Prudence supports neutrality and is not about deliberate bias."
+    },
+    {
+      "question": "A valuation gives users relevant information, but the uncertainty is so high that the amount is likely to be misleading. Which qualitative characteristic is most directly affected?",
+      "options": [
+        "Faithful representation",
+        "Comparability",
+        "Understandability",
+        "Timeliness"
+      ],
+      "correct": "Faithful representation",
+      "explanation": "High measurement uncertainty threatens faithful representation even if the information is relevant."
+    },
+    {
+      "question": "An asset valuation is highly relevant to users, but the inputs are so uncertain that the estimate could mislead if treated as precise. Which qualitative characteristic is most directly at risk?",
+      "options": [
+        "Faithful representation",
+        "Comparability",
+        "Understandability",
+        "Timeliness"
+      ],
+      "correct": "Faithful representation",
+      "explanation": "High measurement uncertainty threatens faithful representation even where the information remains relevant."
+    }
+  ],
+  "Chapter 3: IFRS 18 Presentation and Disclosure in Financial Statements": [
+    {
+      "question": "IFRS 18 requires how many categories of income and expenses in the statement of profit or loss?",
+      "options": [
+        "Three (operating, investing, financing)",
+        "Five (operating, investing, financing, income taxes, discontinued operations)",
+        "Four (including taxation)",
+        "Two (recurring and non-recurring)"
+      ],
+      "correct": "Five (operating, investing, financing, income taxes, discontinued operations)",
+      "explanation": "IFRS 18 defines five specific categories with mandatory subtotals to improve comparability."
+    },
+    {
+      "question": "Under IFRS 18, Management Performance Measures (MPMs) must be disclosed with a reconciliation when they are:",
+      "options": [
+        "Presented only in the notes",
+        "Used in public communications outside the financial statements and also included in the financial statements",
+        "Presented on the face of the statement of profit or loss only",
+        "Used solely for internal management purposes"
+      ],
+      "correct": "Used in public communications outside the financial statements and also included in the financial statements",
+      "explanation": "MPMs require specific note disclosures and reconciliation to the nearest IFRS 18 subtotal."
+    },
+    {
+      "question": "Management presents an adjusted operating profit measure in its annual report and includes it in the financial statements. What is required under IFRS 18?",
+      "options": [
+        "A reconciliation to the nearest IFRS 18 subtotal and a description of how the measure is calculated",
+        "No disclosure, because management performance measures are always optional",
+        "Recognition in other comprehensive income instead of profit or loss",
+        "A separate statement of comprehensive income for the adjusted measure only"
+      ],
+      "correct": "A reconciliation to the nearest IFRS 18 subtotal and a description of how the measure is calculated",
+      "explanation": "IFRS 18 requires reconciliation and explanatory disclosure for management performance measures."
+    },
+    {
+      "question": "Management presents an adjusted operating profit measure in public communications and includes it in the financial statements. Under IFRS 18, what must accompany that measure?",
+      "options": [
+        "A reconciliation to the nearest IFRS 18 subtotal and a description of how the measure is calculated",
+        "No disclosure, because management performance measures are optional",
+        "Recognition in other comprehensive income instead of profit or loss",
+        "A separate statement of comprehensive income for the adjusted measure only"
+      ],
+      "correct": "A reconciliation to the nearest IFRS 18 subtotal and a description of how the measure is calculated",
+      "explanation": "IFRS 18 requires reconciliation and explanatory disclosure for management performance measures used in the financial statements."
+    }
+  ],
+  "Chapter 4: IAS 8 Basis of Preparation of Financial Statements": [
+    {
+      "question": "A change from the cost model to the revaluation model for property, plant and equipment is accounted for as:",
+      "options": [
+        "A change in accounting estimate applied prospectively",
+        "A change in accounting policy applied retrospectively",
+        "A prior period error",
+        "No adjustment required"
+      ],
+      "correct": "A change in accounting policy applied retrospectively",
+      "explanation": "IAS 8 treats this as a voluntary change in accounting policy requiring retrospective application."
+    },
+    {
+      "question": "When a new IFRS Standard conflicts with an existing IAS Standard on the same topic, which takes precedence?",
+      "options": [
+        "The IAS Standard (more detailed)",
+        "The newer IFRS Standard",
+        "The one chosen by management",
+        "The one giving higher profit"
+      ],
+      "correct": "The newer IFRS Standard",
+      "explanation": "The IASB intends newer IFRS Standards to supersede earlier IAS Standards."
+    },
+    {
+      "question": "An entity changes its depreciation method because the pattern of consumption of benefits has changed. How should this be treated?",
+      "options": [
+        "As a change in accounting estimate applied prospectively",
+        "As a prior period error requiring full restatement",
+        "As a change in accounting policy applied retrospectively",
+        "As a revaluation under IAS 16"
+      ],
+      "correct": "As a change in accounting estimate applied prospectively",
+      "explanation": "A revised depreciation pattern is a change in estimate, so it is applied prospectively."
+    },
+    {
+      "question": "After year end, an accountant finds that opening inventory at the previous year end was understated because of a spreadsheet formula error. How should this be treated?",
+      "options": [
+        "Retrospective restatement as a prior period error",
+        "Prospective change in accounting estimate",
+        "Change in accounting policy with no restatement",
+        "Disclosure only, because the current year is unaffected"
+      ],
+      "correct": "Retrospective restatement as a prior period error",
+      "explanation": "A formula mistake is a prior period error, so comparative figures are restated retrospectively."
+    }
+  ],
+  "Chapter 5: IFRS 15 Revenue from Contracts with Customers": [
+    {
+      "question": "A contract modification is accounted for as a separate contract under IFRS 15 when it:",
+      "options": [
+        "Increases the scope by distinct goods/services and the price increase reflects stand-alone selling prices",
+        "Is approved by both parties but does not change the transaction price",
+        "Only affects the timing of revenue recognition",
+        "Reduces the scope of existing performance obligations"
+      ],
+      "correct": "Increases the scope by distinct goods/services and the price increase reflects stand-alone selling prices",
+      "explanation": "Both criteria must be met for separate contract treatment."
+    },
+    {
+      "question": "Variable consideration is estimated using the method that best predicts the amount the entity will be entitled to. This is usually:",
+      "options": [
+        "The expected value method only",
+        "The most likely amount method only",
+        "Either the expected value or most likely amount method, whichever better predicts the outcome",
+        "The minimum guaranteed amount"
+      ],
+      "correct": "Either the expected value or most likely amount method, whichever better predicts the outcome",
+      "explanation": "IFRS 15 requires the method that best predicts the amount of variable consideration."
+    },
+    {
+      "question": "Revenue is recognised over time if the entity has an enforceable right to payment for performance completed to date AND:",
+      "options": [
+        "The asset has no alternative use to the entity",
+        "The customer pays in advance",
+        "The contract is for more than 12 months",
+        "The performance obligation is distinct"
+      ],
+      "correct": "The asset has no alternative use to the entity",
+      "explanation": "Both criteria (enforceable right to payment + no alternative use) must be met for over-time recognition."
+    },
+    {
+      "question": "A travel platform arranges hotel bookings for customers but never controls the rooms before transfer. How should it recognise revenue?",
+      "options": [
+        "Gross, because it arranged the booking",
+        "Net, because it acts as an agent",
+        "As a lease income stream",
+        "Only when cash is collected from the customer"
+      ],
+      "correct": "Net, because it acts as an agent",
+      "explanation": "If the platform does not control the rooms before transfer, it is an agent and recognises revenue net."
+    },
+    {
+      "question": "A contractor is entitled to a bonus for early completion, but historical evidence shows a significant risk that the full bonus would reverse if recognised now. What amount should be included in the transaction price?",
+      "options": [
+        "Only the amount for which it is highly probable that a significant reversal will not occur",
+        "The full bonus immediately because it is part of the contract",
+        "Nothing until the bonus is actually received in cash",
+        "The bonus only when the project is completed, regardless of probability"
+      ],
+      "correct": "Only the amount for which it is highly probable that a significant reversal will not occur",
+      "explanation": "Variable consideration is constrained so that revenue is not recognised where a significant reversal is likely."
+    }
+  ],
+  "Chapter 6: Inventories and Agriculture": [
+    {
+      "question": "Under IAS 2, agricultural produce is measured at:",
+      "options": [
+        "Cost",
+        "Fair value less costs to sell at the point of harvest",
+        "Net realisable value",
+        "Lower of cost and net realisable value"
+      ],
+      "correct": "Fair value less costs to sell at the point of harvest",
+      "explanation": "IAS 41 requires agricultural produce to be measured at fair value less costs to sell at harvest."
+    },
+    {
+      "question": "The cost of inventories does NOT include:",
+      "options": [
+        "Import duties",
+        "Abnormal amounts of wasted materials",
+        "Direct labour",
+        "Production overheads allocated systematically"
+      ],
+      "correct": "Abnormal amounts of wasted materials",
+      "explanation": "Abnormal waste is expensed immediately, not included in inventory cost."
+    },
+    {
+      "question": "Which cost formula is prohibited for inventories that are interchangeable and not specifically identifiable?",
+      "options": [
+        "FIFO",
+        "Weighted average",
+        "LIFO",
+        "Specific identification"
+      ],
+      "correct": "LIFO",
+      "explanation": "IAS 2 does not permit LIFO."
+    },
+    {
+      "question": "Inventory costed at 100,000 was written down to NRV of 92,000 in the previous period. In the current period, improved market conditions raise NRV to 96,000. What reversal is permitted?",
+      "options": [
+        "4,000",
+        "8,000",
+        "96,000",
+        "No reversal is permitted under IAS 2"
+      ],
+      "correct": "4,000",
+      "explanation": "The reversal is limited to the amount of the original write-down, so the inventory may be written back by 4,000."
+    }
+  ],
+  "Chapter 7: IAS 16 Property, Plant and Equipment": [
+    {
+      "question": "Subsequent expenditure on PPE is capitalised only if it:",
+      "options": [
+        "Restores the asset to its original condition",
+        "Increases future economic benefits beyond the originally assessed standard of performance",
+        "Is routine maintenance",
+        "Is incurred within the first year of acquisition"
+      ],
+      "correct": "Increases future economic benefits beyond the originally assessed standard of performance",
+      "explanation": "Day-to-day servicing and restoration costs are expensed."
+    },
+    {
+      "question": "When changing from the cost model to the revaluation model under IAS 16, the change is treated as:",
+      "options": [
+        "A change in estimate (prospective)",
+        "A change in accounting policy (retrospective)",
+        "A prior period error",
+        "No restatement needed"
+      ],
+      "correct": "A change in accounting policy (retrospective)",
+      "explanation": "IAS 8 requires retrospective application for this voluntary policy change."
+    },
+    {
+      "question": "Depreciation of an item of PPE begins when the asset:",
+      "options": [
+        "Is purchased",
+        "Is available for use as intended by management",
+        "Generates revenue",
+        "Is fully paid for"
+      ],
+      "correct": "Is available for use as intended by management",
+      "explanation": "IAS 16 requires depreciation from the date the asset is in the location and condition necessary for operation."
+    },
+    {
+      "question": "An upward revaluation of PPE reverses a previous revaluation decrease that was recognised in profit or loss. How is the gain treated?",
+      "options": [
+        "Profit or loss to the extent of the prior loss, then OCI for any excess",
+        "Entirely in OCI",
+        "Entirely in profit or loss",
+        "Directly in retained earnings"
+      ],
+      "correct": "Profit or loss to the extent of the prior loss, then OCI for any excess",
+      "explanation": "A revaluation increase first reverses a prior P/L loss on the same asset, with any excess going to OCI."
+    },
+    {
+      "question": "A machine is overhauled and a major inspection component is replaced. The carrying amount of the old component is still included in PPE. What is the correct treatment?",
+      "options": [
+        "Derecognise the old component and capitalise the new inspection cost if it meets the recognition criteria",
+        "Expense both the old and new inspection costs immediately",
+        "Leave the carrying amount unchanged because inspections are maintenance",
+        "Recognise the new inspection cost in OCI"
+      ],
+      "correct": "Derecognise the old component and capitalise the new inspection cost if it meets the recognition criteria",
+      "explanation": "IAS 16 requires component accounting: the old component is removed and the replacement is capitalised."
+    }
+  ],
+  "Chapter 8: IAS 23 Borrowing Costs": [
+    {
+      "question": "Borrowing costs directly attributable to the acquisition, construction or production of a qualifying asset are:",
+      "options": [
+        "Expensed immediately",
+        "Capitalised as part of the cost of the asset",
+        "Recognised in other comprehensive income",
+        "Only capitalised if the asset is completed within 12 months"
+      ],
+      "correct": "Capitalised as part of the cost of the asset",
+      "explanation": "IAS 23 requires capitalisation of borrowing costs for qualifying assets."
+    },
+    {
+      "question": "For funds borrowed specifically for a qualifying asset, the capitalisation rate is:",
+      "options": [
+        "The weighted average rate of all borrowings",
+        "The actual rate on that specific borrowing",
+        "The entity's incremental borrowing rate",
+        "Zero if the asset is funded by equity"
+      ],
+      "correct": "The actual rate on that specific borrowing",
+      "explanation": "Specific borrowings use the actual rate incurred."
+    },
+    {
+      "question": "Borrowing costs on a qualifying asset are being capitalised, but active development is suspended for an extended period. What happens during the suspension?",
+      "options": [
+        "Capitalisation is suspended",
+        "Capitalisation continues automatically",
+        "All borrowing costs are reversed",
+        "The asset is reclassified as investment property"
+      ],
+      "correct": "Capitalisation is suspended",
+      "explanation": "IAS 23 requires suspension of capitalisation during extended interruptions in active development."
+    },
+    {
+      "question": "Specific borrowing costs of 96,000 are incurred evenly over a year on a qualifying asset. Construction is suspended for three months because of an extended labour strike unrelated to the asset itself. How much can be capitalised?",
+      "options": [
+        "72,000",
+        "96,000",
+        "48,000",
+        "0"
+      ],
+      "correct": "72,000",
+      "explanation": "Capitalisation is suspended during the three-month interruption, so only 9 of 12 months qualify: 96,000 x 9/12 = 72,000."
+    }
+  ],
+  "Chapter 9: Government Grants": [
+    {
+      "question": "A government grant related to an asset is recognised in profit or loss over the periods that:",
+      "options": [
+        "The entity incurs the related costs",
+        "The asset is depreciated or amortised",
+        "The cash is received",
+        "The grant conditions are fulfilled"
+      ],
+      "correct": "The asset is depreciated or amortised",
+      "explanation": "Grants related to assets are recognised systematically over the useful life of the asset."
+    },
+    {
+      "question": "Non-monetary government grants (e.g., land at below market price) are accounted for at:",
+      "options": [
+        "Nominal value",
+        "Fair value of the grant",
+        "Zero",
+        "The carrying amount of the related asset"
+      ],
+      "correct": "Fair value of the grant",
+      "explanation": "IAS 20 requires non-monetary grants to be measured at fair value."
+    },
+    {
+      "question": "An entity receives a cash grant for PPE, but there is not yet reasonable assurance that the conditions will be met. How should the grant be treated?",
+      "options": [
+        "Recognise it immediately in profit or loss",
+        "Defer it as a liability until reasonable assurance exists",
+        "Deduct it from the cost of the asset immediately",
+        "Recognise it in equity as share capital"
+      ],
+      "correct": "Defer it as a liability until reasonable assurance exists",
+      "explanation": "Grant income is recognised only when there is reasonable assurance of compliance and receipt."
+    },
+    {
+      "question": "A government grant reimburses staff training costs over two years and the entity is reasonably assured of meeting the conditions as the training is delivered. How should the income be recognised?",
+      "options": [
+        "Deferred and recognised in profit or loss over the same periods as the related training costs",
+        "Recognised immediately in equity",
+        "Deducted from the cost of PPE",
+        "Recognised only when the final training invoice is paid"
+      ],
+      "correct": "Deferred and recognised in profit or loss over the same periods as the related training costs",
+      "explanation": "Grants related to income are matched to the related expenses over the periods in which the costs are incurred."
+    }
+  ],
+  "Chapter 10: IAS 40 Investment Property": [
+    {
+      "question": "Under the fair value model in IAS 40, changes in fair value of investment property are recognised in:",
+      "options": [
+        "Other comprehensive income",
+        "Profit or loss",
+        "Revaluation surplus in equity",
+        "Retained earnings directly"
+      ],
+      "correct": "Profit or loss",
+      "explanation": "Unlike PPE revaluation, fair value changes go through profit or loss."
+    },
+    {
+      "question": "Investment property under the cost model is accounted for in accordance with:",
+      "options": [
+        "IAS 16",
+        "IAS 40 only",
+        "IFRS 16",
+        "IAS 2"
+      ],
+      "correct": "IAS 16",
+      "explanation": "The cost model in IAS 40 follows IAS 16 principles (including depreciation)."
+    },
+    {
+      "question": "An entity measures investment property using the fair value model. What is the correct treatment of subsequent fair value changes and depreciation?",
+      "options": [
+        "Fair value changes go to profit or loss and the property is not depreciated",
+        "Fair value changes go to OCI and the property is depreciated",
+        "Fair value changes bypass profit or loss and go directly to retained earnings",
+        "The property is always measured at cost less depreciation"
+      ],
+      "correct": "Fair value changes go to profit or loss and the property is not depreciated",
+      "explanation": "Under the fair value model, changes are recognised in profit or loss and depreciation is not charged."
+    },
+    {
+      "question": "An office tower is 90% leased to third parties and 10% occupied by head office staff. The parts cannot be sold separately, and the owner-occupied portion is insignificant. How should the property be classified?",
+      "options": [
+        "Investment property",
+        "Owner-occupied PPE",
+        "Inventory",
+        "Non-current asset held for sale"
+      ],
+      "correct": "Investment property",
+      "explanation": "Where the owner-occupied portion is insignificant, the whole property can be treated as investment property."
+    }
+  ],
+  "Chapter 11: IAS 38 Intangible Assets": [
+    {
+      "question": "Internally generated goodwill is:",
+      "options": [
+        "Recognised as an intangible asset",
+        "Never recognised as an asset",
+        "Recognised only if purchased",
+        "Amortised over 10 years"
+      ],
+      "correct": "Never recognised as an asset",
+      "explanation": "IAS 38 prohibits recognition of internally generated goodwill."
+    },
+    {
+      "question": "Development costs can be capitalised only if all of the following are met EXCEPT:",
+      "options": [
+        "Technical feasibility of completing the asset",
+        "Intention to complete and use or sell the asset",
+        "The asset will generate probable future economic benefits",
+        "The costs are incurred during the research phase"
+      ],
+      "correct": "The costs are incurred during the research phase",
+      "explanation": "Research costs are always expensed; only development phase costs meeting the criteria are capitalised."
+    },
+    {
+      "question": "A software project has moved beyond research and meets the IAS 38 development criteria, including technical feasibility and probable future economic benefits. What is the correct treatment of development expenditure?",
+      "options": [
+        "Capitalise it as an intangible asset",
+        "Expense it because all software must be written off immediately",
+        "Recognise it only when the project is completed and sold",
+        "Treat it as investment property"
+      ],
+      "correct": "Capitalise it as an intangible asset",
+      "explanation": "Development costs may be capitalised only when the IAS 38 criteria are all met."
+    },
+    {
+      "question": "An entity spends heavily on a new brand launch, advertising, and customer outreach while legal registration is underway. Can those costs be capitalised as an intangible asset?",
+      "options": [
+        "No, they are generally expensed because internally generated brands and advertising are not capitalisable",
+        "Yes, because the future benefits are likely to be significant",
+        "Yes, but only once legal registration is completed",
+        "Only the advertising cost can be capitalised"
+      ],
+      "correct": "No, they are generally expensed because internally generated brands and advertising are not capitalisable",
+      "explanation": "IAS 38 prohibits capitalising internally generated brands and most advertising or launch costs."
+    }
+  ],
+  "Chapter 12: IFRS 5 Non-current Assets Held for Sale and Discontinued Operations": [
+    {
+      "question": "An asset is classified as held for sale under IFRS 5 when its carrying amount will be recovered principally through:",
+      "options": [
+        "Continued use",
+        "A sale transaction rather than through continuing use",
+        "Depreciation over its remaining useful life",
+        "Revaluation"
+      ],
+      "correct": "A sale transaction rather than through continuing use",
+      "explanation": "IFRS 5 requires the asset to be available for immediate sale in its present condition and the sale to be highly probable."
+    },
+    {
+      "question": "Non-current assets held for sale are measured at the lower of:",
+      "options": [
+        "Cost and net realisable value",
+        "Carrying amount and fair value less costs to sell",
+        "Carrying amount and value in use",
+        "Fair value and recoverable amount"
+      ],
+      "correct": "Carrying amount and fair value less costs to sell",
+      "explanation": "Depreciation ceases and the asset is measured at the lower of carrying amount and fair value less costs to sell."
+    },
+    {
+      "question": "A discontinued operation is a component of an entity that has been disposed of or is classified as held for sale and:",
+      "options": [
+        "Represents a separate major line of business or geographical area",
+        "Is a small subsidiary",
+        "Generates less than 5% of revenue",
+        "Is expected to be sold within 12 months"
+      ],
+      "correct": "Represents a separate major line of business or geographical area",
+      "explanation": "It must represent a separate major line of business or geographical area of operations."
+    },
+    {
+      "question": "A disposal group meets the held-for-sale criteria. How is it measured and what happens to depreciation?",
+      "options": [
+        "Lower of carrying amount and fair value less costs to sell; depreciation stops",
+        "Higher of carrying amount and fair value less costs to sell; depreciation continues",
+        "Fair value only, with depreciation accelerated",
+        "Cost less depreciation, with no change to useful life"
+      ],
+      "correct": "Lower of carrying amount and fair value less costs to sell; depreciation stops",
+      "explanation": "IFRS 5 requires the lower of carrying amount and FVLCTS, and depreciation ceases once held for sale."
+    },
+    {
+      "question": "A disposal group meets the held-for-sale criteria. Its carrying amount is 1,200,000 and fair value less costs to sell is 1,050,000. What carrying amount is reported, and what happens to depreciation?",
+      "options": [
+        "1,050,000 and depreciation stops",
+        "1,200,000 and depreciation continues",
+        "1,050,000 and depreciation continues",
+        "950,000 and depreciation stops"
+      ],
+      "correct": "1,050,000 and depreciation stops",
+      "explanation": "IFRS 5 measures the asset at the lower of carrying amount and fair value less costs to sell, and depreciation ceases once held for sale."
+    }
+  ],
+  "Chapter 13: IAS 36 Impairment of Assets": [
+    {
+      "question": "An impairment loss is recognised when the carrying amount of an asset exceeds its:",
+      "options": [
+        "Fair value",
+        "Recoverable amount",
+        "Value in use",
+        "Net realisable value"
+      ],
+      "correct": "Recoverable amount",
+      "explanation": "Recoverable amount is the higher of fair value less costs of disposal and value in use."
+    },
+    {
+      "question": "For a cash-generating unit (CGU) that includes goodwill, impairment losses are allocated first to:",
+      "options": [
+        "Other assets pro-rata",
+        "Goodwill",
+        "Current assets",
+        "Liabilities"
+      ],
+      "correct": "Goodwill",
+      "explanation": "Goodwill is reduced first, then other assets pro-rata."
+    },
+    {
+      "question": "Reversal of an impairment loss is permitted for:",
+      "options": [
+        "Goodwill",
+        "Assets other than goodwill",
+        "All assets without exception",
+        "Intangible assets only"
+      ],
+      "correct": "Assets other than goodwill",
+      "explanation": "IAS 36 prohibits reversal of impairment losses recognised for goodwill."
+    },
+    {
+      "question": "Goodwill has been allocated to a cash-generating unit and an impairment loss is recognised. Can that goodwill impairment be reversed in a later period?",
+      "options": [
+        "No, goodwill impairment is never reversed",
+        "Yes, but only if profit rises in the following year",
+        "Yes, if the recoverable amount exceeds carrying amount within three years",
+        "Yes, but only through OCI"
+      ],
+      "correct": "No, goodwill impairment is never reversed",
+      "explanation": "IAS 36 prohibits reversal of goodwill impairment losses."
+    },
+    {
+      "question": "A cash-generating unit has a carrying amount of 1,100,000 including goodwill of 100,000. Recoverable amount is 950,000. How is the impairment allocated initially?",
+      "options": [
+        "Goodwill is written off first, then the remaining loss is allocated pro rata to the other assets",
+        "All assets are reduced evenly, including goodwill",
+        "Only goodwill can be impaired, so the loss is capped at 100,000",
+        "The loss is recognised in OCI and not allocated to assets"
+      ],
+      "correct": "Goodwill is written off first, then the remaining loss is allocated pro rata to the other assets",
+      "explanation": "IAS 36 allocates impairment losses to goodwill first, then to the remaining assets in the CGU on a pro rata basis."
+    }
+  ],
+  "Chapter 14: IFRS 16 Leases": [
+    {
+      "question": "Under IFRS 16, a lessee recognises a right-of-use asset and lease liability for most leases EXCEPT:",
+      "options": [
+        "Leases of low-value assets (if elected)",
+        "All leases without exception",
+        "Finance leases only",
+        "Leases longer than 12 months"
+      ],
+      "correct": "Leases of low-value assets (if elected)",
+      "explanation": "Short-term leases (≤12 months) and low-value asset leases may be exempted by policy election."
+    },
+    {
+      "question": "In a sale and leaseback transaction, if the transfer qualifies as a sale under IFRS 15, the seller-lessee recognises:",
+      "options": [
+        "The full gain on sale immediately",
+        "Only the gain relating to the rights transferred to the buyer-lessor",
+        "No gain at all",
+        "The gain in other comprehensive income"
+      ],
+      "correct": "Only the gain relating to the rights transferred to the buyer-lessor",
+      "explanation": "The gain is restricted to the portion of rights transferred."
+    },
+    {
+      "question": "The lease liability is initially measured at the present value of lease payments using:",
+      "options": [
+        "The implicit rate in the lease if readily determinable, otherwise the lessee’s incremental borrowing rate",
+        "The risk-free rate",
+        "The contractual interest rate",
+        "Zero discount rate"
+      ],
+      "correct": "The implicit rate in the lease if readily determinable, otherwise the lessee’s incremental borrowing rate",
+      "explanation": "This is the IFRS 16 requirement."
+    },
+    {
+      "question": "Variable lease payments based on an index or rate are included in the lease liability:",
+      "options": [
+        "Using the index or rate at the commencement date",
+        "Only when the payment is made",
+        "Using forward rates",
+        "Never included"
+      ],
+      "correct": "Using the index or rate at the commencement date",
+      "explanation": "Subsequent changes trigger remeasurement of the liability."
+    },
+    {
+      "question": "Which lease payments are excluded from the initial measurement of the lease liability under IFRS 16?",
+      "options": [
+        "Variable payments based on sales or usage",
+        "Fixed payments in substance fixed by contract",
+        "Lease payments during extension periods that are reasonably certain",
+        "Payments under a purchase option that is reasonably certain to be exercised"
+      ],
+      "correct": "Variable payments based on sales or usage",
+      "explanation": "Variable lease payments that depend on sales or usage are excluded from the initial lease liability."
+    },
+    {
+      "question": "A lease requires three annual payments of 100,000 in arrears. The discount factor for the present value of a 3-year annuity at the lessee’s rate is 2.487. Initial direct costs are 3,000 and a lease incentive of 15,000 is received at commencement. What is the initial right-of-use asset?",
+      "options": [
+        "236,700",
+        "248,700",
+        "251,700",
+        "233,700"
+      ],
+      "correct": "236,700",
+      "explanation": "Lease liability = 100,000 x 2.487 = 248,700. ROU asset = 248,700 + 3,000 - 15,000 = 236,700."
+    }
+  ],
+  "Chapter 15: IAS 37 Provisions, Contingent Liabilities and Contingent Assets": [
+    {
+      "question": "A provision is recognised when there is:",
+      "options": [
+        "A possible obligation",
+        "A present obligation (legal or constructive) from a past event, probable outflow, and reliable estimate",
+        "A future operating loss",
+        "A contingent liability"
+      ],
+      "correct": "A present obligation (legal or constructive) from a past event, probable outflow, and reliable estimate",
+      "explanation": "All three criteria must be satisfied."
+    },
+    {
+      "question": "Onerous contracts require a provision for:",
+      "options": [
+        "The full contract value",
+        "The unavoidable costs of meeting the obligations exceeding expected economic benefits",
+        "Future losses only",
+        "No provision required"
+      ],
+      "correct": "The unavoidable costs of meeting the obligations exceeding expected economic benefits",
+      "explanation": "This is the lower of cost of fulfilment or penalties."
+    },
+    {
+      "question": "A board announces a restructuring, but no detailed plan has been communicated to those affected. When can a provision be recognised?",
+      "options": [
+        "Only when a detailed formal plan exists and a valid expectation has been created",
+        "As soon as management intends to restructure",
+        "Immediately after the board vote, regardless of communication",
+        "Only after the restructuring is completed"
+      ],
+      "correct": "Only when a detailed formal plan exists and a valid expectation has been created",
+      "explanation": "A restructuring provision needs a constructive obligation, not mere intent."
+    },
+    {
+      "question": "Management decides to close one plant and offers redundancy compensation, but it also expects the plant to incur operating losses until closure. Which costs can be included in the restructuring provision?",
+      "options": [
+        "Only direct expenditures necessarily entailed by the restructuring, not future operating losses",
+        "Future operating losses as well, because they arise from the decision to restructure",
+        "All planned expenditure, including marketing and retraining",
+        "Only redundancy payments after the closure date"
+      ],
+      "correct": "Only direct expenditures necessarily entailed by the restructuring, not future operating losses",
+      "explanation": "IAS 37 excludes future operating losses and general future costs from restructuring provisions."
+    }
+  ],
+  "Chapter 16: IAS 10 Events after the Reporting Period": [
+    {
+      "question": "Adjusting events after the reporting period are those that:",
+      "options": [
+        "Provide evidence of conditions that existed at the end of the reporting period",
+        "Are non-adjusting but material",
+        "Occur after the financial statements are authorised for issue",
+        "Relate only to the next period"
+      ],
+      "correct": "Provide evidence of conditions that existed at the end of the reporting period",
+      "explanation": "Adjusting events require adjustment to the financial statements."
+    },
+    {
+      "question": "A dividend declared after the reporting period but before authorisation is:",
+      "options": [
+        "An adjusting event",
+        "A non-adjusting event requiring disclosure",
+        "Recognised as a liability",
+        "Ignored"
+      ],
+      "correct": "A non-adjusting event requiring disclosure",
+      "explanation": "Dividends declared after the reporting date are non-adjusting."
+    },
+    {
+      "question": "A customer was already in financial difficulty at the reporting date and becomes insolvent shortly after year end. How should the receivable be treated?",
+      "options": [
+        "Adjust the receivable because the post-year-end insolvency provides evidence of year-end conditions",
+        "Ignore the event entirely because it happened after year end",
+        "Recognise it only in OCI",
+        "Treat it as a prior period error"
+      ],
+      "correct": "Adjust the receivable because the post-year-end insolvency provides evidence of year-end conditions",
+      "explanation": "If the post-year-end event confirms conditions existing at the reporting date, it is an adjusting event."
+    },
+    {
+      "question": "A major fire destroys inventory two weeks after year end. The inventory was undamaged at the reporting date. What is the correct treatment?",
+      "options": [
+        "Do not adjust the financial statements, but disclose if material",
+        "Adjust the inventory figure because the event happened before the accounts were authorised",
+        "Recognise the loss through OCI",
+        "Treat it as a prior period error"
+      ],
+      "correct": "Do not adjust the financial statements, but disclose if material",
+      "explanation": "The fire is a non-adjusting event because it does not provide evidence of conditions existing at the reporting date."
+    }
+  ],
+  "Chapter 17: IAS 12 Income Taxes": [
+    {
+      "question": "Deferred tax liabilities are recognised for:",
+      "options": [
+        "All taxable temporary differences",
+        "Only deductible temporary differences",
+        "Tax losses carried forward only",
+        "Permanent differences"
+      ],
+      "correct": "All taxable temporary differences",
+      "explanation": "With limited exceptions (e.g., initial recognition of goodwill)."
+    },
+    {
+      "question": "Deferred tax assets are recognised for deductible temporary differences to the extent that it is:",
+      "options": [
+        "Possible that they will be utilised",
+        "Probable that taxable profit will be available against which they can be utilised",
+        "Always recognised",
+        "Only if the tax rate is expected to decrease"
+      ],
+      "correct": "Probable that taxable profit will be available against which they can be utilised",
+      "explanation": "Probable means more likely than not."
+    },
+    {
+      "question": "The tax base of a non-depreciable asset that has been revalued is normally:",
+      "options": [
+        "Its revalued carrying amount",
+        "Its original historical cost for tax purposes",
+        "Zero",
+        "Its fair value at revaluation date"
+      ],
+      "correct": "Its original historical cost for tax purposes",
+      "explanation": "This creates a taxable temporary difference."
+    },
+    {
+      "question": "An entity has unused tax losses. When can a deferred tax asset be recognised for those losses?",
+      "options": [
+        "Only when future taxable profits are probable against which the losses can be utilised",
+        "Always, because losses create an automatic tax benefit",
+        "Only when the losses were incurred from discontinued operations",
+        "Only if the tax rate is expected to increase next year"
+      ],
+      "correct": "Only when future taxable profits are probable against which the losses can be utilised",
+      "explanation": "IAS 12 requires probable future taxable profits before recognising a DTA for unused losses."
+    },
+    {
+      "question": "Land is revalued upward by 300,000. The tax base is unchanged and the tax rate is 25%. What deferred tax entry arises?",
+      "options": [
+        "A deferred tax liability of 75,000 recognised with the revaluation gain",
+        "A deferred tax asset of 75,000 recognised in profit or loss",
+        "No deferred tax arises because land is not depreciated",
+        "A current tax liability of 300,000 recognised in OCI"
+      ],
+      "correct": "A deferred tax liability of 75,000 recognised with the revaluation gain",
+      "explanation": "The upward revaluation creates a taxable temporary difference, so a deferred tax liability of 300,000 x 25% = 75,000 is recognised."
+    }
+  ],
+  "Chapter 18: Financial Instruments": [
+    {
+      "question": "Under IFRS 9, a debt instrument is measured at amortised cost if it passes:",
+      "options": [
+        "The business model test only",
+        "The SPPI test only",
+        "Both the business model test (hold to collect) and the SPPI test",
+        "The fair value through OCI election"
+      ],
+      "correct": "Both the business model test (hold to collect) and the SPPI test",
+      "explanation": "Both tests must be met."
+    },
+    {
+      "question": "Equity investments under IFRS 9 are normally measured at:",
+      "options": [
+        "Amortised cost",
+        "Fair value through profit or loss",
+        "Fair value through OCI with recycling",
+        "Cost less impairment"
+      ],
+      "correct": "Fair value through profit or loss",
+      "explanation": "FVOCI election (no recycling) is available but irrevocable."
+    },
+    {
+      "question": "The expected credit loss model applies to:",
+      "options": [
+        "Only trade receivables",
+        "Financial assets at amortised cost and FVOCI, lease receivables, contract assets and certain loan commitments",
+        "Equity instruments",
+        "Derivatives only"
+      ],
+      "correct": "Financial assets at amortised cost and FVOCI, lease receivables, contract assets and certain loan commitments",
+      "explanation": "This is the IFRS 9 impairment scope."
+    },
+    {
+      "question": "Hedge accounting requires formal designation and documentation at inception of:",
+      "options": [
+        "The hedging relationship and risk management objective",
+        "The hedging instrument only",
+        "The hedged item only",
+        "No documentation if effective"
+      ],
+      "correct": "The hedging relationship and risk management objective",
+      "explanation": "Documentation is mandatory."
+    },
+    {
+      "question": "A debt instrument passes the SPPI test and the business model is to hold the asset to collect contractual cash flows and sell it when useful. Which measurement category applies?",
+      "options": [
+        "Fair value through OCI",
+        "Amortised cost",
+        "Fair value through profit or loss only",
+        "Cost less impairment"
+      ],
+      "correct": "Fair value through OCI",
+      "explanation": "SPPI plus a hold-and-sell business model leads to FVOCI for debt instruments."
+    },
+    {
+      "question": "A debt instrument is measured at fair value through OCI because it is held to collect contractual cash flows and sell. During the year, fair value falls by 40,000, expected credit losses increase by 6,000, and interest revenue is 18,000. Which statement is correct?",
+      "options": [
+        "The fair value loss goes to OCI, the expected credit loss goes to profit or loss, and interest revenue goes to profit or loss",
+        "All three amounts go to profit or loss",
+        "The fair value loss goes to profit or loss, while impairment goes to OCI",
+        "All three amounts go directly to equity"
+      ],
+      "correct": "The fair value loss goes to OCI, the expected credit loss goes to profit or loss, and interest revenue goes to profit or loss",
+      "explanation": "For FVOCI debt instruments, fair value changes go to OCI, impairment goes through profit or loss, and interest is recognised using the effective interest method in profit or loss."
+    }
+  ],
+  "Chapter 19: Foreign Currency Transactions": [
+    {
+      "question": "A foreign currency transaction is initially recognised at:",
+      "options": [
+        "The closing rate on the transaction date",
+        "The spot exchange rate on the date of the transaction",
+        "The average rate for the period",
+        "The forward rate"
+      ],
+      "correct": "The spot exchange rate on the date of the transaction",
+      "explanation": "IAS 21 requires the spot rate at the transaction date."
+    },
+    {
+      "question": "Monetary items in foreign currency are translated at the reporting date using:",
+      "options": [
+        "The historical rate",
+        "The closing rate",
+        "The average rate",
+        "The rate at the start of the year"
+      ],
+      "correct": "The closing rate",
+      "explanation": "Non-monetary items use historical rates."
+    },
+    {
+      "question": "An entity holds a foreign currency receivable that is monetary in nature. How is it translated at the reporting date?",
+      "options": [
+        "At the closing rate, with exchange differences in profit or loss",
+        "At the historical rate, with no retranslation",
+        "At the average rate for the year, with differences in OCI",
+        "At the spot rate only when the receivable is collected"
+      ],
+      "correct": "At the closing rate, with exchange differences in profit or loss",
+      "explanation": "Monetary items are retranslated at the closing rate and exchange differences go to profit or loss."
+    },
+    {
+      "question": "An entity pays a foreign supplier in advance for inventory before the reporting date. The exchange rate changes after payment but before delivery. How is the prepayment treated at the reporting date?",
+      "options": [
+        "As a non-monetary item carried at the historical rate",
+        "It is retranslated at the closing rate because it relates to inventory",
+        "It is measured using the average rate for the year",
+        "It is translated to OCI until the inventory is received"
+      ],
+      "correct": "As a non-monetary item carried at the historical rate",
+      "explanation": "A prepayment is non-monetary, so it is not retranslated at the reporting date."
+    }
+  ],
+  "Chapter 20: IAS 33 Earnings per Share": [
+    {
+      "question": "Basic EPS is calculated as:",
+      "options": [
+        "Profit after tax divided by the weighted average number of ordinary shares outstanding",
+        "Profit before tax divided by total shares in issue",
+        "Profit attributable to equity holders divided by the number of shares at year end",
+        "Diluted profit divided by diluted shares"
+      ],
+      "correct": "Profit after tax divided by the weighted average number of ordinary shares outstanding",
+      "explanation": "IAS 33 definition (adjusted for preference dividends if applicable)."
+    },
+    {
+      "question": "For diluted EPS, potential ordinary shares are included when they are:",
+      "options": [
+        "Anti-dilutive",
+        "Dilutive",
+        "Always included",
+        "Only if exercised"
+      ],
+      "correct": "Dilutive",
+      "explanation": "Only dilutive potential shares are included in diluted EPS."
+    },
+    {
+      "question": "Which potential ordinary share is excluded from diluted EPS when its inclusion would increase, rather than reduce, earnings per share?",
+      "options": [
+        "An anti-dilutive instrument",
+        "A share option with an exercise price above market price",
+        "A convertible bond that reduces EPS",
+        "A bonus issue"
+      ],
+      "correct": "An anti-dilutive instrument",
+      "explanation": "Potential ordinary shares are included in diluted EPS only if they are dilutive."
+    },
+    {
+      "question": "An entity has 2,000,000 ordinary shares in issue at the start of the year. On 1 July it issues another 600,000 shares for cash. What is the weighted average number of ordinary shares for basic EPS?",
+      "options": [
+        "2,300,000",
+        "2,600,000",
+        "2,150,000",
+        "2,000,000"
+      ],
+      "correct": "2,300,000",
+      "explanation": "The original 2,000,000 shares are weighted for 12 months, and the 600,000 new shares are weighted for 6 months: 2,000,000 + (600,000 x 6/12) = 2,300,000."
+    }
+  ],
+  "Chapter 21: Conceptual Principles of Groups": [
+    {
+      "question": "Control for consolidation under IFRS 10 exists when the investor has:",
+      "options": [
+        "Significant influence only",
+        "Power over the investee, exposure to variable returns, and the ability to affect those returns",
+        "50% or more voting rights",
+        "Joint control"
+      ],
+      "correct": "Power over the investee, exposure to variable returns, and the ability to affect those returns",
+      "explanation": "All three elements of control must be present."
+    },
+    {
+      "question": "Non-controlling interest at acquisition can be measured using:",
+      "options": [
+        "Proportionate share of net identifiable assets only",
+        "Fair value or proportionate share of net identifiable assets (choice per acquisition)",
+        "Fair value only",
+        "Zero"
+      ],
+      "correct": "Fair value or proportionate share of net identifiable assets (choice per acquisition)",
+      "explanation": "The choice affects the amount of goodwill recognised."
+    },
+    {
+      "question": "Which combination is required to demonstrate control of an investee under IFRS 10?",
+      "options": [
+        "Power, exposure to variable returns, and the ability to use power to affect those returns",
+        "Majority voting rights only",
+        "The ability to appoint the finance director only",
+        "A contractual right to receive dividends only"
+      ],
+      "correct": "Power, exposure to variable returns, and the ability to use power to affect those returns",
+      "explanation": "Control requires all three elements, not just majority ownership."
+    },
+    {
+      "question": "A lender has veto rights only over a borrower’s major asset disposals to protect its loan. Does that right give the lender control of the borrower?",
+      "options": [
+        "No, because protective rights do not give power over the relevant activities",
+        "Yes, because any veto right creates control",
+        "Yes, but only if the loan is more than 50% of assets",
+        "No, because control can never exist without majority share ownership"
+      ],
+      "correct": "No, because protective rights do not give power over the relevant activities",
+      "explanation": "Protective rights are designed to protect the holder’s interests and do not themselves confer control."
+    }
+  ],
+  "Chapter 22: Consolidated Statement of Financial Position": [
+    {
+      "question": "Goodwill is calculated as:",
+      "options": [
+        "Consideration transferred + NCI + fair value of previous interest – fair value of net identifiable assets acquired",
+        "Consideration transferred – carrying amount of net assets",
+        "Share of net assets only",
+        "Fair value of subsidiary"
+      ],
+      "correct": "Consideration transferred + NCI + fair value of previous interest – fair value of net identifiable assets acquired",
+      "explanation": "This is the full goodwill method (or partial if NCI at proportionate share)."
+    },
+    {
+      "question": "Intra-group unrealised profit in inventory held by the parent is eliminated by:",
+      "options": [
+        "Reducing group inventory and group retained earnings by 100% of the PURP",
+        "Reducing only the subsidiary’s retained earnings",
+        "No adjustment needed if sold externally",
+        "Reducing cost of sales only"
+      ],
+      "correct": "Reducing group inventory and group retained earnings by 100% of the PURP",
+      "explanation": "The full PURP is eliminated regardless of who holds the inventory."
+    },
+    {
+      "question": "When a parent acquires additional shares in a subsidiary without losing control, the difference between consideration paid and the carrying amount of NCI acquired is recognised in:",
+      "options": [
+        "Profit or loss",
+        "Equity (other reserves)",
+        "Goodwill",
+        "Retained earnings only"
+      ],
+      "correct": "Equity (other reserves)",
+      "explanation": "It is an equity transaction with no gain or loss in profit or loss."
+    },
+    {
+      "question": "In the consolidated statement of financial position, the investment in subsidiary is replaced by:",
+      "options": [
+        "The subsidiary’s assets and liabilities at book value",
+        "The subsidiary’s identifiable assets and liabilities at fair value at acquisition plus post-acquisition changes",
+        "The cost of the investment",
+        "The NCI share only"
+      ],
+      "correct": "The subsidiary’s identifiable assets and liabilities at fair value at acquisition plus post-acquisition changes",
+      "explanation": "Line-by-line consolidation uses acquisition-date fair values."
+    },
+    {
+      "question": "Losses attributable to non-controlling interest are allocated even if this results in a debit balance in NCI unless:",
+      "options": [
+        "The subsidiary has no obligation to absorb losses",
+        "The parent has a contractual obligation to absorb all losses",
+        "The group has no obligation to provide further finance",
+        "The losses are immaterial"
+      ],
+      "correct": "The parent has a contractual obligation to absorb all losses",
+      "explanation": "NCI shares in losses even if a deficit arises unless a specific agreement exists."
+    },
+    {
+      "question": "A parent acquires 80% of a subsidiary and measures non-controlling interest at proportionate share of net assets. Which goodwill basis is used?",
+      "options": [
+        "Partial goodwill only",
+        "Full goodwill only",
+        "Negative goodwill by default",
+        "No goodwill is recognised"
+      ],
+      "correct": "Partial goodwill only",
+      "explanation": "Measuring NCI at proportionate share gives a partial goodwill calculation."
+    },
+    {
+      "question": "A parent pays 300,000 for an 80% interest in a subsidiary. At acquisition, the subsidiary has share capital of 150,000, retained earnings of 50,000, and a 20,000 fair value uplift on property. NCI is measured at proportionate share of net assets. What goodwill is recognised?",
+      "options": [
+        "124,000",
+        "104,000",
+        "84,000",
+        "144,000"
+      ],
+      "correct": "124,000",
+      "explanation": "FV net assets = 150,000 + 50,000 + 20,000 = 220,000. NCI = 20% x 220,000 = 44,000. Goodwill = 300,000 + 44,000 - 220,000 = 124,000."
+    }
+  ],
+  "Chapter 23: Consolidation Adjustments": [
+    {
+      "question": "Intra-group dividends received by the parent from the subsidiary are eliminated by:",
+      "options": [
+        "Reducing investment income and group retained earnings",
+        "Reducing only the subsidiary’s retained earnings",
+        "No elimination required",
+        "Adding to NCI"
+      ],
+      "correct": "Reducing investment income and group retained earnings",
+      "explanation": "Intra-group dividends are fully eliminated."
+    },
+    {
+      "question": "The provision for unrealised profit on intra-group sales of non-current assets is adjusted against:",
+      "options": [
+        "Group retained earnings and the carrying amount of the asset",
+        "Cost of sales only",
+        "NCI only",
+        "Investment income"
+      ],
+      "correct": "Group retained earnings and the carrying amount of the asset",
+      "explanation": "PURP is eliminated from both the asset and group equity."
+    },
+    {
+      "question": "Fair value adjustments at acquisition are depreciated/amortised in the consolidated financial statements from:",
+      "options": [
+        "The acquisition date",
+        "The reporting date",
+        "The date the subsidiary was incorporated",
+        "The date of the first consolidation"
+      ],
+      "correct": "The acquisition date",
+      "explanation": "Post-acquisition depreciation of fair value uplifts affects group retained earnings."
+    },
+    {
+      "question": "At the year end, a subsidiary has unsold inventory purchased from the parent and the sale was made by the parent. How is the unrealised profit eliminated?",
+      "options": [
+        "It reduces group profit and, because it is downstream, it does not affect NCI",
+        "It increases group profit and increases NCI",
+        "It is ignored until the inventory is sold externally",
+        "It is recognised entirely in OCI"
+      ],
+      "correct": "It reduces group profit and, because it is downstream, it does not affect NCI",
+      "explanation": "Downstream unrealised profit is eliminated against group profit and does not reduce NCI."
+    },
+    {
+      "question": "A parent sells inventory to its subsidiary for 12,000. The inventory cost the parent 9,000, and 40% of the inventory remains unsold at year end. How much unrealised profit is eliminated from group profit?",
+      "options": [
+        "1,200",
+        "3,000",
+        "4,800",
+        "7,200"
+      ],
+      "correct": "1,200",
+      "explanation": "Profit on sale = 3,000. Unrealised portion = 3,000 x 40% = 1,200. Because this is a downstream sale, the adjustment reduces group profit and does not affect NCI."
+    }
+  ],
+  "Chapter 24: Consolidated Statement of Profit or Loss": [
+    {
+      "question": "In the consolidated statement of profit or loss, intra-group sales are eliminated by:",
+      "options": [
+        "Reducing revenue and cost of sales by the full intra-group amount",
+        "Reducing revenue only",
+        "Reducing cost of sales only",
+        "No adjustment required"
+      ],
+      "correct": "Reducing revenue and cost of sales by the full intra-group amount",
+      "explanation": "This prevents double-counting."
+    },
+    {
+      "question": "Post-acquisition profits of a subsidiary are included in the consolidated statement of profit or loss on a:",
+      "options": [
+        "100% basis",
+        "Parent’s ownership percentage only",
+        "NCI percentage only",
+        "Pre-acquisition basis"
+      ],
+      "correct": "100% basis",
+      "explanation": "Line-by-line consolidation includes 100% of post-acquisition results, with NCI share shown separately."
+    },
+    {
+      "question": "When a subsidiary is acquired during the year, its results are included in the consolidated statement of profit or loss from:",
+      "options": [
+        "The beginning of the year",
+        "The date of acquisition",
+        "The end of the year",
+        "The date the financial statements are authorised"
+      ],
+      "correct": "The date of acquisition",
+      "explanation": "Only post-acquisition results are consolidated."
+    },
+    {
+      "question": "A subsidiary had a fair value uplift on PPE at acquisition. What is the effect of the additional depreciation on the consolidated statement of profit or loss after acquisition?",
+      "options": [
+        "It is an extra group expense that reduces post-acquisition profit",
+        "It is ignored because fair value uplifts are only relevant to the statement of financial position",
+        "It is recognised in OCI",
+        "It is added back to revenue"
+      ],
+      "correct": "It is an extra group expense that reduces post-acquisition profit",
+      "explanation": "Fair value uplifts on depreciable assets create extra depreciation charged in group profit or loss."
+    },
+    {
+      "question": "A subsidiary is acquired on 1 July. Its profit after tax for the year is 160,000, earned evenly through the year. A fair value uplift on PPE creates extra annual depreciation of 24,000. What subsidiary profit is included in group profit after acquisition?",
+      "options": [
+        "68,000",
+        "80,000",
+        "56,000",
+        "92,000"
+      ],
+      "correct": "68,000",
+      "explanation": "Only post-acquisition profit is consolidated, so 160,000 x 6/12 = 80,000. The fair value uplift adds 24,000 x 6/12 = 12,000 extra depreciation, leaving 68,000."
+    }
+  ],
+  "Chapter 25: Investments in Associates": [
+    {
+      "question": "An associate is accounted for using:",
+      "options": [
+        "The cost method",
+        "The equity method",
+        "Full consolidation",
+        "Fair value through profit or loss"
+      ],
+      "correct": "The equity method",
+      "explanation": "IAS 28 requires the equity method for associates."
+    },
+    {
+      "question": "The investment in associate in the consolidated statement of financial position is shown as:",
+      "options": [
+        "The cost of the investment",
+        "The group’s share of the associate’s net assets plus goodwill",
+        "100% of the associate’s assets and liabilities",
+        "Fair value"
+      ],
+      "correct": "The group’s share of the associate’s net assets plus goodwill",
+      "explanation": "This is the single-line equity accounting presentation."
+    },
+    {
+      "question": "Dividends received from an associate are credited to:",
+      "options": [
+        "Investment income in profit or loss",
+        "The carrying amount of the investment in associate (reducing it)",
+        "Other comprehensive income",
+        "Group retained earnings directly"
+      ],
+      "correct": "The carrying amount of the investment in associate (reducing it)",
+      "explanation": "They reduce the carrying amount under the equity method."
+    },
+    {
+      "question": "Under the equity method, how is a dividend received from an associate treated?",
+      "options": [
+        "It reduces the carrying amount of the investment",
+        "It is recognised as revenue in full",
+        "It is credited to OCI",
+        "It is ignored because associates are not consolidated"
+      ],
+      "correct": "It reduces the carrying amount of the investment",
+      "explanation": "Dividends from an associate are not income under the equity method; they reduce the carrying amount."
+    },
+    {
+      "question": "A parent owns 30% of an associate. The associate sells inventory to the parent for 130,000, at a cost of 100,000, and 40% of the inventory remains unsold at year end. What unrealised profit is deducted from the investor’s share of associate profit?",
+      "options": [
+        "3,600",
+        "12,000",
+        "9,000",
+        "4,800"
+      ],
+      "correct": "3,600",
+      "explanation": "Unrealised profit = 30,000 x 40% = 12,000. Under the equity method, the investor eliminates its share of that profit: 30% x 12,000 = 3,600."
+    }
+  ],
+  "Chapter 26: Analysis and Interpretation": [
+    {
+      "question": "A major limitation of ratio analysis is that it:",
+      "options": [
+        "Ignores the effect of different accounting policies and estimates",
+        "Always provides a complete picture of performance",
+        "Is only useful for listed companies",
+        "Considers qualitative factors automatically"
+      ],
+      "correct": "Ignores the effect of different accounting policies and estimates",
+      "explanation": "Ratios are based on reported figures that can vary due to policy choices."
+    },
+    {
+      "question": "When comparing ratios between entities, an important factor to consider is:",
+      "options": [
+        "The use of different accounting policies",
+        "The exact same industry classification",
+        "The same financial year end only",
+        "The size of the entity being irrelevant"
+      ],
+      "correct": "The use of different accounting policies",
+      "explanation": "This can make direct comparison misleading."
+    },
+    {
+      "question": "The current ratio is most useful for assessing:",
+      "options": [
+        "Profitability",
+        "Short-term liquidity",
+        "Long-term solvency",
+        "Efficiency"
+      ],
+      "correct": "Short-term liquidity",
+      "explanation": "It measures the ability to meet short-term obligations."
+    },
+    {
+      "question": "A company reports a higher current ratio, but the increase is driven mainly by slow-moving inventory. What is the best interpretation?",
+      "options": [
+        "Liquidity may have worsened because inventory is the least liquid current asset",
+        "Liquidity has definitely improved because the ratio increased",
+        "The quick ratio will always move in the same direction by the same amount",
+        "Gearing has improved automatically"
+      ],
+      "correct": "Liquidity may have worsened because inventory is the least liquid current asset",
+      "explanation": "A rising current ratio can be misleading if it is caused by inventory buildup rather than cash or receivables."
+    },
+    {
+      "question": "A company’s gross margin improves and ROCE looks stable, but operating cash outflows increase because receivables and inventory rise faster than sales. What is the most defensible interpretation?",
+      "options": [
+        "Profit quality may be weakening because earnings are not converting into cash",
+        "Liquidity must have improved because sales are rising",
+        "Gearing has fallen automatically",
+        "The company is definitely less profitable because profit and cash are identical metrics"
+      ],
+      "correct": "Profit quality may be weakening because earnings are not converting into cash",
+      "explanation": "A widening gap between profit and operating cash flow can indicate weaker earnings quality or working capital absorption."
+    }
+  ],
+  "Chapter 27: IAS 7 Statement of Cash Flows": [
+    {
+      "question": "Interest paid can be classified in the statement of cash flows as:",
+      "options": [
+        "Operating or financing activities (policy choice)",
+        "Only operating activities",
+        "Only investing activities",
+        "Only financing activities"
+      ],
+      "correct": "Operating or financing activities (policy choice)",
+      "explanation": "IAS 7 allows a choice provided it is applied consistently."
+    },
+    {
+      "question": "In the indirect method, the starting point for operating activities is:",
+      "options": [
+        "Profit before tax",
+        "Cash received from customers",
+        "Revenue",
+        "Net cash from investing activities"
+      ],
+      "correct": "Profit before tax",
+      "explanation": "Adjustments are then made for non-cash items and working capital changes."
+    },
+    {
+      "question": "Which statement about dividend classification under IAS 7 is correct?",
+      "options": [
+        "Dividends received may be operating or investing; dividends paid may be operating or financing, provided the policy is applied consistently",
+        "Dividends received must always be financing cash flows",
+        "Dividends paid must always be investing cash flows",
+        "Dividend classification is prohibited because it distorts operating cash flow"
+      ],
+      "correct": "Dividends received may be operating or investing; dividends paid may be operating or financing, provided the policy is applied consistently",
+      "explanation": "IAS 7 allows classification choices for dividends, but the policy must be consistent from period to period."
+    },
+    {
+      "question": "Profit before tax is 200,000. Depreciation is 30,000, inventory increases by 20,000, receivables decrease by 10,000, and payables decrease by 5,000. What is operating cash flow before interest and tax under the indirect method?",
+      "options": [
+        "215,000",
+        "205,000",
+        "225,000",
+        "235,000"
+      ],
+      "correct": "215,000",
+      "explanation": "Operating cash flow = 200,000 + 30,000 - 20,000 + 10,000 - 5,000 = 215,000."
+    }
+  ]
+}

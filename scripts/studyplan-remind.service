@@ -1,0 +1,13 @@
+# studyplan-remind.service — systemd user service for review reminders.
+# Install to ~/.config/systemd/user/ then:
+#   systemctl --user enable --now studyplan-remind.timer
+
+[Unit]
+Description=Study Plan — fire a desktop notification when SRS reviews are due
+
+[Service]
+Type=oneshot
+# Adjust the path to your repo and the module ID as needed.
+ExecStart=/usr/bin/python3 %h/Study-Plan-APP-OSS/scripts/remind_review.py --module acca_f7
+# Required so notify-send can reach the session D-Bus.
+Environment=DISPLAY=:0
