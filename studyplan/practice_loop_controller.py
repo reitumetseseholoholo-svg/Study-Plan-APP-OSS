@@ -4,7 +4,14 @@ from typing import Any
 from .cognitive_state import CognitiveState, CognitiveStateValidator
 from .mastery_kernel import MasteryKernel
 from .coach_fsm import SocraticFSM
-from .practice_loop_fsm import recommend_action_policy
+from .practice_loop_fsm import (
+    PracticeLoopEvent,
+    PracticeLoopFSM,
+    PracticeLoopFsmState,
+    coerce_practice_loop_state,
+    normalize_assessment_outcome,
+    recommend_action_policy,
+)
 from .contracts import (
     TutorPracticeItem,
     TutorAssessmentSubmission,
@@ -41,6 +48,7 @@ from .confidence_tracking import (
 
 logger = get_logger(__name__)
 RECOVERABLE_LOOP_ERRORS = (AttributeError, RuntimeError, TypeError, ValueError, KeyError)
+MAX_TRANSITION_LOG_ENTRIES = 25
 
 
 @dataclass
@@ -53,6 +61,8 @@ class PracticeLoopSessionState:
     app_snapshot: AppStateSnapshot
     current_item: TutorPracticeItem | None = None
     current_result: TutorAssessmentResult | None = None
+    practice_fsm_state: str = PracticeLoopFsmState.IDLE.value
+    transition_log: list[dict[str, Any]] = field(default_factory=list)
     
     # Tutor improvement tracking
     error_detector: ErrorPatternDetector = field(default_factory=ErrorPatternDetector)
@@ -179,6 +189,335 @@ class PracticeLoopController:
         if not str(payload.get("item_id", "") or "").strip() and fallback_item_id:
             payload["item_id"] = str(fallback_item_id)
         return TutorAssessmentResult.from_dict(payload)
+
+    @staticmethod
+    def _loop_phase_for_practice_state(state: PracticeLoopFsmState) -> str:
+        mapping = {
+            PracticeLoopFsmState.IDLE: "observe",
+            PracticeLoopFsmState.PRESENTING: "practice",
+            PracticeLoopFsmState.AWAITING_SUBMISSION: "practice",
+            PracticeLoopFsmState.ASSESSING: "assess",
+            PracticeLoopFsmState.SCORED: "reinforce",
+            PracticeLoopFsmState.REFLECTING: "recap",
+            PracticeLoopFsmState.TRANSFER_TESTING: "assess",
+            PracticeLoopFsmState.MASTERED: "recap",
+            PracticeLoopFsmState.ERROR: "diagnose",
+        }
+        return mapping.get(state, "observe")
+
+    def _resolve_practice_fsm_state(self, loop_state: PracticeLoopSessionState) -> PracticeLoopFsmState:
+        state_raw: Any = getattr(loop_state, "practice_fsm_state", PracticeLoopFsmState.IDLE)
+        if state_raw in (None, "", PracticeLoopFsmState.IDLE):
+            try:
+                session_meta = dict(getattr(loop_state.session_state, "meta", {}) or {})
+            except Exception:
+                session_meta = {}
+            state_raw = session_meta.get("practice_loop_fsm_state", state_raw)
+        resolved = coerce_practice_loop_state(state_raw)
+        loop_state.practice_fsm_state = resolved.value
+        return resolved
+
+    def _write_practice_fsm_state(
+        self,
+        loop_state: PracticeLoopSessionState,
+        *,
+        previous_state: PracticeLoopFsmState | None = None,
+        state: PracticeLoopFsmState,
+        event: PracticeLoopEvent | None = None,
+        action: str = "",
+        item: TutorPracticeItem | None = None,
+        result: TutorAssessmentResult | None = None,
+        source: str = "",
+    ) -> PracticeLoopFsmState:
+        prior_state = previous_state or self._resolve_practice_fsm_state(loop_state)
+        loop_state.practice_fsm_state = state.value
+        if item is not None:
+            loop_state.current_item = item
+        if result is not None:
+            loop_state.current_result = result
+        entry = {
+            "from_state": prior_state.value,
+            "to_state": state.value,
+            "event": event.value if isinstance(event, PracticeLoopEvent) else "",
+            "action": self._coerce_str(action),
+            "item_id": self._coerce_str(getattr(item, "item_id", "")),
+            "outcome": self._coerce_str(getattr(result, "outcome", "")).lower(),
+            "source": self._coerce_str(source),
+        }
+        loop_state.transition_log.append(entry)
+        if len(loop_state.transition_log) > MAX_TRANSITION_LOG_ENTRIES:
+            del loop_state.transition_log[:-MAX_TRANSITION_LOG_ENTRIES]
+        payload = loop_state.session_state.to_dict()
+        meta = dict(payload.get("meta", {}) or {})
+        transition_count = self._coerce_int(meta.get("practice_loop_transition_count"), 0, min_value=0)
+        meta["practice_loop_fsm_state"] = state.value
+        meta["practice_loop_last_event"] = entry["event"]
+        meta["practice_loop_last_action"] = entry["action"]
+        meta["practice_loop_transition_count"] = transition_count + 1
+        payload["meta"] = meta
+        payload["loop_phase"] = self._loop_phase_for_practice_state(state)
+        payload["active_practice_item_id"] = self._coerce_str(
+            getattr(item, "item_id", ""),
+            self._coerce_str(payload.get("active_practice_item_id", "")),
+        )
+        payload["last_action"] = entry["event"] or self._coerce_str(payload.get("last_action", ""))
+        if result is not None:
+            payload["last_assessment_outcome"] = normalize_assessment_outcome(getattr(result, "outcome", ""))
+        payload["active"] = state not in {PracticeLoopFsmState.IDLE, PracticeLoopFsmState.MASTERED}
+        loop_state.session_state = TutorSessionState.from_dict(payload)
+        return state
+
+    def _reset_practice_fsm(
+        self,
+        loop_state: PracticeLoopSessionState,
+        *,
+        item: TutorPracticeItem | None = None,
+        source: str = "",
+    ) -> PracticeLoopFsmState:
+        logger.info(
+            "practice loop reset",
+            extra={
+                "session": self._coerce_str(getattr(loop_state.session_state, "session_id", "")),
+                "source": self._coerce_str(source),
+                "item_id": self._coerce_str(getattr(item, "item_id", "")),
+            },
+        )
+        return self._write_practice_fsm_state(
+            loop_state,
+            state=PracticeLoopFsmState.IDLE,
+            item=item,
+            source=source or "reset",
+        )
+
+    def _transition_practice_fsm(
+        self,
+        loop_state: PracticeLoopSessionState,
+        event: PracticeLoopEvent,
+        *,
+        item: TutorPracticeItem | None = None,
+        result: TutorAssessmentResult | None = None,
+        source: str = "",
+    ) -> PracticeLoopFsmState | None:
+        previous_state = self._resolve_practice_fsm_state(loop_state)
+        fsm = PracticeLoopFSM(initial_state=previous_state)
+        if not fsm.can_transition(event):
+            logger.warning(
+                "practice loop transition rejected",
+                extra={
+                    "session": self._coerce_str(getattr(loop_state.session_state, "session_id", "")),
+                    "from_state": previous_state.value,
+                    "event": event.value,
+                    "allowed_events": [candidate.value for candidate in fsm.allowed_events()],
+                    "item_id": self._coerce_str(getattr(item, "item_id", "")),
+                    "source": self._coerce_str(source),
+                },
+            )
+            return None
+        next_state, action = fsm.transition(event)
+        self._write_practice_fsm_state(
+            loop_state,
+            previous_state=previous_state,
+            state=next_state,
+            event=event,
+            action=action,
+            item=item,
+            result=result,
+            source=source,
+        )
+        logger.info(
+            "practice loop transition",
+            extra={
+                "session": self._coerce_str(getattr(loop_state.session_state, "session_id", "")),
+                "from_state": previous_state.value,
+                "to_state": next_state.value,
+                "event": event.value,
+                "action": self._coerce_str(action),
+                "item_id": self._coerce_str(getattr(item, "item_id", "")),
+                "source": self._coerce_str(source),
+            },
+        )
+        return next_state
+
+    def present_practice_item(
+        self,
+        loop_state: PracticeLoopSessionState,
+        item: TutorPracticeItem,
+        *,
+        restart: bool = False,
+        source: str = "runtime_present_item",
+    ) -> PracticeLoopFsmState:
+        current_state = self._resolve_practice_fsm_state(loop_state)
+        if restart and current_state != PracticeLoopFsmState.IDLE:
+            current_state = self._reset_practice_fsm(loop_state, item=item, source=f"{source}_restart")
+        if current_state in {PracticeLoopFsmState.IDLE, PracticeLoopFsmState.ERROR}:
+            transitioned = self._transition_practice_fsm(
+                loop_state,
+                PracticeLoopEvent.QUIZ_START,
+                item=item,
+                source=source,
+            )
+            current_state = transitioned or self._resolve_practice_fsm_state(loop_state)
+        if current_state == PracticeLoopFsmState.PRESENTING:
+            transitioned = self._transition_practice_fsm(
+                loop_state,
+                PracticeLoopEvent.ITEM_PRESENTED,
+                item=item,
+                source=source,
+            )
+            current_state = transitioned or self._resolve_practice_fsm_state(loop_state)
+        loop_state.current_item = item
+        loop_state.current_result = None
+        return current_state
+
+    def note_submission_received(
+        self,
+        loop_state: PracticeLoopSessionState,
+        item: TutorPracticeItem,
+        *,
+        source: str = "runtime_submission",
+    ) -> PracticeLoopFsmState:
+        current_state = self._resolve_practice_fsm_state(loop_state)
+        if current_state in {PracticeLoopFsmState.IDLE, PracticeLoopFsmState.PRESENTING}:
+            current_state = self.present_practice_item(loop_state, item, source=f"{source}_autopresent")
+        if current_state == PracticeLoopFsmState.AWAITING_SUBMISSION:
+            transitioned = self._transition_practice_fsm(
+                loop_state,
+                PracticeLoopEvent.SUBMISSION_RECEIVED,
+                item=item,
+                source=source,
+            )
+            current_state = transitioned or current_state
+        return current_state
+
+    def note_assessment_result(
+        self,
+        loop_state: PracticeLoopSessionState,
+        item: TutorPracticeItem,
+        result: TutorAssessmentResult,
+        *,
+        source: str = "runtime_assessment",
+    ) -> PracticeLoopFsmState:
+        outcome = normalize_assessment_outcome(getattr(result, "outcome", ""))
+        current_state = self._resolve_practice_fsm_state(loop_state)
+        item_meta = dict(getattr(item, "meta", {}) or {})
+        if bool(item_meta.get("transfer_variant", False)) and current_state == PracticeLoopFsmState.TRANSFER_TESTING:
+            transitioned = self._transition_practice_fsm(
+                loop_state,
+                PracticeLoopEvent.TRANSFER_TEST_RESULT,
+                item=item,
+                result=result,
+                source=source,
+            )
+            return transitioned or current_state
+        if current_state != PracticeLoopFsmState.ASSESSING:
+            current_state = self.note_submission_received(loop_state, item, source=f"{source}_autosubmit")
+        outcome_event = {
+            "correct": PracticeLoopEvent.ASSESSMENT_CORRECT,
+            "partial": PracticeLoopEvent.ASSESSMENT_PARTIAL,
+            "incorrect": PracticeLoopEvent.ASSESSMENT_INCORRECT,
+        }.get(outcome)
+        if outcome_event is None:
+            logger.warning(
+                "practice assessment outcome unmapped",
+                extra={
+                    "session": self._coerce_str(getattr(loop_state.session_state, "session_id", "")),
+                    "outcome": self._coerce_str(getattr(result, "outcome", "")).lower(),
+                    "item_id": self._coerce_str(getattr(item, "item_id", "")),
+                    "source": self._coerce_str(source),
+                },
+            )
+            loop_state.current_item = item
+            loop_state.current_result = result
+            return current_state
+        transitioned = self._transition_practice_fsm(
+            loop_state,
+            outcome_event,
+            item=item,
+            result=result,
+            source=source,
+        )
+        return transitioned or current_state
+
+    def note_hint_request(
+        self,
+        loop_state: PracticeLoopSessionState,
+        item: TutorPracticeItem,
+        *,
+        source: str = "runtime_hint",
+    ) -> PracticeLoopFsmState:
+        current_state = self._resolve_practice_fsm_state(loop_state)
+        if current_state in {PracticeLoopFsmState.IDLE, PracticeLoopFsmState.PRESENTING}:
+            current_state = self.present_practice_item(loop_state, item, source=f"{source}_autopresent")
+        transitioned = self._transition_practice_fsm(
+            loop_state,
+            PracticeLoopEvent.HINT_REQUESTED,
+            item=item,
+            source=source,
+        )
+        return transitioned or current_state
+
+    def begin_transfer_variant(
+        self,
+        loop_state: PracticeLoopSessionState,
+        item: TutorPracticeItem,
+        *,
+        source: str = "runtime_transfer_start",
+    ) -> PracticeLoopFsmState:
+        current_state = self._resolve_practice_fsm_state(loop_state)
+        if current_state == PracticeLoopFsmState.SCORED:
+            transitioned = self._transition_practice_fsm(
+                loop_state,
+                PracticeLoopEvent.TRANSFER_TEST_START,
+                item=item,
+                source=source,
+            )
+            if transitioned is not None:
+                loop_state.current_item = item
+                loop_state.current_result = None
+                return transitioned
+        logger.info(
+            "practice transfer fallback to item presentation",
+            extra={
+                "session": self._coerce_str(getattr(loop_state.session_state, "session_id", "")),
+                "from_state": current_state.value,
+                "item_id": self._coerce_str(getattr(item, "item_id", "")),
+                "source": self._coerce_str(source),
+            },
+        )
+        return self.present_practice_item(loop_state, item, restart=True, source=f"{source}_fallback")
+
+    def complete_practice_session(
+        self,
+        loop_state: PracticeLoopSessionState,
+        *,
+        source: str = "runtime_session_end",
+    ) -> PracticeLoopFsmState:
+        current_state = self._resolve_practice_fsm_state(loop_state)
+        if current_state == PracticeLoopFsmState.SCORED:
+            transitioned = self._transition_practice_fsm(
+                loop_state,
+                PracticeLoopEvent.REFLECTION_REQUESTED,
+                item=loop_state.current_item,
+                result=loop_state.current_result,
+                source=source,
+            )
+            current_state = transitioned or current_state
+        if current_state == PracticeLoopFsmState.REFLECTING:
+            transitioned = self._transition_practice_fsm(
+                loop_state,
+                PracticeLoopEvent.QUIZ_END,
+                item=loop_state.current_item,
+                result=loop_state.current_result,
+                source=source,
+            )
+            current_state = transitioned or current_state
+        elif current_state != PracticeLoopFsmState.IDLE:
+            current_state = self._reset_practice_fsm(
+                loop_state,
+                item=loop_state.current_item,
+                source=f"{source}_fallback",
+            )
+        return current_state
 
     @staticmethod
     def _normalize_hint(raw_hint: Any, *, default_level: int = 0) -> HintLevel:
@@ -389,6 +728,7 @@ class PracticeLoopController:
     ) -> TutorAssessmentResult:
         """Score a learner submission and update state."""
         with self.perf_monitor.context("assess"):
+            self.note_submission_received(loop_state, item, source="controller_submit_attempt")
             try:
                 raw_result = self.assess_svc.assess(
                     item=item,
@@ -422,10 +762,11 @@ class PracticeLoopController:
 
             loop_state.current_item = item
             loop_state.current_result = result
+            self.note_assessment_result(loop_state, item, result, source="controller_submit_attempt")
             return result
 
     def advance_state(self, loop_state: PracticeLoopSessionState, event: str, metadata: dict[str, Any] | None = None) -> str:
-        """Advance `SocraticFSM` (coach working-memory state); not `PracticeLoopFSM` table transitions."""
+        """Advance `SocraticFSM` with `PracticeLoopFSM` runtime logging/fallbacks for practice events."""
         fsm = SocraticFSM(loop_state.cognitive_state)
         try:
             decision = fsm.transition(event, metadata)
@@ -742,6 +1083,7 @@ class PracticeLoopController:
         Returns:
             HintLevel to show learner
         """
+        self.note_hint_request(loop_state, item, source="controller_get_next_hint")
         is_struggling = loop_state.cognitive_state.struggle_mode
         next_level = self._coerce_int(
             HintBank.recommend_next_level(

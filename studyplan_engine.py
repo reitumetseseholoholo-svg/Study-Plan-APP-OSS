@@ -10,6 +10,7 @@ import difflib
 import hashlib
 import io
 import json
+import logging
 import math
 import os
 import random
@@ -41,6 +42,8 @@ from studyplan.syllabus_fr import (
 )
 from studyplan.syllabus_f7 import get_f7_syllabus_structure
 from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
+
+logger = logging.getLogger(__name__)
 
 class StudyPlanEngine:
 
@@ -387,7 +390,8 @@ class StudyPlanEngine:
                         if level is not None:
                             try:
                                 level_int = int(level)
-                            except Exception:
+                            except Exception as exc:
+                                logger.debug("Failed to coerce syllabus outcome level.", exc_info=exc)
                                 level_int = None
                         if not text:
                             continue
@@ -399,6 +403,49 @@ class StudyPlanEngine:
                         row = {"id": outcome_id, "text": text, "level": level_int}
                         row.update(self._coerce_learning_outcome_optional_fields(item))
                         cleaned_outcomes.append(row)
+                # Additive merge: never remove existing outcomes already in the structure.
+                # Preserve all prior outcomes; only append genuinely new ones from the incoming config.
+                existing_info = (getattr(self, "syllabus_structure", None) or {}).get(key)
+                if isinstance(existing_info, dict):
+                    prior_los = existing_info.get("learning_outcomes") or []
+                    if isinstance(prior_los, list) and prior_los:
+                        prior_by_id: Dict[str, Dict[str, Any]] = {}
+                        prior_norm_texts: Set[str] = set()
+                        for o in prior_los:
+                            if isinstance(o, dict):
+                                oid = str(o.get("id", "") or "").strip()
+                                if oid:
+                                    prior_by_id[oid] = o
+                                ntxt = re.sub(r"\s+", " ", str(o.get("text", "") or "").lower()).strip()
+                                if ntxt:
+                                    prior_norm_texts.add(ntxt)
+                        # Start with all prior outcomes (preserving order and IDs).
+                        merged_outcomes: List[Dict[str, Any]] = list(prior_los)
+                        merged_ids = set(prior_by_id.keys())
+                        for incoming in cleaned_outcomes:
+                            inc_id = str(incoming.get("id", "") or "").strip()
+                            inc_norm = re.sub(r"\s+", " ", str(incoming.get("text", "") or "").lower()).strip()
+                            if inc_id and inc_id in merged_ids:
+                                # Allow text corrections on existing outcomes (fix malformed text) but keep the ID.
+                                if inc_norm and inc_norm not in prior_norm_texts:
+                                    for mi, mo in enumerate(merged_outcomes):
+                                        if isinstance(mo, dict) and str(mo.get("id", "") or "").strip() == inc_id:
+                                            inc_text = str(incoming.get("text", "") or "").strip()
+                                            existing_text = str(mo.get("text", "") or "").strip()
+                                            # Only update text if the incoming is longer/better (not a truncation).
+                                            if len(inc_text) >= len(existing_text):
+                                                merged_outcomes[mi] = {**mo, "text": inc_text, "level": incoming.get("level", mo.get("level", 2))}
+                                            break
+                                continue
+                            if inc_norm and inc_norm in prior_norm_texts:
+                                continue
+                            # Genuinely new outcome: append it.
+                            merged_outcomes.append(incoming)
+                            if inc_id:
+                                merged_ids.add(inc_id)
+                            if inc_norm:
+                                prior_norm_texts.add(inc_norm)
+                        cleaned_outcomes = merged_outcomes
                 info["learning_outcomes"] = cleaned_outcomes
                 mix = info.get("intellectual_level_mix")
                 if not isinstance(mix, dict):
@@ -411,10 +458,7 @@ class StudyPlanEngine:
                     }
                 except (TypeError, ValueError):
                     info["intellectual_level_mix"] = {"level_1": 0, "level_2": 0, "level_3": 0}
-                try:
-                    info["outcome_count"] = int(info.get("outcome_count", len(cleaned_outcomes)) or 0)
-                except (TypeError, ValueError):
-                    info["outcome_count"] = len(cleaned_outcomes)
+                info["outcome_count"] = len(cleaned_outcomes)
                 normalized[key] = info
             self.syllabus_structure = normalized
             syllabus_structure_updated = True
@@ -517,7 +561,8 @@ class StudyPlanEngine:
             if isinstance(stats_by_ch, dict):
                 try:
                     keys = sorted(str(k) for k in stats_by_ch.keys())
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Failed to sort outcome coverage stats keys.", exc_info=exc)
                     keys = []
                 h.update(b"stats:")
                 for key in keys:
@@ -731,7 +776,8 @@ class StudyPlanEngine:
                 if lev_m:
                     try:
                         outcome_level = int(lev_m.group(1))
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug("Failed to parse generic syllabus outcome level.", exc_info=exc)
                         outcome_level = 2
                     outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", outcome_text).strip()
                     flush_outcome()
@@ -893,7 +939,8 @@ class StudyPlanEngine:
                 if m_level:
                     try:
                         current_level = int(m_level.group(1))
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug("Failed to parse syllabus outcome level.", exc_info=exc)
                         current_level = 2
                     current_outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", current_outcome_text).strip()
                     _flush_outcome()
@@ -950,7 +997,8 @@ class StudyPlanEngine:
                     if m_level:
                         try:
                             current_level = int(m_level.group(1))
-                        except Exception:
+                        except Exception as exc:
+                            logger.debug("Failed to parse fallback syllabus outcome level.", exc_info=exc)
                             current_level = 2
                         current_outcome_text = re.sub(r"[\[\(](\d)[\]\)]\s*$", "", current_outcome_text).strip()
                         _flush_fallback()
@@ -1005,7 +1053,8 @@ class StudyPlanEngine:
                     continue
                 try:
                     level = int(outcome.get("level", 2) or 2)
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Failed to normalize syllabus outcome level.", exc_info=exc)
                     level = 2
                 level = 1 if level < 1 else 3 if level > 3 else level
                 normalized_outcomes.append(
@@ -2494,7 +2543,11 @@ class StudyPlanEngine:
         return result
 
     def import_syllabus_meta_from_json(
-        self, payload: Dict[str, Any], module_id: str | None = None
+        self,
+        payload: Dict[str, Any],
+        module_id: str | None = None,
+        *,
+        merge_syllabus_meta: bool = True,
     ) -> Dict[str, Any]:
         """Merge syllabus_meta (and optionally syllabus_structure, chapters, etc.) from a JSON payload
         into the current module config and apply to the engine. No AI or PDF parsing.
@@ -2503,6 +2556,9 @@ class StudyPlanEngine:
         :param payload: Dict with any of: syllabus_meta, syllabus_structure, chapters,
             chapter_flow, importance_weights, capabilities, aliases, title.
         :param module_id: Target module (default: current self.module_id).
+        :param merge_syllabus_meta: When True (default), overlay incoming syllabus_meta keys
+            onto the existing block. When False, replace the existing syllabus_meta block
+            with the JSON payload's syllabus_meta block.
         :return: Summary dict with keys: applied, warnings, config (validated merged config).
         """
         target_id = self._sanitize_module_id(module_id or self.module_id)
@@ -2512,7 +2568,11 @@ class StudyPlanEngine:
         merged = copy.deepcopy(base)
         warnings: List[str] = []
         if isinstance(payload.get("syllabus_meta"), dict):
-            merged["syllabus_meta"] = {**merged.get("syllabus_meta", {}), **payload["syllabus_meta"]}
+            incoming_syllabus_meta = dict(payload["syllabus_meta"])
+            if merge_syllabus_meta:
+                merged["syllabus_meta"] = {**merged.get("syllabus_meta", {}), **incoming_syllabus_meta}
+            else:
+                merged["syllabus_meta"] = incoming_syllabus_meta
         if isinstance(payload.get("syllabus_structure"), dict):
             merged["syllabus_structure"] = dict(payload["syllabus_structure"])
         if isinstance(payload.get("chapters"), list) and payload["chapters"]:
@@ -2520,7 +2580,15 @@ class StudyPlanEngine:
         if isinstance(payload.get("chapter_flow"), dict):
             merged["chapter_flow"] = dict(payload["chapter_flow"])
         if isinstance(payload.get("importance_weights"), dict):
-            merged["importance_weights"] = {str(k): int(v) for k, v in payload["importance_weights"].items() if str(k).strip()}
+            safe_weights = {}
+            for k, v in payload["importance_weights"].items():
+                if not str(k).strip():
+                    continue
+                try:
+                    safe_weights[str(k)] = int(v)
+                except (TypeError, ValueError):
+                    pass
+            merged["importance_weights"] = safe_weights
         if isinstance(payload.get("capabilities"), dict):
             merged["capabilities"] = {str(k).strip().upper(): str(v).strip() for k, v in payload["capabilities"].items() if str(k).strip() and str(v).strip()}
         if isinstance(payload.get("aliases"), dict):
@@ -2677,11 +2745,52 @@ class StudyPlanEngine:
         # Other modules must stay isolated by module_id to avoid cross-module state bleed.
         if safe_id != "acca_f9":
             return module_data, module_questions
+        has_module_files = os.path.exists(module_data) or os.path.exists(module_questions)
+        has_legacy_files = os.path.exists(self.DEFAULT_DATA_FILE) or os.path.exists(self.DEFAULT_QUESTIONS_FILE)
+        should_use_module_dir = os.path.isdir(module_dir) and (has_module_files or not has_legacy_files)
+        if should_use_module_dir:
+            return module_data, module_questions
         legacy_data = self.DEFAULT_DATA_FILE
         legacy_questions = self.DEFAULT_QUESTIONS_FILE
         data_path = legacy_data if os.path.exists(legacy_data) and not os.path.exists(module_data) else module_data
         questions_path = legacy_questions if os.path.exists(legacy_questions) and not os.path.exists(module_questions) else module_questions
         return data_path, questions_path
+
+    def _assert_data_paths_under_module(self, module_id: str, data_path: str, questions_path: str) -> None:
+        class_data = getattr(self.__class__, "DATA_FILE", self.DEFAULT_DATA_FILE)
+        class_questions = getattr(self.__class__, "QUESTIONS_FILE", self.DEFAULT_QUESTIONS_FILE)
+        if class_data != self.DEFAULT_DATA_FILE or class_questions != self.DEFAULT_QUESTIONS_FILE:
+            return
+        safe_id = self._sanitize_module_id(module_id)
+        if not safe_id:
+            return
+        module_dir = os.path.realpath(os.path.join(self.DEFAULT_DATA_DIR, safe_id))
+        if not os.path.isdir(module_dir):
+            return
+        module_data = os.path.join(module_dir, "data.json")
+        module_questions = os.path.join(module_dir, "questions.json")
+        if safe_id == "acca_f9":
+            has_module_files = os.path.exists(module_data) or os.path.exists(module_questions)
+            has_legacy_files = os.path.exists(self.DEFAULT_DATA_FILE) or os.path.exists(self.DEFAULT_QUESTIONS_FILE)
+            if not has_module_files and has_legacy_files:
+                return
+        expected_paths = {
+            "data.json": os.path.realpath(data_path),
+            "questions.json": os.path.realpath(questions_path),
+        }
+        for label, resolved_path in expected_paths.items():
+            try:
+                common_root = os.path.commonpath([module_dir, resolved_path])
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Could not validate {label} path for '{safe_id}' because the paths are incompatible: "
+                    f"{resolved_path} vs {module_dir}"
+                ) from exc
+            if common_root != module_dir:
+                raise RuntimeError(
+                    f"Resolved {label} path escaped active module directory for '{safe_id}': "
+                    f"{resolved_path} (expected under {module_dir})"
+                )
 
     def _question_quality_meta_path(self) -> str:
         """Per-module sidecar for lazy question quality (quarantine, error streak)."""
@@ -2910,6 +3019,7 @@ class StudyPlanEngine:
             for ch in self.CHAPTERS:
                 self.importance_weights.setdefault(ch, 10)
         self.DATA_FILE, self.QUESTIONS_FILE = self._resolve_module_paths(self.module_id)
+        self._assert_data_paths_under_module(self.module_id, self.DATA_FILE, self.QUESTIONS_FILE)
         data_dir_for_module = os.path.dirname(self.DATA_FILE) or self.DEFAULT_DATA_DIR
         self.COGNITIVE_STATE_FILE = os.path.join(data_dir_for_module, "cognitive_state.json")
         if exam_date is None:
@@ -4045,40 +4155,28 @@ class StudyPlanEngine:
     def _reconcile_outcome_stats_to_syllabus(
         self, outcome_stats_raw: Dict[str, Dict[str, Dict[str, Any]]]
     ) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """Keep only outcome_ids that exist in current syllabus_structure; drop stale ids (syllabus ingest Phase 3)."""
+        """Preserve all existing outcome_stats — never drop already-counted outcomes.
+
+        Previously this method pruned stats for outcome IDs not in the current
+        syllabus_structure. This caused outcome count regressions when the
+        syllabus was re-parsed with fewer outcomes (e.g. by a local model).
+        Now we keep every stat entry: outcomes still in the syllabus are kept as-is,
+        and orphaned stats (IDs no longer in syllabus) are also preserved so they
+        survive until the syllabus is re-enriched and the IDs reappear.
+        """
         if not isinstance(outcome_stats_raw, dict):
             return {}
-        structure = getattr(self, "syllabus_structure", {}) or {}
-        if not isinstance(structure, dict):
-            return outcome_stats_raw
-        valid_ids_by_ch: Dict[str, Set[str]] = {}
-        for ch, info in structure.items():
-            if not isinstance(info, dict):
-                continue
-            los = info.get("learning_outcomes") or []
-            if not isinstance(los, list):
-                continue
-            valid_ids_by_ch[str(ch).strip()] = {
-                str(o.get("id", "") or "").strip()
-                for o in los
-                if isinstance(o, dict) and str(o.get("id", "") or "").strip()
-            }
         reconciled: Dict[str, Dict[str, Dict[str, Any]]] = {}
         for ch, items in outcome_stats_raw.items():
             if not isinstance(ch, str) or not isinstance(items, dict):
                 continue
-            valid = valid_ids_by_ch.get(ch)
-            if valid is None:
-                valid = valid_ids_by_ch.get(self._try_match_chapter(ch) or ch, set())
-            if not valid:
-                continue
             inner = {
                 oid: stats
                 for oid, stats in items.items()
-                if str(oid).strip() in valid and isinstance(stats, dict)
+                if isinstance(stats, dict) and str(oid).strip()
             }
             if inner:
-                reconciled[ch] = inner
+                reconciled[str(ch).strip()] = inner
         return reconciled
 
     def _question_id(self, question: Dict[str, Any]) -> str | None:
@@ -6503,7 +6601,8 @@ class StudyPlanEngine:
             if ranked_outcomes:
                 normalized_targets.append(ranked_outcomes[0][3])
         if not normalized_targets:
-            normalized_targets = [outcome_order[0]]
+            if outcome_order:
+                normalized_targets = [outcome_order[0]]
         return normalized_targets
 
     def _adaptive_interleave_ratios(self, chapter: str) -> tuple[float, float, float, str]:
@@ -7155,6 +7254,20 @@ class StudyPlanEngine:
                 if last is None:
                     due_count += 1
                     continue
+                # Prefer FSRS due date when available.
+                fsrs_due = item.get("fsrs_due")
+                if fsrs_due:
+                    _fsrs_parsed = False
+                    try:
+                        _fsrs_date = datetime.date.fromisoformat(str(fsrs_due))
+                        _fsrs_parsed = True
+                    except Exception:
+                        pass
+                    if _fsrs_parsed:
+                        if _fsrs_date <= today:
+                            due_count += 1
+                        continue  # FSRS owns this card's schedule; skip SM-2
+                # Fall back to SM-2 interval.
                 try:
                     last_date = datetime.date.fromisoformat(str(last))
                 except Exception:
@@ -8511,6 +8624,141 @@ class StudyPlanEngine:
 
         return (total_mastered / total_questions * 100) if total_questions else 0
 
+    def get_accuracy_by_chapter(self) -> dict[str, dict[str, Any]]:
+        """Return per-chapter accuracy statistics derived from ``question_stats``.
+
+        Only questions that have been attempted at least once are counted.
+
+        Returns a dict mapping each chapter name to::
+
+            {
+                "attempts":           int,   # total answer attempts across all questions
+                "correct":            int,   # total correct answers
+                "accuracy":           float, # correct / attempts (0.0 when attempts == 0)
+                "questions_practiced":int,   # number of distinct questions attempted
+            }
+
+        Chapters with no recorded attempts are omitted from the result.
+        """
+        result: dict[str, dict[str, Any]] = {}
+        qs: dict[str, Any] = self.question_stats if isinstance(self.question_stats, dict) else {}
+        for chapter, stats_by_ch in qs.items():
+            if not isinstance(stats_by_ch, dict):
+                continue
+            ch_attempts = 0
+            ch_correct = 0
+            ch_practiced = 0
+            # Prefer qid-keyed entries when present; fall back to index-keyed.
+            has_qid = any(
+                isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX)
+                for k in stats_by_ch
+            )
+            for key, entry in stats_by_ch.items():
+                if has_qid and isinstance(key, str) and not key.startswith(self.QUESTION_ID_PREFIX):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    a = max(0, int(entry.get("attempts", 0) or 0))
+                except Exception:
+                    a = 0
+                try:
+                    c = max(0, int(entry.get("correct", 0) or 0))
+                except Exception:
+                    c = 0
+                c = min(c, a)
+                if a > 0:
+                    ch_attempts += a
+                    ch_correct += c
+                    ch_practiced += 1
+            if ch_attempts > 0:
+                result[chapter] = {
+                    "attempts": ch_attempts,
+                    "correct": ch_correct,
+                    "accuracy": round(ch_correct / ch_attempts, 4),
+                    "questions_practiced": ch_practiced,
+                }
+        return result
+
+    def get_weakest_questions(
+        self,
+        n: int = 10,
+        min_attempts: int = 2,
+    ) -> list[dict[str, Any]]:
+        """Return the *n* questions with the lowest accuracy rate.
+
+        Only questions with at least *min_attempts* recorded attempts are
+        considered, so newly-seen cards are not unfairly surfaced.
+
+        Each entry in the returned list contains::
+
+            {
+                "chapter":   str,   # chapter name
+                "index":     int,   # 0-based question index in QUESTIONS[chapter]
+                "question":  str,   # question text (first 120 chars)
+                "attempts":  int,
+                "correct":   int,
+                "accuracy":  float, # 0.0 – 1.0
+            }
+
+        The list is sorted ascending by *accuracy* (worst first), with ties
+        broken by descending *attempts* (most-practiced first).
+        """
+        n = max(1, int(n))
+        min_attempts = max(1, int(min_attempts))
+        rows: list[dict[str, Any]] = []
+        qs: dict[str, Any] = self.question_stats if isinstance(self.question_stats, dict) else {}
+        for chapter, stats_by_ch in qs.items():
+            if not isinstance(stats_by_ch, dict):
+                continue
+            questions_in_ch: list[dict[str, Any]] = self.QUESTIONS.get(chapter) or []
+            has_qid = any(
+                isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX)
+                for k in stats_by_ch
+            )
+            for key, entry in stats_by_ch.items():
+                if has_qid and isinstance(key, str) and not key.startswith(self.QUESTION_ID_PREFIX):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    a = max(0, int(entry.get("attempts", 0) or 0))
+                except Exception:
+                    a = 0
+                if a < min_attempts:
+                    continue
+                try:
+                    c = max(0, min(a, int(entry.get("correct", 0) or 0)))
+                except Exception:
+                    c = 0
+                # Resolve question index from key (may be a qid string or str(int)).
+                q_idx: int | None = None
+                if isinstance(key, str) and key.startswith(self.QUESTION_ID_PREFIX):
+                    # Search questions for matching qid.
+                    for qi, qrow in enumerate(questions_in_ch):
+                        if isinstance(qrow, dict) and self._question_qid(chapter, qi) == key:
+                            q_idx = qi
+                            break
+                else:
+                    try:
+                        q_idx = int(key)
+                    except Exception:
+                        pass
+                q_text = ""
+                if q_idx is not None and 0 <= q_idx < len(questions_in_ch):
+                    qrow = questions_in_ch[q_idx]
+                    if isinstance(qrow, dict):
+                        q_text = str(qrow.get("question", "") or "")[:120]
+                rows.append({
+                    "chapter": chapter,
+                    "index": q_idx if q_idx is not None else -1,
+                    "question": q_text,
+                    "attempts": a,
+                    "correct": c,
+                    "accuracy": round(c / a, 4),
+                })
+        rows.sort(key=lambda r: (r["accuracy"], -r["attempts"]))
+        return rows[:n]
 
     def get_days_remaining(self):
         """
@@ -9869,15 +10117,28 @@ class StudyPlanEngine:
     def is_overdue(self, srs_item, today):
         """Check if an SRS item is overdue for review.
 
-        If the SRS item is None or missing 'last_review', returns False.
-        If the last review date is None (never reviewed), returns False.
-        If the last review date is invalid (not a valid date string), raises ValueError.
-        If the last review date is valid, compares it with the current date and returns True if the next review date has passed, False otherwise.
+        Prefers the FSRS ``fsrs_due`` date when available (set by the default
+        FSRS scheduler).  Falls back to the SM-2 ``last_review`` + ``interval``
+        calculation for legacy items that have not yet been processed by FSRS.
+
+        Returns False when the item is None or has never been reviewed.
         """
-        if srs_item is None or 'last_review' not in srs_item:
+        if srs_item is None:
             return False
 
-        last_review = srs_item.get('last_review')
+        # Prefer the FSRS due date when the card has been scheduled by FSRS.
+        fsrs_due = srs_item.get("fsrs_due")
+        if fsrs_due:
+            try:
+                return datetime.date.fromisoformat(str(fsrs_due)) <= today
+            except (ValueError, TypeError):
+                pass
+
+        # Legacy SM-2 fallback.
+        if "last_review" not in srs_item:
+            return False
+
+        last_review = srs_item.get("last_review")
         if last_review is None:
             return False
 
@@ -9886,7 +10147,7 @@ class StudyPlanEngine:
         except ValueError:
             return False
 
-        interval = srs_item.get('interval', 1)
+        interval = float(srs_item.get("interval", 1) or 1)
         next_review_date = last_review_date + datetime.timedelta(days=interval)
         return next_review_date <= today
 
@@ -11098,16 +11359,27 @@ class StudyPlanEngine:
 
     def get_retention_probability(self, chapter, idx):
         srs_list = self.srs_data.get(chapter, [])
-        if idx >= len(srs_list): return 0.0
+        if idx >= len(srs_list):
+            return 0.0
         srs = srs_list[idx]
-        if srs.get('last_review') is None:
+        last_review = srs.get("fsrs_last_review") or srs.get("last_review")
+        if last_review is None:
             return 0.0
         try:
-            days_since = (datetime.date.today() - datetime.date.fromisoformat(srs['last_review'])).days
+            days_since = (datetime.date.today() - datetime.date.fromisoformat(str(last_review))).days
         except (ValueError, TypeError):
             return 0.0
+        # Use FSRS stability when available: R(t) = 0.9^(t/S)
+        fsrs_stability = srs.get("fsrs_stability")
+        if fsrs_stability is not None:
+            try:
+                s = max(0.1, float(fsrs_stability))
+                return math.pow(0.9, days_since / s)
+            except Exception:
+                pass
+        # Fall back to SM-2 interval-based estimate.
         try:
-            interval = int(srs.get('interval', 1) or 1)
+            interval = int(srs.get("interval", 1) or 1)
         except Exception:
             interval = 1
         interval = max(1, interval)
@@ -11116,7 +11388,10 @@ class StudyPlanEngine:
 
     def update_srs(self, chapter: str, question_index: int, is_correct: bool):
         """
-        Update SRS stats using improved SM-2 with capped growth.
+        Update SRS stats.  Uses FSRS-4.5 by default, falling back to SM-2.
+
+        FSRS is the default algorithm.  Set ``STUDYPLAN_SRS_ALGORITHM=sm2``
+        (or ``legacy``) to force the legacy SM-2 path instead.
 
         Args:
             chapter (str): The chapter name (e.g., "FM Function")
@@ -11143,38 +11418,66 @@ class StudyPlanEngine:
                     )
                     return
             srs = srs_data[question_index]
-            try:
-                efactor = float(srs.get('efactor', 2.5) or 2.5)
-            except Exception:
-                efactor = 2.5
-            try:
-                interval = float(srs.get('interval', 1) or 1)
-            except Exception:
-                interval = 1.0
-            srs['last_review'] = datetime.date.today().isoformat()
-            if is_correct:
-                # Clear must-review if answered correctly
-                if chapter in self.must_review:
-                    self.must_review[chapter].pop(str(question_index), None)
-                efactor = min(efactor + 0.1, 2.5)
-                sm2_interval = max(interval * min(efactor, 2.0), 3)
-                interval = sm2_interval
-                try:
-                    pred_interval = self.predict_interval_days(chapter, question_index, interval, efactor)
-                except Exception:
-                    pred_interval = None
-                if pred_interval is not None:
-                    # Blend ML prediction with SM-2, cap for stability.
-                    max_cap = 30.0
-                    blended = (0.6 * sm2_interval) + (0.4 * pred_interval)
-                    interval = max(3.0, min(max_cap, blended))
+
+            # Route to SM-2 only when explicitly requested; FSRS is the default.
+            _algo = str(os.environ.get("STUDYPLAN_SRS_ALGORITHM", "") or "").strip().lower()
+            use_sm2 = _algo in ("sm2", "legacy")
+            if use_sm2:
+                self._update_srs_sm2(srs, chapter, question_index, is_correct)
             else:
-                efactor = max(efactor - 0.2, 1.3)
-                interval = 1.0
-            srs['efactor'] = efactor
-            srs['interval'] = interval
+                self._update_srs_fsrs(srs, chapter, question_index, is_correct)
         except Exception as e:
             print(f"Error updating SRS for question {question_index} in chapter {chapter}: {e}", file=sys.stderr)
+
+    def _update_srs_fsrs(self, srs: dict, chapter: str, question_index: int, is_correct: bool) -> None:
+        """Update a single SRS item using the FSRS-4.5 algorithm."""
+        try:
+            from studyplan.fsrs import FSRSScheduler, fsrs_update_srs_item
+            scheduler = getattr(self, "_fsrs_scheduler", None)
+            if scheduler is None:
+                scheduler = FSRSScheduler()
+                self._fsrs_scheduler = scheduler
+            fsrs_update_srs_item(srs, is_correct, scheduler=scheduler)
+            if is_correct:
+                if chapter in self.must_review:
+                    self.must_review[chapter].pop(str(question_index), None)
+        except Exception as e:
+            # Degrade gracefully to SM-2 on any FSRS error.
+            print(f"FSRS update failed, falling back to SM-2: {e}", file=sys.stderr)
+            self._update_srs_sm2(srs, chapter, question_index, is_correct)
+
+    def _update_srs_sm2(self, srs: dict, chapter: str, question_index: int, is_correct: bool) -> None:
+        """Update a single SRS item using improved SM-2 with capped growth."""
+        try:
+            efactor = float(srs.get('efactor', 2.5) or 2.5)
+        except Exception:
+            efactor = 2.5
+        try:
+            interval = float(srs.get('interval', 1) or 1)
+        except Exception:
+            interval = 1.0
+        srs['last_review'] = datetime.date.today().isoformat()
+        if is_correct:
+            # Clear must-review if answered correctly
+            if chapter in self.must_review:
+                self.must_review[chapter].pop(str(question_index), None)
+            efactor = min(efactor + 0.1, 2.5)
+            sm2_interval = max(interval * min(efactor, 2.0), 3)
+            interval = sm2_interval
+            try:
+                pred_interval = self.predict_interval_days(chapter, question_index, interval, efactor)
+            except Exception:
+                pred_interval = None
+            if pred_interval is not None:
+                # Blend ML prediction with SM-2, cap for stability.
+                max_cap = 30.0
+                blended = (0.6 * sm2_interval) + (0.4 * pred_interval)
+                interval = max(3.0, min(max_cap, blended))
+        else:
+            efactor = max(efactor - 0.2, 1.3)
+            interval = 1.0
+        srs['efactor'] = efactor
+        srs['interval'] = interval
 
     def _leitner_box(self, srs_item: dict) -> int:
         """Map SRS item to a Leitner box (1-5)."""
@@ -11295,7 +11598,21 @@ class StudyPlanEngine:
                 due_kind_by_idx[idx] = 1
                 overdue_by_idx[idx] = 1
                 continue
-            # due today (non-overdue but scheduled)
+            # due today (non-overdue but scheduled); prefer fsrs_due when available
+            fsrs_due = srs.get("fsrs_due")
+            if fsrs_due:
+                _fsrs_parsed = False
+                try:
+                    _fsrs_date = datetime.date.fromisoformat(str(fsrs_due))
+                    _fsrs_parsed = True
+                except Exception:
+                    pass
+                if _fsrs_parsed:
+                    if _fsrs_date <= today:
+                        due_indices.append(idx)
+                        due_kind_by_idx[idx] = 0
+                        overdue_by_idx[idx] = 0
+                    continue  # FSRS owns this card's schedule; skip SM-2 check
             last = srs.get("last_review")
             if isinstance(last, str) and last:
                 try:
@@ -13081,3 +13398,323 @@ class StudyPlanEngine:
             self.progress_log.append(entry)
 
         self.progress_log = self._coerce_progress_log(self.progress_log)
+
+    def export_flashcards_csv(self, output_path: str, *, chapters: list[str] | None = None) -> dict:
+        """Export the question bank with SRS state to a CSV file.
+
+        The output file is compatible with the ``_import_questions_csv`` format
+        so it can be re-imported after editing.  It also includes SRS-state
+        columns so third-party tools (e.g. Anki) can import due-date metadata.
+
+        Columns
+        -------
+        chapter, question, option1, option2, option3, option4, correct,
+        explanation, last_review, interval_days, efactor, due_date,
+        fsrs_stability, fsrs_difficulty, fsrs_reps, fsrs_lapses
+
+        Parameters
+        ----------
+        output_path:
+            Destination CSV path.  Parent directory must exist.
+        chapters:
+            Optional list of chapter names to include.  Defaults to all chapters.
+
+        Returns
+        -------
+        dict with keys: ``rows_written``, ``chapters``, ``output_path``
+        """
+        target_chapters = chapters if isinstance(chapters, list) else self.CHAPTERS
+        rows_written = 0
+        chapters_included: list[str] = []
+
+        fieldnames = [
+            "chapter",
+            "question",
+            "option1",
+            "option2",
+            "option3",
+            "option4",
+            "correct",
+            "explanation",
+            "last_review",
+            "interval_days",
+            "efactor",
+            "due_date",
+            "fsrs_stability",
+            "fsrs_difficulty",
+            "fsrs_reps",
+            "fsrs_lapses",
+        ]
+
+        today = datetime.date.today()
+        tmp_path = output_path + ".tmp"
+        try:
+            with open(tmp_path, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+                writer.writeheader()
+                for chapter in target_chapters:
+                    questions = self.QUESTIONS.get(chapter, [])
+                    srs_list = self.srs_data.get(chapter, [])
+                    if not isinstance(questions, list) or not questions:
+                        continue
+                    chapter_rows = 0
+                    for idx, q in enumerate(questions):
+                        if not isinstance(q, dict):
+                            continue
+                        srs: dict = srs_list[idx] if idx < len(srs_list) and isinstance(srs_list[idx], dict) else {}
+                        options = q.get("options") or []
+                        last_review = srs.get("last_review") or ""
+                        try:
+                            interval = float(srs.get("interval", 1) or 1)
+                        except (TypeError, ValueError):
+                            interval = 1.0
+                        try:
+                            efactor = float(srs.get("efactor", 2.5) or 2.5)
+                        except (TypeError, ValueError):
+                            efactor = 2.5
+                        # Compute due date from legacy interval.
+                        if last_review:
+                            try:
+                                lr = datetime.date.fromisoformat(str(last_review))
+                                due_date = (lr + datetime.timedelta(days=int(interval))).isoformat()
+                            except (ValueError, TypeError):
+                                due_date = today.isoformat()
+                        else:
+                            due_date = today.isoformat()
+                        row: dict = {
+                            "chapter": chapter,
+                            "question": str(q.get("question", "") or ""),
+                            "option1": str(options[0]) if len(options) > 0 else "",
+                            "option2": str(options[1]) if len(options) > 1 else "",
+                            "option3": str(options[2]) if len(options) > 2 else "",
+                            "option4": str(options[3]) if len(options) > 3 else "",
+                            "correct": str(q.get("correct", "") or ""),
+                            "explanation": str(q.get("explanation", "") or ""),
+                            "last_review": last_review,
+                            "interval_days": round(interval, 1),
+                            "efactor": round(efactor, 4),
+                            "due_date": due_date,
+                            "fsrs_stability": srs.get("fsrs_stability", ""),
+                            "fsrs_difficulty": srs.get("fsrs_difficulty", ""),
+                            "fsrs_reps": srs.get("fsrs_reps", ""),
+                            "fsrs_lapses": srs.get("fsrs_lapses", ""),
+                        }
+                        writer.writerow(row)
+                        chapter_rows += 1
+                    if chapter_rows:
+                        chapters_included.append(chapter)
+                        rows_written += chapter_rows
+            os.replace(tmp_path, output_path)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        return {
+            "rows_written": rows_written,
+            "chapters": chapters_included,
+            "output_path": output_path,
+        }
+
+    def export_anki_note_tsv(self, output_path: str, *, chapters: list[str] | None = None) -> dict:
+        """Export question bank as Anki-importable tab-separated notes (Basic note type).
+
+        The output file uses Anki's plain-text import format:
+        - Tab-separated, no header row.
+        - Column 1 (Front): question text with lettered options appended.
+        - Column 2 (Back): correct answer letter + explanation.
+        - Column 3 (Tags): chapter name, FSRS stability bucket, and due-status tags.
+
+        Import into Anki via File → Import, selecting "Fields separated by: Tab" and
+        "Note Type: Basic".
+
+        Parameters
+        ----------
+        output_path:
+            Destination ``.tsv`` path.
+        chapters:
+            Optional list of chapter names.  Defaults to all chapters.
+
+        Returns
+        -------
+        dict with keys: ``rows_written``, ``chapters``, ``output_path``
+        """
+        target_chapters = chapters if isinstance(chapters, list) else self.CHAPTERS
+        rows_written = 0
+        chapters_included: list[str] = []
+        today = datetime.date.today()
+        tmp_path = output_path + ".tmp"
+        try:
+            with open(tmp_path, "w", newline="", encoding="utf-8") as fh:
+                for chapter in target_chapters:
+                    questions = self.QUESTIONS.get(chapter, [])
+                    srs_list = self.srs_data.get(chapter, [])
+                    if not isinstance(questions, list) or not questions:
+                        continue
+                    chapter_rows = 0
+                    # Build a safe tag from the chapter name (Anki tags cannot have spaces).
+                    chapter_tag = chapter.replace(" ", "_").replace(":", "").replace("/", "_")
+                    for idx, q in enumerate(questions):
+                        if not isinstance(q, dict):
+                            continue
+                        question_text = str(q.get("question", "") or "").strip()
+                        if not question_text:
+                            continue
+                        options: list[str] = list(q.get("options") or [])
+                        correct = str(q.get("correct", "") or "").strip()
+                        explanation = str(q.get("explanation", "") or "").strip()
+                        # Build front: question + lettered options.
+                        letter_map = {opt: chr(ord("A") + i) for i, opt in enumerate(options)}
+                        options_block = "\n".join(
+                            f"{chr(ord('A') + i)}. {opt}" for i, opt in enumerate(options)
+                        )
+                        front = f"{question_text}\n\n{options_block}" if options else question_text
+                        # Build back: correct answer + optional explanation.
+                        correct_letter = letter_map.get(correct, "?")
+                        back = f"{correct_letter}. {correct}"
+                        if explanation:
+                            back += f"\n\n{explanation}"
+                        # Build tags.
+                        tags_parts = [chapter_tag]
+                        srs: dict = srs_list[idx] if idx < len(srs_list) and isinstance(srs_list[idx], dict) else {}
+                        fsrs_stability = srs.get("fsrs_stability")
+                        if fsrs_stability is not None:
+                            try:
+                                s = float(fsrs_stability)
+                                if s < 7:
+                                    tags_parts.append("fsrs:fragile")
+                                elif s < 30:
+                                    tags_parts.append("fsrs:moderate")
+                                else:
+                                    tags_parts.append("fsrs:stable")
+                            except (TypeError, ValueError):
+                                pass
+                        if self.is_overdue(srs, today):
+                            tags_parts.append("due:overdue")
+                        elif srs.get("last_review") is None:
+                            tags_parts.append("due:new")
+                        tags_str = " ".join(tags_parts)
+                        # Escape tabs and newlines within fields (Anki TSV uses \n in fields as line breaks).
+                        def _esc(text: str) -> str:
+                            return text.replace("\t", " ").replace("\r", "")
+                        row = "\t".join([_esc(front), _esc(back), _esc(tags_str)])
+                        fh.write(row + "\n")
+                        chapter_rows += 1
+                    if chapter_rows:
+                        chapters_included.append(chapter)
+                        rows_written += chapter_rows
+            os.replace(tmp_path, output_path)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        return {
+            "rows_written": rows_written,
+            "chapters": chapters_included,
+            "output_path": output_path,
+        }
+
+    # ------------------------------------------------------------------
+    # Module versioning helpers
+    # ------------------------------------------------------------------
+
+    def compute_module_content_hash(self) -> str:
+        """Return a SHA-256 hex digest of the module's canonical content.
+
+        The hash covers ``chapters`` and ``syllabus_structure`` serialised in a
+        deterministic, sorted order.  It is stable across whitespace and key
+        ordering changes in the stored JSON, but changes whenever chapter names
+        or learning outcomes change.
+
+        Typical use: compare ``engine.compute_module_content_hash()`` against
+        the ``content_hash`` field stored in the module config JSON to detect
+        that the file has been edited externally.
+        """
+        payload = {
+            "chapters": sorted(self.CHAPTERS or []),
+            "syllabus_structure": {
+                ch: {
+                    "learning_outcomes": sorted(
+                        [
+                            {"id": lo.get("id", ""), "text": lo.get("text", ""), "level": lo.get("level", 0)}
+                            for lo in (section.get("learning_outcomes") or [])
+                            if isinstance(lo, dict)
+                        ],
+                        key=lambda lo: lo.get("id", ""),
+                    )
+                }
+                for ch, section in sorted((self.syllabus_structure or {}).items())
+                if isinstance(section, dict)
+            },
+        }
+        serialised = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+        return hashlib.sha256(serialised.encode("utf-8")).hexdigest()
+
+    def get_module_version_info(self) -> dict:
+        """Return version metadata for the currently loaded module.
+
+        Returns a dict with keys:
+        - ``module_version``: semver string from the config, or ``"0.0.0"`` if absent.
+        - ``content_hash``: current computed hash (see :meth:`compute_module_content_hash`).
+        - ``stored_hash``: the ``content_hash`` value saved in the config JSON, if any.
+        - ``hash_matches``: True when current hash equals the stored hash.
+        - ``registry_id``: value from config, or empty string.
+        - ``registry_url``: value from config, or empty string.
+        """
+        config_path = getattr(self, "_last_loaded_module_config_path", None)
+        stored_hash = ""
+        module_version = "0.0.0"
+        registry_id = ""
+        registry_url = ""
+        if config_path and os.path.exists(str(config_path)):
+            try:
+                with open(str(config_path), "r", encoding="utf-8") as fh:
+                    raw_config = json.load(fh)
+                if isinstance(raw_config, dict):
+                    stored_hash = str(raw_config.get("content_hash", "") or "")
+                    module_version = str(raw_config.get("module_version", "0.0.0") or "0.0.0")
+                    registry_id = str(raw_config.get("registry_id", "") or "")
+                    registry_url = str(raw_config.get("registry_url", "") or "")
+            except Exception:
+                pass
+        current_hash = self.compute_module_content_hash()
+        return {
+            "module_version": module_version,
+            "content_hash": current_hash,
+            "stored_hash": stored_hash,
+            "hash_matches": current_hash == stored_hash if stored_hash else None,
+            "registry_id": registry_id,
+            "registry_url": registry_url,
+        }
+
+    def stamp_module_content_hash(self) -> bool:
+        """Write the current content hash into the active module config JSON.
+
+        Returns True on success, False if the config path is unknown or cannot
+        be written.  Should be called after saving a module edit so the hash
+        stays fresh.
+        """
+        config_path = getattr(self, "_last_loaded_module_config_path", None)
+        if not config_path or not os.path.exists(str(config_path)):
+            return False
+        try:
+            with open(str(config_path), "r", encoding="utf-8") as fh:
+                raw_config = json.load(fh)
+            if not isinstance(raw_config, dict):
+                return False
+            raw_config["content_hash"] = self.compute_module_content_hash()
+            tmp_path = str(config_path) + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(raw_config, fh, indent=2, ensure_ascii=False)
+                fh.write("\n")
+            os.replace(tmp_path, str(config_path))
+            return True
+        except Exception:
+            return False

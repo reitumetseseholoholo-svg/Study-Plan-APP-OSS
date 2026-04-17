@@ -276,3 +276,58 @@ def test_reconfigure_from_rag_derives_chapters_when_config_has_none() -> None:
     assert len(chs) >= 1, "reconfig must derive chapters from RAG when config had none"
     structure = out.get("syllabus_structure") or {}
     assert isinstance(structure, dict)
+
+
+def test_reconfigure_from_rag_never_reduces_outcome_count() -> None:
+    """Auto-refresh must never remove already-counted outcomes (no backwards counting).
+
+    If the LLM returns fewer outcomes than are currently in the config for a chapter,
+    all original outcomes must be preserved and any genuinely new outcomes appended.
+    Uses target_chapters_only=False so the merge logic is exercised even for chapters
+    that are at or above the median outcome count.
+    """
+    existing_outcomes = [
+        {"id": "ch1_1", "text": "Explain the concept of NPV", "level": 2},
+        {"id": "ch1_2", "text": "Calculate IRR for an investment project", "level": 2},
+        {"id": "ch1_3", "text": "Discuss the limitations of payback period", "level": 1},
+    ]
+    config = {
+        "chapters": ["Ch1", "Ch2"],
+        "syllabus_structure": {
+            "Ch1": {"capability": "A", "learning_outcomes": list(existing_outcomes), "outcome_count": 3},
+            "Ch2": {"capability": "B", "learning_outcomes": [], "outcome_count": 0},
+        },
+        "syllabus_meta": {},
+    }
+    chunks = {"/s.pdf": [{"text": "Ch1 outcomes. Ch2 outcomes."}]}
+
+    # LLM returns only ONE existing outcome for Ch1 (a subset) plus one new outcome.
+    # Without the fix the existing two would be lost; with it they must survive.
+    def mock_llm(prompt: str, max_tokens: int) -> str:
+        if "exam_code" in prompt:
+            return '{"exam_code":"FM","effective_window":"2024"}'
+        if "capabilities" in prompt:
+            return '{"capabilities":{"A":"Framework"},"aliases":{},"chapter_to_capability":{"Ch1":"A","Ch2":"B"}}'
+        return (
+            '{"outcomes":['
+            '{"chapter":"Ch1","text":"Explain the concept of NPV","level":2},'
+            '{"chapter":"Ch1","text":"Apply sensitivity analysis to investment decisions","level":3}'
+            ']}'
+        )
+
+    # target_chapters_only=False forces the merge for all chapters (including Ch1 at median)
+    out = reconfigure_from_rag(config, chunks, ["Ch1", "Ch2"], mock_llm, target_chapters_only=False)
+    structure = out.get("syllabus_structure") or {}
+    ch1 = structure.get("Ch1") or {}
+    los = ch1.get("learning_outcomes") or []
+    texts = [o.get("text", "") for o in los]
+
+    # All 3 existing outcomes must still be present
+    assert "Explain the concept of NPV" in texts, "original outcome 1 must not be removed"
+    assert "Calculate IRR for an investment project" in texts, "original outcome 2 must not be removed"
+    assert "Discuss the limitations of payback period" in texts, "original outcome 3 must not be removed"
+    # The genuinely new outcome must be added
+    assert "Apply sensitivity analysis to investment decisions" in texts, "new outcome must be appended"
+    # Total count must be >= original count (never less)
+    assert len(los) >= 3, f"outcome count must not decrease below 3, got {len(los)}"
+    assert ch1.get("outcome_count", 0) >= 3

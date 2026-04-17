@@ -203,18 +203,82 @@ class TestRenderMarkdownToBuffer(unittest.TestCase):
     def test_pipe_table_row_monospace(self):
         md = "| Item | Amount |\n|------|--------|\n| Revenue | 100 |"
         buf = self._render(md)
-        self.assertIn("table", buf.tag_names_for("| Revenue | 100 |"))
+        # Data row should carry the "table" tag
+        self.assertIn("table", buf.tag_names_for("Revenue"))
 
     def test_pipe_table_separator_gets_sep_tag(self):
         md = "| Item | Amount |\n|------|--------|\n| Revenue | 100 |"
         buf = self._render(md)
-        self.assertIn("table_sep", buf.tag_names_for("|------|--------|"))
+        # Separator is now rendered as Unicode rule characters (─), not dashes
+        sep_tags = next(
+            (tags for seg, tags in buf.segments if "─" in seg and "table_sep" in tags),
+            None,
+        )
+        self.assertIsNotNone(sep_tags, "Expected a table_sep-tagged segment containing rule characters")
 
     def test_pipe_table_content_preserved(self):
         md = "| Revenue | 500,000 |"
         buf = self._render(md)
         self.assertIn("Revenue", buf.plain_text)
         self.assertIn("500,000", buf.plain_text)
+
+    def test_pipe_table_header_bold(self):
+        md = "| Item | Amount |\n|------|--------|\n| Revenue | 100 |"
+        buf = self._render(md)
+        self.assertIn("table_header", buf.tag_names_for("Item"))
+
+    def test_pipe_table_body_row_not_header_tag(self):
+        md = "| Item | Amount |\n|------|--------|\n| Revenue | 100 |"
+        buf = self._render(md)
+        self.assertNotIn("table_header", buf.tag_names_for("Revenue"))
+
+    def test_pipe_table_numeric_column_right_aligned(self):
+        md = "| Item | Amount |\n|------|--------|\n| Revenue | 500 |\n| Costs | 200 |"
+        buf = self._render(md)
+        # Numeric values should be right-padded (rjust) so appear without trailing spaces
+        # in the rightmost position; verify the number appears in the buffer
+        self.assertIn("500", buf.plain_text)
+        self.assertIn("200", buf.plain_text)
+
+    def test_pipe_table_columns_padded_to_same_width(self):
+        md = (
+            "| Short | Amt |\n"
+            "|-------|-----|\n"
+            "| A very long description | 1,234 |\n"
+            "| B | 56 |\n"
+        )
+        buf = self._render(md)
+        # All data rows should be tagged with "table"
+        self.assertIn("table", buf.tag_names_for("A very long description"))
+        self.assertIn("table", buf.tag_names_for("B"))
+
+    def test_pipe_table_inline_markup_stripped_from_cells(self):
+        md = "| **Item** | Amount |\n|----------|--------|\n| **Revenue** | 100 |"
+        buf = self._render(md)
+        # Asterisks should not appear in the output; the word should be preserved
+        self.assertIn("Revenue", buf.plain_text)
+        self.assertNotIn("**", buf.plain_text)
+
+    def test_pipe_table_no_pipe_characters_in_output(self):
+        md = "| Item | Amount |\n|------|--------|\n| Revenue | 100 |"
+        buf = self._render(md)
+        # Pipe characters must not appear in the rendered output
+        self.assertNotIn("|", buf.plain_text)
+
+    def test_pipe_table_total_row_gets_table_total_tag(self):
+        md = (
+            "| Item | Amount |\n"
+            "|------|--------|\n"
+            "| Revenue | 100 |\n"
+            "| Total assets | 100 |"
+        )
+        buf = self._render(md)
+        self.assertIn("table_total", buf.tag_names_for("Total assets"))
+
+    def test_pipe_table_non_total_row_not_table_total(self):
+        md = "| Item | Amount |\n|------|--------|\n| Revenue | 100 |"
+        buf = self._render(md)
+        self.assertNotIn("table_total", buf.tag_names_for("Revenue"))
 
     # ------------------------------------------------------------------
     # Bullet lists

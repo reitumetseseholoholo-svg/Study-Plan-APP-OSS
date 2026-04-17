@@ -40,11 +40,16 @@ from studyplan_ai_tutor import (
 )
 
 try:
+    import studyplan_app as studyplan_app_module
+
     from studyplan_app import (
         DEFAULT_OLLAMA_MODEL_COACH,
         DEFAULT_OLLAMA_MODEL_TUTOR,
         StudyPlanGUI,
         TutorWorkspaceState,
+        _diagnose_display_access_issue,
+        _should_require_default_display,
+        _write_early_mode_failure_report,
     )
 except Exception as exc:  # pragma: no cover - environment-dependent import gate
     pytest.skip(f"studyplan_app import unavailable: {exc}", allow_module_level=True)
@@ -2120,6 +2125,8 @@ def test_build_debug_info_message_includes_rag_embedding_insights_lines():
             "cache_db_path": "/tmp/ai_runtime_cache_v1.sqlite3",
             "memory_rag_docs": 2,
             "memory_rag_chunks": 244,
+            "memory_rag_chunk_cap": 360,
+            "memory_rag_chunk_usage_pct": 67.8,
             "disk_rag_docs": 2,
             "disk_rag_chunks": 244,
             "disk_postings": 5000,
@@ -2134,6 +2141,10 @@ def test_build_debug_info_message_includes_rag_embedding_insights_lines():
             "cache_debug_rag_query_hit": 2,
             "cache_debug_embedding_hits": 31,
             "cache_debug_embedding_misses": 5,
+            "cache_debug_rag_doc_evictions": 3,
+            "cache_debug_rag_doc_chunk_budget_evictions": 2,
+            "cache_debug_rag_doc_cache_max_evictions": 1,
+            "cache_debug_rag_doc_evicted_chunks": 77,
         },
     )
     msg = StudyPlanGUI._build_debug_info_message(
@@ -2153,6 +2164,7 @@ def test_build_debug_info_message_includes_rag_embedding_insights_lines():
     assert "RAG PDF tiers: syllabus:1 | notes:1" in msg
     assert "RAG PDF details:" in msg
     assert "RAG cache enabled/db: True (ai_runtime_cache_v1.sqlite3)" in msg
+    assert "RAG chunk cap usage/evictions: 244/360 (67.8%) • evict 3 docs/77 chunks (chunk-cap 2, cache-max 1)" in msg
     assert "Embeddings rows total/model: 320/240 (all-minilm)" in msg
     assert "Embeddings coverage active chunks: 180/244 (73.8%)" in msg
     assert "Cache debug doc/query/emb-hit/emb-miss: 4/2/31/5" in msg
@@ -2221,7 +2233,14 @@ def test_get_rag_embedding_insights_includes_per_pdf_details_and_tiers(tmp_path)
 
     dummy = types.SimpleNamespace(
         engine=types.SimpleNamespace(SEMANTIC_MODEL_NAME="all-minilm"),
-        _perf_cache=PerformanceCacheService({"cache_max_size": 100, "default_ttl_seconds": 300, "cache_ttl": {}}),
+        _perf_cache=PerformanceCacheService(
+            {
+                "cache_max_size": 100,
+                "default_ttl_seconds": 300,
+                "cache_ttl": {},
+                "rag_doc_chunk_budget": 10,
+            }
+        ),
         _ai_cache_debug_last={},
         ai_tutor_rag_max_sources=6,
     )
@@ -2235,6 +2254,9 @@ def test_get_rag_embedding_insights_includes_per_pdf_details_and_tiers(tmp_path)
     assert insights["active_pdf_count"] == 2
     assert insights["active_pdf_tier_counts"]["syllabus"] == 1
     assert insights["active_pdf_tier_counts"]["notes"] == 1
+    assert insights["memory_rag_chunk_cap"] == 10
+    assert insights["memory_rag_chunks"] == 0
+    assert insights["cache_debug_rag_doc_evictions"] == 0
     assert len(details) == 2
     assert {row["tier"] for row in details} == {"syllabus", "notes"}
     assert all("memory_loaded" in row for row in details)
@@ -3022,6 +3044,20 @@ def test_validate_generated_gap_questions_uses_engine_sanitizer_for_placeholder_
     assert "placeholder_options_only" in reasons
 
 
+def test_format_gap_question_reject_summary_includes_specific_reasons():
+    dummy = types.SimpleNamespace()
+    msg = StudyPlanGUI._format_gap_question_reject_summary(
+        dummy,
+        ["duplicate_or_near_duplicate", "question_too_short", "explanation_too_short"],
+        strict_gate_enabled=True,
+        generated_count=3,
+    )
+    assert "Generated 3 question(s), but none were kept." in msg
+    assert "duplicated existing ones" in msg
+    assert "too short" in msg
+    assert "disable strict validation" in msg
+
+
 def test_parse_generated_gap_questions_normalizes_common_schema_variants():
     dummy = types.SimpleNamespace()
     dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
@@ -3221,6 +3257,44 @@ def test_generate_gap_drill_questions_shows_storage_error_when_save_fails():
     ok, msg = StudyPlanGUI._generate_gap_drill_questions(dummy, "Topic A", snapshot={})
     assert ok is False
     assert "could not be saved" in msg or "storage error" in msg.lower()
+
+
+def test_generate_gap_drill_questions_surfaces_validation_reasons():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    valid_json = json.dumps(
+        {
+            "chapter": "Topic A",
+            "questions": [
+                {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."},
+            ],
+        }
+    )
+    row = {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Ok."}
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        ai_tutor_gap_generation_enabled=True,
+        local_llm_enabled=True,
+        ai_tutor_gap_autosave_strict_gate=True,
+        ai_tutor_gap_autosave_enabled=True,
+        _build_local_llm_model_failover_sequence=lambda **_kw: (["model-a"], None),
+        _build_gap_generation_prompt=lambda chapter, count, snapshot: "prompt",
+        _ollama_generate_text=lambda model, prompt: (valid_json, None),
+        _parse_generated_gap_questions=lambda text: ("Topic A", [row], None),
+        _validate_generated_gap_questions=lambda ch, q, **kw: ([], ["duplicate_or_near_duplicate", "question_too_short"]),
+        _append_gap_question_quarantine=lambda *_args, **_kw: None,
+        _record_ai_tutor_autopilot_metrics=lambda *_args, **_kw: None,
+        _ai_tutor_autopilot_stats={},
+    )
+    dummy._format_gap_question_reject_summary = types.MethodType(
+        StudyPlanGUI._format_gap_question_reject_summary,
+        dummy,
+    )
+
+    ok, msg = StudyPlanGUI._generate_gap_drill_questions(dummy, "Topic A", snapshot={})
+
+    assert ok is False
+    assert "duplicated existing ones" in msg
+    assert "too short" in msg
 
 
 def test_generate_gap_drill_questions_rejects_stale_workflow_token_before_save():
@@ -3907,7 +3981,74 @@ def test_parse_section_c_evaluation_payload_backfills_missing_rubric_rows():
     assert rows[2]["score"] == 0
 
 
-def test_section_c_deterministic_examiner_style_rewards_applied_answer():
+def test_parse_section_c_evaluation_payload_fallback_rubric_sums_to_20():
+    """When question has no marking_rubric, fallback uses 4-criterion 20-mark rubric."""
+    dummy = types.SimpleNamespace()
+    dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
+    question: dict = {}  # no marking_rubric at all
+    payload = json.dumps(
+        {
+            "total_mark": 12,
+            "criterion_scores": [
+                {"criterion": "Technical application to case facts", "score": 6, "max_mark": 8, "feedback": "Ok."},
+                {"criterion": "Method, workings, and assumptions", "score": 3, "max_mark": 5, "feedback": "Fair."},
+                {"criterion": "Evaluation and recommendation", "score": 2, "max_mark": 4, "feedback": "Partial."},
+                {"criterion": "Structure and exam communication", "score": 1, "max_mark": 3, "feedback": "Brief."},
+            ],
+            "strengths": ["Some relevant points"],
+            "improvements": ["More structure needed"],
+            "next_drill": "Restructure your answer.",
+        },
+        ensure_ascii=True,
+    )
+    parsed, err = StudyPlanGUI._parse_section_c_evaluation_payload(dummy, payload, question)
+    assert err is None
+    assert isinstance(parsed, dict)
+    assert parsed["max_mark"] == 20
+    assert parsed["total_mark"] == 12
+    rows = list(parsed.get("criterion_scores", []) or [])
+    assert len(rows) == 4
+    assert rows[0]["max_mark"] == 8
+    assert rows[1]["max_mark"] == 5
+    assert rows[2]["max_mark"] == 4
+    assert rows[3]["max_mark"] == 3
+
+
+def test_parse_section_c_evaluation_criterion_fuzzy_match_prefers_best_overlap():
+    """Fuzzy matching picks the candidate whose name has the best overlap ratio."""
+    dummy = types.SimpleNamespace()
+    dummy._extract_first_json_object = types.MethodType(StudyPlanGUI._extract_first_json_object, dummy)
+    question = {
+        "marking_rubric": [
+            {"criterion": "Technical application to case facts", "max_marks": 8},
+            {"criterion": "Method, workings, and assumptions", "max_marks": 5},
+        ]
+    }
+    payload = json.dumps(
+        {
+            "total_mark": 10,
+            "criterion_scores": [
+                {"criterion": "Technical application", "score": 6, "max_mark": 8, "feedback": "Good."},
+                {"criterion": "Method and workings", "score": 4, "max_mark": 5, "feedback": "Solid."},
+            ],
+            "strengths": ["Clear"],
+            "improvements": ["More detail"],
+            "next_drill": "Improve workings.",
+        },
+        ensure_ascii=True,
+    )
+    parsed, err = StudyPlanGUI._parse_section_c_evaluation_payload(dummy, payload, question)
+    assert err is None
+    assert isinstance(parsed, dict)
+    rows = list(parsed.get("criterion_scores", []) or [])
+    assert len(rows) == 2
+    # "Technical application" should match "Technical application to case facts" (overlap 24/40 = 0.60 > 0.35)
+    assert rows[0]["score"] == 6
+    assert rows[0]["criterion"] == "Technical application to case facts"
+    # "Method and workings" should match "Method, workings, and assumptions" (not exact but substring)
+    assert rows[1]["score"] <= 5
+
+
     dummy = types.SimpleNamespace()
     dummy._evaluate_section_c_response_deterministic = types.MethodType(
         StudyPlanGUI._evaluate_section_c_response_deterministic,
@@ -4164,6 +4305,388 @@ def test_evaluate_section_c_rewrite_uses_loop_diff_purpose(monkeypatch):
     assert isinstance(evaluation, dict)
     assert evaluation.get("evaluation_meta", {}).get("loop_diff") is True
     assert warn and "Rewrite" in str(warn)
+
+
+def test_open_section_c_practice_dialog_wires_generate_case_button(monkeypatch):
+    class _Buffer:
+        def __init__(self) -> None:
+            self.text = ""
+            self._changed: list[object] = []
+
+        def set_text(self, text: str) -> None:
+            self.text = str(text)
+            for cb in list(self._changed):
+                cb(self)
+
+        def get_start_iter(self) -> int:
+            return 0
+
+        def get_end_iter(self) -> int:
+            return len(self.text)
+
+        def get_text(self, _start: int, _end: int, _include_hidden: bool) -> str:
+            return self.text
+
+        def insert(self, _iter: int, text: str) -> None:
+            self.text += str(text)
+            for cb in list(self._changed):
+                cb(self)
+
+        def connect(self, signal: str, callback: object) -> int:
+            if signal == "changed":
+                self._changed.append(callback)
+            return len(self._changed)
+
+    class _Widget:
+        def __init__(self) -> None:
+            self.visible = True
+            self.sensitive = True
+
+        def set_visible(self, value: bool) -> None:
+            self.visible = bool(value)
+
+        def get_visible(self) -> bool:
+            return bool(self.visible)
+
+        def set_sensitive(self, value: bool) -> None:
+            self.sensitive = bool(value)
+
+        def add_css_class(self, _name: str) -> None:
+            return None
+
+        def set_tooltip_text(self, _text: str | None) -> None:
+            return None
+
+        def set_halign(self, _align: object) -> None:
+            return None
+
+        def set_wrap(self, _wrap: bool) -> None:
+            return None
+
+        def set_wrap_mode(self, _mode: object) -> None:
+            return None
+
+    class _Label(_Widget):
+        def __init__(self, label: str = "", **_kwargs: object) -> None:
+            super().__init__()
+            self.label = str(label)
+
+        def set_label(self, text: str) -> None:
+            self.label = str(text)
+
+        def get_label(self) -> str:
+            return self.label
+
+    class _Button(_Widget):
+        def __init__(self, label: str = "", **_kwargs: object) -> None:
+            super().__init__()
+            self.label = str(label)
+            self._signals: dict[str, list[object]] = {}
+
+        def connect(self, signal: str, callback: object) -> int:
+            self._signals.setdefault(signal, []).append(callback)
+            return len(self._signals[signal])
+
+        def click(self) -> None:
+            for cb in list(self._signals.get("clicked", [])):
+                cb(self)
+
+        def set_label(self, text: str) -> None:
+            self.label = str(text)
+
+    class _Box(_Widget):
+        def __init__(self, **_kwargs: object) -> None:
+            super().__init__()
+            self.children: list[object] = []
+
+        def append(self, child: object) -> None:
+            self.children.append(child)
+
+        def set_spacing(self, _spacing: int) -> None:
+            return None
+
+        def set_margin_top(self, _value: int) -> None:
+            return None
+
+        def set_margin_bottom(self, _value: int) -> None:
+            return None
+
+        def set_margin_start(self, _value: int) -> None:
+            return None
+
+        def set_margin_end(self, _value: int) -> None:
+            return None
+
+    class _StringList(list):
+        @classmethod
+        def new(cls, items: list[str]) -> "_StringList":
+            return cls(items)
+
+    class _DropDown(_Widget):
+        def __init__(self, model: list[str], _expr: object = None) -> None:
+            super().__init__()
+            self.model = list(model)
+            self.selected = 0
+            self._signals: dict[str, list[object]] = {}
+
+        @classmethod
+        def new(cls, model: list[str], expr: object = None) -> "_DropDown":
+            return cls(model, expr)
+
+        def set_selected(self, index: int) -> None:
+            self.selected = int(index)
+
+        def get_selected(self) -> int:
+            return int(self.selected)
+
+        def connect(self, signal: str, callback: object) -> int:
+            self._signals.setdefault(signal, []).append(callback)
+            return len(self._signals[signal])
+
+    class _TextView(_Widget):
+        def __init__(self) -> None:
+            super().__init__()
+            self._buffer = _Buffer()
+
+        def get_buffer(self) -> _Buffer:
+            return self._buffer
+
+        def set_editable(self, _value: bool) -> None:
+            return None
+
+        def set_cursor_visible(self, _value: bool) -> None:
+            return None
+
+        def set_monospace(self, _value: bool) -> None:
+            return None
+
+        def grab_focus(self) -> None:
+            return None
+
+    class _ScrolledWindow(_Widget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.child = None
+
+        def set_min_content_height(self, _value: int) -> None:
+            return None
+
+        def set_child(self, child: object) -> None:
+            self.child = child
+
+        def set_policy(self, _h: object, _v: object) -> None:
+            return None
+
+    class _Spinner(_Widget):
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    class _Dialog:
+        def __init__(self) -> None:
+            self.content = _Box()
+            self._signals: dict[str, list[object]] = {}
+            self.visible = False
+
+        def add_buttons(self, *_args: object) -> None:
+            return None
+
+        def set_default_size(self, _width: int, _height: int) -> None:
+            return None
+
+        def get_content_area(self) -> _Box:
+            return self.content
+
+        def connect(self, signal: str, callback: object) -> int:
+            self._signals.setdefault(signal, []).append(callback)
+            return len(self._signals[signal])
+
+        def present(self) -> None:
+            self.visible = True
+
+        def destroy(self) -> None:
+            self.visible = False
+
+        def get_visible(self) -> bool:
+            return bool(self.visible)
+
+    fake_gtk = types.SimpleNamespace(
+        Label=_Label,
+        Button=_Button,
+        Box=_Box,
+        DropDown=_DropDown,
+        StringList=_StringList,
+        TextView=_TextView,
+        ScrolledWindow=_ScrolledWindow,
+        Spinner=_Spinner,
+        Orientation=types.SimpleNamespace(HORIZONTAL=0, VERTICAL=1),
+        Align=types.SimpleNamespace(START=0, END=1),
+        WrapMode=types.SimpleNamespace(WORD_CHAR=0),
+        PolicyType=types.SimpleNamespace(AUTOMATIC=0, NEVER=1),
+        ResponseType=types.SimpleNamespace(CLOSE=0, CANCEL=1, OK=2),
+        MessageType=types.SimpleNamespace(ERROR=0),
+    )
+    fake_glib = types.SimpleNamespace(
+        idle_add=lambda func, *args: func(*args),
+        timeout_add=lambda _interval, _func, *args: 1,
+        source_remove=lambda _sid: None,
+    )
+    monkeypatch.setattr(studyplan_app_module, "Gtk", fake_gtk)
+    monkeypatch.setattr(studyplan_app_module, "GLib", fake_glib)
+    monkeypatch.setattr(
+        studyplan_app_module,
+        "render_markdown_to_buffer",
+        lambda text, buf: buf.set_text(str(text)),
+    )
+    monkeypatch.setattr(
+        StudyPlanGUI,
+        "_start_managed_background_thread",
+        staticmethod(lambda _self, target, *args, **kwargs: target()),
+    )
+
+    created_dialogs: list[_Dialog] = []
+    generated: list[str] = []
+    counter = {"token": 0}
+    question = {
+        "chapter": "Topic A",
+        "scenario": "Existing case",
+        "requirements": [{"part": "a", "requirement_text": "Explain", "marks": 10}],
+    }
+
+    def _new_dialog(**_kwargs: object) -> _Dialog:
+        dialog = _Dialog()
+        created_dialogs.append(dialog)
+        return dialog
+
+    def _issue_token(_scope: str) -> int:
+        counter["token"] += 1
+        return counter["token"]
+
+    dummy = types.SimpleNamespace(
+        engine=types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"]),
+        current_topic="Topic A",
+        _ensure_chapters_ready=lambda _label: True,
+        _constructed_response_button_label=lambda: "Section C",
+        _new_dialog=_new_dialog,
+        _show_text_dialog=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected text dialog")),
+        _issue_workflow_token=_issue_token,
+        _build_section_c_intelligence_snapshot=lambda _chapter: {},
+        _format_section_c_intelligence_line=lambda _intel: "context ready",
+        _get_section_c_questions=lambda _chapter: [dict(question)],
+        _default_section_c_question=lambda chapter: {"chapter": chapter, "scenario": "Fallback", "requirements": []},
+        _upsert_section_c_question=lambda _chapter, payload, persist=True: dict(payload),
+        _snapshot_question_payload=lambda payload: dict(payload),
+        _format_section_c_question_text=lambda payload: str(payload.get("scenario", "")),
+        _read_recent_section_c_attempts_summary=lambda _chapter, max_rows=3: {},
+        _format_section_c_delta_text=lambda _delta: "Rewrite delta: no re-mark comparison yet.",
+        _is_fr_financial_reporting_module=lambda: False,
+        _set_current_topic=lambda _topic: None,
+        start_quiz_session=lambda **_kwargs: None,
+        on_focus_now=lambda _arg: None,
+        _generate_section_c_question=lambda chapter, snapshot=None, cancel_check=None: (
+            generated.append(str(chapter)) or {"chapter": chapter, "scenario": f"Generated for {chapter}", "requirements": []},
+            None,
+        ),
+    )
+
+    StudyPlanGUI._open_section_c_practice_dialog(dummy, topic="Topic A")
+
+    assert created_dialogs
+    dialog = created_dialogs[0]
+    generate_btn = next(
+        child
+        for child in dialog.content.children[3].children
+        if isinstance(child, _Button) and child.label == "Generate case"
+    )
+    generate_btn.click()
+
+    assert generated == ["Topic A"]
+
+
+def test_startup_display_requirement_skips_default_display_for_headless_test_modes():
+    assert _should_require_default_display(dialog_smoke_test=True, latency_soak_test=False) is False
+    assert _should_require_default_display(dialog_smoke_test=False, latency_soak_test=True) is False
+    assert _should_require_default_display(dialog_smoke_test=False, latency_soak_test=False) is True
+
+
+def test_write_early_mode_failure_report_creates_minimal_report(tmp_path):
+    path = tmp_path / "smoke_last.json"
+    _write_early_mode_failure_report(str(path), status="failed", reason="startup_error", error="boom")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["reason"] == "startup_error"
+    assert payload["steps_total"] == 0
+    assert payload["startup_error"] == "boom"
+
+
+def test_diagnose_display_access_issue_reports_wayland_socket_permission(monkeypatch, tmp_path):
+    runtime_dir = tmp_path / "run"
+    runtime_dir.mkdir()
+    sock_path = runtime_dir / "wayland-1"
+    sock_path.write_text("", encoding="utf-8")
+
+    class _Probe:
+        def connect(self, _path: str) -> None:
+            raise PermissionError(1, "Operation not permitted")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
+    monkeypatch.setenv("DISPLAY", ":1")
+    monkeypatch.setattr("studyplan_app.socket.socket", lambda *args, **kwargs: _Probe())
+
+    msg = _diagnose_display_access_issue()
+    assert "cannot access the compositor socket" in msg
+    assert str(sock_path) in msg
+
+
+def test_build_dialog_smoke_steps_covers_critical_ui_dialogs():
+    dummy = types.SimpleNamespace(
+        on_about=lambda *_args: None,
+        on_show_shortcuts=lambda *_args: None,
+        on_open_preferences=lambda *_args: None,
+        _smoke_toggle_ui_modern_mode=lambda: None,
+        _smoke_toggle_coach_only=lambda: None,
+        _smoke_check_coach_pick_consistency=lambda: None,
+        _smoke_coach_next_burst=lambda: None,
+        _smoke_trigger_ui_controls=lambda: None,
+        on_edit_focus_allowlist=lambda *_args: None,
+        on_switch_module=lambda *_args: None,
+        on_manage_modules=lambda *_args: None,
+        on_edit_module=lambda *_args: None,
+        on_import_syllabus_pdf=lambda *_args: None,
+        on_reconfigure_from_rag=lambda *_args: None,
+        on_set_exam_date=lambda *_args: None,
+        on_open_availability_dialog=lambda *_args: None,
+        on_import_pdf=lambda *_args: None,
+        on_import_ai_questions=lambda *_args: None,
+        on_export_data=lambda *_args: None,
+        on_export_template=lambda *_args: None,
+        on_export_question_stats=lambda *_args: None,
+        on_export_anki_tsv=lambda *_args: None,
+        _open_section_c_practice_dialog=lambda: None,
+        _open_section_c_browse_dialog=lambda: None,
+        _open_section_c_analytics_dialog=lambda: None,
+        _open_section_c_exam_simulation_dialog=lambda: None,
+        on_reset_data=lambda *_args: None,
+        on_view_health_log=lambda *_args: None,
+        on_debug_info=lambda *_args: None,
+        on_train_ml_models=lambda *_args: None,
+        on_first_run_tour=lambda *_args: None,
+        on_take_quiz=lambda *_args: None,
+    )
+    steps = StudyPlanGUI._build_dialog_smoke_steps(dummy)
+    labels = [label for label, _func in steps]
+    assert "Set Availability" in labels
+    assert "Export Anki TSV" in labels
+    assert "Section C Practice" in labels
+    assert "Section C Browse" in labels
+    assert "Section C Analytics" in labels
+    assert "Section C Exam Simulation" in labels
 
 
 def test_section_c_rewrite_planner_picks_weakest_by_ratio_then_mark_weight():
@@ -4439,6 +4962,152 @@ def test_generate_section_c_question_failover_uses_second_model():
     assert row.get("scenario") == "Generated case"
     assert warn is None
     assert "sec-1" in calls and "sec-2" in calls
+
+
+def test_generate_section_c_question_fr_retries_when_exhibits_lack_tables():
+    """For FR modules, if the first valid parse has exhibits with no real financial figures,
+    a targeted retry is made and the result with actual data is used."""
+    from studyplan.ai.prompt_design import RETRY_SUFFIX_FR_TABLES
+
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+
+    # First call returns a valid case but exhibits have no numeric financial data.
+    # Second call (FR table retry) returns a case with real figures.
+    no_data_case = {
+        "chapter": "Topic A",
+        "scenario": "XYZ Corp scenario.",
+        "prompt": "XYZ Corp scenario.",
+        "requirements": [
+            {"part": "a", "requirement_text": "Prepare the SoFP.", "marks": 12},
+            {"part": "b", "requirement_text": "Evaluate.", "marks": 4},
+            {"part": "c", "requirement_text": "Advise.", "marks": 4},
+        ],
+        "model_answer_outline": ["a", "b", "c"],
+        "time_budget_minutes": 45,
+        "exhibits": ["Exhibit 1: Statement of Financial Position (see scenario)"],
+    }
+    data_case = dict(no_data_case)
+    data_case["exhibits"] = [
+        "Exhibit 1: Draft SoFP\nPPE: £5,200\nInventories: £1,800\nTotal assets: £7,000"
+    ]
+
+    prompts_seen: list[str] = []
+
+    def _ollama(model, prompt, **_kw):
+        prompts_seen.append(prompt)
+        if RETRY_SUFFIX_FR_TABLES in prompt:
+            return (json.dumps(data_case), None)
+        return (json.dumps(no_data_case), None)
+
+    def _parse(text, chapter):
+        try:
+            data = json.loads(text)
+        except Exception:
+            return (None, "parse error")
+        return (data, None)
+
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        local_llm_enabled=True,
+        module_id="acca_f7",
+        module_title="Financial Reporting",
+        _build_local_llm_model_failover_sequence=lambda **_kw: (["model-a"], None),
+        _select_local_llm_model=lambda **_kw: ("model-a", None),
+        _build_section_c_generation_prompt=lambda chapter, snapshot=None: "base-prompt",
+        _ollama_generate_text=_ollama,
+        _parse_generated_section_c_question=_parse,
+        _is_fr_financial_reporting_module=lambda: True,
+        _upsert_section_c_question=lambda chapter, row, persist=True: row,
+    )
+
+    row, warn = StudyPlanGUI._generate_section_c_question(dummy, "Topic A", snapshot={})
+
+    assert isinstance(row, dict)
+    exhibits = row.get("exhibits", [])
+    assert any(
+        StudyPlanGUI._exhibit_has_financial_data(ex) for ex in exhibits
+    ), "FR retry should have produced a case with exhibits containing real financial figures"
+    assert any(RETRY_SUFFIX_FR_TABLES in p for p in prompts_seen), "FR table retry prompt should have been used"
+    assert warn is None
+
+
+def test_generate_section_c_question_fr_keeps_initial_result_when_retry_has_no_data():
+    """If FR table retry also returns exhibits without financial figures, the initial valid result is kept."""
+    from studyplan.ai.prompt_design import RETRY_SUFFIX_FR_TABLES
+
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+
+    no_data_case = {
+        "chapter": "Topic A",
+        "scenario": "XYZ Corp scenario.",
+        "prompt": "XYZ Corp scenario.",
+        "requirements": [
+            {"part": "a", "requirement_text": "Prepare.", "marks": 12},
+            {"part": "b", "requirement_text": "Discuss.", "marks": 4},
+            {"part": "c", "requirement_text": "Advise.", "marks": 4},
+        ],
+        "model_answer_outline": ["a", "b", "c"],
+        "time_budget_minutes": 45,
+        "exhibits": ["Exhibit 1: Statement of Financial Position"],
+    }
+
+    def _ollama(model, prompt, **_kw):
+        return (json.dumps(no_data_case), None)
+
+    def _parse(text, chapter):
+        try:
+            data = json.loads(text)
+        except Exception:
+            return (None, "parse error")
+        return (data, None)
+
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        local_llm_enabled=True,
+        module_id="acca_f7",
+        module_title="Financial Reporting",
+        _build_local_llm_model_failover_sequence=lambda **_kw: (["model-a"], None),
+        _select_local_llm_model=lambda **_kw: ("model-a", None),
+        _build_section_c_generation_prompt=lambda chapter, snapshot=None: "base-prompt",
+        _ollama_generate_text=_ollama,
+        _parse_generated_section_c_question=_parse,
+        _is_fr_financial_reporting_module=lambda: True,
+        _upsert_section_c_question=lambda chapter, row, persist=True: row,
+    )
+
+    row, warn = StudyPlanGUI._generate_section_c_question(dummy, "Topic A", snapshot={})
+
+    assert isinstance(row, dict)
+    # Should still return the initial valid result (without data) rather than failing.
+    assert row.get("scenario") == "XYZ Corp scenario."
+    assert warn is None
+
+
+def test_normalize_section_c_question_fr_no_table_note_not_injected():
+    """FR questions with exhibits that lack financial figures must NOT have a user-visible note injected."""
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
+    dummy = types.SimpleNamespace(engine=engine)
+    dummy._section_c_question_id = types.MethodType(StudyPlanGUI._section_c_question_id, dummy)
+    dummy._is_fr_financial_reporting_module = lambda: True
+    row = {
+        "chapter": "Topic A",
+        "prompt": "FR question without tables.",
+        "scenario": "Company scenario.",
+        "requirements": [
+            {"part": "a", "requirement_text": "Prepare SoFP.", "marks": 12},
+            {"part": "b", "requirement_text": "Discuss.", "marks": 4},
+            {"part": "c", "requirement_text": "Advise.", "marks": 4},
+        ],
+        "model_answer_outline": ["a", "b", "c"],
+        "time_budget_minutes": 45,
+        "exhibits": ["Exhibit 1: Statement of Financial Position (see scenario)"],
+    }
+    out = StudyPlanGUI._normalize_section_c_question(dummy, "Topic A", row)
+    assert isinstance(out, dict)
+    for ex in out.get("exhibits", []):
+        assert "Note: numeric data table required" not in str(ex), (
+            "User-visible note must not be injected into exhibit text"
+        )
 
 
 def test_build_ai_tutor_assistant_history_row_prefers_requested_model_for_ollama():
@@ -5887,3 +6556,930 @@ def test_render_grounded_tutor_feedback_coerces_invalid_confidence_and_citations
     assert payload["evidence_confidence"] == 0.0
     assert payload["citations_count"] == 0
     assert "Evidence:" in str(payload["details_text"])
+
+
+# ---------------------------------------------------------------------------
+# Streak-break and badge-revocation tests
+# ---------------------------------------------------------------------------
+
+def _make_streak_dummy():
+    """Return a minimal SimpleNamespace wired up for streak/badge methods."""
+    dummy = types.SimpleNamespace(
+        achievements=set(),
+        study_streak=0,
+        last_study_date=None,
+        # UI stubs — badge_flow is None so update_badges_display is a no-op
+        badge_flow=None,
+    )
+    dummy.update_badges_display = lambda: None
+    dummy.save_preferences = lambda: None
+    dummy._revoke_streak_badges = types.MethodType(StudyPlanGUI._revoke_streak_badges, dummy)
+    dummy._check_streak_milestones = types.MethodType(StudyPlanGUI._check_streak_milestones, dummy)
+    dummy._unlock_achievement = types.MethodType(StudyPlanGUI._unlock_achievement, dummy)
+    dummy.send_notification = lambda *_a, **_kw: None
+    dummy._animate_badge_unlock = lambda *_a, **_kw: None
+    dummy.update_streak = types.MethodType(StudyPlanGUI.update_streak, dummy)
+    return dummy
+
+
+def test_revoke_streak_badges_removes_all_streak_keys():
+    dummy = _make_streak_dummy()
+    dummy.achievements = {"streak_3", "streak_7", "streak_14", "streak_30", "quiz_first"}
+    dummy._revoke_streak_badges()
+    assert "streak_3" not in dummy.achievements
+    assert "streak_7" not in dummy.achievements
+    assert "streak_14" not in dummy.achievements
+    assert "streak_30" not in dummy.achievements
+    # Unrelated badge must survive
+    assert "quiz_first" in dummy.achievements
+
+
+def test_revoke_streak_badges_is_noop_when_no_streak_badges():
+    dummy = _make_streak_dummy()
+    dummy.achievements = {"quiz_first", "pomodoro_4"}
+    dummy._revoke_streak_badges()
+    assert dummy.achievements == {"quiz_first", "pomodoro_4"}
+
+
+def test_update_streak_revokes_badges_when_day_skipped():
+    dummy = _make_streak_dummy()
+    dummy.study_streak = 7
+    dummy.last_study_date = datetime.date.today() - datetime.timedelta(days=3)
+    dummy.achievements = {"streak_3", "streak_7"}
+
+    revoked = []
+    original_revoke = dummy._revoke_streak_badges
+
+    def _spy_revoke():
+        revoked.append(True)
+        original_revoke()
+
+    dummy._revoke_streak_badges = _spy_revoke
+
+    # Stub save_streak_data so no file I/O is needed
+    dummy.save_streak_data = lambda: None
+
+    dummy.update_streak()
+
+    assert len(revoked) == 1, "expected _revoke_streak_badges to be called exactly once"
+    assert dummy.study_streak == 1
+    assert dummy.last_study_date == datetime.date.today()
+    assert "streak_3" not in dummy.achievements
+    assert "streak_7" not in dummy.achievements
+
+
+def test_update_streak_does_not_revoke_when_studied_yesterday():
+    dummy = _make_streak_dummy()
+    dummy.study_streak = 3
+    dummy.last_study_date = datetime.date.today() - datetime.timedelta(days=1)
+    dummy.achievements = {"streak_3"}
+
+    revoked = []
+    original_revoke = dummy._revoke_streak_badges
+
+    def _spy_revoke():
+        revoked.append(True)
+        original_revoke()
+
+    dummy._revoke_streak_badges = _spy_revoke
+    dummy.save_streak_data = lambda: None
+
+    dummy.update_streak()
+
+    assert len(revoked) == 0, "_revoke_streak_badges must NOT be called for a consecutive day"
+    assert dummy.study_streak == 4
+    assert "streak_3" in dummy.achievements
+
+
+def test_load_streak_data_resets_streak_and_badges_after_missed_day(tmp_path, monkeypatch):
+    import json as _json
+
+    streak_file = tmp_path / "streak.json"
+    two_days_ago = (datetime.date.today() - datetime.timedelta(days=2)).isoformat()
+    streak_file.write_text(_json.dumps({"last_study_date": two_days_ago, "study_streak": 14}))
+
+    monkeypatch.setattr("studyplan_app.Config.CONFIG_HOME", str(tmp_path))
+
+    dummy = _make_streak_dummy()
+    dummy.achievements = {"streak_3", "streak_7", "streak_14"}
+    dummy.load_streak_data = types.MethodType(StudyPlanGUI.load_streak_data, dummy)
+
+    dummy.load_streak_data()
+
+    assert dummy.study_streak == 0, "streak must be reset to 0 after a missed day"
+    assert "streak_3" not in dummy.achievements
+    assert "streak_7" not in dummy.achievements
+    assert "streak_14" not in dummy.achievements
+
+
+def test_load_streak_data_keeps_streak_when_studied_yesterday(tmp_path, monkeypatch):
+    import json as _json
+
+    streak_file = tmp_path / "streak.json"
+    yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    streak_file.write_text(_json.dumps({"last_study_date": yesterday, "study_streak": 5}))
+
+    monkeypatch.setattr("studyplan_app.Config.CONFIG_HOME", str(tmp_path))
+
+    dummy = _make_streak_dummy()
+    dummy.achievements = {"streak_3"}
+    dummy.load_streak_data = types.MethodType(StudyPlanGUI.load_streak_data, dummy)
+
+    dummy.load_streak_data()
+
+    assert dummy.study_streak == 5, "streak must be preserved when studied yesterday"
+    assert "streak_3" in dummy.achievements
+
+
+def test_load_streak_data_keeps_streak_when_studied_today(tmp_path, monkeypatch):
+    import json as _json
+
+    streak_file = tmp_path / "streak.json"
+    today = datetime.date.today().isoformat()
+    streak_file.write_text(_json.dumps({"last_study_date": today, "study_streak": 10}))
+
+    monkeypatch.setattr("studyplan_app.Config.CONFIG_HOME", str(tmp_path))
+
+    dummy = _make_streak_dummy()
+    dummy.achievements = {"streak_7"}
+    dummy.load_streak_data = types.MethodType(StudyPlanGUI.load_streak_data, dummy)
+
+    dummy.load_streak_data()
+
+    assert dummy.study_streak == 10, "streak must be preserved when studied today"
+    assert "streak_7" in dummy.achievements
+
+
+# ---------------------------------------------------------------------------
+# Edge-case fix tests (autopilot)
+# ---------------------------------------------------------------------------
+
+# Helper: import the module-level constants we need from studyplan_app.
+try:
+    from studyplan_app import (
+        AI_TUTOR_AUTOPILOT_ACTION_COOLDOWN_SECONDS,
+        AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS,
+        AI_TUTOR_DEFAULT_AUTONOMY_MODE,
+        AI_TUTOR_NUDGE_COOLDOWN_SECONDS,
+    )
+except Exception:  # pragma: no cover
+    pass
+
+
+# ------------------------------------------------------------------
+# Fix 1 / edge case #12–13: _accept_ai_tutor_pending_suggestion
+# must enforce the 20 s cooldown and 60 s duplicate guard.
+# ------------------------------------------------------------------
+
+def _make_accept_dummy(*, last_action_offset: float = 0.0, executed_topic: str = "", executed_action: str = ""):
+    """Build a minimal dummy with the accept method bound."""
+    executed: list[bool] = []
+    now_base = float(time.monotonic())
+
+    def _fake_execute(action_plan):
+        executed.append(True)
+        return True, "done"
+
+    recent_log: list[dict] = []
+    if executed_action:
+        recent_log.append(
+            {
+                "action": executed_action,
+                "topic": executed_topic,
+                "outcome": "executed",
+                "monotonic_at": now_base - 5.0,  # 5 s ago — within the 60 s guard
+                "source": "autopilot",
+                "reason": "",
+                "at": "",
+            }
+        )
+
+    metrics_calls: list[dict] = []
+
+    dummy = types.SimpleNamespace(
+        _ai_tutor_pending_suggestion={"action": "focus_start", "topic": executed_topic, "source": "autopilot"},
+        _ai_tutor_global_autopilot_last_action_at=now_base - last_action_offset,
+        _ai_tutor_recent_action_log=recent_log,
+        _ai_tutor_autopilot_stats={},
+        _ai_tutor_global_autopilot_action_window=[],
+        _ai_tutor_global_quiet_until=0.0,
+        _executed=executed,
+        _metrics_calls=metrics_calls,
+    )
+    dummy._execute_ai_tutor_action = _fake_execute
+    dummy._record_ai_tutor_recent_action = lambda *_a, **_kw: None
+    dummy._record_ai_tutor_action_budget_use = lambda _ts: None
+    dummy._clear_ai_tutor_pending_suggestion = lambda: None
+    dummy.send_notification = lambda *_a, **_kw: None
+    dummy._refresh_ai_tutor_autopilot_surface = lambda: None
+
+    def _record_metrics(updates, persist=False):
+        metrics_calls.append(dict(updates or {}))
+
+    dummy._record_ai_tutor_autopilot_metrics = _record_metrics
+
+    def _sanitize(rows, limit=10):
+        return list(rows or [])[-limit:]
+
+    dummy._sanitize_ai_tutor_recent_action_log = _sanitize
+    return dummy
+
+
+def test_accept_suggestion_blocked_by_cooldown():
+    """Accept must be silently skipped when still within the 20 s cooldown."""
+    dummy = _make_accept_dummy(last_action_offset=5.0)  # only 5 s since last action
+    StudyPlanGUI._accept_ai_tutor_pending_suggestion(dummy)
+    assert not dummy._executed, "execution must be blocked by cooldown"
+    reasons = [m.get("autopilot_last_block_reason") for m in dummy._metrics_calls]
+    assert "action_cooldown" in reasons
+
+
+def test_accept_suggestion_blocked_by_duplicate_guard():
+    """Accept must be skipped when the same action+topic was executed < 60 s ago."""
+    dummy = _make_accept_dummy(
+        last_action_offset=30.0,  # cooldown has passed (> 20 s)
+        executed_action="focus_start",
+        executed_topic="",
+    )
+    StudyPlanGUI._accept_ai_tutor_pending_suggestion(dummy)
+    assert not dummy._executed, "execution must be blocked by duplicate guard"
+    reasons = [m.get("autopilot_last_block_reason") for m in dummy._metrics_calls]
+    assert "action_duplicate_guard" in reasons
+
+
+def test_accept_suggestion_proceeds_when_guards_pass():
+    """Accept must execute when both cooldown and duplicate guard allow it."""
+    dummy = _make_accept_dummy(
+        last_action_offset=30.0,  # cooldown cleared
+        executed_action="drill_start",  # different action → duplicate guard won't fire
+        executed_topic="",
+    )
+    StudyPlanGUI._accept_ai_tutor_pending_suggestion(dummy)
+    assert dummy._executed, "execution must proceed when guards pass"
+
+
+# ------------------------------------------------------------------
+# Fix 1 / edge case #18: accept must use the env-var quiet period.
+# ------------------------------------------------------------------
+
+def test_accept_suggestion_respects_quiet_env_var(monkeypatch):
+    """The quiet period set by _accept must honour STUDYPLAN_AI_TUTOR_AUTOPILOT_QUIET_SECONDS."""
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_AUTOPILOT_QUIET_SECONDS", "300")
+    dummy = _make_accept_dummy(last_action_offset=30.0)
+    before = float(time.monotonic())
+    StudyPlanGUI._accept_ai_tutor_pending_suggestion(dummy)
+    after = float(time.monotonic())
+    quiet_until = float(getattr(dummy, "_ai_tutor_global_quiet_until", 0.0))
+    # quiet_until should be approximately now + 300 s
+    assert quiet_until >= before + 290.0, "quiet period must reflect env-var value"
+    assert quiet_until <= after + 310.0
+
+
+# ------------------------------------------------------------------
+# Fix 2 / edge cases #14 & #17: repeated-suggestion backoff must
+# only count entries with outcome exactly == "suggested".
+# ------------------------------------------------------------------
+
+def _make_backoff_dummy(outcomes: list[str]):
+    """Return a dummy with a recent-action log containing the given outcomes."""
+    now_base = float(time.monotonic())
+    log = [
+        {
+            "action": "focus_start",
+            "topic": "",
+            "outcome": o,
+            "monotonic_at": now_base - float(i * 30),
+            "source": "autopilot",
+            "reason": "",
+            "at": "",
+        }
+        for i, o in enumerate(outcomes)
+    ]
+    dummy = types.SimpleNamespace(
+        _ai_tutor_global_last_event_sig="",
+        _ai_tutor_global_last_decision_at=now_base - 10.0,
+        _ai_tutor_global_quiet_until=0.0,
+        _ai_tutor_recent_action_log=log,
+    )
+    dummy._ai_cache_sha1 = types.MethodType(StudyPlanGUI._ai_cache_sha1, dummy)
+    dummy._build_ai_tutor_autopilot_event_signature = types.MethodType(
+        StudyPlanGUI._build_ai_tutor_autopilot_event_signature, dummy
+    )
+
+    def _sanitize(rows, limit=10):
+        return list(rows or [])[-max(1, limit):]
+
+    dummy._sanitize_ai_tutor_recent_action_log = _sanitize
+
+    snapshot = {
+        "current_topic": "Topic A",
+        "coach_pick": "",
+        "must_review_due": 2,
+        "overdue_srs_count": 0,
+        "new_srs_count": 0,
+        "tutor_dialog_open": False,
+        "pomodoro_active": False,
+        "pomodoro_paused": False,
+        "pomodoro_remaining_sec": 0,
+        "focus_trend_14d": {},
+        "weak_topics_top3": [],
+        "risk_snapshot_top3": [],
+        "due_snapshot_top3": [],
+        "gap_generation_recommended": False,
+        "runtime_scope": "app_wide",
+    }
+    return dummy, snapshot
+
+
+def test_backoff_only_fires_for_pending_suggested_outcomes():
+    """Backoff must NOT fire when the three recent outcomes are suggested_accepted/dismissed."""
+    dummy, snapshot = _make_backoff_dummy(
+        ["suggested_accepted", "suggested_dismissed", "suggested_accepted"]
+    )
+    sig = StudyPlanGUI._build_ai_tutor_autopilot_event_signature(dummy, snapshot)
+    dummy._ai_tutor_global_last_event_sig = sig
+
+    should, reason, _ = StudyPlanGUI._should_request_global_ai_tutor_decision(
+        dummy, snapshot, now_ts=float(time.monotonic()) + 200.0
+    )
+    assert reason != "repeated_suggestion_backoff", (
+        "accepted/dismissed entries must not trigger backoff"
+    )
+
+
+def test_backoff_fires_for_three_pending_suggested():
+    """Backoff must fire when three consecutive unresolved 'suggested' entries exist."""
+    dummy, snapshot = _make_backoff_dummy(["suggested", "suggested", "suggested"])
+    sig = StudyPlanGUI._build_ai_tutor_autopilot_event_signature(dummy, snapshot)
+    dummy._ai_tutor_global_last_event_sig = sig
+
+    should, reason, _ = StudyPlanGUI._should_request_global_ai_tutor_decision(
+        dummy, snapshot, now_ts=float(time.monotonic()) + 10.0
+    )
+    assert reason == "repeated_suggestion_backoff"
+
+
+# ------------------------------------------------------------------
+# Fix 4 / edge case #9: nudge per-key cooldown.
+# ------------------------------------------------------------------
+
+def _make_nudge_dummy_perkey(policy: str = "moderate"):
+    """Nudge dummy for the per-key cooldown edge-case tests (fix 4)."""
+    notifications: list[str] = []
+    dummy = types.SimpleNamespace(
+        ai_tutor_nudges_enabled=True,
+        ai_tutor_nudge_policy=policy,
+        _ai_tutor_global_autopilot_last_nudge_at=0.0,
+        _ai_tutor_global_autopilot_last_nudge_key="",
+        _ai_tutor_global_nudge_key_times={},
+        _ai_tutor_autopilot_stats={},
+        _notifications=notifications,
+    )
+    dummy._coerce_ai_tutor_nudge_policy = types.MethodType(StudyPlanGUI._coerce_ai_tutor_nudge_policy, dummy)
+    dummy._record_ai_tutor_autopilot_metrics = lambda *_a, **_kw: None
+    dummy.send_notification = lambda _title, msg: notifications.append(msg)
+    dummy._emit_global_ai_tutor_nudge = types.MethodType(StudyPlanGUI._emit_global_ai_tutor_nudge, dummy)
+    return dummy
+
+
+def test_nudge_different_messages_each_get_own_cooldown():
+    """Two different nudge messages must each fire even if the first is still in cooldown."""
+    dummy = _make_nudge_dummy_perkey(policy="moderate")  # 120 s cooldown
+    dummy._emit_global_ai_tutor_nudge("info", "message one")
+    dummy._emit_global_ai_tutor_nudge("info", "message two")  # different key
+    assert len(dummy._notifications) == 2, "both distinct nudges must be delivered"
+
+
+def test_nudge_same_message_blocked_by_cooldown():
+    """The same nudge message must be suppressed if it fires again within the cooldown."""
+    dummy = _make_nudge_dummy_perkey(policy="moderate")
+    dummy._emit_global_ai_tutor_nudge("info", "steady message")
+    dummy._emit_global_ai_tutor_nudge("info", "steady message")  # same key, immediate re-fire
+    assert len(dummy._notifications) == 1, "duplicate nudge within cooldown must be suppressed"
+
+
+def test_nudge_key_times_pruned_on_emit():
+    """Stale nudge keys older than the max cooldown must be pruned from the tracking dict."""
+    dummy = _make_nudge_dummy_perkey(policy="moderate")
+    max_cooldown = float(max(AI_TUTOR_NUDGE_COOLDOWN_SECONDS.values()))
+    # Manually plant a stale entry
+    dummy._ai_tutor_global_nudge_key_times = {"info:old_message": float(time.monotonic()) - max_cooldown - 10.0}
+    dummy._emit_global_ai_tutor_nudge("info", "new message")
+    remaining = dict(dummy._ai_tutor_global_nudge_key_times)
+    assert "info:old_message" not in remaining, "stale entry must have been pruned"
+
+
+# ------------------------------------------------------------------
+# Fix 5 / edge case #4: fallback topic validated against CHAPTERS.
+# ------------------------------------------------------------------
+
+def _make_fallback_dummy(chapters: list[str]):
+    import types as _types
+
+    engine = _types.SimpleNamespace(CHAPTERS=chapters)
+    dummy = _types.SimpleNamespace(engine=engine)
+    dummy._derive_ai_tutor_action_evidence = None
+    return dummy
+
+
+def test_fallback_action_rejects_invalid_current_topic():
+    """_build_ai_tutor_fallback_action must clear current_topic if not in CHAPTERS."""
+    dummy = _make_fallback_dummy(chapters=["Valid Chapter"])
+    snapshot = {"current_topic": "Stale Bad Topic", "must_review_due": 0, "overdue_srs_count": 0, "weak_topics_top3": []}
+    result = StudyPlanGUI._build_ai_tutor_fallback_action(dummy, snapshot)
+    assert result["topic"] == "", "invalid topic must be cleared"
+
+
+def test_fallback_action_keeps_valid_current_topic():
+    """_build_ai_tutor_fallback_action must keep current_topic if it exists in CHAPTERS."""
+    dummy = _make_fallback_dummy(chapters=["Valid Chapter"])
+    snapshot = {"current_topic": "Valid Chapter", "must_review_due": 0, "overdue_srs_count": 0, "weak_topics_top3": []}
+    result = StudyPlanGUI._build_ai_tutor_fallback_action(dummy, snapshot)
+    assert result["topic"] == "Valid Chapter"
+
+
+def test_fallback_action_rejects_invalid_weak_topic_chapter():
+    """weak_topics[0].chapter that is not in CHAPTERS must be ignored."""
+    dummy = _make_fallback_dummy(chapters=["Valid Chapter"])
+    snapshot = {
+        "current_topic": "Valid Chapter",
+        "must_review_due": 0,
+        "overdue_srs_count": 0,
+        "weak_topics_top3": [{"chapter": "Ghost Chapter", "score": 0.2}],
+    }
+    result = StudyPlanGUI._build_ai_tutor_fallback_action(dummy, snapshot)
+    # The weak_drill_start path must fall back to current_topic, not Ghost Chapter
+    assert result["topic"] == "Valid Chapter"
+
+
+def test_fallback_action_uses_valid_weak_topic_chapter():
+    """weak_topics[0].chapter in CHAPTERS must be used as the topic."""
+    dummy = _make_fallback_dummy(chapters=["Valid Chapter", "Weak Chapter"])
+    snapshot = {
+        "current_topic": "Valid Chapter",
+        "must_review_due": 0,
+        "overdue_srs_count": 0,
+        "weak_topics_top3": [{"chapter": "Weak Chapter", "score": 0.1}],
+    }
+    result = StudyPlanGUI._build_ai_tutor_fallback_action(dummy, snapshot)
+    assert result["topic"] == "Weak Chapter"
+    assert result["action"] == "weak_drill_start"
+
+
+# ------------------------------------------------------------------
+# Fix 3 / edge case #3: status-bar default mode must match the
+# module-level AI_TUTOR_DEFAULT_AUTONOMY_MODE, not "assist".
+# ------------------------------------------------------------------
+
+def test_effective_autonomy_mode_matches_module_default():
+    """_effective_ai_tutor_autonomy_mode must return the module default when unset."""
+    dummy = types.SimpleNamespace()
+    dummy._coerce_ai_tutor_autonomy_mode = types.MethodType(StudyPlanGUI._coerce_ai_tutor_autonomy_mode, dummy)
+    dummy._effective_ai_tutor_autonomy_mode = types.MethodType(StudyPlanGUI._effective_ai_tutor_autonomy_mode, dummy)
+    mode = dummy._effective_ai_tutor_autonomy_mode()
+    assert mode == AI_TUTOR_DEFAULT_AUTONOMY_MODE, (
+        f"default mode must be {AI_TUTOR_DEFAULT_AUTONOMY_MODE!r}, got {mode!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gap-closing tests: action budget, nudge, duplicate guard, execute dispatcher,
+# restart timer, and worker exception logging.
+# ---------------------------------------------------------------------------
+
+from studyplan_app import (
+    AI_TUTOR_ALLOWED_ACTIONS,
+    AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS,
+    AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW,
+    AI_TUTOR_NUDGE_COOLDOWN_SECONDS,
+)
+
+
+# --- _consume_global_ai_tutor_action_budget -----------------------------------
+
+def test_consume_global_ai_tutor_action_budget_allows_when_empty():
+    dummy = types.SimpleNamespace(_ai_tutor_global_autopilot_action_window=[])
+    assert StudyPlanGUI._consume_global_ai_tutor_action_budget(dummy, 1000.0) is True
+
+
+def test_consume_global_ai_tutor_action_budget_blocks_when_full():
+    now = 1000.0
+    # Fill window to max capacity.
+    window = [now - i for i in range(AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW)]
+    dummy = types.SimpleNamespace(_ai_tutor_global_autopilot_action_window=window)
+    assert StudyPlanGUI._consume_global_ai_tutor_action_budget(dummy, now) is False
+
+
+def test_consume_global_ai_tutor_action_budget_prunes_expired_entries():
+    now = 1000.0
+    old_ts = now - float(AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS) - 1.0
+    # One entry inside the window, the rest are stale.
+    window = [old_ts] * (AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW - 1) + [now - 1.0]
+    dummy = types.SimpleNamespace(_ai_tutor_global_autopilot_action_window=window)
+    # After pruning stale entries only 1 remains — well below max.
+    assert StudyPlanGUI._consume_global_ai_tutor_action_budget(dummy, now) is True
+    assert dummy._ai_tutor_global_autopilot_action_window == [now - 1.0]
+
+
+def test_consume_global_ai_tutor_action_budget_tolerates_invalid_entries():
+    dummy = types.SimpleNamespace(_ai_tutor_global_autopilot_action_window=["bad", None, 999.0])
+    assert StudyPlanGUI._consume_global_ai_tutor_action_budget(dummy, 1000.0) is True
+    assert dummy._ai_tutor_global_autopilot_action_window == [999.0]
+
+
+# --- _record_ai_tutor_action_budget_use --------------------------------------
+
+def test_record_ai_tutor_action_budget_use_appends_timestamp():
+    dummy = types.SimpleNamespace(_ai_tutor_global_autopilot_action_window=[100.0, 200.0])
+    StudyPlanGUI._record_ai_tutor_action_budget_use(dummy, 300.0)
+    assert dummy._ai_tutor_global_autopilot_action_window == [100.0, 200.0, 300.0]
+
+
+def test_record_ai_tutor_action_budget_use_initialises_missing_window():
+    dummy = types.SimpleNamespace()
+    StudyPlanGUI._record_ai_tutor_action_budget_use(dummy, 500.0)
+    assert dummy._ai_tutor_global_autopilot_action_window == [500.0]
+
+
+# --- _emit_global_ai_tutor_nudge ---------------------------------------------
+
+def _make_nudge_dummy(*, enabled=True, policy="moderate"):
+    notifications = []
+    stats = {"nudge_info_count": 0, "nudge_warning_count": 0, "nudge_intervention_count": 0}
+    dummy = types.SimpleNamespace(
+        ai_tutor_nudges_enabled=enabled,
+        ai_tutor_nudge_policy=policy,
+        _ai_tutor_global_autopilot_last_nudge_at=0.0,
+        _ai_tutor_global_autopilot_last_nudge_key="",
+        _ai_tutor_global_nudge_key_times={},
+        _ai_tutor_autopilot_stats=stats,
+        send_notification=lambda title, msg: notifications.append((title, msg)),
+        _notifications=notifications,
+    )
+    dummy._coerce_ai_tutor_nudge_policy = types.MethodType(StudyPlanGUI._coerce_ai_tutor_nudge_policy, dummy)
+    dummy._record_ai_tutor_autopilot_metrics = lambda updates, persist=False: stats.update(updates)
+    return dummy, notifications, stats
+
+
+def test_emit_global_ai_tutor_nudge_fires_notification():
+    dummy, notifications, stats = _make_nudge_dummy()
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Keep going!")
+    assert len(notifications) == 1
+    assert notifications[0][1] == "Keep going!"
+    assert stats["nudge_info_count"] == 1
+
+
+def test_emit_global_ai_tutor_nudge_disabled_does_nothing():
+    dummy, notifications, stats = _make_nudge_dummy(enabled=False)
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Ignored")
+    assert notifications == []
+    assert stats["nudge_info_count"] == 0
+
+
+def test_emit_global_ai_tutor_nudge_deduplicates_within_cooldown():
+    dummy, notifications, stats = _make_nudge_dummy(policy="moderate")
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Repeat me")
+    # Simulate immediate second call (same message, within cooldown).
+    dummy._ai_tutor_global_autopilot_last_nudge_at = time.monotonic()
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Repeat me")
+    assert len(notifications) == 1, "second nudge must be suppressed within cooldown"
+    assert stats["nudge_info_count"] == 1
+
+
+def test_emit_global_ai_tutor_nudge_warning_increments_warning_counter():
+    dummy, notifications, stats = _make_nudge_dummy()
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "warning", "Low focus!")
+    assert stats["nudge_warning_count"] == 1
+    assert stats["nudge_info_count"] == 0
+
+
+def test_emit_global_ai_tutor_nudge_intervention_increments_intervention_counter():
+    dummy, notifications, stats = _make_nudge_dummy()
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "intervention", "5 reviews due!")
+    assert stats["nudge_intervention_count"] == 1
+
+
+def test_emit_global_ai_tutor_nudge_different_message_after_cooldown_fires_again():
+    dummy, notifications, _stats = _make_nudge_dummy(policy="moderate")
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Message 1")
+    # Different key — should fire regardless of last_nudge_at.
+    dummy._ai_tutor_global_autopilot_last_nudge_at = time.monotonic()
+    StudyPlanGUI._emit_global_ai_tutor_nudge(dummy, "info", "Message 2")
+    assert len(notifications) == 2
+
+
+# --- duplicate-guard in _global_ai_tutor_autopilot_tick ----------------------
+
+def test_autopilot_duplicate_guard_blocks_repeated_action_within_60s():
+    """Identical action+topic executed less than 60 s ago must be blocked."""
+    now_ts = time.monotonic()
+    recent_log = [
+        {
+            "action": "drill_start",
+            "topic": "Topic A",
+            "outcome": "executed",
+            "source": "autopilot",
+            "at": "2026-01-01T10:00:00",
+            "monotonic_at": now_ts - 10.0,  # 10 s ago — within 60 s window
+        }
+    ]
+    dummy = types.SimpleNamespace(
+        _ai_tutor_recent_action_log=recent_log,
+    )
+    dummy._sanitize_ai_tutor_recent_action_log = types.MethodType(
+        StudyPlanGUI._sanitize_ai_tutor_recent_action_log, dummy
+    )
+    sanitized = StudyPlanGUI._sanitize_ai_tutor_recent_action_log(dummy, recent_log, limit=10)
+    duplicate_found = False
+    for row in reversed(sanitized):
+        if str(row.get("outcome", "")).lower() != "executed":
+            continue
+        if str(row.get("action", "")).lower() != "drill_start":
+            continue
+        if str(row.get("topic", "")) != "Topic A":
+            continue
+        try:
+            row_ts = float(row.get("monotonic_at", 0.0) or 0.0)
+        except Exception:
+            row_ts = 0.0
+        if row_ts > 0.0 and (now_ts - row_ts) < 60.0:
+            duplicate_found = True
+            break
+    assert duplicate_found, "duplicate guard should detect recent same action+topic"
+
+
+def test_autopilot_duplicate_guard_allows_action_after_60s():
+    """Same action+topic executed more than 60 s ago must NOT be flagged as duplicate."""
+    now_ts = time.monotonic()
+    recent_log = [
+        {
+            "action": "drill_start",
+            "topic": "Topic A",
+            "outcome": "executed",
+            "source": "autopilot",
+            "at": "2026-01-01T10:00:00",
+            "monotonic_at": now_ts - 90.0,  # 90 s ago — outside 60 s window
+        }
+    ]
+    dummy = types.SimpleNamespace(_ai_tutor_recent_action_log=recent_log)
+    dummy._sanitize_ai_tutor_recent_action_log = types.MethodType(
+        StudyPlanGUI._sanitize_ai_tutor_recent_action_log, dummy
+    )
+    sanitized = StudyPlanGUI._sanitize_ai_tutor_recent_action_log(dummy, recent_log, limit=10)
+    duplicate_found = False
+    for row in reversed(sanitized):
+        if str(row.get("outcome", "")).lower() != "executed":
+            continue
+        if str(row.get("action", "")).lower() != "drill_start":
+            continue
+        if str(row.get("topic", "")) != "Topic A":
+            continue
+        try:
+            row_ts = float(row.get("monotonic_at", 0.0) or 0.0)
+        except Exception:
+            row_ts = 0.0
+        if row_ts > 0.0 and (now_ts - row_ts) < 60.0:
+            duplicate_found = True
+            break
+    assert not duplicate_found, "duplicate guard must not block action older than 60 s"
+
+
+# --- _execute_ai_tutor_action dispatcher -------------------------------------
+
+def _make_execute_dummy():
+    engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"])
+    calls = {}
+    dummy = types.SimpleNamespace(
+        engine=engine,
+        current_topic="Topic A",
+        pomodoro_timer_id=None,
+        pomodoro_remaining=0,
+        pomodoro_paused=False,
+        pomodoro_btn_pause=None,
+        pomodoro_btn_stop=None,
+        _ai_tutor_dialog_open=False,
+        _ensure_chapters_ready=lambda _label: True,
+        _set_current_topic=lambda _topic: None,
+        on_focus_now=lambda _btn: calls.update({"focus_start": True}),
+        on_pomodoro_pause=lambda _btn: calls.update({"timer_pause": True}),
+        on_pomodoro_stop=lambda _btn: calls.update({"timer_stop": True}),
+        _open_ai_tutor_dialog=lambda: calls.update({"tutor_open": True}),
+        on_open_ai_coach=lambda _btn: calls.update({"coach_open": True}),
+        on_quick_quiz=lambda _btn: calls.update({"quick_quiz_start": True}),
+        on_drill_weak=lambda _btn: calls.update({"weak_drill_start": True}),
+        on_leitner_drill=lambda _btn: calls.update({"leitner_drill_start": True}),
+        on_error_drill=lambda _btn: calls.update({"error_drill_start": True}),
+        on_leech_drill=lambda _btn: calls.update({"leech_drill_start": True}),
+        on_do_coach_next=lambda _btn: calls.update({"coach_next": True}),
+        _topic_has_questions=lambda topic: topic in {"Topic A", "Topic B"},
+        _get_drill_topic=lambda: "Topic A",
+        _get_interleave_topic=lambda: "Topic A",
+        start_quiz_session=lambda topic, total_override, kind: calls.update({kind: topic}),
+        on_clear_must_review=lambda _btn: calls.update({"review_start": True}),
+        _calls=calls,
+    )
+    return dummy
+
+
+def test_execute_ai_tutor_action_unknown_action_returns_false():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "teleport_now"})
+    assert ok is False
+    assert "Unsupported" in msg
+
+
+def test_execute_ai_tutor_action_chapters_not_ready_blocks_drill():
+    dummy = _make_execute_dummy()
+    dummy._ensure_chapters_ready = lambda _label: False
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "drill_start", "topic": "Topic A"})
+    assert ok is False
+    assert "No chapters loaded" in msg
+
+
+def test_execute_ai_tutor_action_focus_start_calls_handler():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "focus_start", "topic": ""})
+    assert ok is True
+    assert dummy._calls.get("focus_start") is True
+
+
+def test_execute_ai_tutor_action_timer_pause_no_active_timer_returns_false():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "timer_pause", "topic": ""})
+    assert ok is False
+    assert "No active Pomodoro" in msg
+
+
+def test_execute_ai_tutor_action_timer_resume_no_active_timer_returns_false():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "timer_resume", "topic": ""})
+    assert ok is False
+    assert "No active Pomodoro" in msg
+
+
+def test_execute_ai_tutor_action_timer_stop_no_active_timer_returns_false():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "timer_stop", "topic": ""})
+    assert ok is False
+    assert "No active Pomodoro" in msg
+
+
+def test_execute_ai_tutor_action_tutor_open_calls_handler():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "tutor_open", "topic": ""})
+    assert ok is True
+    assert dummy._calls.get("tutor_open") is True
+
+
+def test_execute_ai_tutor_action_coach_open_calls_handler():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "coach_open", "topic": ""})
+    assert ok is True
+    assert dummy._calls.get("coach_open") is True
+
+
+def test_execute_ai_tutor_action_quick_quiz_start_calls_handler():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "quick_quiz_start", "topic": ""})
+    assert ok is True
+    assert dummy._calls.get("quick_quiz_start") is True
+
+
+def test_execute_ai_tutor_action_drill_start_with_valid_topic():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "drill_start", "topic": "Topic A"})
+    assert ok is True
+    assert dummy._calls.get("drill") == "Topic A"
+
+
+def test_execute_ai_tutor_action_review_start_calls_handler():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "review_start", "topic": ""})
+    assert ok is True
+    assert dummy._calls.get("review_start") is True
+
+
+def test_execute_ai_tutor_action_coach_next_calls_handler():
+    dummy = _make_execute_dummy()
+    ok, msg = StudyPlanGUI._execute_ai_tutor_action(dummy, {"action": "coach_next", "topic": ""})
+    assert ok is True
+    assert dummy._calls.get("coach_next") is True
+
+
+# --- _restart_ai_tutor_global_autopilot_timer --------------------------------
+
+def _make_restart_dummy(*, enabled=True, tick_seconds=45):
+    removed = []
+    registered = []
+
+    class _FakeGLib:
+        PRIORITY_LOW = 300
+
+        @staticmethod
+        def timeout_add_seconds(interval, cb):
+            return 99  # fake source id
+
+        @staticmethod
+        def idle_add(cb, priority=300):
+            pass  # don't actually call the callback
+
+    dummy = types.SimpleNamespace(
+        ai_tutor_autopilot_enabled=enabled,
+        ai_tutor_autopilot_tick_seconds=tick_seconds,
+        _ai_tutor_global_autopilot_id=77,
+        _ai_tutor_global_autopilot_busy=True,
+        _ai_tutor_global_last_event_sig="old_sig",
+        _ai_tutor_global_last_decision_at=999.9,
+        _ai_tutor_global_quiet_until=888.8,
+        _remove_glib_source=lambda sid: removed.append(sid),
+        _register_glib_source=lambda sid: registered.append(sid),
+        _global_ai_tutor_autopilot_tick=lambda: None,
+        _removed=removed,
+        _registered=registered,
+    )
+    dummy._coerce_ai_tutor_autopilot_tick_seconds = types.MethodType(
+        StudyPlanGUI._coerce_ai_tutor_autopilot_tick_seconds, dummy
+    )
+
+    import unittest.mock as _mock
+    import studyplan_app as _appmod
+
+    with _mock.patch.object(_appmod, "GLib", _FakeGLib):
+        StudyPlanGUI._restart_ai_tutor_global_autopilot_timer(dummy)
+
+    return dummy
+
+
+def test_restart_ai_tutor_global_autopilot_timer_resets_state_fields():
+    dummy = _make_restart_dummy(enabled=True)
+    assert dummy._ai_tutor_global_autopilot_busy is False
+    assert dummy._ai_tutor_global_last_event_sig == ""
+    assert dummy._ai_tutor_global_last_decision_at == 0.0
+    assert dummy._ai_tutor_global_quiet_until == 0.0
+
+
+def test_restart_ai_tutor_global_autopilot_timer_removes_old_source():
+    dummy = _make_restart_dummy(enabled=True)
+    assert 77 in dummy._removed
+
+
+def test_restart_ai_tutor_global_autopilot_timer_registers_new_source_when_enabled():
+    dummy = _make_restart_dummy(enabled=True)
+    assert dummy._ai_tutor_global_autopilot_id == 99
+    assert 99 in dummy._registered
+
+
+def test_restart_ai_tutor_global_autopilot_timer_skips_new_timer_when_disabled():
+    dummy = _make_restart_dummy(enabled=False)
+    assert dummy._ai_tutor_global_autopilot_id == 0
+    assert dummy._registered == []
+
+
+# --- worker exception is logged (smoke check) --------------------------------
+
+def test_global_ai_tutor_autopilot_tick_worker_exception_is_logged(caplog):
+    """Exceptions in the autopilot background worker must be logged, not silently dropped."""
+    import logging as _logging
+
+    def _boom():
+        raise RuntimeError("simulated snapshot failure")
+
+    dummy = types.SimpleNamespace(
+        ai_tutor_autopilot_enabled=True,
+        ai_tutor_autopilot_paused=False,
+        _dialog_smoke_mode=False,
+        _ai_tutor_global_autopilot_busy=False,
+        _effective_ai_tutor_autonomy_mode=lambda: "cockpit",
+        _build_ai_tutor_autopilot_snapshot=_boom,
+        _ai_tutor_autopilot_stats={},
+        _record_ai_tutor_autopilot_metrics=lambda updates=None, persist=False: None,
+    )
+    # Run _worker() synchronously by extracting it from the patched tick.
+    worker_exc = []
+    original_start = StudyPlanGUI._start_managed_background_thread
+
+    def _capture_worker(self_arg, worker_fn):
+        try:
+            worker_fn()
+        except Exception as e:
+            worker_exc.append(e)
+
+    import unittest.mock as _mock
+    import studyplan_app as _appmod
+
+    class _FakeGLib:
+        PRIORITY_LOW = 300
+
+        @staticmethod
+        def idle_add(cb, priority=300):
+            cb()  # run _finish() synchronously
+            return 0
+
+    with _mock.patch.object(StudyPlanGUI, "_start_managed_background_thread", _capture_worker):
+        with _mock.patch.object(_appmod, "GLib", _FakeGLib):
+            with caplog.at_level(_logging.WARNING, logger="studyplan_app"):
+                StudyPlanGUI._global_ai_tutor_autopilot_tick(dummy)
+
+    assert any("autopilot tick worker failed" in r.message for r in caplog.records), (
+        "background worker exception must produce a warning log record"
+    )

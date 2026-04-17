@@ -1,3 +1,4 @@
+import copy
 import datetime
 import hashlib
 import types
@@ -156,6 +157,60 @@ def test_constructor_sets_today_and_initial_structures(monkeypatch):
     assert isinstance(eng.pomodoro_log, dict)
     assert eng.pomodoro_log.get("total_minutes") == 0
     assert eng.pomodoro_log.get("by_chapter") == {}
+
+
+def test_engine_init_raises_when_module_paths_escape_active_module_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+
+    config_home = tmp_path / "config"
+    module_dir = config_home / "safety_mod"
+    module_dir.mkdir(parents=True)
+    legacy_data = config_home / "data.json"
+    legacy_questions = config_home / "questions.json"
+
+    monkeypatch.setattr(StudyPlanEngine, "DEFAULT_DATA_DIR", str(config_home), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "DEFAULT_DATA_FILE", str(legacy_data), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "DEFAULT_QUESTIONS_FILE", str(legacy_questions), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(legacy_data), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "QUESTIONS_FILE", str(legacy_questions), raising=True)
+    monkeypatch.setattr(
+        StudyPlanEngine,
+        "_resolve_module_paths",
+        lambda self, module_id: (str(legacy_data), str(legacy_questions)),
+        raising=True,
+    )
+
+    with pytest.raises(RuntimeError, match="escaped active module directory"):
+        StudyPlanEngine(module_id="safety_mod")
+
+
+def test_acca_f9_prefers_module_dir_paths_when_module_dir_exists(tmp_path, monkeypatch):
+    monkeypatch.setattr(StudyPlanEngine, "load_data", lambda self: None, raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
+
+    config_home = tmp_path / "config"
+    module_dir = config_home / "acca_f9"
+    module_dir.mkdir(parents=True)
+    legacy_data = config_home / "data.json"
+    legacy_questions = config_home / "questions.json"
+    module_data = module_dir / "data.json"
+    module_questions = module_dir / "questions.json"
+    legacy_data.write_text('{"legacy": true}', encoding="utf-8")
+    legacy_questions.write_text('{"legacy": true}', encoding="utf-8")
+    module_data.write_text('{"module": true}', encoding="utf-8")
+    module_questions.write_text('{"module": true}', encoding="utf-8")
+
+    monkeypatch.setattr(StudyPlanEngine, "DEFAULT_DATA_DIR", str(config_home), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "DEFAULT_DATA_FILE", str(legacy_data), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "DEFAULT_QUESTIONS_FILE", str(legacy_questions), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(legacy_data), raising=True)
+    monkeypatch.setattr(StudyPlanEngine, "QUESTIONS_FILE", str(legacy_questions), raising=True)
+
+    eng = StudyPlanEngine(module_id="acca_f9")
+
+    assert eng.DATA_FILE == str(module_data)
+    assert eng.QUESTIONS_FILE == str(module_questions)
 
 
 def test_engine_initializes_cognitive_runtime_wrapper(engine_no_io):
@@ -2200,7 +2255,160 @@ def test_build_module_config_merges_outcomes_by_id_and_text(engine_no_io):
     assert int(ch1.get("outcome_count", 0)) == 3
 
 
-def test_validate_module_config_returns_warnings_for_invalid_config(engine_no_io):
+def test_apply_module_config_additive_merge_never_removes_outcomes(engine_no_io):
+    """_apply_module_config must never reduce outcome count when updating syllabus_structure.
+
+    Simulates the scenario where a local model re-parses the syllabus and produces
+    fewer outcomes (e.g. 2 instead of 5). Existing outcomes must be preserved.
+    """
+    eng = engine_no_io
+    eng.CHAPTERS = ["Ch1"]
+    eng.syllabus_structure = {
+        "Ch1": {
+            "capability": "A",
+            "subtopics": [],
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Explain financial reporting.", "level": 1},
+                {"id": "A.2", "text": "Discuss IFRS standards.", "level": 2},
+                {"id": "A.3", "text": "Apply IAS 16.", "level": 2},
+                {"id": "A.4", "text": "Evaluate investment decisions.", "level": 3},
+                {"id": "A.5", "text": "Prepare consolidated statements.", "level": 3},
+            ],
+            "outcome_count": 5,
+            "intellectual_level_mix": {"level_1": 1, "level_2": 2, "level_3": 2},
+        }
+    }
+    # Incoming config has only 2 outcomes (simulating local model under-count).
+    incoming = {
+        "chapters": ["Ch1"],
+        "syllabus_structure": {
+            "Ch1": {
+                "capability": "A",
+                "subtopics": [],
+                "learning_outcomes": [
+                    {"id": "A.1", "text": "Explain financial reporting.", "level": 1},
+                    {"id": "A.2", "text": "Discuss IFRS standards.", "level": 2},
+                ],
+                "outcome_count": 2,
+                "intellectual_level_mix": {"level_1": 1, "level_2": 1, "level_3": 0},
+            }
+        },
+    }
+    eng._apply_module_config(incoming)
+    ch1 = eng.syllabus_structure.get("Ch1") or {}
+    los = ch1.get("learning_outcomes") or []
+    # All 5 original outcomes must survive.
+    assert len(los) >= 5, f"Expected >=5 outcomes but got {len(los)}"
+    ids = {str(o.get("id", "")).strip() for o in los}
+    assert {"A.1", "A.2", "A.3", "A.4", "A.5"}.issubset(ids)
+    assert ch1.get("outcome_count") == len(los)
+
+
+def test_apply_module_config_additive_merge_adds_new_outcomes(engine_no_io):
+    """_apply_module_config should add genuinely new outcomes from the incoming config."""
+    eng = engine_no_io
+    eng.CHAPTERS = ["Ch1"]
+    eng.syllabus_structure = {
+        "Ch1": {
+            "capability": "A",
+            "subtopics": [],
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Explain financial reporting.", "level": 1},
+            ],
+            "outcome_count": 1,
+            "intellectual_level_mix": {"level_1": 1, "level_2": 0, "level_3": 0},
+        }
+    }
+    incoming = {
+        "chapters": ["Ch1"],
+        "syllabus_structure": {
+            "Ch1": {
+                "capability": "A",
+                "subtopics": [],
+                "learning_outcomes": [
+                    {"id": "A.1", "text": "Explain financial reporting.", "level": 1},
+                    {"id": "A.2", "text": "Brand new outcome.", "level": 2},
+                ],
+                "outcome_count": 2,
+                "intellectual_level_mix": {"level_1": 1, "level_2": 1, "level_3": 0},
+            }
+        },
+    }
+    eng._apply_module_config(incoming)
+    ch1 = eng.syllabus_structure.get("Ch1") or {}
+    los = ch1.get("learning_outcomes") or []
+    assert len(los) == 2
+    ids = {str(o.get("id", "")).strip() for o in los}
+    assert "A.1" in ids
+    assert "A.2" in ids
+
+
+def test_apply_module_config_additive_merge_corrects_text(engine_no_io):
+    """_apply_module_config should correct malformed/truncated outcome text (if new text is longer)."""
+    eng = engine_no_io
+    eng.CHAPTERS = ["Ch1"]
+    eng.syllabus_structure = {
+        "Ch1": {
+            "capability": "A",
+            "subtopics": [],
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Explain the concept of...", "level": 1},
+            ],
+            "outcome_count": 1,
+            "intellectual_level_mix": {"level_1": 1, "level_2": 0, "level_3": 0},
+        }
+    }
+    incoming = {
+        "chapters": ["Ch1"],
+        "syllabus_structure": {
+            "Ch1": {
+                "capability": "A",
+                "subtopics": [],
+                "learning_outcomes": [
+                    {"id": "A.1", "text": "Explain the concept of double-entry bookkeeping.", "level": 2},
+                ],
+                "outcome_count": 1,
+                "intellectual_level_mix": {"level_1": 0, "level_2": 1, "level_3": 0},
+            }
+        },
+    }
+    eng._apply_module_config(incoming)
+    ch1 = eng.syllabus_structure.get("Ch1") or {}
+    los = ch1.get("learning_outcomes") or []
+    assert len(los) == 1
+    assert los[0]["text"] == "Explain the concept of double-entry bookkeeping."
+
+
+def test_reconcile_outcome_stats_preserves_all_stats(engine_no_io):
+    """_reconcile_outcome_stats_to_syllabus must never drop already-counted outcome stats."""
+    eng = engine_no_io
+    eng.CHAPTERS = ["Ch1"]
+    # Syllabus only has 1 outcome (simulating under-count).
+    eng.syllabus_structure = {
+        "Ch1": {
+            "capability": "A",
+            "learning_outcomes": [
+                {"id": "A.1", "text": "Only this one.", "level": 1},
+            ],
+            "outcome_count": 1,
+        }
+    }
+    # Stats have 3 outcomes (from a previous richer syllabus).
+    stats = {
+        "Ch1": {
+            "A.1": {"attempts": 5, "correct": 4, "streak": 2, "last_seen": "2026-04-01"},
+            "A.2": {"attempts": 3, "correct": 2, "streak": 1, "last_seen": "2026-04-01"},
+            "A.3": {"attempts": 10, "correct": 8, "streak": 5, "last_seen": "2026-04-02"},
+        }
+    }
+    result = eng._reconcile_outcome_stats_to_syllabus(stats)
+    # All 3 stats must be preserved, even A.2 and A.3 which are not in current syllabus.
+    assert "Ch1" in result
+    assert "A.1" in result["Ch1"]
+    assert "A.2" in result["Ch1"]
+    assert "A.3" in result["Ch1"]
+    assert result["Ch1"]["A.1"]["attempts"] == 5
+    assert result["Ch1"]["A.3"]["attempts"] == 10
     eng = engine_no_io
     assert eng.validate_module_config(None) == ["Module config is missing or not a dict."]
     assert eng.validate_module_config({}) == ["chapters must be a non-empty list."]
@@ -3202,6 +3410,52 @@ def test_import_syllabus_meta_from_json_only_syllabus_meta(engine_no_io):
     assert (eng.syllabus_meta or {}).get("effective_window") == "June 2024"
 
 
+def test_import_syllabus_meta_from_json_merge_preserves_existing_keys(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    base = {
+        "title": "Module",
+        "chapters": list(getattr(eng, "CHAPTERS", []) or []),
+        "syllabus_meta": {
+            "exam_code": "TX",
+            "effective_window": "June 2024",
+            "reference_pdfs": ["/tmp/original.pdf"],
+        },
+    }
+    monkeypatch.setattr(eng, "_load_module_config", lambda _mid: copy.deepcopy(base))
+    result = eng.import_syllabus_meta_from_json(
+        {"syllabus_meta": {"effective_window": "December 2025"}},
+        module_id=eng.module_id,
+        merge_syllabus_meta=True,
+    )
+    assert result.get("applied") is True
+    assert (eng.syllabus_meta or {}).get("exam_code") == "TX"
+    assert (eng.syllabus_meta or {}).get("effective_window") == "December 2025"
+    assert (eng.syllabus_meta or {}).get("reference_pdfs") == ["/tmp/original.pdf"]
+
+
+def test_import_syllabus_meta_from_json_replace_overwrites_existing_keys(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    base = {
+        "title": "Module",
+        "chapters": list(getattr(eng, "CHAPTERS", []) or []),
+        "syllabus_meta": {
+            "exam_code": "TX",
+            "effective_window": "June 2024",
+            "reference_pdfs": ["/tmp/original.pdf"],
+        },
+    }
+    monkeypatch.setattr(eng, "_load_module_config", lambda _mid: copy.deepcopy(base))
+    result = eng.import_syllabus_meta_from_json(
+        {"syllabus_meta": {"effective_window": "December 2025"}},
+        module_id=eng.module_id,
+        merge_syllabus_meta=False,
+    )
+    assert result.get("applied") is True
+    assert (eng.syllabus_meta or {}).get("exam_code") is None
+    assert (eng.syllabus_meta or {}).get("reference_pdfs") in (None, [])
+    assert (eng.syllabus_meta or {}).get("effective_window") == "December 2025"
+
+
 def test_select_outcome_gap_questions_returns_uncovered_only(engine_no_io, monkeypatch):
     eng = engine_no_io
     chapter = "FM Function"
@@ -3737,3 +3991,26 @@ def test_import_questions_json_rejects_oversized_file(engine_no_io, tmp_path):
     path.write_text(json.dumps({"chapter": "FM Function", "questions": [{"question": "Q", "options": ["A"], "correct": "A"}] * 50}), encoding="utf-8")
     with pytest.raises(ValueError):
         eng.import_questions_json(str(path))
+
+
+# ---------------------------------------------------------------------------
+# is_overdue — regression for string-typed interval (BUG 3)
+# ---------------------------------------------------------------------------
+
+
+def test_is_overdue_handles_string_interval(engine_no_io):
+    """is_overdue must not raise TypeError when interval is stored as a string."""
+    today = datetime.date.today()
+    yesterday = (today - datetime.timedelta(days=1)).isoformat()
+    # Simulate a JSON round-trip that left interval as a string.
+    srs_item = {"last_review": yesterday, "interval": "1"}
+    # Should return True (1-day interval, reviewed yesterday → due today)
+    assert engine_no_io.is_overdue(srs_item, today) is True
+
+
+def test_is_overdue_handles_float_interval(engine_no_io):
+    """is_overdue must handle float interval values correctly."""
+    today = datetime.date.today()
+    long_ago = (today - datetime.timedelta(days=30)).isoformat()
+    srs_item = {"last_review": long_ago, "interval": 7.5}
+    assert engine_no_io.is_overdue(srs_item, today) is True

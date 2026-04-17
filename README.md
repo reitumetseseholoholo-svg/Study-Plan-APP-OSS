@@ -1,13 +1,16 @@
-# Study Assistant (module default)
+# Study Assistant
 
-A focused module-aware study coach built around Pomodoro discipline, SRS‑based quizzes, and a mission‑driven dashboard. It adapts to whichever module you load.
+A focused, AI-powered study coach built for professional exam preparation. It combines Pomodoro discipline, FSRS-4.5 spaced-repetition quizzes, a data-driven coaching engine, and a local/cloud AI tutor with an autonomous AI Cockpit that can run your session for you. It adapts to whichever module you load.
 
 ## Documentation map
 
-- Setup and operations: `README.md`
-- Tutor quality tooling: `tests/tutor_quality/README.md`
-- Module chapter tooling notes: `scripts/README_module_chapters.md`
-- LLM telemetry fields + golden prompts: `docs/LLM_TELEMETRY_SCHEMA.md`
+- **End-user guide**: `USER_GUIDE.md`
+- **Developer internals & architecture**: `DEVELOPER_DOC.md`
+- **Contributing**: `CONTRIBUTING.md`
+- **Outcome linking feature**: `docs/CORE_FEATURE_IMPROVEMENT_OUTCOME_LINKING.md`
+- **LLM telemetry fields + golden prompts**: `docs/LLM_TELEMETRY_SCHEMA.md`
+- **Tutor quality tooling**: `tests/tutor_quality/README.md`
+- **Module chapter tooling notes**: `scripts/README_module_chapters.md`
 
 ## Quick start
 
@@ -22,6 +25,19 @@ Optional module override (env vars):
 ```bash
 STUDYPLAN_MODULE_TITLE="Your Module" python studyplan_app.py
 ```
+
+### Key environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STUDYPLAN_SRS_ALGORITHM` | `fsrs` | Spaced-repetition algorithm. Set to `sm2` or `legacy` to use the original SM-2 scheduler. When unset or set to any other value, FSRS-4.5 is used by default. |
+| `STUDYPLAN_LLM_GATEWAY_ENABLED` | `0` | Set to `1` to route AI tutor through the cloud gateway instead of local Ollama. Can also be toggled in Preferences → Cloud AI. |
+| `STUDYPLAN_LLM_GATEWAY_ENDPOINT` | — | OpenAI-compatible endpoint URL, e.g. `https://openrouter.ai/api/v1/chat/completions`. |
+| `STUDYPLAN_LLM_GATEWAY_API_KEY` | — | API key for the cloud gateway (also settable as `OPENROUTER_API_KEY`). |
+| `STUDYPLAN_LLM_GATEWAY_MODEL` | — | Primary model ID for the cloud gateway, e.g. `openrouter/google/gemini-2.5-flash`. |
+| `STUDYPLAN_LLM_GATEWAY_MODEL_FALLBACKS` | — | Comma-separated fallback model IDs. |
+| `STUDYPLAN_MODULE_TITLE` | — | Override the active module title at startup. |
+| `STUDYPLAN_SMOKE_MODE` | `0` | Set to `1` to run the dialog smoke test (headless CI). |
 
 ## Requirements
 
@@ -74,6 +90,8 @@ The primary desktop no-regression gate is `.github/workflows/linux-ci.yml`:
 
 ## Core features
 
+- **FSRS-4.5 spaced-repetition**: per-card stability/difficulty model (default); SM-2 opt-in via `STUDYPLAN_SRS_ALGORITHM=sm2`
+- **AI Cockpit (Autopilot)**: runs autonomously in the background; three modes — Cockpit (default, executes safe actions), Assist (notifies after), Suggest (prompts approval); rate-limited to 6 actions/10 min
 - **Coach Briefing**: readiness score, mission checklist, pace status, daily target
 - **Exam Readiness Index** + retrieval quota bar (exam‑aware pacing)
 - **Coach Pick**: single “do this now” topic with reasons + pace tip
@@ -186,7 +204,7 @@ Use **Tools → More → Module** to view the metadata/paths that the app has lo
 8. Save explicitly when ready
 9. Optional: use **View Syllabus Cache Stats** in Tools to inspect cache hit rates and disk status
 
-For stable setups, prefer versioned module JSON as the source of truth and use PDF import + RAG to review or update when new syllabi are published (see DEVELOPER_DOC § Syllabus ingestion strategy).
+For stable setups, prefer versioned module JSON as the source of truth and use PDF import + RAG to review or update when new syllabi are published (see `DEVELOPER_DOC.md` § Syllabus ingestion strategy).
 
 ### Module JSON format
 
@@ -302,18 +320,24 @@ Strict smoke KPI thresholds:
 - **Semantic map shows fallback**: confirm launcher environment has `sentence-transformers`
 - **Data file failed to load**: app auto-recovers from latest snapshot; manual options are in **File → Recover from Snapshot…**
 
-## Recent stability updates (Feb 2026)
+## Recent stability updates
 
-- Fixed a quiz runtime issue where full dashboard rebuilds could trigger high CPU/jank during answer confirmation.
-- Added defensive quiz selection/history handling to reduce repetitive card loops and corrupted history impact.
-- Hardened file chooser path handling to avoid noisy GTK deprecation warnings in normal use.
+- FSRS-4.5 is now the default SRS algorithm (SM-2 opt-in via `STUDYPLAN_SRS_ALGORITHM=sm2`)
+- AI Cockpit default autonomy mode is now `cockpit` (was `suggest`)
+- Fixed a quiz runtime issue where full dashboard rebuilds could trigger high CPU/jank during answer confirmation
+- Added defensive quiz selection/history handling to reduce repetitive card loops and corrupted history impact
+- Hardened file chooser path handling to avoid noisy GTK deprecation warnings in normal use
 
 ## Files
 
-- `studyplan_app.py` — GTK4 app UI
-- `studyplan_engine.py` — engine + data model
-- `modules/*.json` — module configs
+- `studyplan_app.py` — GTK4 app UI (~51,000 lines; StudyPlanGUI/StudyApp)
+- `studyplan_engine.py` — engine + data model (~13,500 lines; SRS, coach, ML, persistence)
+- `studyplan_ai_tutor.py` — AI tutor session management, RAG, prompt assembly
+- `studyplan/` — pure-Python library: config, FSRS, contracts, coach FSM, cognitive state, AI routing
+- `modules/*.json` — built-in module configs (ACCA F6, F7, F8, F9) and question banks
+- `tools/` — ML training scripts, GTK4 linter, tutor quality pipeline
+- `tests/` — unit tests (~388 no-GTK tests + tutor quality suite)
 
 ---
 
-For detailed usage, see `USER_GUIDE.md`. For internals, see `DEVELOPER_DOC.md`.
+For detailed usage, see [`USER_GUIDE.md`](USER_GUIDE.md). For internals, see [`DEVELOPER_DOC.md`](DEVELOPER_DOC.md). To contribute, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
