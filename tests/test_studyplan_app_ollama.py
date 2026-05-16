@@ -28,6 +28,7 @@ from studyplan_ai_tutor import (
     build_ai_tutor_context_prompt_details,
     build_rag_context_block,
     build_targeted_rag_queries,
+    build_tutor_rag_query_plan,
     build_tutor_coverage_checklist_note,
     chunk_text_for_rag,
     classify_ollama_error,
@@ -63,7 +64,23 @@ def _make_dummy(host: str = "127.0.0.1:11434"):
     )
     dummy._allow_remote_ollama_hosts = types.MethodType(StudyPlanGUI._allow_remote_ollama_hosts, dummy)
     dummy._is_local_or_private_host = types.MethodType(StudyPlanGUI._is_local_or_private_host, dummy)
+    dummy._cloud_connectivity_policy_mode = types.MethodType(StudyPlanGUI._cloud_connectivity_policy_mode, dummy)
+    dummy._probe_target_from_endpoint = types.MethodType(StudyPlanGUI._probe_target_from_endpoint, dummy)
+    dummy._internet_connectivity_probe_targets = types.MethodType(
+        StudyPlanGUI._internet_connectivity_probe_targets, dummy
+    )
+    dummy._has_internet_connectivity = types.MethodType(StudyPlanGUI._has_internet_connectivity, dummy)
+    dummy._cloud_model_routing_mode = types.MethodType(StudyPlanGUI._cloud_model_routing_mode, dummy)
+    dummy._remote_llm_backends_allowed = types.MethodType(StudyPlanGUI._remote_llm_backends_allowed, dummy)
     dummy._normalize_ollama_host = types.MethodType(StudyPlanGUI._normalize_ollama_host, dummy)
+    dummy._ollama_model_is_cloud = types.MethodType(StudyPlanGUI._ollama_model_is_cloud, dummy)
+    dummy._infer_local_model_source_label = types.MethodType(StudyPlanGUI._infer_local_model_source_label, dummy)
+    dummy._describe_ai_backend_label = types.MethodType(StudyPlanGUI._describe_ai_backend_label, dummy)
+    dummy._format_ai_status_line = types.MethodType(StudyPlanGUI._format_ai_status_line, dummy)
+    dummy._select_ollama_cloud_model = types.MethodType(StudyPlanGUI._select_ollama_cloud_model, dummy)
+    dummy._reconfig_cloud_llm_available = types.MethodType(StudyPlanGUI._reconfig_cloud_llm_available, dummy)
+    dummy._resolve_cloud_candidate_models = types.MethodType(StudyPlanGUI._resolve_cloud_candidate_models, dummy)
+    dummy._ollama_generate_text = types.MethodType(StudyPlanGUI._ollama_generate_text, dummy)
     dummy._get_ollama_retry_limit = types.MethodType(StudyPlanGUI._get_ollama_retry_limit, dummy)
     dummy._get_ollama_retry_backoff_seconds = types.MethodType(StudyPlanGUI._get_ollama_retry_backoff_seconds, dummy)
     dummy._is_transient_ollama_error = types.MethodType(StudyPlanGUI._is_transient_ollama_error, dummy)
@@ -1071,6 +1088,40 @@ def test_build_ai_tutor_rag_prompt_context_returns_snippets_for_relevant_query()
     assert "WACC" in context or "NPV" in context
 
 
+def test_build_ai_tutor_rag_prompt_context_prefers_exact_topic_match(monkeypatch):
+    monkeypatch.setenv("STUDYPLAN_AI_TUTOR_RAG_MIN_SCORE", "0.0")
+    dummy = types.SimpleNamespace(
+        module_title="FR",
+        current_topic="IAS 38",
+        semantic_enabled=False,
+        engine=types.SimpleNamespace(),
+    )
+    dummy._effective_tutor_topic = types.MethodType(StudyPlanGUI._effective_tutor_topic, dummy)
+    dummy._tutor_topic_for_context = types.MethodType(StudyPlanGUI._tutor_topic_for_context, dummy)
+    dummy._is_cognitive_runtime_enabled = lambda: False
+    dummy._get_ai_tutor_rag_source_pdfs = lambda: ["/tmp/fr_source.pdf"]
+    dummy._load_ai_tutor_rag_doc = lambda _path: (
+        {
+            "path": "/tmp/fr_source.pdf",
+            "source": "fr_source.pdf",
+            "chunks": [
+                {"chunk_index": 0, "text": "IAS 38 development costs are capitalised when criteria are met."},
+                {"chunk_index": 1, "text": "Cash flow statements present operating cash flows."},
+            ],
+        },
+        None,
+    )
+    context, meta = StudyPlanGUI._build_ai_tutor_rag_prompt_context(
+        dummy,
+        user_prompt="Explain IAS 38 development cost treatment",
+        history=[],
+        top_k=4,
+    )
+    assert int(meta.get("snippet_count", 0) or 0) == 1
+    assert "IAS 38 development costs" in context
+    assert "Cash flow statements" not in context
+
+
 def _make_rag_dummy(docs_by_path: dict[str, dict[str, object]]) -> types.SimpleNamespace:
     dummy = types.SimpleNamespace(
         module_title="FM",
@@ -1506,10 +1557,10 @@ def test_rag_prompt_context_relevance_floor_with_fallback(monkeypatch):
         history=[],
         top_k=4,
     )
-    # Even with an aggressive relevance floor, fallback should keep at least one candidate.
     assert int(meta.get("candidate_count", 0) or 0) >= 1
-    assert int(meta.get("snippet_count", 0) or 0) >= 1
-    assert "Reference snippets" in context
+    assert int(meta.get("snippet_count", 0) or 0) == 0
+    assert str(meta.get("method", "") or "") == "below_threshold"
+    assert context == ""
 
 
 def test_build_local_ai_context_packet_returns_required_fields():
@@ -1728,6 +1779,22 @@ def test_assemble_ai_tutor_turn_prompt_includes_planner_brief():
     )
     assert "Planner brief (deterministic guidance):" in prompt
     assert "Coverage order: Topic A -> Topic B" in prompt
+
+
+def test_assemble_ai_tutor_turn_prompt_can_signal_low_relevance_rag_without_snippets():
+    prompt = assemble_ai_tutor_turn_prompt(
+        "BASE PROMPT",
+        learning_context="Topic: Topic A",
+        rag_context="",
+        planner_brief=(
+            "- RAG retrieval was attempted but rejected as low relevance: do not imply document support; "
+            "answer from model knowledge and flag assumptions."
+        ),
+    )
+    lowered = prompt.lower()
+    assert "low relevance" in lowered
+    assert "document support" in lowered
+    assert "reference snippets" not in lowered
 
 
 def test_build_ai_tutor_context_prompt_details_includes_practice_first_contract():
@@ -2708,6 +2775,49 @@ def test_build_targeted_rag_queries_adds_relationship_blends():
     prompt = "Compare CAPM and WACC and explain NPV sensitivity."
     queries = build_targeted_rag_queries(prompt, max_targets=4)
     assert any("relationship" in q.lower() for q in queries)
+
+
+def test_build_tutor_rag_query_plan_collects_primary_and_target_queries():
+    plan = build_tutor_rag_query_plan(
+        "Compare CAPM and WACC and explain NPV sensitivity.",
+        history=[
+            {"role": "assistant", "content": "Earlier reply."},
+            {"role": "user", "content": "Focus on project appraisal."},
+        ],
+        module_title="FM",
+        topic_hint="Investment appraisal",
+        max_targets=4,
+    )
+    assert "fm" in str(plan.get("primary_query", "")).lower()
+    assert "investment appraisal" in str(plan.get("primary_query", "")).lower()
+    assert "focus on project appraisal" in str(plan.get("primary_query", "")).lower()
+    assert any("capm" in str(item).lower() for item in list(plan.get("target_queries", []) or []))
+    assert isinstance(plan.get("query_variants"), list)
+
+
+def test_query_ai_tutor_rag_uses_explicit_target_queries():
+    captured = {}
+    dummy = types.SimpleNamespace(module_title="FM")
+    dummy._tutor_topic_for_context = lambda: "Investment appraisal"
+
+    def _fake_builder(self_arg, user_prompt, history=None, top_k=4, char_budget_override=None, rag_preset=None, query_plan=None):
+        captured["user_prompt"] = user_prompt
+        captured["query_plan"] = dict(query_plan or {})
+        return "ctx", {"retrieved_snippets": [{"id": "S1", "text": "snippet"}]}
+
+    dummy._build_ai_tutor_rag_prompt_context = types.MethodType(_fake_builder, dummy)
+    result = StudyPlanGUI._query_ai_tutor_rag(
+        dummy,
+        query_text="Explain NPV.",
+        history=[{"role": "user", "content": "Use project finance examples."}],
+        target_queries=["NPV formula", "discount rate sensitivity"],
+        top_k=5,
+    )
+    assert result["context_block"] == "ctx"
+    assert len(result["snippets"]) == 1
+    plan = captured["query_plan"]
+    assert plan["target_queries"] == ["NPV formula", "discount rate sensitivity"]
+    assert plan["primary_query"].startswith("FM Investment appraisal Explain NPV.")
 
 
 def test_assess_tutor_coverage_reports_hits_and_misses():
@@ -5486,6 +5596,7 @@ def test_gateway_endpoint_prefers_gateway_models_and_skips_legacy_llama_server(m
         "openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet",
     )
     monkeypatch.setenv("STUDYPLAN_LLM_GATEWAY_API_KEY", "gateway-token")
+    monkeypatch.setattr(dummy, "_has_internet_connectivity", lambda force_refresh=False: True)
 
     assert dummy._cloud_endpoint_is_candidate() is True
 
@@ -5522,6 +5633,245 @@ def test_gateway_endpoint_prefers_gateway_models_and_skips_legacy_llama_server(m
     assert captured["models"][0] == "openrouter/google/gemini-2.5-flash"
     assert "openrouter/openai/gpt-4o-mini" in captured["models"]
     assert "openrouter/anthropic/claude-3.5-sonnet" in captured["models"]
+
+
+def test_cloud_endpoint_candidate_disabled_when_offline(monkeypatch) -> None:
+    dummy = _make_dummy()
+    dummy._resolve_openai_compatible_endpoint = types.MethodType(
+        StudyPlanGUI._resolve_openai_compatible_endpoint, dummy
+    )
+    dummy._cloud_endpoint_is_candidate = types.MethodType(StudyPlanGUI._cloud_endpoint_is_candidate, dummy)
+
+    monkeypatch.setattr(
+        "studyplan.config.Config.LLM_GATEWAY_ENDPOINT", "https://gateway.example.com/v1/chat/completions"
+    )
+    monkeypatch.setattr("studyplan.config.Config.LLM_GATEWAY_ENABLED", True)
+    monkeypatch.setenv("STUDYPLAN_LLM_GATEWAY_API_KEY", "gateway-token")
+    monkeypatch.setattr(dummy, "_has_internet_connectivity", lambda force_refresh=False: False)
+
+    assert dummy._cloud_endpoint_is_candidate() is False
+
+
+def test_brave_candidate_disabled_when_offline(monkeypatch) -> None:
+    dummy = _make_dummy()
+    dummy._brave_search_ai_is_candidate = types.MethodType(StudyPlanGUI._brave_search_ai_is_candidate, dummy)
+
+    monkeypatch.setattr("studyplan.config.Config.BRAVE_SEARCH_AI_ENABLED", True)
+    monkeypatch.setattr(
+        "studyplan.config.Config.BRAVE_SEARCH_AI_ENDPOINT",
+        "https://api.search.brave.com/res/v1/chat/completions",
+    )
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-token")
+    monkeypatch.setattr(dummy, "_has_internet_connectivity", lambda force_refresh=False: False)
+
+    assert dummy._brave_search_ai_is_candidate() is False
+
+
+def test_ollama_generate_uses_local_fallback_when_offline_even_with_cloud_configured(monkeypatch) -> None:
+    dummy = _make_dummy()
+    dummy._resolve_openai_compatible_endpoint = types.MethodType(
+        StudyPlanGUI._resolve_openai_compatible_endpoint, dummy
+    )
+    dummy._cloud_endpoint_is_candidate = types.MethodType(StudyPlanGUI._cloud_endpoint_is_candidate, dummy)
+    dummy._brave_search_ai_is_candidate = types.MethodType(StudyPlanGUI._brave_search_ai_is_candidate, dummy)
+
+    monkeypatch.setattr(
+        "studyplan.config.Config.LLM_GATEWAY_ENDPOINT", "https://gateway.example.com/v1/chat/completions"
+    )
+    monkeypatch.setattr("studyplan.config.Config.LLM_GATEWAY_ENABLED", True)
+    monkeypatch.setenv("STUDYPLAN_LLM_GATEWAY_API_KEY", "gateway-token")
+    monkeypatch.setattr(dummy, "_has_internet_connectivity", lambda force_refresh=False: False)
+
+    cloud_calls = {"n": 0}
+
+    def _cloud(*_args, **_kwargs):
+        cloud_calls["n"] += 1
+        return "cloud-response", None
+
+    dummy._generate_via_cloud_llama_cpp_endpoint = _cloud
+    dummy._ollama_request_json = lambda *_args, **_kwargs: ({"response": "local-response"}, None)
+
+    text, err = StudyPlanGUI._ollama_generate_text_with_options(
+        dummy,
+        model="llama3.2:3b",
+        prompt="ping",
+        num_ctx=2048,
+        temperature=0.2,
+        use_response_cache=False,
+    )
+
+    assert err is None
+    assert text == "local-response"
+    assert cloud_calls["n"] == 0
+
+
+def test_cloud_connectivity_policy_mode_defaults_to_auto(monkeypatch) -> None:
+    dummy = _make_dummy()
+    monkeypatch.delenv("STUDYPLAN_CLOUD_CONNECTIVITY_POLICY", raising=False)
+    assert dummy._cloud_connectivity_policy_mode() == "auto"
+
+
+def test_cloud_connectivity_policy_mode_accepts_force_modes(monkeypatch) -> None:
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_CLOUD_CONNECTIVITY_POLICY", "force_offline")
+    assert dummy._cloud_connectivity_policy_mode() == "offline"
+    monkeypatch.setenv("STUDYPLAN_CLOUD_CONNECTIVITY_POLICY", "always_online")
+    assert dummy._cloud_connectivity_policy_mode() == "online"
+
+
+def test_has_internet_connectivity_respects_forced_offline_policy(monkeypatch) -> None:
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_CLOUD_CONNECTIVITY_POLICY", "offline")
+    monkeypatch.setattr("studyplan_app.socket.create_connection", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError))
+    assert dummy._has_internet_connectivity(force_refresh=True) is False
+
+
+def test_has_internet_connectivity_respects_forced_online_policy(monkeypatch) -> None:
+    dummy = _make_dummy()
+    monkeypatch.setenv("STUDYPLAN_CLOUD_CONNECTIVITY_POLICY", "online")
+    monkeypatch.setattr("studyplan_app.socket.create_connection", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError))
+    assert dummy._has_internet_connectivity(force_refresh=True) is True
+
+
+def test_probe_target_from_endpoint_skips_local_hosts() -> None:
+    dummy = _make_dummy()
+    assert dummy._probe_target_from_endpoint("http://127.0.0.1:8080/v1/chat/completions") is None
+
+
+def test_remote_llm_backends_allowed_follows_cloud_model_routing_mode(monkeypatch) -> None:
+    dummy = _make_dummy()
+    monkeypatch.setattr(dummy, "_cloud_model_routing_mode", lambda: "offline")
+    assert dummy._remote_llm_backends_allowed() is False
+    monkeypatch.setattr(dummy, "_cloud_model_routing_mode", lambda: "online")
+    assert dummy._remote_llm_backends_allowed() is True
+
+
+def test_ollama_model_is_cloud_detects_cloud_tags() -> None:
+    dummy = _make_dummy()
+    assert dummy._ollama_model_is_cloud("qwen3.5:cloud") is True
+    assert dummy._ollama_model_is_cloud("gpt-oss:20b-cloud") is True
+    assert dummy._ollama_model_is_cloud("gpt4all-qwen3-4b-q4-0:latest") is False
+
+
+def test_format_ai_status_line_labels_gateway_and_ollama_cloud() -> None:
+    dummy = _make_dummy()
+    text_gateway, tooltip_gateway = dummy._format_ai_status_line(
+        backend="gateway",
+        model_name="google/gemini-2.5-flash",
+    )
+    assert text_gateway == "AI: Gateway • google/gemini-2.5-flash"
+    assert tooltip_gateway == text_gateway
+
+    text_cloud, tooltip_cloud = dummy._format_ai_status_line(
+        backend="ollama",
+        model_name="qwen3.5:cloud",
+    )
+    assert text_cloud == "AI: Ollama Cloud • qwen3.5:cloud"
+    assert tooltip_cloud == text_cloud
+
+
+def test_format_ai_status_line_falls_back_to_selected_model_when_idle() -> None:
+    dummy = _make_dummy()
+    text, tooltip = dummy._format_ai_status_line(
+        backend="",
+        model_name="",
+        fallback_model="gpt4all-qwen3-4b-q4-0:latest",
+    )
+    assert text == "AI: GPT4All • gpt4all-qwen3-4b-q4-0:latest"
+    assert "selected/default model" in tooltip
+
+
+def test_select_ollama_cloud_model_filters_to_cloud_candidates() -> None:
+    dummy = _make_dummy()
+    dummy._get_ollama_models_cached = lambda force_refresh=False: (
+        ["gpt4all-qwen3-4b-q4-0:latest", "qwen3.5:cloud", "gpt-oss:20b-cloud"],
+        None,
+    )
+    captured: dict[str, object] = {}
+
+    def _select_local_llm_model(*, model_override=None, purpose="general", available_models=None, persist=True, **_kwargs):
+        captured["purpose"] = purpose
+        captured["available_models"] = list(available_models or [])
+        return "qwen3.5:cloud", None
+
+    dummy._select_local_llm_model = _select_local_llm_model
+
+    picked, err = dummy._select_ollama_cloud_model(purpose="gap_generation")
+
+    assert err is None
+    assert picked == "qwen3.5:cloud"
+    assert captured["purpose"] == "gap_generation"
+    assert captured["available_models"] == ["qwen3.5:cloud", "gpt-oss:20b-cloud"]
+
+
+def test_reconfig_cloud_llm_available_accepts_gateway(monkeypatch) -> None:
+    dummy = _make_dummy()
+    monkeypatch.setattr(dummy, "_cloud_endpoint_is_candidate", lambda: True)
+    monkeypatch.setattr(dummy, "_select_ollama_cloud_model", lambda purpose="general": ("", "unused"))
+    ok, err = dummy._reconfig_cloud_llm_available()
+    assert ok is True
+    assert err == ""
+
+
+def test_reconfig_cloud_llm_available_accepts_ollama_cloud_model(monkeypatch) -> None:
+    dummy = _make_dummy()
+    monkeypatch.setattr(dummy, "_cloud_endpoint_is_candidate", lambda: False)
+    monkeypatch.setattr(dummy, "_select_ollama_cloud_model", lambda purpose="general": ("qwen3.5:cloud", None))
+    ok, err = dummy._reconfig_cloud_llm_available()
+    assert ok is True
+    assert err == ""
+
+
+def test_reconfig_cloud_llm_available_rejects_local_only_models(monkeypatch) -> None:
+    dummy = _make_dummy()
+    monkeypatch.setattr(dummy, "_cloud_endpoint_is_candidate", lambda: False)
+    monkeypatch.setattr(dummy, "_select_ollama_cloud_model", lambda purpose="general": ("", "No Ollama cloud models found."))
+    ok, err = dummy._reconfig_cloud_llm_available()
+    assert ok is False
+    assert err == "No Ollama cloud models found."
+
+
+def test_syllabus_ai_llm_generate_prefers_gateway_for_reconfig(monkeypatch) -> None:
+    dummy = _make_dummy()
+    dummy._syllabus_ai_llm_generate = types.MethodType(StudyPlanGUI._syllabus_ai_llm_generate, dummy)
+    monkeypatch.setattr(dummy, "_cloud_endpoint_is_candidate", lambda: True)
+    monkeypatch.setattr(dummy, "_resolve_cloud_candidate_models", lambda **_kwargs: ["openrouter/model"])
+    monkeypatch.setattr(
+        dummy,
+        "_generate_via_cloud_llama_cpp_endpoint",
+        lambda prompt_text, *, candidate_models, inference_purpose, cancel_check=None: ("cloud-result", None),
+    )
+    monkeypatch.setattr(dummy, "_select_ollama_cloud_model", lambda purpose="general": ("", "unused"))
+    monkeypatch.setattr(dummy, "_ollama_generate_text", lambda *_args, **_kwargs: ("", "should_not_run"))
+
+    assert dummy._syllabus_ai_llm_generate("prompt", 1024) == "cloud-result"
+
+
+def test_syllabus_ai_llm_generate_falls_back_to_ollama_cloud_model(monkeypatch) -> None:
+    dummy = _make_dummy()
+    dummy._syllabus_ai_llm_generate = types.MethodType(StudyPlanGUI._syllabus_ai_llm_generate, dummy)
+    monkeypatch.setattr(dummy, "_cloud_endpoint_is_candidate", lambda: False)
+    monkeypatch.setattr(dummy, "_select_ollama_cloud_model", lambda purpose="general": ("qwen3.5:cloud", None))
+    monkeypatch.setattr(
+        dummy,
+        "_ollama_generate_text",
+        lambda model, prompt, **_kwargs: ("ollama-cloud-result" if model == "qwen3.5:cloud" else "", None),
+    )
+
+    assert dummy._syllabus_ai_llm_generate("prompt", 1024) == "ollama-cloud-result"
+
+
+def test_syllabus_ai_llm_generate_rejects_local_only_ollama_models(monkeypatch) -> None:
+    dummy = _make_dummy()
+    dummy._syllabus_ai_llm_generate = types.MethodType(StudyPlanGUI._syllabus_ai_llm_generate, dummy)
+    monkeypatch.setattr(dummy, "_cloud_endpoint_is_candidate", lambda: False)
+    monkeypatch.setattr(dummy, "_select_ollama_cloud_model", lambda purpose="general": ("", "No Ollama cloud models found."))
+    logged: list[tuple[str, str]] = []
+    dummy._log_message = lambda code, msg: logged.append((code, msg))
+    monkeypatch.setattr(dummy, "_ollama_generate_text", lambda *_args, **_kwargs: ("local-result", None))
+
+    assert dummy._syllabus_ai_llm_generate("prompt", 1024) == ""
+    assert logged and logged[-1][0] == "reconfig_cloud_model_unavailable"
 
 
 def test_pause_and_resume_tutor_workspace_turn_snapshot() -> None:
@@ -6566,14 +6916,20 @@ def _make_streak_dummy():
     """Return a minimal SimpleNamespace wired up for streak/badge methods."""
     dummy = types.SimpleNamespace(
         achievements=set(),
+        xp_total=0,
+        level=1,
         study_streak=0,
         last_study_date=None,
         # UI stubs — badge_flow is None so update_badges_display is a no-op
         badge_flow=None,
     )
     dummy.update_badges_display = lambda: None
+    dummy.update_xp_display = lambda: None
     dummy.save_preferences = lambda: None
     dummy._revoke_streak_badges = types.MethodType(StudyPlanGUI._revoke_streak_badges, dummy)
+    dummy._reset_progression_for_streak_break = types.MethodType(
+        StudyPlanGUI._reset_progression_for_streak_break, dummy
+    )
     dummy._check_streak_milestones = types.MethodType(StudyPlanGUI._check_streak_milestones, dummy)
     dummy._unlock_achievement = types.MethodType(StudyPlanGUI._unlock_achievement, dummy)
     dummy.send_notification = lambda *_a, **_kw: None
@@ -6604,28 +6960,31 @@ def test_revoke_streak_badges_is_noop_when_no_streak_badges():
 def test_update_streak_revokes_badges_when_day_skipped():
     dummy = _make_streak_dummy()
     dummy.study_streak = 7
+    dummy.xp_total = 240
+    dummy.level = 3
     dummy.last_study_date = datetime.date.today() - datetime.timedelta(days=3)
-    dummy.achievements = {"streak_3", "streak_7"}
+    dummy.achievements = {"streak_3", "streak_7", "quiz_first"}
 
-    revoked = []
-    original_revoke = dummy._revoke_streak_badges
+    reset_calls = []
+    original_reset = dummy._reset_progression_for_streak_break
 
-    def _spy_revoke():
-        revoked.append(True)
-        original_revoke()
+    def _spy_reset():
+        reset_calls.append(True)
+        original_reset()
 
-    dummy._revoke_streak_badges = _spy_revoke
+    dummy._reset_progression_for_streak_break = _spy_reset
 
     # Stub save_streak_data so no file I/O is needed
     dummy.save_streak_data = lambda: None
 
     dummy.update_streak()
 
-    assert len(revoked) == 1, "expected _revoke_streak_badges to be called exactly once"
+    assert len(reset_calls) == 1, "expected progression reset to be called exactly once"
     assert dummy.study_streak == 1
     assert dummy.last_study_date == datetime.date.today()
-    assert "streak_3" not in dummy.achievements
-    assert "streak_7" not in dummy.achievements
+    assert dummy.xp_total == 0
+    assert dummy.level == 1
+    assert dummy.achievements == set()
 
 
 def test_update_streak_does_not_revoke_when_studied_yesterday():
@@ -6661,15 +7020,84 @@ def test_load_streak_data_resets_streak_and_badges_after_missed_day(tmp_path, mo
     monkeypatch.setattr("studyplan_app.Config.CONFIG_HOME", str(tmp_path))
 
     dummy = _make_streak_dummy()
+    dummy.xp_total = 180
+    dummy.level = 2
     dummy.achievements = {"streak_3", "streak_7", "streak_14"}
     dummy.load_streak_data = types.MethodType(StudyPlanGUI.load_streak_data, dummy)
 
     dummy.load_streak_data()
 
     assert dummy.study_streak == 0, "streak must be reset to 0 after a missed day"
-    assert "streak_3" not in dummy.achievements
-    assert "streak_7" not in dummy.achievements
-    assert "streak_14" not in dummy.achievements
+    assert dummy.xp_total == 0
+    assert dummy.level == 1
+    assert dummy.achievements == set()
+
+
+def test_reset_progression_for_streak_break_clears_badges_and_xp():
+    dummy = _make_streak_dummy()
+    dummy.xp_total = 320
+    dummy.level = 4
+    dummy.achievements = {"streak_30", "quiz_first", "pomodoro_4"}
+
+    dummy._reset_progression_for_streak_break()
+
+    assert dummy.xp_total == 0
+    assert dummy.level == 1
+    assert dummy.achievements == set()
+
+
+def test_reconcile_calendar_day_rollover_refreshes_date_sensitive_ui(monkeypatch):
+    yesterday = datetime.date.today() - datetime.timedelta(days=1)
+    dummy = types.SimpleNamespace(
+        _last_ui_calendar_day=yesterday.isoformat(),
+        last_study_date=datetime.date.today(),
+        study_streak=4,
+        _reset_progression_for_streak_break=lambda: (_ for _ in ()).throw(AssertionError("unexpected reset")),
+        save_streak_data=lambda: None,
+    )
+    calls = {"exam": 0, "streak": 0, "quests": 0, "save": 0, "plan": 0, "rec": 0, "room": 0, "dash": 0}
+    dummy.update_exam_date_display = lambda: calls.__setitem__("exam", calls["exam"] + 1)
+    dummy.update_streak_display = lambda: calls.__setitem__("streak", calls["streak"] + 1)
+    dummy.update_daily_quests_display = lambda: calls.__setitem__("quests", calls["quests"] + 1)
+    dummy.update_save_status_display = lambda: calls.__setitem__("save", calls["save"] + 1)
+    dummy.update_daily_plan = lambda: calls.__setitem__("plan", calls["plan"] + 1)
+    dummy.update_recommendations = lambda: calls.__setitem__("rec", calls["rec"] + 1)
+    dummy.update_study_room_card = lambda: calls.__setitem__("room", calls["room"] + 1)
+    dummy.update_dashboard = lambda: calls.__setitem__("dash", calls["dash"] + 1)
+
+    changed = StudyPlanGUI._reconcile_calendar_day_rollover(dummy)
+
+    assert changed is True
+    assert dummy._last_ui_calendar_day == datetime.date.today().isoformat()
+    assert calls == {"exam": 1, "streak": 1, "quests": 1, "save": 1, "plan": 1, "rec": 1, "room": 1, "dash": 1}
+
+
+def test_reconcile_calendar_day_rollover_resets_progression_after_missed_day():
+    yesterday = datetime.date.today() - datetime.timedelta(days=1)
+    reset_calls = []
+    save_calls = []
+    dummy = types.SimpleNamespace(
+        _last_ui_calendar_day=yesterday.isoformat(),
+        last_study_date=datetime.date.today() - datetime.timedelta(days=2),
+        study_streak=7,
+        _reset_progression_for_streak_break=lambda: reset_calls.append(True),
+        save_streak_data=lambda: save_calls.append(True),
+        update_exam_date_display=lambda: None,
+        update_streak_display=lambda: None,
+        update_daily_quests_display=lambda: None,
+        update_save_status_display=lambda: None,
+        update_daily_plan=lambda: None,
+        update_recommendations=lambda: None,
+        update_study_room_card=lambda: None,
+        update_dashboard=lambda: None,
+    )
+
+    changed = StudyPlanGUI._reconcile_calendar_day_rollover(dummy)
+
+    assert changed is True
+    assert dummy.study_streak == 0
+    assert len(reset_calls) == 1
+    assert len(save_calls) == 1
 
 
 def test_load_streak_data_keeps_streak_when_studied_yesterday(tmp_path, monkeypatch):

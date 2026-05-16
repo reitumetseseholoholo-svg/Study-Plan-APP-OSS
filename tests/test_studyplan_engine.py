@@ -3214,6 +3214,214 @@ def test_apply_question_quality_quarantine_removes_bad_rows_from_active_bank(tmp
     assert saved[chapter] == [good]
 
 
+def test_set_question_review_state_persists_manual_quarantine_and_note(tmp_path, monkeypatch, engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    question = {
+        "question": "What does NPV stand for?",
+        "options": ["Net present value", "Net profit variance", "Nominal present value", "None"],
+        "correct": "Net present value",
+        "explanation": "NPV means net present value.",
+        "outcome_ids": ["A1"],
+    }
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS_DEFAULT = {chapter: []}
+    eng.QUESTIONS = {chapter: [dict(question)]}
+    meta_path = tmp_path / "question_quality_meta.json"
+    monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
+
+    ok = eng.set_question_review_state(
+        chapter,
+        0,
+        quarantine=True,
+        note="check distractors",
+        quality_reason="manual_review",
+    )
+
+    assert ok is True
+    saved = json.loads(meta_path.read_text(encoding="utf-8"))
+    entry = saved[chapter]["0"]
+    assert entry["quarantine"] is True
+    assert entry["quality_reason"] == "manual_review"
+    assert entry["review_note"] == "check distractors"
+    assert entry["question_key"] == eng._question_bank_fingerprint(question)
+
+
+def test_get_question_bank_review_rows_includes_stats_links_and_manual_review_meta(tmp_path, monkeypatch, engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    question = {
+        "question": "Which rate should discount project cash flows?",
+        "options": ["WACC", "Tax rate", "Inflation rate", "Coupon rate"],
+        "correct": "WACC",
+        "explanation": "WACC is the standard project discount rate.",
+        "outcome_ids": ["A1"],
+    }
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS_DEFAULT = {chapter: []}
+    eng.QUESTIONS = {chapter: [dict(question)]}
+    eng.syllabus_structure = {
+        chapter: {"learning_outcomes": [{"id": "A1", "text": "Apply discount rates.", "level": 2}]}
+    }
+    meta_path = tmp_path / "question_quality_meta.json"
+    monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
+    qid = eng._question_qid(chapter, 0) or "0"
+    eng.question_stats = {
+        chapter: {
+            qid: {
+                "attempts": 4,
+                "correct": 3,
+                "last_seen_iso": "2026-05-01T10:00:00",
+                "last_result": "correct",
+                "linked_outcome_ids": ["A1"],
+                "linked_outcome_source": "manual",
+            }
+        }
+    }
+    eng.set_question_review_state(chapter, 0, quarantine=True, note="reviewed")
+
+    rows = eng.get_question_bank_review_rows(chapter)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["chapter"] == chapter
+    assert row["index"] == 0
+    assert row["question"] == question["question"]
+    assert row["difficulty"] in {"easy", "medium", "hard", "unknown"}
+    assert row["attempts"] == 4
+    assert row["correct_count"] == 3
+    assert row["accuracy_pct"] == 75.0
+    assert row["last_result"] == "correct"
+    assert row["quarantine"] is True
+    assert row["review_note"] == "reviewed"
+    assert row["outcome_ids"] == ["A1"]
+    assert row["resolved_outcome_ids"] == ["A1"]
+    assert "manual" in str(row["route_reason"]).lower() or "explicit" in str(row["route_reason"]).lower()
+    assert row["question_key"] == eng._question_bank_fingerprint(question)
+
+
+def test_get_question_bank_review_rows_flags_weak_or_invalid_outcome_links(tmp_path, monkeypatch, engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    question = {
+        "question": "Compute the project NPV using discounted cash flows.",
+        "options": ["$100", "$120", "$140", "$160"],
+        "correct": "$120",
+        "explanation": "Discount each cash flow and sum them.",
+        "outcome_ids": ["bad.id"],
+    }
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS_DEFAULT = {chapter: []}
+    eng.QUESTIONS = {chapter: [dict(question)]}
+    eng.syllabus_structure = {
+        chapter: {"learning_outcomes": [{"id": "A1", "text": "Calculate NPV.", "level": 2}]}
+    }
+    meta_path = tmp_path / "question_quality_meta.json"
+    monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
+    monkeypatch.setattr(
+        eng,
+        "resolve_question_outcomes",
+        lambda _chapter, _idx: {
+            "outcome_ids": ["A1"],
+            "semantic_match_confidence": 0.0,
+            "semantic_match_method": "fallback",
+            "reason": "stable deterministic fallback",
+        },
+    )
+
+    rows = eng.get_question_bank_review_rows(chapter)
+
+    assert len(rows) == 1
+    issues = set(rows[0]["quality_issues"])
+    assert "invalid_explicit_outcome_ids" in issues
+    assert "weak_outcome_link_fallback" in issues
+    assert rows[0]["semantic_match_confidence"] == 0.0
+    assert rows[0]["semantic_match_method"] == "fallback"
+
+
+def test_flag_question_wrong_answer_key_persists_structured_review_fields(tmp_path, monkeypatch, engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    question = {
+        "question": "Which method is used to value a project?",
+        "options": ["NPV", "Audit", "Tax", "Bookkeeping"],
+        "correct": "Audit",
+        "explanation": "This item is intentionally wrong.",
+    }
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS_DEFAULT = {chapter: []}
+    eng.QUESTIONS = {chapter: [dict(question)]}
+    meta_path = tmp_path / "question_quality_meta.json"
+    monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
+
+    ok = eng.flag_question_wrong_answer_key(chapter, 0, "NPV", note="key is wrong")
+
+    assert ok is True
+    row = eng.get_question_bank_review_rows(chapter)[0]
+    assert row["quarantine"] is True
+    assert row["review_label"] == "wrong_answer_key"
+    assert row["proposed_correct"] == "NPV"
+    assert row["quality_reason"] == "wrong_answer_key_review"
+
+
+def test_flag_question_explanation_mismatch_persists_structured_review_fields(tmp_path, monkeypatch, engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    question = {
+        "question": "What is WACC used for?",
+        "options": ["Discounting projects", "Payroll", "Inventory count", "Tax return"],
+        "correct": "Discounting projects",
+        "explanation": "Tax return is correct because it affects compliance.",
+    }
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS_DEFAULT = {chapter: []}
+    eng.QUESTIONS = {chapter: [dict(question)]}
+    meta_path = tmp_path / "question_quality_meta.json"
+    monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
+
+    ok = eng.flag_question_explanation_mismatch(chapter, 0, note="explanation points to distractor")
+
+    assert ok is True
+    row = eng.get_question_bank_review_rows(chapter)[0]
+    assert row["quarantine"] is True
+    assert row["review_label"] == "explanation_mismatch"
+    assert row["proposed_explanation_note"] == "explanation points to distractor"
+    assert row["quality_reason"] == "explanation_mismatch_review"
+
+
+def test_propose_question_outcome_ids_can_apply_now(tmp_path, monkeypatch, engine_no_io):
+    eng = engine_no_io
+    chapter = "FM Function"
+    question = {
+        "question": "Calculate NPV for the project.",
+        "options": ["$10", "$20", "$30", "$40"],
+        "correct": "$20",
+        "explanation": "Discount the cash flows.",
+    }
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS_DEFAULT = {chapter: []}
+    eng.QUESTIONS = {chapter: [dict(question)]}
+    eng.syllabus_structure = {
+        chapter: {
+            "learning_outcomes": [
+                {"id": "A1", "text": "Calculate NPV.", "level": 2},
+                {"id": "A2", "text": "Explain WACC.", "level": 2},
+            ]
+        }
+    }
+    meta_path = tmp_path / "question_quality_meta.json"
+    monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
+
+    ok = eng.propose_question_outcome_ids(chapter, 0, ["A1"], apply_now=True, note="apply corrected link")
+
+    assert ok is True
+    row = eng.get_question_bank_review_rows(chapter)[0]
+    assert row["review_label"] == "outcome_link_review"
+    assert row["proposed_outcome_ids"] == ["A1"]
+    assert row["quality_reason"] == "outcome_link_review"
+    assert row["outcome_ids"] == ["A1"]
+
+
 def test_sync_srs_with_questions_preserves_keyed_rows_after_removal(engine_no_io):
     """Key-based SRS sync keeps the surviving question's review state when a bank row is removed."""
     eng = engine_no_io

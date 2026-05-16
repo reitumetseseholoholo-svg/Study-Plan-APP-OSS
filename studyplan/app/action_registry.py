@@ -44,6 +44,8 @@ DEFAULT_UI_ACTION_BINDINGS: tuple[ActionBinding, ...] = (
     ActionBinding("view_performance_stats", "on_menu_view_performance_stats"),
     ActionBinding("clear_performance_cache", "on_menu_clear_performance_cache"),
     ActionBinding("view_module_metadata", "on_menu_view_module_metadata"),
+    ActionBinding("view_question_bank_review", "on_menu_view_question_bank_review"),
+    ActionBinding("view_tutor_runtime_inspector", "on_menu_view_tutor_runtime_inspector"),
     ActionBinding("reload_module_config", "on_menu_reload_module_config"),
     ActionBinding("view_reflections", "on_view_reflections"),
     ActionBinding("open_ai_tutor", "on_open_ai_tutor"),

@@ -937,6 +937,21 @@ def test_rag_evidence_policy_disabled_mode_is_bounded_and_explicit():
     assert "unavailable" in str(decision.get("planner_brief_line", "")).lower()
 
 
+def test_rag_evidence_policy_below_threshold_is_explicit_about_rejected_retrieval():
+    svc = RuleBasedRagEvidencePolicyService()
+    decision = svc.evaluate(
+        rag_meta={"method": "below_threshold", "snippet_count": 0, "source_count": 1, "target_query_count": 2},
+        user_prompt="What does IAS 38 say about development costs?",
+        current_topic="IAS 38",
+    )
+    assert str(decision.get("policy_mode", "")) == "weak_grounding"
+    assert bool(decision.get("insufficient", False)) is True
+    planner = str(decision.get("planner_brief_line", "")).lower()
+    assert "attempted" in planner
+    assert "low relevance" in planner
+    assert "not specific enough" in planner
+
+
 def test_phase6_cognitive_runtime_meta_can_shift_mode_to_retrieval_drill():
     sessions = InMemoryTutorSessionController()
     learners = InMemoryTutorLearnerModelStore()

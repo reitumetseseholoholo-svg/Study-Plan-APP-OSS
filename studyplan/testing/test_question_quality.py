@@ -10,6 +10,7 @@ import pytest
 from studyplan.question_quality import (
     QuestionQuality,
     QuestionBankEvaluator,
+    assess_question_quality_extended,
     correct_option_length_guessable_reason,
     option_looks_like_see_explanation,
     get_poor_quality_indices,
@@ -267,6 +268,44 @@ def test_get_poor_quality_indices_placeholder_options():
     poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False, detect_bare_letter_correct=False, detect_length_guessable=False)
     assert len(poor) == 1
     assert poor[0] == (1, "placeholder_options")
+
+
+def test_assess_question_quality_extended_flags_explanation_supporting_distractor():
+    item = {
+        "question": "Which cost of capital should be used to discount project cash flows?",
+        "options": ["WACC", "Tax rate", "Inflation rate", "Coupon rate"],
+        "correct": "WACC",
+        "explanation": "The tax rate is correct because it reflects the company's tax shield.",
+    }
+    rpt = assess_question_quality_extended(item)
+    assert "explanation_supports_distractor" in rpt["issues"]
+
+
+def test_assess_question_quality_extended_flags_near_duplicate_distractors():
+    item = {
+        "question": "Which statement about IAS 38 is correct?",
+        "options": [
+            "Research costs must be expensed as incurred.",
+            "Development costs can be capitalised if the recognition criteria are satisfied.",
+            "Research costs must be capitalised when they are material.",
+            "Development costs may be capitalised when the recognition criteria are satisfied.",
+        ],
+        "correct": "Research costs must be expensed as incurred.",
+        "explanation": "IAS 38 allows qualifying development costs to be capitalised.",
+    }
+    rpt = assess_question_quality_extended(item)
+    assert "near_duplicate_distractors" in rpt["issues"]
+
+
+def test_assess_question_quality_extended_flags_malformed_numeric_options():
+    item = {
+        "question": "What is the NPV of the project?",
+        "options": ["$1,200", "$950", "$1,0x0", "$1,500"],
+        "correct": "$1,200",
+        "explanation": "Discount the cash flows and sum them to obtain $1,200.",
+    }
+    rpt = assess_question_quality_extended(item)
+    assert "malformed_numeric_option" in rpt["issues"]
 
 
 if __name__ == "__main__":

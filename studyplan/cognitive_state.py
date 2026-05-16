@@ -71,6 +71,7 @@ class WorkingMemoryBuffer:
     active_chapter: str | None = None
     socratic_state: str = "DIAGNOSE"
     context_chunks: list[str] = field(default_factory=list)
+    tutor_chunks: list[str] = field(default_factory=list)
     struggle_flags: dict[str, bool] = field(
         default_factory=lambda: {
             "latency_spike": False,
@@ -91,6 +92,18 @@ class WorkingMemoryBuffer:
         if len(self.context_chunks) > cap:
             self.context_chunks[:] = self.context_chunks[-cap:]
 
+    def push_tutor_context(self, text: str, max_chunks: int = 4) -> None:
+        row = str(text or "").strip()
+        if not row:
+            return
+        try:
+            cap = max(1, min(12, int(max_chunks)))
+        except Exception:
+            cap = 4
+        self.tutor_chunks.append(row)
+        if len(self.tutor_chunks) > cap:
+            self.tutor_chunks[:] = self.tutor_chunks[-cap:]
+
     @classmethod
     def from_payload(cls, payload: Any) -> "WorkingMemoryBuffer":
         buf = cls()
@@ -103,6 +116,9 @@ class WorkingMemoryBuffer:
         chunks = payload.get("context_chunks")
         if isinstance(chunks, list):
             buf.context_chunks = [str(v).strip() for v in chunks if str(v).strip()][:4]
+        tutor_chunks = payload.get("tutor_chunks")
+        if isinstance(tutor_chunks, list):
+            buf.tutor_chunks = [str(v).strip() for v in tutor_chunks if str(v).strip()][:4]
         flags = payload.get("struggle_flags")
         if isinstance(flags, dict):
             for flag_key in list(buf.struggle_flags.keys()):

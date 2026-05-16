@@ -172,6 +172,7 @@ def test_note_tutor_exchange_user_adds_to_context():
     svc = _make_service()
     svc.note_tutor_exchange("user", "What is NPV?")
     ctx = svc.get_context_string()
+    assert "Recent tutor exchange:" in ctx
     assert "U: What is NPV?" in ctx
 
 
@@ -180,6 +181,26 @@ def test_note_tutor_exchange_assistant_adds_to_context():
     svc.note_tutor_exchange("assistant", "NPV stands for Net Present Value.")
     ctx = svc.get_context_string()
     assert "T: NPV stands for" in ctx
+
+
+def test_note_tutor_exchange_does_not_overwrite_attempt_context():
+    svc = _make_service()
+    svc.capture_attempt("Chapter A", "q1", correct=False)
+    svc.note_tutor_exchange("assistant", "Try again with the discount rate first.")
+    ctx = svc.get_context_string()
+    assert "Recent session attempts:" in ctx
+    assert "✗ Chapter A" in ctx
+    assert "Recent tutor exchange:" in ctx
+
+
+def test_get_context_string_can_exclude_tutor_exchange():
+    svc = _make_service()
+    svc.capture_attempt("Chapter A", "q1", correct=False)
+    svc.note_tutor_exchange("assistant", "Try again with the discount rate first.")
+    ctx = svc.get_context_string(include_tutor_exchange=False)
+    assert "Recent session attempts:" in ctx
+    assert "✗ Chapter A" in ctx
+    assert "Recent tutor exchange:" not in ctx
 
 
 def test_note_tutor_exchange_invalid_role_ignored():

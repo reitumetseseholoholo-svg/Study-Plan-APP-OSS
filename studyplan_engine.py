@@ -2943,6 +2943,275 @@ class StudyPlanEngine:
         meta[chapter_key] = by_chapter
         self._save_question_quality_meta(meta)
 
+    def set_question_review_state(
+        self,
+        chapter: str,
+        question_index: int,
+        *,
+        quarantine: bool | None = None,
+        note: str | None = None,
+        quality_reason: str | None = None,
+        remove: bool | None = None,
+        review_label: str | None = None,
+        proposed_correct: str | None = None,
+        proposed_outcome_ids: List[str] | None = None,
+        proposed_explanation_note: str | None = None,
+    ) -> bool:
+        """Update per-question manual review state in the quality sidecar.
+
+        Backward-compatible: uses the existing ``question_quality_meta.json`` sidecar rather
+        than modifying question JSON schema. Manual quarantine excludes a question from quiz
+        selection because ``get_quarantined_question_indices`` only checks the ``quarantine`` bit.
+        """
+        chapter_key = str(chapter or "").strip()
+        try:
+            qidx = int(question_index)
+        except Exception:
+            return False
+        rows = (self.QUESTIONS or {}).get(chapter_key, [])
+        if chapter_key not in self.CHAPTERS or not isinstance(rows, list) or qidx < 0 or qidx >= len(rows):
+            return False
+        meta = self._load_question_quality_meta()
+        by_chapter = meta.setdefault(chapter_key, {})
+        if not isinstance(by_chapter, dict):
+            by_chapter = {}
+            meta[chapter_key] = by_chapter
+        key = str(qidx)
+        entry = by_chapter.get(key)
+        if not isinstance(entry, dict):
+            entry = {"quarantine": False, "error_streak": 0, "last_used_iso": ""}
+        row = rows[qidx]
+        entry["question_key"] = self._question_bank_fingerprint(row)
+        if quarantine is not None:
+            entry["quarantine"] = bool(quarantine)
+        if remove is not None:
+            entry["remove"] = bool(remove)
+        if quality_reason is not None:
+            text = str(quality_reason or "").strip()
+            if text:
+                entry["quality_reason"] = text[:200]
+            else:
+                entry.pop("quality_reason", None)
+        if note is not None:
+            text = str(note or "").strip()
+            if text:
+                entry["review_note"] = text[:1000]
+            else:
+                entry.pop("review_note", None)
+        if review_label is not None:
+            text = str(review_label or "").strip()
+            if text:
+                entry["review_label"] = text[:80]
+            else:
+                entry.pop("review_label", None)
+        if proposed_correct is not None:
+            text = str(proposed_correct or "").strip()
+            if text:
+                entry["proposed_correct"] = text[:300]
+            else:
+                entry.pop("proposed_correct", None)
+        if proposed_explanation_note is not None:
+            text = str(proposed_explanation_note or "").strip()
+            if text:
+                entry["proposed_explanation_note"] = text[:1000]
+            else:
+                entry.pop("proposed_explanation_note", None)
+        if proposed_outcome_ids is not None:
+            cleaned_ids: List[str] = []
+            for value in list(proposed_outcome_ids or []):
+                candidate = str(value or "").strip()
+                if candidate and candidate not in cleaned_ids:
+                    cleaned_ids.append(candidate)
+            if cleaned_ids:
+                entry["proposed_outcome_ids"] = cleaned_ids[:32]
+            else:
+                entry.pop("proposed_outcome_ids", None)
+        entry["review_updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        by_chapter[key] = entry
+        meta[chapter_key] = by_chapter
+        self._save_question_quality_meta(meta)
+        return True
+
+    def flag_question_wrong_answer_key(
+        self,
+        chapter: str,
+        question_index: int,
+        proposed_correct: str,
+        *,
+        note: str = "",
+    ) -> bool:
+        return self.set_question_review_state(
+            chapter,
+            question_index,
+            quarantine=True,
+            note=note,
+            quality_reason="wrong_answer_key_review",
+            review_label="wrong_answer_key",
+            proposed_correct=proposed_correct,
+        )
+
+    def flag_question_explanation_mismatch(
+        self,
+        chapter: str,
+        question_index: int,
+        *,
+        note: str = "",
+    ) -> bool:
+        return self.set_question_review_state(
+            chapter,
+            question_index,
+            quarantine=True,
+            note=note,
+            quality_reason="explanation_mismatch_review",
+            review_label="explanation_mismatch",
+            proposed_explanation_note=note,
+        )
+
+    def propose_question_outcome_ids(
+        self,
+        chapter: str,
+        question_index: int,
+        outcome_ids: List[str],
+        *,
+        apply_now: bool = False,
+        note: str = "",
+    ) -> bool:
+        cleaned = [str(x or "").strip() for x in list(outcome_ids or []) if str(x or "").strip()]
+        ok = self.set_question_review_state(
+            chapter,
+            question_index,
+            note=note,
+            quality_reason="outcome_link_review",
+            review_label="outcome_link_review",
+            proposed_outcome_ids=cleaned,
+        )
+        if not ok:
+            return False
+        if apply_now:
+            self.update_question_outcome_ids(chapter, question_index, cleaned)
+        return True
+
+    def get_question_bank_review_rows(self, chapter: str | None = None) -> List[Dict[str, Any]]:
+        """Return normalized rows for question-bank review UI.
+
+        This is intentionally read-mostly and derived from existing state:
+        question rows, question_stats, outcome routing, and quality sidecar metadata.
+        """
+        rows_out: List[Dict[str, Any]] = []
+        meta = self._load_question_quality_meta()
+        chapters = [str(chapter).strip()] if isinstance(chapter, str) and str(chapter).strip() else list(self.CHAPTERS or [])
+        for chapter_name in chapters:
+            questions = (self.QUESTIONS or {}).get(chapter_name, [])
+            if not isinstance(questions, list):
+                continue
+            by_chapter_meta = meta.get(chapter_name, {}) if isinstance(meta.get(chapter_name, {}), dict) else {}
+            for idx, row in enumerate(questions):
+                if not isinstance(row, dict):
+                    continue
+                stats = self._get_question_stats(chapter_name, idx)
+                stats = dict(stats) if isinstance(stats, dict) else {}
+                review_entry = by_chapter_meta.get(str(idx), {})
+                review_entry = dict(review_entry) if isinstance(review_entry, dict) else {}
+                try:
+                    attempts = max(0, int(stats.get("attempts", 0) or 0))
+                except Exception:
+                    attempts = 0
+                try:
+                    correct = max(0, int(stats.get("correct", 0) or 0))
+                except Exception:
+                    correct = 0
+                accuracy_pct = round((100.0 * correct / max(1, attempts)), 1) if attempts > 0 else None
+                difficulty = "unknown"
+                try:
+                    difficulty = str(self.get_question_difficulty(chapter_name, idx) or "unknown").strip() or "unknown"
+                except Exception:
+                    difficulty = "unknown"
+                route_meta = self.resolve_question_outcomes(chapter_name, idx)
+                route_meta = dict(route_meta) if isinstance(route_meta, dict) else {}
+                quality_report = assess_question_quality_extended(row)
+                issues: List[str] = []
+                if isinstance(quality_report, dict):
+                    raw_issues = list(quality_report.get("issues", []) or [])
+                    if not raw_issues:
+                        raw_issues = list(quality_report.get("errors", []) or []) + list(quality_report.get("warnings", []) or [])
+                    seen: set[str] = set()
+                    for item in raw_issues:
+                        text = str(item or "").strip()
+                        if text and text not in seen:
+                            issues.append(text)
+                            seen.add(text)
+                if review_entry.get("quality_reason"):
+                    text = str(review_entry.get("quality_reason", "") or "").strip()
+                    if text and text not in issues:
+                        issues.append(text)
+                raw_outcome_ids = [str(x).strip() for x in list(row.get("outcome_ids", []) or []) if str(x).strip()]
+                known_lookup = self._chapter_outcome_lookup(chapter_name)
+                known_ids = set(known_lookup.keys()) if isinstance(known_lookup, dict) else set()
+                invalid_explicit_ids = [oid for oid in raw_outcome_ids if oid not in known_ids]
+                if invalid_explicit_ids:
+                    issues.append("invalid_explicit_outcome_ids")
+                resolved_outcomes = [
+                    str(x).strip() for x in list(route_meta.get("outcome_ids", []) or []) if str(x).strip()
+                ]
+                route_reason = str(route_meta.get("reason", "") or "").strip()
+                try:
+                    semantic_confidence = float(route_meta.get("semantic_match_confidence", 0.0) or 0.0)
+                except Exception:
+                    semantic_confidence = 0.0
+                if not resolved_outcomes:
+                    issues.append("unresolved_outcome_link")
+                elif route_reason.startswith("stable deterministic fallback") or route_reason.startswith(
+                    "capability deterministic bucket"
+                ):
+                    issues.append("weak_outcome_link_fallback")
+                elif (
+                    not raw_outcome_ids
+                    and not route_reason.startswith("manual linked outcomes")
+                    and not route_reason.startswith("explicit ")
+                    and semantic_confidence < 0.55
+                ):
+                    issues.append("weak_outcome_link_low_confidence")
+                rows_out.append(
+                    {
+                        "chapter": chapter_name,
+                        "index": int(idx),
+                        "question_id": self._question_qid(chapter_name, idx) or str(idx),
+                        "question_key": self._question_bank_fingerprint(row),
+                        "question": str(row.get("question", "") or "").strip(),
+                        "correct": str(row.get("correct", "") or "").strip(),
+                        "options": [str(x or "").strip() for x in list(row.get("options", []) or [])],
+                        "explanation": str(row.get("explanation", "") or "").strip(),
+                        "difficulty": difficulty,
+                        "attempts": int(attempts),
+                        "correct_count": int(correct),
+                        "accuracy_pct": accuracy_pct,
+                        "last_seen": str(stats.get("last_seen", "") or "").strip(),
+                        "last_result": str(stats.get("last_result", "") or "").strip().lower(),
+                        "outcome_ids": raw_outcome_ids,
+                        "resolved_outcome_ids": resolved_outcomes,
+                        "route_reason": route_reason,
+                        "semantic_match_confidence": semantic_confidence,
+                        "semantic_match_method": str(route_meta.get("semantic_match_method", "") or "").strip(),
+                        "quarantine": bool(review_entry.get("quarantine", False)),
+                        "remove": bool(review_entry.get("remove", False)),
+                        "quality_reason": str(review_entry.get("quality_reason", "") or "").strip(),
+                        "review_note": str(review_entry.get("review_note", "") or "").strip(),
+                        "review_label": str(review_entry.get("review_label", "") or "").strip(),
+                        "proposed_correct": str(review_entry.get("proposed_correct", "") or "").strip(),
+                        "proposed_explanation_note": str(
+                            review_entry.get("proposed_explanation_note", "") or ""
+                        ).strip(),
+                        "proposed_outcome_ids": [
+                            str(x).strip()
+                            for x in list(review_entry.get("proposed_outcome_ids", []) or [])
+                            if str(x).strip()
+                        ],
+                        "review_updated_at": str(review_entry.get("review_updated_at", "") or "").strip(),
+                        "quality_issues": issues,
+                    }
+                )
+        return rows_out
+
 
     def __init__(self, exam_date=None, default_exam_date_to_today: bool = True, module_id: str | None = None, module_title: str | None = None):
 

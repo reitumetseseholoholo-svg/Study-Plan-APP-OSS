@@ -227,6 +227,19 @@ class LlamaRuntime:
                 catalog_size=0,
                 error="No GGUF models found",
             )
+        if not bool(getattr(self.server, "binary_available", True)):
+            if self.ollama_fallback_enabled:
+                return self._try_ollama_fallback(purpose)
+            return RuntimeStatus(
+                backend="none",
+                model_name="",
+                model_path="",
+                endpoint="",
+                healthy=False,
+                startup_latency_ms=0,
+                catalog_size=len(catalog),
+                error="llama-server binary not available",
+            )
 
         pref_raw = (preferred_gguf_name or "").strip()
         preferred = None

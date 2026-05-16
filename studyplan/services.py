@@ -2170,6 +2170,7 @@ class RuleBasedRagEvidencePolicyService:
             "empty": 0.08,
             "empty_query": 0.08,
             "error": 0.10,
+            "below_threshold": 0.12,
             "lexical": 0.56,
             "semantic": 0.68,
             "hybrid": 0.72,
@@ -2184,7 +2185,7 @@ class RuleBasedRagEvidencePolicyService:
             confidence += 0.05
         if errors:
             confidence -= min(0.25, 0.12 + (0.06 * float(len(errors))))
-        if method in {"disabled", "error", "empty", "empty_query"} and snippet_count <= 0:
+        if method in {"disabled", "error", "empty", "empty_query", "below_threshold"} and snippet_count <= 0:
             confidence = min(confidence, 0.35)
         confidence = max(0.0, min(1.0, confidence))
 
@@ -2220,6 +2221,12 @@ class RuleBasedRagEvidencePolicyService:
             certainty_style = "assumption_first"
         else:
             planner_line = "- RAG evidence weak: avoid overclaiming; answer with model knowledge, flag assumptions, and prioritize robust principles."
+            certainty_style = "hedged"
+        if method == "below_threshold":
+            planner_line = (
+                "- RAG retrieval was attempted but rejected as low relevance: do not imply document support; "
+                "answer from model knowledge, flag assumptions, and say the retrieved material was not specific enough."
+            )
             certainty_style = "hedged"
         if standard_sensitive and policy_mode in {"weak_grounding", "disabled"}:
             planner_line += " Note uncertainty for standard-specific details."

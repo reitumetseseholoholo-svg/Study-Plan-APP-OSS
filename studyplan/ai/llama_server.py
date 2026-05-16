@@ -69,6 +69,8 @@ class LlamaServerManager:
     _idle_watcher_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _stderr_lines: deque[str] = field(default_factory=lambda: deque(maxlen=200), init=False, repr=False)
     _stderr_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _binary_available: bool | None = field(default=None, init=False, repr=False)
+    _binary_missing_logged: bool = field(default=False, init=False, repr=False)
 
     @property
     def endpoint(self) -> str:
@@ -90,6 +92,16 @@ class LlamaServerManager:
     @property
     def startup_latency_ms(self) -> int:
         return self._startup_latency_ms
+
+    @property
+    def binary_available(self) -> bool:
+        cached = self._binary_available
+        if isinstance(cached, bool):
+            return cached
+        binary = str(self.config.binary or "").strip()
+        available = bool(binary) and bool(shutil.which(binary))
+        self._binary_available = bool(available)
+        return bool(available)
 
     def ensure_running(
         self,
@@ -162,9 +174,11 @@ class LlamaServerManager:
         n_gpu_layers: int | None = None,
         batch_size: int | None = None,
     ) -> bool:
-        binary = self.config.binary
-        if not binary or not shutil.which(binary):
-            log.error("llama-server binary not found: %s", binary)
+        binary = str(self.config.binary or "").strip()
+        if not self.binary_available:
+            if not self._binary_missing_logged:
+                log.warning("llama-server binary not available; disabling managed llama-server for this session: %s", binary)
+                self._binary_missing_logged = True
             return False
 
         if not os.path.isfile(model_path):

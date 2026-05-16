@@ -40,6 +40,10 @@ def test_working_memory_service_captures_attempts_and_quiz_state():
     ctx = svc.get_context_string()
     assert "Quiz state: active question" in ctx
     assert "Recent session attempts" in ctx
+    svc.note_tutor_exchange("assistant", "Try again by testing the discount rate first.")
+    runtime_ctx = svc.get_context_string(include_tutor_exchange=False)
+    assert "Recent session attempts" in runtime_ctx
+    assert "Recent tutor exchange" not in runtime_ctx
     svc.clear_active_question()
     assert state.quiz_active is False
     assert state.working_memory.active_question_id is None
@@ -116,6 +120,7 @@ def test_cognitive_state_transfer_tracking_roundtrips_snapshot():
     state = CognitiveState()
     state.record_transfer_exposure("wacc_optimization_v1", attempt_id="t-1")
     state.record_transfer_exposure("wacc_optimization_v1", attempt_id="t-2")
+    state.working_memory.tutor_chunks = ["U: Explain WACC.", "T: Start with market values."]
     post = state.get_structure_posterior("wacc_optimization_v1")
     post.alpha = 5.0
     post.beta = 1.5
@@ -124,3 +129,4 @@ def test_cognitive_state_transfer_tracking_roundtrips_snapshot():
     assert restored.structure_exposure_counts.get("wacc_optimization_v1") == 2
     assert "t-2" in restored.transfer_attempt_ids
     assert "wacc_optimization_v1" in restored.structure_posteriors
+    assert restored.working_memory.tutor_chunks == ["U: Explain WACC.", "T: Start with market values."]

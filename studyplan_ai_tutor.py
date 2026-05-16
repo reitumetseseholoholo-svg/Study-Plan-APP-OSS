@@ -329,6 +329,54 @@ def build_targeted_rag_queries(user_prompt: str, max_targets: int = 4) -> list[s
     return queries[:query_cap]
 
 
+def build_tutor_rag_query_plan(
+    user_prompt: str,
+    *,
+    history: list[dict[str, str]] | None = None,
+    module_title: str = "",
+    topic_hint: str = "",
+    max_targets: int = 4,
+    explicit_target_queries: list[str] | None = None,
+) -> dict[str, Any]:
+    recent_user_lines: list[str] = []
+    for msg in list(history or [])[-4:]:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "") or "").strip().lower()
+        if role != "user":
+            continue
+        content = str(msg.get("content", "") or "").strip()
+        if content:
+            recent_user_lines.append(content)
+    query_parts = [
+        str(module_title or "").strip() or "selected module",
+        str(topic_hint or "").strip(),
+        str(user_prompt or "").strip(),
+        " ".join(recent_user_lines).strip(),
+    ]
+    primary_query = " ".join(part for part in query_parts if part).strip()
+    if explicit_target_queries is not None:
+        target_queries = [str(item or "").strip() for item in list(explicit_target_queries or []) if str(item or "").strip()]
+    else:
+        target_queries = build_targeted_rag_queries(str(user_prompt or ""), max_targets=max_targets)
+    query_variants: list[tuple[str, float]] = []
+    if primary_query:
+        query_variants.append((primary_query, 1.0))
+    for target_query in target_queries:
+        tq = str(target_query or "").strip()
+        if not tq or tq == primary_query:
+            continue
+        query_variants.append((tq, 0.72))
+    return {
+        "primary_query": primary_query,
+        "recent_user_lines": recent_user_lines,
+        "target_queries": target_queries,
+        "query_variants": query_variants,
+        "module_title": str(module_title or "").strip(),
+        "topic_hint": str(topic_hint or "").strip(),
+    }
+
+
 def assess_tutor_coverage(response_text: str, targets: list[str]) -> dict[str, Any]:
     response = str(response_text or "").lower()
     target_rows = [str(target or "").strip() for target in list(targets or []) if str(target or "").strip()]
@@ -805,15 +853,9 @@ def assemble_ai_tutor_turn_prompt(
     learning_context_unchanged_sha256: str = "",
 ) -> str:
     parts: list[str] = [str(base_prompt or "").strip()]
-    fp = str(learning_context_unchanged_sha256 or "").strip()
     context_text = str(learning_context or "").strip()
     if context_text:
         parts.append("\n".join(["Learning context (aggregated app state):", context_text]).strip())
-    elif fp:
-        parts.append(
-            "Learning context (aggregated app state): Unchanged since the prior turn "
-            f"(fingerprint sha256:{fp})."
-        )
     planner_text = str(planner_brief or "").strip()
     if planner_text:
         parts.append("\n".join(["Planner brief (deterministic guidance):", planner_text]).strip())
@@ -1564,6 +1606,16 @@ class AITutorDialogController:
         topic_label.add_css_class("muted")
         content.append(topic_label)
 
+        ai_status_label = Gtk.Label(label="")
+        ai_status_label.set_halign(Gtk.Align.START)
+        ai_status_label.set_wrap(False)
+        ai_status_label.set_ellipsize(Pango.EllipsizeMode.END)
+        ai_status_label.set_max_width_chars(96)
+        ai_status_label.add_css_class("single-line-lock")
+        ai_status_label.add_css_class("status-line")
+        ai_status_label.add_css_class("muted")
+        content.append(ai_status_label)
+
         model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         model_label = Gtk.Label(label="Model")
         model_label.set_halign(Gtk.Align.START)
@@ -2093,6 +2145,7 @@ class AITutorDialogController:
             copy_last_btn.set_sensitive(bool(controls.get("copy_last_enabled", False)))
             jump_latest_btn.set_sensitive(bool(controls.get("jump_latest_enabled", False)))
             _sync_cockpit_controls()
+            _refresh_ai_status_line()
 
         def _autopilot_mode() -> str:
             try:
@@ -2181,6 +2234,7 @@ class AITutorDialogController:
                 model_dropdown.set_selected(0)
             _set_running(bool(run_state.get("active", False)))
             current_models = cleaned
+            _refresh_ai_status_line()
 
         def _refresh_models(*_args):
             if bool(run_state.get("active", False)):
@@ -2258,6 +2312,25 @@ class AITutorDialogController:
                 app.local_llm_model = model_name
                 app.save_preferences()
             _set_running(False)
+            _refresh_ai_status_line()
+
+        def _refresh_ai_status_line() -> None:
+            turn_backend = str(run_state.get("backend", "") or "").strip()
+            turn_model = str(run_state.get("model", "") or "").strip()
+            fallback_model = _selected_model_name() or str(getattr(app, "local_llm_model", "") or "").strip()
+            text, tooltip = app._format_ai_status_line(
+                backend=turn_backend or str(getattr(app, "_last_llm_inference_backend", "") or "").strip(),
+                model_name=turn_model or str(getattr(app, "_last_llm_inference_model", "") or "").strip(),
+                fallback_model=fallback_model,
+                idle_prefix="AI",
+            )
+            ai_status_label.set_text(text)
+            try:
+                ai_status_label.set_tooltip_text(tooltip)
+            except Exception:
+                pass
+
+        _refresh_ai_status_line()
 
         def _new_chat(*_args):
             if bool(run_state.get("active", False)):
@@ -2618,13 +2691,31 @@ class AITutorDialogController:
                     concise_mode=bool(effective_concise),
                     exam_technique_only=bool(getattr(app, "ai_tutor_exam_technique_only", False)),
                 )
-                rag_context, rag_meta = app._build_ai_tutor_rag_prompt_context(
-                    user_prompt=user_prompt,
-                    history=history,
-                    top_k=rag_top_k,
-                    char_budget_override=rag_char_budget_override,
-                    rag_preset=rag_preset,
-                )
+                rag_query = getattr(app, "_query_ai_tutor_rag", None)
+                if callable(rag_query):
+                    rag_payload = dict(
+                        cast(
+                            Any,
+                            rag_query(
+                                query_text=user_prompt,
+                                history=history,
+                                top_k=rag_top_k,
+                                char_budget_override=rag_char_budget_override,
+                                rag_preset=rag_preset,
+                            ),
+                        )
+                        or {}
+                    )
+                    rag_context = str(rag_payload.get("context_block", "") or "")
+                    rag_meta = dict(rag_payload.get("meta", {}) or {})
+                else:
+                    rag_context, rag_meta = app._build_ai_tutor_rag_prompt_context(
+                        user_prompt=user_prompt,
+                        history=history,
+                        top_k=rag_top_k,
+                        char_budget_override=rag_char_budget_override,
+                        rag_preset=rag_preset,
+                    )
             except Exception as exc:
                 rag_context = ""
                 rag_meta = {
@@ -2724,11 +2815,6 @@ class AITutorDialogController:
             dedup_on = dedup_raw not in {"0", "false", "no", "off"}
             if context_block.strip():
                 ctx_fp_full = hashlib.sha256(context_block.encode("utf-8")).hexdigest()
-                prev_fp = str(run_state.get("learning_context_sha256") or "")
-                if dedup_on and prev_fp and prev_fp == ctx_fp_full:
-                    ctx_for_assemble = ""
-                    unchanged_fp = ctx_fp_full[:24]
-                    learning_ctx_omitted = 1
                 run_state["learning_context_sha256"] = ctx_fp_full
             else:
                 run_state.pop("learning_context_sha256", None)

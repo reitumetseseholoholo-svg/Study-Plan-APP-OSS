@@ -71,7 +71,7 @@ class WorkingMemoryService:
             self._state.quiz_active = False
             self._state.working_memory.active_question_id = None
 
-    def get_context_string(self, max_items: int = 2) -> str:
+    def get_context_string(self, max_items: int = 2, *, include_tutor_exchange: bool = True) -> str:
         with locked_cognitive_state(self._state, self._state_lock):
             wm = self._state.working_memory
             rows: list[str] = []
@@ -79,10 +79,14 @@ class WorkingMemoryService:
                 cap = max(1, min(4, int(max_items)))
             except Exception:
                 cap = 2
-            chunks = [str(v).strip() for v in list(wm.context_chunks or []) if str(v).strip()]
-            if chunks:
+            attempt_chunks = [str(v).strip() for v in list(wm.context_chunks or []) if str(v).strip()]
+            if attempt_chunks:
                 rows.append("Recent session attempts:")
-                rows.extend([f"- {item}" for item in chunks[-cap:]])
+                rows.extend([f"- {item}" for item in attempt_chunks[-cap:]])
+            tutor_chunks = [str(v).strip() for v in list(wm.tutor_chunks or []) if str(v).strip()]
+            if include_tutor_exchange and tutor_chunks:
+                rows.append("Recent tutor exchange:")
+                rows.extend([f"- {item}" for item in tutor_chunks[-cap:]])
             if wm.active_chapter:
                 rows.append(f"Active chapter: {wm.active_chapter}")
             if wm.active_question_id and self._state.quiz_active:
@@ -111,4 +115,4 @@ class WorkingMemoryService:
             clipped = text.replace("\n", " ").strip()
             if len(clipped) > 120:
                 clipped = f"{clipped[:117].rstrip()}..."
-            self._state.working_memory.push_context(f"{prefix}: {clipped}")
+            self._state.working_memory.push_tutor_context(f"{prefix}: {clipped}")

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import difflib
 from typing import Any, Dict, List, Tuple
 
 from .logging_config import get_logger
@@ -206,6 +207,118 @@ def _is_numeric_option(text: str) -> bool:
     return bool(re.match(r"^\(?-?\$?\d", compact))
 
 
+def _normalize_option_surface(text: str) -> str:
+    if not text or not isinstance(text, str):
+        return ""
+    compact = " ".join(str(text).strip().lower().split())
+    compact = re.sub(r"[^\w\s%$().,-]", "", compact)
+    return compact.strip()
+
+
+def _option_mentions_in_text(text: str, option: str) -> bool:
+    base = _normalize_option_surface(text)
+    target = _normalize_option_surface(option)
+    if not base or not target or len(target) < 3:
+        return False
+    return target in base
+
+
+def _near_duplicate_distractor_reason(item: dict[str, Any]) -> str | None:
+    opts = _options_list_from_item(item)
+    correct_text = _resolve_correct_option_text(item, opts)
+    if len(opts) < 3:
+        return None
+    distractors = [o for o in opts if o and o != correct_text]
+    if len(distractors) < 2:
+        return None
+    normalized = [_normalize_option_surface(opt) for opt in distractors if _normalize_option_surface(opt)]
+    for idx, left in enumerate(normalized):
+        for right in normalized[idx + 1 :]:
+            if not left or not right:
+                continue
+            if left == right:
+                return "near_duplicate_distractors"
+            left_tokens = _tokenize_for_similarity(left)
+            right_tokens = _tokenize_for_similarity(right)
+            sim = _jaccard_similarity(left_tokens, right_tokens)
+            if sim >= 0.9:
+                return "near_duplicate_distractors"
+            seq_ratio = difflib.SequenceMatcher(None, left, right).ratio()
+            if sim >= 0.55 and seq_ratio >= 0.72:
+                return "near_duplicate_distractors"
+            shorter = left if len(left) <= len(right) else right
+            longer = right if shorter == left else left
+            if len(shorter) >= 12 and shorter in longer and sim >= 0.65:
+                return "near_duplicate_distractors"
+    return None
+
+
+def _parse_numeric_option(text: str) -> tuple[bool, str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return False, ""
+    if not re.search(r"\d", raw):
+        return False, ""
+    kind = "plain"
+    if "%" in raw:
+        kind = "percent"
+    elif "$" in raw or "\u00a3" in raw or "\u20ac" in raw:
+        kind = "currency"
+    compact = raw.replace(",", "").replace("$", "").replace("\u00a3", "").replace("\u20ac", "").replace("%", "").strip()
+    if compact.startswith("(") and compact.endswith(")"):
+        compact = "-" + compact[1:-1].strip()
+    if compact.startswith("+"):
+        compact = compact[1:].strip()
+    if re.match(r"^-?\d+(?:\.\d+)?$", compact):
+        return True, kind
+    return False, kind
+
+
+def _numeric_option_format_issue(item: dict[str, Any]) -> str | None:
+    opts = _options_list_from_item(item)
+    if len(opts) < 2:
+        return None
+    parsed = [_parse_numeric_option(opt) for opt in opts]
+    parseable = [kind for ok, kind in parsed if ok]
+    numericish = [kind for ok, kind in parsed if ok or kind]
+    if len(numericish) < 2:
+        return None
+    if any((not ok) and kind for ok, kind in parsed):
+        return "malformed_numeric_option"
+    kinds = {kind for kind in parseable if kind}
+    if len(parseable) >= 3 and len(kinds) > 1:
+        return "numeric_option_format_inconsistent"
+    return None
+
+
+def _explanation_consistency_issue(item: dict[str, Any]) -> str | None:
+    explanation = str(item.get("explanation", "") or "").strip()
+    if len(explanation) < 12:
+        return None
+    opts = _options_list_from_item(item)
+    correct_text = _resolve_correct_option_text(item, opts)
+    if not opts or not correct_text:
+        return None
+    mentioned: list[str] = []
+    for opt in opts:
+        if _option_mentions_in_text(explanation, opt):
+            mentioned.append(opt)
+    if not mentioned:
+        return None
+    if correct_text in mentioned:
+        return None
+    unique_mentioned = []
+    seen: set[str] = set()
+    for opt in mentioned:
+        key = _normalize_option_surface(opt)
+        if key and key not in seen:
+            unique_mentioned.append(opt)
+            seen.add(key)
+    if len(unique_mentioned) == 1:
+        return "explanation_supports_distractor"
+    return None
+
+
 def _estimate_difficulty(question_text: str, options: list[str]) -> str:
     score = 0
     q_text = str(question_text or "").strip()
@@ -269,6 +382,20 @@ def assess_question_quality_extended(item: Any) -> dict[str, Any]:
     if any(META_OPTION_PATTERN.search(str(opt or "")) for opt in options):
         issues.append("meta_option_present")
         penalty += 0.10
+
+    if isinstance(item, dict):
+        near_dup_issue = _near_duplicate_distractor_reason(item)
+        if near_dup_issue and near_dup_issue not in issues:
+            issues.append(near_dup_issue)
+            penalty += 0.12
+        numeric_issue = _numeric_option_format_issue(item)
+        if numeric_issue and numeric_issue not in issues:
+            issues.append(numeric_issue)
+            penalty += 0.1
+        explanation_issue = _explanation_consistency_issue(item)
+        if explanation_issue and explanation_issue not in issues:
+            issues.append(explanation_issue)
+            penalty += 0.2
 
     difficulty_guess = _estimate_difficulty(question_text, options)
     base_score = float(report.get("score", 0.0) or 0.0)

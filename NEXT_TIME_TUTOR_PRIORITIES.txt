@@ -1,0 +1,50 @@
+Tutor/System priorities to fix next
+
+1. Reduce tutor orchestration complexity in studyplan_app.py
+- Priority: highest.
+- Why: too much critical tutor behavior still sits in large, stateful orchestration paths.
+- Risk: harder to reason about prompt correctness, regressions, and feature interactions.
+- What to do:
+  - extract tutor-turn assembly into a smaller service/module boundary
+  - separate prompt-building, telemetry-building, and runtime-guard logic
+  - shrink duplicated popup/workspace tutor paths where possible
+
+2. Keep prompt behavior and telemetry semantically aligned
+- Priority: high.
+- Why: this app depends on telemetry for trust, tuning, and future policy decisions.
+- Risk: if telemetry says one thing and the prompt actually did another, debugging becomes misleading.
+- What to do:
+  - audit tutor telemetry fields against real prompt assembly behavior
+  - add regression tests for telemetry semantics, not just shape/ranges
+  - treat prompt/telemetry drift as a first-class bug category
+
+3. Continue prompt-efficiency cleanup
+- Priority: high.
+- Why: the app has rich context, but rich context becomes prompt debt if repeated or weakly prioritized.
+- Risk: lower signal-to-noise, unnecessary token spend, less stable tutor behavior.
+- What to do:
+  - keep only high-value runtime state in cognitive brief
+  - avoid duplicate information across history, planner brief, working memory, and learning context
+  - make every prompt section justify its cost
+
+4. Strengthen broader regression coverage around tutor behavior
+- Priority: medium-high.
+- Why: this tutoring stack is complex enough that narrow tests are not enough long term.
+- Risk: subtle quality regressions pass unit tests but degrade tutoring quality.
+- What to do:
+  - add golden prompt cases for repeated-context turns, quiz guard turns, and low-relevance RAG turns
+  - add tutor-quality scenarios for hedging/assumption behavior when RAG is weak
+  - keep regression fixtures small but representative
+
+5. Keep RAG policy explicit and conservative
+- Priority: medium.
+- Why: weak retrieval should never quietly look like grounded retrieval.
+- Risk: confident but weakly grounded tutoring on standards/rule-heavy topics.
+- What to do:
+  - preserve explicit low-relevance signaling
+  - distinguish no retrieval, failed retrieval, and low-relevance retrieval
+  - keep standard-specific answers cautious when grounding is weak
+
+Summary
+- If doing only one thing next time: break down tutor orchestration in studyplan_app.py.
+- If doing two things: add that refactor plus stronger golden/tutor-quality regression coverage.

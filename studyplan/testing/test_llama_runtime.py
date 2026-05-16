@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from studyplan.ai.gguf_registry import GgufRegistry, GgufRegistryConfig
 from studyplan.ai.llama_runtime import (
     LlamaRuntime,
+    RuntimeStatus,
     _detect_available_ram,
     _pick_ollama_model_safe_for_ram,
 )
@@ -75,6 +76,42 @@ class TestRuntimeStatus:
             status = rt.ensure_ready()
             assert not status.healthy
             assert status.catalog_size >= 1
+            assert "binary" in str(status.error or "").lower()
+
+    def test_binary_missing_uses_ollama_fallback_without_server_attempts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_fake_gguf(os.path.join(tmpdir, "test-1.5b-instruct-q4_k_m.gguf"))
+            cfg = GgufRegistryConfig(
+                gpt4all_dir=tmpdir,
+                ollama_manifests_dir="/nonexistent",
+                ollama_blobs_dir="/nonexistent",
+            )
+            fake_server = MagicMock(spec=LlamaServerManager)
+            fake_server.binary_available = False
+            rt = LlamaRuntime(
+                registry=GgufRegistry(config=cfg),
+                selector=ModelSelector(),
+                server=fake_server,
+                ollama_fallback_enabled=True,
+                ollama_host="http://127.0.0.1:11434",
+            )
+            rt._try_ollama_fallback = MagicMock(return_value=RuntimeStatus(
+                backend="ollama",
+                model_name="fallback-model",
+                model_path="",
+                endpoint="http://127.0.0.1:11434/api/generate",
+                healthy=True,
+                startup_latency_ms=0,
+                catalog_size=1,
+                error="",
+            ))
+
+            status = rt.ensure_ready()
+
+            assert status.healthy
+            assert status.backend == "ollama"
+            assert fake_server.ensure_running.call_count == 0
+            assert rt._try_ollama_fallback.call_count == 1
 
     def test_status_report(self):
         with tempfile.TemporaryDirectory() as tmpdir:

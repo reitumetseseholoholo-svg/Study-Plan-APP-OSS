@@ -5,7 +5,7 @@ from __future__ import annotations
 from studyplan_ai_tutor import assemble_ai_tutor_turn_prompt
 
 
-def test_assemble_inserts_fingerprint_when_context_unchanged():
+def test_assemble_ignores_fingerprint_without_real_context():
     out = assemble_ai_tutor_turn_prompt(
         "BASE",
         learning_context="",
@@ -13,9 +13,7 @@ def test_assemble_inserts_fingerprint_when_context_unchanged():
         planner_brief="",
         learning_context_unchanged_sha256="deadbeef",
     )
-    assert "Unchanged since the prior turn" in out
-    assert "sha256:deadbeef" in out
-    assert "Learning context" in out
+    assert out == "BASE"
 
 
 def test_assemble_prefers_full_context_over_fingerprint():
