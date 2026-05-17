@@ -225,7 +225,7 @@ from studyplan_ai_tutor import (
     build_rag_concept_graph,
     build_rag_context_block,
     build_targeted_rag_queries,
-    build_tutor_rag_query_plan,
+    build_tutor_rag_query_plan as _orig_build_tutor_rag_query_plan,
     build_tutor_coverage_checklist_note,
     chunk_text_for_rag,
     classify_ollama_error,
@@ -242,6 +242,101 @@ from studyplan_ai_tutor import (
     should_keep_response_bottom,
     tutor_query_suggests_format_rag_focus,
 )
+
+def _build_tutor_rag_query_plan_compat(
+    *,
+    user_prompt: str | None = None,
+    history: list[dict[str, Any]] | None = None,
+    module_title: str | None = None,
+    topic: str | None = None,
+    topic_hint: str | None = None,
+    recent_user_turns: list[dict[str, Any]] | None = None,
+    target_queries: list[str] | None = None,
+    explicit_target_queries: list[str] | None = None,
+    max_targets: int | None = None,
+    rag_preset: str | None = None,
+    **kwargs,
+) -> dict[str, Any]:
+    if target_queries is None:
+        target_queries = explicit_target_queries
+    if recent_user_turns is None:
+        recent_user_turns = history
+    if topic is None:
+        topic = topic_hint
+
+    minimal_plan = {
+        "primary_query": str(user_prompt or ""),
+        "target_queries": list(target_queries or []),
+    }
+
+    if _orig_build_tutor_rag_query_plan is None:
+        return minimal_plan
+
+    try:
+        return _orig_build_tutor_rag_query_plan(
+            user_prompt=user_prompt or "",
+            history=recent_user_turns,
+            module_title=module_title or "",
+            topic_hint=topic or "",
+            explicit_target_queries=target_queries,
+            **kwargs,
+        )
+    except TypeError:
+        try:
+            return _orig_build_tutor_rag_query_plan(
+                str(user_prompt or ""),
+                history=recent_user_turns,
+                module_title=module_title or "",
+                topic_hint=topic or "",
+                explicit_target_queries=target_queries,
+            )
+        except Exception:
+            return minimal_plan
+    except Exception:
+        return minimal_plan
+
+# tolerant wrapper for build_tutor_rag_query_plan to accept multiple call-site variants
+# The original implementation is imported as `_orig_build_tutor_rag_query_plan`.
+
+def build_tutor_rag_query_plan(
+    *args,
+    module_title: str | None = None,
+    topic: str | None = None,
+    user_prompt: str | None = None,
+    recent_user_turns: list[dict] | None = None,
+    target_queries: list[str] | None = None,
+    rag_preset: str | None = None,
+    **kwargs,
+) -> dict[str, Any]:
+    """Compatibility wrapper: accept a few common parameter names/call shapes and forward to original."""
+    if _orig_build_tutor_rag_query_plan is None:
+        return {"primary_query": str(user_prompt or ""), "target_queries": list(target_queries or [])}
+    try:
+        # Prefer keyword call to original with correct parameter names.
+        # Original signature: build_tutor_rag_query_plan(user_prompt, *, history=None, 
+        #                      module_title="", topic_hint="", max_targets=4, 
+        #                      explicit_target_queries=None)
+        return _orig_build_tutor_rag_query_plan(
+            user_prompt=str(user_prompt or ""),
+            history=recent_user_turns,
+            module_title=module_title or "",
+            topic_hint=topic or "",
+            explicit_target_queries=target_queries,
+            **kwargs,
+        )
+    except TypeError:
+        # Fallback: try calling with positional + keyword (best-effort).
+        try:
+            return _orig_build_tutor_rag_query_plan(
+                str(user_prompt or ""),
+                history=recent_user_turns,
+                module_title=module_title or "",
+                topic_hint=topic or "",
+                explicit_target_queries=target_queries,
+            )
+        except Exception:
+            # Last resort: return a minimal plan
+            return {"primary_query": str(user_prompt or ""), "target_queries": list(target_queries or [])}
 from studyplan_app_path_utils import (
     atomic_write_bytes_file as _path_atomic_write_bytes,
 )
@@ -1072,6 +1167,14 @@ class _TutorTurnState:
     def draft_assistant(self) -> str:
         with self._s._lock:
             return str(self._s.get("draft_assistant", "") or "")
+
+    @property
+    def backend(self):
+        raise NotImplementedError
+
+    @backend.setter
+    def backend(self, value):
+        raise NotImplementedError
 
 
 class _TutorStreamState:
@@ -23586,6 +23689,52 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         module_title: str = "",
         topic_hint: str = "",
     ) -> dict[str, Any]:
+        """Plan retrieval queries, run RAG, and return structured retrieval data."""
+        try:
+            # Build a retrieval query plan when the planner is available.
+            try:
+                plan = build_tutor_rag_query_plan(
+                    module_title=str(module_title or getattr(self, "module_title", "") or ""),
+                    topic=str(topic_hint or "").strip(),
+                    user_prompt=str(query_text or ""),
+                    recent_user_turns=list(history or [])[-8:],
+                    target_queries=list(target_queries or []),
+                    rag_preset=rag_preset,
+                )
+            except Exception:
+                # Fallback: simple plan with primary + any explicit targets.
+                plan = {"primary_query": str(query_text or ""), "target_queries": list(target_queries or [])}
+
+            # Reuse existing prompt/context builder path, passing the query plan through.
+            try:
+                context_block, meta = self._build_ai_tutor_rag_prompt_context(
+                    user_prompt=str(query_text or ""),
+                    history=history,
+                    top_k=int(top_k or 4),
+                    char_budget_override=char_budget_override,
+                    rag_preset=rag_preset,
+                    query_plan=plan,
+                )
+            except Exception as exc:
+                return {
+                    "context_block": "",
+                    "meta": {"error": f"prompt_context_failed: {str(exc)}"},
+                    "snippets": [],
+                    "query_plan": plan,
+                }
+
+            snippets = []
+            if isinstance(meta, dict):
+                snippets = list(meta.get("retrieved_snippets", []) or [])
+
+            return {
+                "context_block": str(context_block or ""),
+                "meta": dict(meta or {}),
+                "snippets": snippets,
+                "query_plan": dict(plan or {}),
+            }
+        except Exception as exc:
+            return {"context_block": "", "meta": {"error": str(exc)}, "snippets": [], "query_plan": {}}
         plan = build_tutor_rag_query_plan(
             str(query_text or ""),
             history=history,
@@ -52198,7 +52347,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 label.set_wrap(True)
                 label.add_css_class("muted")
                 self.rec_box.append(label)
-                return
+                return False
 
             _pc = getattr(self, "_perf_cache", None)
             recommendations = None
@@ -52214,7 +52363,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 label.set_wrap(True)
                 label.add_css_class("muted")
                 self.rec_box.append(label)
-                return
+                return False
 
             for chapter, score in recommendations:
                 line = f"{chapter} ({score}%)"
