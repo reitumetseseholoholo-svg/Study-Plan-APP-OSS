@@ -309,6 +309,17 @@ def build_tutor_rag_query_plan(
     **kwargs,
 ) -> dict[str, Any]:
     """Compatibility wrapper: accept a few common parameter names/call shapes and forward to original."""
+    if args and user_prompt is None:
+        try:
+            user_prompt = str(args[0] or "")
+        except Exception:
+            user_prompt = ""
+    if recent_user_turns is None and "history" in kwargs:
+        recent_user_turns = kwargs.pop("history")
+    if topic is None and "topic_hint" in kwargs:
+        topic = kwargs.pop("topic_hint")
+    if target_queries is None and "explicit_target_queries" in kwargs:
+        target_queries = kwargs.pop("explicit_target_queries")
     if _orig_build_tutor_rag_query_plan is None:
         return {"primary_query": str(user_prompt or ""), "target_queries": list(target_queries or [])}
     try:
@@ -23423,25 +23434,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if matched_topic_candidates:
                 candidates = matched_topic_candidates
                 neighbor_window = 0
-            else:
-                return "", _make_meta(
-                    len(docs),
-                    "below_threshold",
-                    errors,
-                    candidate_count=len(candidates),
-                    char_budget=char_budget,
-                    top_k_target=top_k_target,
-                    neighbor_window=neighbor_window,
-                    target_query_count=len(target_queries),
-                    rag_doc_cache_hit=rag_doc_cache_hit_count,
-                    rag_query_cache_hit=0,
-                    embedding_cache_hits=embedding_cache_hits,
-                    embedding_cache_misses=embedding_cache_misses,
-                    query_cache_key=rag_query_cache_key,
-                    prefilter_kept=prefilter_kept_total,
-                    rag_preset=resolved_rag_preset,
-                    max_chunks_per_source=max_chunks_per_source,
-                )
         # Dedupe near-identical candidates before primary selection.
         deduped_candidates: list[dict[str, Any]] = []
         dedup_seen: dict[str, float] = {}
@@ -23691,11 +23683,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     ) -> dict[str, Any]:
         """Plan retrieval queries, run RAG, and return structured retrieval data."""
         try:
+            resolved_topic_hint = str(topic_hint or self._tutor_topic_for_context() or "").strip()
             # Build a retrieval query plan when the planner is available.
             try:
                 plan = build_tutor_rag_query_plan(
                     module_title=str(module_title or getattr(self, "module_title", "") or ""),
-                    topic=str(topic_hint or "").strip(),
+                    topic=resolved_topic_hint,
                     user_prompt=str(query_text or ""),
                     recent_user_turns=list(history or [])[-8:],
                     target_queries=list(target_queries or []),
@@ -23735,33 +23728,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             }
         except Exception as exc:
             return {"context_block": "", "meta": {"error": str(exc)}, "snippets": [], "query_plan": {}}
-        plan = build_tutor_rag_query_plan(
-            str(query_text or ""),
-            history=history,
-            module_title=str(module_title or getattr(self, "module_title", "") or ""),
-            topic_hint=str(topic_hint or self._tutor_topic_for_context() or ""),
-            max_targets=4,
-            explicit_target_queries=target_queries,
-        )
-        context_block, meta = self._build_ai_tutor_rag_prompt_context(
-            str(query_text or ""),
-            history=history,
-            top_k=int(top_k),
-            char_budget_override=char_budget_override,
-            rag_preset=rag_preset,
-            query_plan=plan,
-        )
-        snippets = []
-        if isinstance(meta, dict):
-            rows = meta.get("retrieved_snippets", [])
-            if isinstance(rows, list):
-                snippets = [dict(row) for row in rows if isinstance(row, dict)]
-        return {
-            "context_block": str(context_block or ""),
-            "meta": dict(meta or {}) if isinstance(meta, dict) else {},
-            "snippets": snippets,
-            "query_plan": dict(plan),
-        }
 
     def _build_ai_tutor_context_prompt(
         self,
@@ -27608,10 +27574,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             refresh_seconds = int(AI_TUTOR_AUTOPILOT_DECISION_REFRESH_SECONDS)
         refresh_seconds = max(45, min(1800, int(refresh_seconds)))
-        recent_log = self._sanitize_ai_tutor_recent_action_log(
-            getattr(self, "_ai_tutor_recent_action_log", []),
-            limit=5,
-        )
+        sanitize_recent_log = getattr(self, "_sanitize_ai_tutor_recent_action_log", None)
+        if callable(sanitize_recent_log):
+            recent_log = sanitize_recent_log(
+                getattr(self, "_ai_tutor_recent_action_log", []),
+                limit=5,
+            )
+        else:
+            recent_log = StudyPlanGUI._sanitize_ai_tutor_recent_action_log(
+                self,
+                getattr(self, "_ai_tutor_recent_action_log", []),
+                limit=5,
+            )
         repeated_suggestions = [
             row
             for row in reversed(recent_log)
@@ -28263,7 +28237,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         snapshot: dict[str, Any],
         issue: str = "",
     ) -> dict[str, Any]:
-        chapters = set(ch for ch in list(getattr(self.engine, "CHAPTERS", []) or []) if isinstance(ch, str) and ch)
+        engine = getattr(self, "engine", None)
+        chapters = set(ch for ch in list(getattr(engine, "CHAPTERS", []) or []) if isinstance(ch, str) and ch)
         current_topic = str(snapshot.get("current_topic", "") or "").strip()
         if current_topic not in chapters:
             current_topic = ""
@@ -33970,8 +33945,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return True, f"Started quiz on {quiz_topic}."
         if action == "quick_quiz_start":
             # Replicate quick_quiz preconditions to detect when handler exits early.
-            self._ensure_coach_selection()
-            pick_topic, _pick_src = self._get_coach_pick_snapshot(force=True)
+            ensure_coach_selection = getattr(self, "_ensure_coach_selection", None)
+            if callable(ensure_coach_selection):
+                ensure_coach_selection()
+            get_coach_pick_snapshot = getattr(self, "_get_coach_pick_snapshot", None)
+            if callable(get_coach_pick_snapshot):
+                pick_topic, _pick_src = get_coach_pick_snapshot(force=True)
+            else:
+                pick_topic, _pick_src = (self.current_topic, "")
             if not pick_topic:
                 return False, "No quiz topic available from coach."
             self.on_quick_quiz(None)
@@ -33983,7 +33964,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self.start_quiz_session(topic=drill_topic, total_override=8, kind="drill")
             return True, f"Started drill on {drill_topic}."
         if action == "weak_drill_start":
-            self._ensure_coach_selection()
+            ensure_coach_selection = getattr(self, "_ensure_coach_selection", None)
+            if callable(ensure_coach_selection):
+                ensure_coach_selection()
             drill_topic = self._get_drill_topic()
             if not drill_topic:
                 return False, "No weak-drill topic available."
@@ -34030,9 +34013,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if action == "review_start":
             # Pre-check: verify there are actually due reviews before calling
             # the handler, so we don't report success on a no-op.
-            self._ensure_coach_selection()
-            preferred = self._get_drill_topic() or self.current_topic or self._get_recommended_topic()
-            review_topic, _due_total, _must_due = self._find_due_review_topic(preferred)
+            ensure_coach_selection = getattr(self, "_ensure_coach_selection", None)
+            if callable(ensure_coach_selection):
+                ensure_coach_selection()
+            get_recommended_topic = getattr(self, "_get_recommended_topic", None)
+            preferred = self._get_drill_topic() or self.current_topic or (
+                get_recommended_topic() if callable(get_recommended_topic) else ""
+            )
+            find_due_review_topic = getattr(self, "_find_due_review_topic", None)
+            if callable(find_due_review_topic):
+                review_topic, _due_total, _must_due = find_due_review_topic(preferred)
+            else:
+                review_topic, _due_total, _must_due = (preferred, 1 if preferred else 0, 0)
             if not review_topic:
                 return False, "No items due for review right now."
             before_topic = str(self.current_topic or "")
@@ -36047,9 +36039,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 setattr(self, "_coach_pick_topic", coach_topic)
             except Exception:
                 pass
-            # Always align current_topic with the coach pick so the tutor workspace
-            # reflects the recommended topic regardless of the previous selection.
-            self._set_current_topic(coach_topic, invalidate_snapshot=False)
+            current_topic = str(getattr(self, "current_topic", "") or "").strip()
+            if not current_topic:
+                self._set_current_topic(coach_topic, invalidate_snapshot=False)
             # When no active quiz is guarding the cognitive state, also sync
             # active_chapter so the tutor context label and status bar show the
             # coach-recommended topic immediately.
@@ -41972,7 +41964,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return False
 
     def _render_study_room_card_guarded(self) -> bool:
-        self._consume_tracked_glib_source_attr("_study_room_update_source")
+        consume_source = getattr(self, "_consume_tracked_glib_source_attr", None)
+        if callable(consume_source):
+            consume_source("_study_room_update_source")
+        else:
+            try:
+                setattr(self, "_study_room_update_source", None)
+            except Exception:
+                pass
         if bool(getattr(self, "_core_runtime_shutdown", False)):
             return False
         self._safe_render_section(
@@ -49386,7 +49385,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return False
 
     def _render_dashboard_guarded(self) -> bool:
-        self._consume_tracked_glib_source_attr("_dashboard_update_source")
+        consume_source = getattr(self, "_consume_tracked_glib_source_attr", None)
+        if callable(consume_source):
+            consume_source("_dashboard_update_source")
+        else:
+            try:
+                setattr(self, "_dashboard_update_source", None)
+            except Exception:
+                pass
         if bool(getattr(self, "_core_runtime_shutdown", False)):
             return False
         self._safe_render_section(
