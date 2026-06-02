@@ -84,12 +84,12 @@ import warnings
 import wave
 from typing import Any, Callable, Optional, cast
 
-from gi.repository import (  # type: ignore[reportAttributeAccessIssue,import-untyped]
-    Gdk,
-    Gio,
-    GLib,
-    Gtk,
-    Pango,
+from gi.repository import (
+    Gdk,  # type: ignore[reportAttributeAccessIssue]
+    Gio,  # type: ignore[reportAttributeAccessIssue]
+    GLib,  # type: ignore[reportAttributeAccessIssue]
+    Gtk,  # type: ignore[reportAttributeAccessIssue]
+    Pango,  # type: ignore[reportAttributeAccessIssue]
 )
 
 from studyplan.ai.context_policy import (
