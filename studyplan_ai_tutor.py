@@ -1560,6 +1560,7 @@ class AITutorDialogController:
         Gtk = self.Gtk
         GLib = self.GLib
         Gdk = self.Gdk
+        from gi.repository import Pango  # type: ignore[reportAttributeAccessIssue,import-untyped]
         try:
             app._ai_tutor_dialog_open = True
         except Exception:

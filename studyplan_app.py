@@ -1052,6 +1052,22 @@ def _remove_small_holes_safe(binary: Any, size: int) -> Any:
         return remover(binary, area_threshold=int(size))
 
 
+def _clamp_skip_reason_counts_static(value: Any) -> dict[str, int]:
+    """Normalize and preserve skip reason counts from telemetry events."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, int] = {}
+    for key, count in value.items():
+        key_text = str(key or "").strip()[:80]
+        if not key_text:
+            continue
+        try:
+            result[key_text] = max(0, int(count or 0))
+        except Exception:
+            continue
+    return result
+
+
 def _configure_matplotlib_runtime() -> str:
     configured = str(os.environ.get("MPLCONFIGDIR", "") or "").strip()
     if configured:
@@ -1079,9 +1095,12 @@ if _MATPLOTLIB_EMBED_MODE not in {"off", "gtk"}:
 
 plt: Any | None = None
 FigureCanvas: type[Any] | None = None
+FigureCanvasAgg: type[Any] | None = None
 _MATPLOTLIB_BACKEND_ERROR = ""
 try:
     plt = cast(Any, importlib.import_module("matplotlib.pyplot"))
+    _backend_agg = importlib.import_module("matplotlib.backends.backend_agg")
+    FigureCanvasAgg = cast(Any, getattr(_backend_agg, "FigureCanvasAgg"))
     if _MATPLOTLIB_EMBED_MODE == "gtk":
         _backend_gtk4agg = importlib.import_module("matplotlib.backends.backend_gtk4agg")
         _FigureCanvasGTK4Agg = cast(Any, getattr(_backend_gtk4agg, "FigureCanvasGTK4Agg"))
@@ -1110,6 +1129,7 @@ try:
 except Exception as exc:
     plt = None
     FigureCanvas = None
+    FigureCanvasAgg = None
     _MATPLOTLIB_BACKEND_ERROR = str(exc)
 # from matplotlib.backends.backend_gtk4 import NavigationToolbar2GTK3 as NavigationToolbar
 
@@ -2429,6 +2449,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "autopilot_action_executed_count": 0,
             "autopilot_action_blocked_count": 0,
             "autopilot_last_block_reason": "",
+            "autopilot_skip_reason_counts": {},
             "autopilot_suggestion_accepted_count": 0,
             "autopilot_suggestion_dismissed_count": 0,
             "nudge_info_count": 0,
@@ -4281,13 +4302,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 line = "Last: no actions yet"
             self._set_label_text_if_changed(last_label, line)
         if next_label is not None:
+            diag = self._ai_tutor_autopilot_diagnostic_summary()
             pending = getattr(self, "_ai_tutor_pending_suggestion", None)
             if isinstance(pending, dict):
-                self._set_label_text_if_changed(next_label, f"Next: {self._describe_ai_tutor_action(pending)}")
+                line = f"Next: {self._describe_ai_tutor_action(pending)}"
             elif mode == "cockpit":
-                self._set_label_text_if_changed(next_label, "Next: autopilot ready")
+                line = "Next: autopilot ready"
             else:
-                self._set_label_text_if_changed(next_label, "Next: evaluating…")
+                line = "Next: evaluating…"
+            details = [text for text in (diag.get("last_reason", ""), diag.get("quiet_text", "")) if text]
+            if details:
+                line += " (" + " • ".join(details) + ")"
+            self._set_label_text_if_changed(next_label, line)
         # Update SRS debt label
         self._refresh_dashboard_srs_debt()
 
@@ -11796,10 +11822,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         refresh_btn = Gtk.Button(label="Refresh")
         rescan_btn = Gtk.Button(label="Run Quality Scan")
         toggle_btn = Gtk.Button(label="Toggle Quarantine")
+        delete_btn = Gtk.Button(label="Delete Flagged")
+        delete_btn.set_tooltip_text("Delete the selected flagged question from the live bank and keep its SRS mastery history. Shortcut: Delete")
+        auto_clean_btn = Gtk.Button(label="Auto Clean All Flagged")
+        auto_clean_btn.set_tooltip_text("Delete every flagged question across all chapters while preserving SRS mastery history.")
         save_note_btn = Gtk.Button(label="Save Note")
         copy_btn = Gtk.Button(label="Copy JSON")
         close_btn = Gtk.Button(label="Close")
-        for btn in (refresh_btn, rescan_btn, toggle_btn, save_note_btn, copy_btn, close_btn):
+        for btn in (refresh_btn, rescan_btn, toggle_btn, delete_btn, auto_clean_btn, save_note_btn, copy_btn, close_btn):
             btn_row.append(btn)
         detail_box.append(btn_row)
 
@@ -11877,12 +11907,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         def _row_matches(row: dict[str, Any], chapter_filter: str, needle: str, flagged: bool) -> bool:
             if chapter_filter and chapter_filter != "All chapters" and str(row.get("chapter", "")) != chapter_filter:
                 return False
-            if flagged and not (
-                bool(row.get("quarantine"))
-                or bool(row.get("quality_issues"))
-                or bool(str(row.get("quality_reason", "") or "").strip())
-                or bool(str(row.get("review_note", "") or "").strip())
-            ):
+            if flagged and not _row_is_flagged(row):
                 return False
             if not needle:
                 return True
@@ -11951,6 +11976,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             else:
                 _update_detail(None)
 
+        def _row_is_flagged(row: dict[str, Any] | None) -> bool:
+            if not isinstance(row, dict):
+                return False
+            return (
+                bool(row.get("quarantine"))
+                or bool(row.get("quality_issues"))
+                or bool(str(row.get("quality_reason", "") or "").strip())
+                or bool(str(row.get("review_note", "") or "").strip())
+            )
+
         def _refresh_rows(*_args: Any) -> None:
             try:
                 rows = engine.get_question_bank_review_rows()
@@ -12017,6 +12052,97 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
             _refresh_rows()
+
+        def _delete_flagged(*_args: Any) -> None:
+            row = _selected_row()
+            if not isinstance(row, dict):
+                return
+            if not _row_is_flagged(row):
+                self.send_notification(
+                    "Question bank review",
+                    "Delete only works on flagged questions so you do not remove healthy cards by accident.",
+                )
+                return
+            chapter = str(row.get("chapter", "") or "").strip()
+            qnum = int(row.get("index", 0) or 0) + 1
+            confirm = self._new_message_dialog(
+                transient_for=dialog,
+                modal=True,
+                message_type=Gtk.MessageType.WARNING,
+                buttons=Gtk.ButtonsType.OK_CANCEL,
+                text=(
+                    f"Delete flagged question Q{qnum} from {chapter}?\n\n"
+                    "The question will be removed from the live bank, but its SRS mastery history will be preserved."
+                ),
+            )
+
+            def _on_confirm(_dlg: Any, resp: Any) -> None:
+                _dlg.destroy()
+                if resp != Gtk.ResponseType.OK:
+                    return
+                ok = bool(
+                    engine.delete_question_for_review_preserve_srs(
+                        chapter,
+                        int(row.get("index", 0) or 0),
+                    )
+                )
+                if ok:
+                    _refresh_rows()
+                    self.send_notification(
+                        "Question deleted",
+                        f"Removed flagged question Q{qnum} from {chapter}. Mastery history was kept.",
+                    )
+
+            confirm.connect("response", _on_confirm)
+            confirm.present()
+
+        def _auto_clean_flagged(*_args: Any) -> None:
+            rows = [row for row in list(state.get("rows", []) or []) if isinstance(row, dict) and _row_is_flagged(row)]
+            if not rows:
+                self.send_notification("Question bank review", "No flagged questions found to clean.")
+                return
+            by_chapter: dict[str, int] = {}
+            for row in rows:
+                chapter = str(row.get("chapter", "") or "").strip() or "Unknown"
+                by_chapter[chapter] = by_chapter.get(chapter, 0) + 1
+            chapter_text = ", ".join(f"{chapter}: {count}" for chapter, count in sorted(by_chapter.items())[:8])
+            if len(by_chapter) > 8:
+                chapter_text += f", +{len(by_chapter) - 8} more"
+            confirm = self._new_message_dialog(
+                transient_for=dialog,
+                modal=True,
+                message_type=Gtk.MessageType.WARNING,
+                buttons=Gtk.ButtonsType.OK_CANCEL,
+                text=(
+                    f"Auto clean {len(rows)} flagged questions across all chapters?\n\n"
+                    f"{chapter_text}\n\n"
+                    "Flagged questions will be removed from the live bank. SRS mastery history and surviving review due dates will be preserved."
+                ),
+            )
+
+            def _on_confirm(_dlg: Any, resp: Any) -> None:
+                _dlg.destroy()
+                if resp != Gtk.ResponseType.OK:
+                    return
+                result = {}
+                try:
+                    result = engine.auto_clean_flagged_questions_preserve_srs()
+                except Exception as exc:
+                    self._show_text_dialog(
+                        "Question Bank Review",
+                        f"Auto clean failed: {exc}",
+                        Gtk.MessageType.ERROR,
+                    )
+                    return
+                _refresh_rows()
+                removed = int(result.get("removed_total", 0) or 0) if isinstance(result, dict) else 0
+                self.send_notification(
+                    "Question bank cleaned",
+                    f"Removed {removed} flagged questions. Mastery history was kept.",
+                )
+
+            confirm.connect("response", _on_confirm)
+            confirm.present()
 
         def _mark_wrong_key(*_args: Any) -> None:
             row = _selected_row()
@@ -12225,12 +12351,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         refresh_btn.connect("clicked", _refresh_rows)
         rescan_btn.connect("clicked", _run_scan)
         toggle_btn.connect("clicked", _toggle_quarantine)
+        delete_btn.connect("clicked", _delete_flagged)
+        auto_clean_btn.connect("clicked", _auto_clean_flagged)
         save_note_btn.connect("clicked", _save_note)
         copy_btn.connect("clicked", _copy_json)
         wrong_key_btn.connect("clicked", _mark_wrong_key)
         expl_btn.connect("clicked", _mark_explanation_mismatch)
         outcome_btn.connect("clicked", _fix_outcome_links)
         close_btn.connect("clicked", lambda *_: dialog.destroy())
+
+        review_keys = Gtk.EventControllerKey()
+
+        def _on_review_key(_controller: Any, keyval: int, _keycode: int, _state: Any) -> bool:
+            if keyval != Gdk.KEY_Delete:
+                return False
+            _delete_flagged()
+            return True
+
+        review_keys.connect("key-pressed", _on_review_key)
+        list_box.add_controller(review_keys)
 
         _refresh_rows()
         dialog.present()
@@ -27017,6 +27156,31 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             parts.append(f"{duration} min")
         return " • ".join(parts)
 
+    def _ai_tutor_autopilot_diagnostic_summary(self) -> dict[str, str]:
+        stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+        last_reason = str(stats.get("autopilot_last_block_reason", "") or "").strip()[:200]
+        updated_at = str(stats.get("updated_at", "") or "").strip()
+        raw_counts = stats.get("autopilot_skip_reason_counts", {})
+        counts = raw_counts if isinstance(raw_counts, dict) else {}
+        try:
+            quiet_until = float(getattr(self, "_ai_tutor_global_quiet_until", 0.0) or 0.0)
+        except Exception:
+            quiet_until = 0.0
+        quiet_remaining = max(0, int(round(quiet_until - float(time.monotonic())))) if quiet_until > 0.0 else 0
+        ranked_reasons: list[str] = []
+        for key, value in sorted(
+            ((str(k or "").strip(), int(v or 0)) for k, v in counts.items() if str(k or "").strip()),
+            key=lambda item: (-item[1], item[0]),
+        )[:2]:
+            if value > 0:
+                ranked_reasons.append(f"{key} {value}")
+        return {
+            "last_reason": last_reason,
+            "quiet_text": f"quiet {quiet_remaining}s" if quiet_remaining > 0 else "",
+            "last_eval_text": f"last eval {updated_at[-8:]}" if updated_at else "",
+            "top_reasons_text": ", ".join(ranked_reasons),
+        }
+
     def _record_ai_tutor_recent_action(
         self,
         action_plan: dict[str, Any] | None,
@@ -27317,19 +27481,30 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._set_label_text_if_changed(last_action_label, line)
         next_action_label = getattr(self, "_tutor_workspace_autopilot_panel_next_action_label", None)
         if next_action_label is not None:
+            diag = self._ai_tutor_autopilot_diagnostic_summary()
             if isinstance(pending, dict):
                 line = f"Next action: {self._describe_ai_tutor_action(pending)}"
             else:
                 line = "Next action: waiting for state change."
+                details = [text for text in (diag.get("last_reason", ""), diag.get("quiet_text", "")) if text]
+                if details:
+                    line += " (" + " • ".join(details) + ")"
             self._set_label_text_if_changed(next_action_label, line)
         stats_label = getattr(self, "_tutor_workspace_autopilot_panel_stats_label", None)
         if stats_label is not None:
             stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
+            diag = self._ai_tutor_autopilot_diagnostic_summary()
             stats_line = (
                 f"Stats: executed {int(stats.get('autopilot_action_executed_count', 0) or 0)} • "
                 f"dismissed {int(stats.get('autopilot_suggestion_dismissed_count', 0) or 0)} • "
                 f"nudges {int(stats.get('nudge_info_count', 0) or 0)}"
             )
+            extra = [text for text in (diag.get("last_eval_text", ""), diag.get("quiet_text", "")) if text]
+            if extra:
+                stats_line += " • " + " • ".join(extra)
+            top_reasons = str(diag.get("top_reasons_text", "") or "").strip()
+            if top_reasons:
+                stats_line += f" • reasons {top_reasons}"
             self._set_label_text_if_changed(stats_label, stats_line)
         pause_btn = getattr(self, "_tutor_workspace_autopilot_panel_pause_btn", None)
         if pause_btn is not None:
@@ -27497,6 +27672,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 lock.release()
 
     def _build_ai_tutor_autopilot_event_signature(self, snapshot: dict[str, Any]) -> str:
+        def _compact_topic_rows(rows: Any, *, keys: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
+            compact: list[dict[str, Any]] = []
+            for row in list(rows or [])[: max(0, int(limit))]:
+                if not isinstance(row, dict):
+                    continue
+                item: dict[str, Any] = {}
+                for key in keys:
+                    if key in row:
+                        item[key] = row.get(key)
+                if item:
+                    compact.append(item)
+            return compact
+
         focus_info = (
             snapshot.get("focus_trend_14d", {}) if isinstance(snapshot.get("focus_trend_14d", {}), dict) else {}
         )
@@ -27512,6 +27700,34 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pomodoro_remaining_sec = int(snapshot.get("pomodoro_remaining_sec", 0) or 0)
         except Exception:
             pomodoro_remaining_sec = 0
+        try:
+            session_elapsed_sec = int(snapshot.get("session_elapsed_sec", 0) or 0)
+        except Exception:
+            session_elapsed_sec = 0
+        try:
+            idle_seconds = int(snapshot.get("idle_seconds", -1) or -1)
+        except Exception:
+            idle_seconds = -1
+        try:
+            focus_distraction_seconds = int(snapshot.get("focus_distraction_seconds", 0) or 0)
+        except Exception:
+            focus_distraction_seconds = 0
+        daily_plan_progress = (
+            snapshot.get("daily_plan_progress", {})
+            if isinstance(snapshot.get("daily_plan_progress", {}), dict)
+            else {}
+        )
+        try:
+            plan_done = int(daily_plan_progress.get("done", 0) or 0)
+        except Exception:
+            plan_done = 0
+        try:
+            plan_total = int(daily_plan_progress.get("total", 0) or 0)
+        except Exception:
+            plan_total = 0
+        recent_pending = snapshot.get("pending_suggestion", {})
+        if not isinstance(recent_pending, dict):
+            recent_pending = {}
         signal = {
             "current_topic": str(snapshot.get("current_topic", "") or ""),
             "coach_pick": str(snapshot.get("coach_pick", "") or ""),
@@ -27522,10 +27738,40 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "pomodoro_active": bool(snapshot.get("pomodoro_active", False)),
             "pomodoro_paused": bool(snapshot.get("pomodoro_paused", False)),
             "pomodoro_bucket": int(max(0, pomodoro_remaining_sec // 300)),
+            "active_session_kind": str(snapshot.get("active_session_kind", "") or ""),
+            "session_elapsed_bucket": int(max(0, session_elapsed_sec // 300)),
+            "idle_bucket": int(idle_seconds // 60) if idle_seconds >= 0 else -1,
+            "focus_distraction_bucket": int(max(0, focus_distraction_seconds // 60)),
             "focus_integrity_bucket": int(integrity_bucket),
-            "weak_topics_top3": list(snapshot.get("weak_topics_top3", []) or [])[:3],
-            "risk_snapshot_top3": list(snapshot.get("risk_snapshot_top3", []) or [])[:2],
-            "due_snapshot_top3": list(snapshot.get("due_snapshot_top3", []) or [])[:2],
+            "weak_topics_top3": _compact_topic_rows(
+                snapshot.get("weak_topics_top3", []),
+                keys=("chapter", "competence"),
+                limit=3,
+            ),
+            "risk_snapshot_top3": _compact_topic_rows(
+                snapshot.get("risk_snapshot_top3", []),
+                keys=("chapter", "risk", "miss_risk", "recall_risk"),
+                limit=2,
+            ),
+            "due_snapshot_top3": _compact_topic_rows(
+                snapshot.get("due_snapshot_top3", []),
+                keys=("chapter", "due"),
+                limit=2,
+            ),
+            "recent_action_mix": _compact_topic_rows(
+                snapshot.get("recent_action_mix", []),
+                keys=("kind", "minutes", "pct"),
+                limit=3,
+            ),
+            "daily_plan_progress": {
+                "done": int(max(0, plan_done)),
+                "total": int(max(0, plan_total)),
+            },
+            "pending_suggestion": {
+                "action": str(recent_pending.get("action", "") or ""),
+                "topic": str(recent_pending.get("topic", "") or ""),
+                "requires_confirmation": bool(recent_pending.get("requires_confirmation", False)),
+            },
             "gap_generation_recommended": bool(snapshot.get("gap_generation_recommended", False)),
             "runtime_scope": str(snapshot.get("runtime_scope", "") or ""),
         }
@@ -27586,11 +27832,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 getattr(self, "_ai_tutor_recent_action_log", []),
                 limit=5,
             )
-        repeated_suggestions = [
-            row
-            for row in reversed(recent_log)
-            if str(row.get("outcome", "") or "").strip().lower() == "suggested"
-        ][:3]
+        recent_log = cast(list[dict[str, Any]], recent_log if isinstance(recent_log, list) else [])
+        repeated_suggestions: list[dict[str, Any]] = []
+        for row in reversed(recent_log):
+            outcome = str(row.get("outcome", "") or "").strip().lower()
+            if outcome == "suggested":
+                repeated_suggestions.append(row)
+                if len(repeated_suggestions) >= 3:
+                    break
+                continue
+            # Only back off on the trailing streak of unresolved suggestions.
+            # Once the most recent suggestion was accepted, dismissed, expired,
+            # or replaced by another concrete outcome, older suggestions should
+            # not suppress new autopilot decisions.
+            break
         if len(repeated_suggestions) >= 3:
             repeated_actions = {
                 str(row.get("action", "") or "").strip().lower()
@@ -27798,7 +28053,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             updates["autopilot_action_blocked_count"] = (
                                 int(stats.get("autopilot_action_blocked_count", 0) or 0) + 1
                             )
-                            updates["autopilot_last_block_reason"] = str(local_blocked)[:200]
+                            reason_text = str(local_blocked)[:200]
+                            prev_reason = str(stats.get("autopilot_last_block_reason", "") or "").strip()
+                            if reason_text != prev_reason:
+                                reason_counts_dict = dict(stats.get("autopilot_skip_reason_counts", {}) or {})
+                                reason_counts_dict[reason_text] = int(reason_counts_dict.get(reason_text, 0) or 0) + 1
+                                updates["autopilot_skip_reason_counts"] = reason_counts_dict
+                            updates["autopilot_last_block_reason"] = reason_text
                             # Failure backoff for action-level failures (e.g.
                             # action_failed, action_duplicate_guard) so the
                             # autopilot doesn't immediately retry the same thing.
@@ -27818,12 +28079,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             updates["autopilot_action_blocked_count"] = (
                                 int(stats.get("autopilot_action_blocked_count", 0) or 0) + 1
                             )
-                            updates["autopilot_last_block_reason"] = str(blocked_reason)[:200]
+                            reason_text = str(blocked_reason)[:200]
+                            prev_reason = str(stats.get("autopilot_last_block_reason", "") or "").strip()
+                            if reason_text != prev_reason:
+                                reason_counts_dict = dict(stats.get("autopilot_skip_reason_counts", {}) or {})
+                                reason_counts_dict[reason_text] = int(reason_counts_dict.get(reason_text, 0) or 0) + 1
+                                updates["autopilot_skip_reason_counts"] = reason_counts_dict
+                            updates["autopilot_last_block_reason"] = reason_text
                         elif decision_err:
                             updates["autopilot_action_blocked_count"] = (
                                 int(stats.get("autopilot_action_blocked_count", 0) or 0) + 1
                             )
-                            updates["autopilot_last_block_reason"] = str(decision_err)[:200]
+                            reason_text = str(decision_err)[:200]
+                            prev_reason = str(stats.get("autopilot_last_block_reason", "") or "").strip()
+                            if reason_text != prev_reason:
+                                reason_counts_dict = dict(stats.get("autopilot_skip_reason_counts", {}) or {})
+                                reason_counts_dict[reason_text] = int(reason_counts_dict.get(reason_text, 0) or 0) + 1
+                                updates["autopilot_skip_reason_counts"] = reason_counts_dict
+                            updates["autopilot_last_block_reason"] = reason_text
                 if executed:
                     updates["autopilot_action_executed_count"] = (
                         int(stats.get("autopilot_action_executed_count", 0) or 0) + 1
@@ -27843,7 +28116,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     except Exception:
                         pass
                 elif decision_skip_reason and decision_skip_reason != "no_material_change":
-                    updates["autopilot_last_block_reason"] = str(decision_skip_reason)[:200]
+                    reason_text = str(decision_skip_reason)[:200]
+                    prev_reason = str(stats.get("autopilot_last_block_reason", "") or "").strip()
+                    if reason_text != prev_reason:
+                        reason_counts_dict = dict(stats.get("autopilot_skip_reason_counts", {}) or {})
+                        reason_counts_dict[reason_text] = int(reason_counts_dict.get(reason_text, 0) or 0) + 1
+                        updates["autopilot_skip_reason_counts"] = reason_counts_dict
+                    updates["autopilot_last_block_reason"] = reason_text
                 # Failure backoff: set a shorter quiet window so the autopilot
                 # doesn't hot-loop when the AI keeps producing invalid actions
                 # or execution fails repeatedly.
@@ -27876,6 +28155,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "autopilot_action_executed_count": 0,
                 "autopilot_action_blocked_count": 0,
                 "autopilot_last_block_reason": "",
+                "autopilot_skip_reason_counts": {},
                 "autopilot_suggestion_accepted_count": 0,
                 "autopilot_suggestion_dismissed_count": 0,
                 "nudge_info_count": 0,
@@ -27897,6 +28177,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 "ctx_horizon_days": AI_CONTEXT_DEFAULT_HORIZON_DAYS,
                 "updated_at": "",
             }
+        raw_reason_counts = stats.get("autopilot_skip_reason_counts", {})
+        reason_counts: dict[str, int] = {}
+        if isinstance(raw_reason_counts, dict):
+            for key, value in raw_reason_counts.items():
+                key_text = str(key or "").strip()[:80]
+                if not key_text:
+                    continue
+                try:
+                    reason_counts[key_text] = max(0, int(value or 0))
+                except Exception:
+                    continue
         if isinstance(updates, dict):
             for key, value in updates.items():
                 if key in {
@@ -27906,7 +28197,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if key == "autopilot_mode":
                         stats[key] = self._coerce_ai_tutor_autonomy_mode(value)
                     else:
-                        stats[key] = str(value or "")[:200]
+                        reason_text = str(value or "").strip()[:200]
+                        stats[key] = reason_text
+                        if reason_text:
+                            reason_counts[reason_text] = int(reason_counts.get(reason_text, 0) or 0) + 1
+                    continue
+                if key == "autopilot_skip_reason_counts":
+                    if isinstance(value, dict):
+                        for rk, rv in value.items():
+                            reason_text = str(rk or "").strip()[:80]
+                            if not reason_text:
+                                continue
+                            try:
+                                reason_counts[reason_text] = max(
+                                    int(reason_counts.get(reason_text, 0) or 0),
+                                    max(0, int(rv or 0)),
+                                )
+                            except Exception:
+                                continue
                     continue
                 try:
                     if (
@@ -27919,6 +28227,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         stats[key] = value
                 except Exception:
                     continue
+        stats["autopilot_skip_reason_counts"] = reason_counts
         stats["autopilot_mode"] = str(self._effective_ai_tutor_autonomy_mode())
         stats["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
         self._ai_tutor_autopilot_stats = stats
@@ -27932,6 +28241,32 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
         return dict(stats)
+
+    def _get_ai_tutor_autopilot_progress_markers(self) -> dict[str, Any]:
+        """Return coarse session-progress markers so autopilot can react mid-session without noise."""
+        session_kind = str(getattr(self, "_action_timer_kind", "") or "").strip().lower()
+        session_elapsed = float(getattr(self, "_action_timer_elapsed", 0.0) or 0.0)
+        try:
+            started_at = getattr(self, "_action_timer_started_at", None)
+            if started_at is not None:
+                session_elapsed += max(0.0, time.monotonic() - float(started_at))
+        except Exception:
+            pass
+        try:
+            idle_seconds = getattr(self, "_last_idle_seconds", None)
+            idle_value = int(float(idle_seconds)) if idle_seconds is not None else -1
+        except Exception:
+            idle_value = -1
+        try:
+            distraction_seconds = int(getattr(self, "_focus_distraction_seconds", 0) or 0)
+        except Exception:
+            distraction_seconds = 0
+        return {
+            "active_session_kind": session_kind,
+            "session_elapsed_sec": int(max(0.0, session_elapsed)),
+            "idle_seconds": int(idle_value),
+            "focus_distraction_seconds": int(max(0, distraction_seconds)),
+        }
 
     def _build_ai_tutor_autopilot_snapshot(self) -> dict[str, Any]:
         packet = self._build_local_ai_context_packet(kind="tutor", horizon_days=AI_CONTEXT_DEFAULT_HORIZON_DAYS)
@@ -27950,6 +28285,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pom_paused = bool(getattr(self, "pomodoro_paused", False))
         except Exception:
             pom_paused = False
+        progress_markers = self._get_ai_tutor_autopilot_progress_markers()
         snapshot = {
             "module": str(packet.get("module", "") or ""),
             "current_topic": str(packet.get("current_topic", "") or ""),
@@ -27972,6 +28308,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "pomodoro_active": bool(pom_active),
             "pomodoro_paused": bool(pom_paused),
             "pomodoro_remaining_sec": int(max(0, int(getattr(self, "pomodoro_remaining", 0) or 0))),
+            "active_session_kind": str(progress_markers.get("active_session_kind", "") or ""),
+            "session_elapsed_sec": int(progress_markers.get("session_elapsed_sec", 0) or 0),
+            "idle_seconds": int(progress_markers.get("idle_seconds", -1)),
+            "focus_distraction_seconds": int(progress_markers.get("focus_distraction_seconds", 0) or 0),
             "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
             "runtime_scope": "app_wide_autopilot",
             "tutor_dialog_open": bool(getattr(self, "_ai_tutor_dialog_open", False)),
@@ -27987,6 +28327,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "recent_autopilot_actions": self._sanitize_ai_tutor_recent_action_log(
                 getattr(self, "_ai_tutor_recent_action_log", []),
                 limit=10,
+            ),
+            "pending_suggestion": (
+                dict(getattr(self, "_ai_tutor_pending_suggestion", {}))
+                if isinstance(getattr(self, "_ai_tutor_pending_suggestion", None), dict)
+                else {}
             ),
             "total_question_count": int(self._get_total_question_count()),
             "question_generation_cap": int(getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 1500) or 1500),
@@ -33950,7 +34295,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 ensure_coach_selection()
             get_coach_pick_snapshot = getattr(self, "_get_coach_pick_snapshot", None)
             if callable(get_coach_pick_snapshot):
-                pick_topic, _pick_src = get_coach_pick_snapshot(force=True)
+                pick_snapshot = get_coach_pick_snapshot(force=True)
+                if isinstance(pick_snapshot, tuple) and len(pick_snapshot) >= 2:
+                    pick_topic, _pick_src = pick_snapshot[0], pick_snapshot[1]
+                else:
+                    pick_topic, _pick_src = (self.current_topic, "")
             else:
                 pick_topic, _pick_src = (self.current_topic, "")
             if not pick_topic:
@@ -34022,7 +34371,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
             find_due_review_topic = getattr(self, "_find_due_review_topic", None)
             if callable(find_due_review_topic):
-                review_topic, _due_total, _must_due = find_due_review_topic(preferred)
+                review_snapshot = find_due_review_topic(preferred)
+                if isinstance(review_snapshot, tuple) and len(review_snapshot) >= 3:
+                    review_topic, _due_total, _must_due = review_snapshot[0], review_snapshot[1], review_snapshot[2]
+                else:
+                    review_topic, _due_total, _must_due = (preferred, 1 if preferred else 0, 0)
             else:
                 review_topic, _due_total, _must_due = (preferred, 1 if preferred else 0, 0)
             if not review_topic:
@@ -34375,6 +34728,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         status_parts.append(notice)
         self._ai_tutor_load_notice_shown = True
 
+    def _clamp_skip_reason_counts(self, value: Any) -> dict[str, int]:
+        """Normalize and preserve skip reason counts from telemetry events."""
+        return _clamp_skip_reason_counts_static(value)
+
     def _sanitize_ai_tutor_telemetry_event(self, event: Any) -> dict[str, Any] | None:
         if not isinstance(event, dict):
             return None
@@ -34448,6 +34805,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 maximum=100000,
             ),
             "autopilot_last_block_reason": str(event.get("autopilot_last_block_reason", "") or "").strip()[:200],
+            "autopilot_skip_reason_counts": _clamp_skip_reason_counts_static(event.get("autopilot_skip_reason_counts", {})),
             "nudge_info_count": _clamp_int(event.get("nudge_info_count", 0), default=0, minimum=0, maximum=100000),
             "nudge_warning_count": _clamp_int(
                 event.get("nudge_warning_count", 0),
@@ -34731,6 +35089,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         autopilot_action_executed_count = 0
         autopilot_action_blocked_count = 0
         autopilot_last_block_reason = ""
+        autopilot_skip_reason_counts: dict[str, int] = {}
         nudge_info_count = 0
         nudge_warning_count = 0
         nudge_intervention_count = 0
@@ -34875,6 +35234,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             block_reason = str(row.get("autopilot_last_block_reason", "") or "").strip()
             if block_reason:
                 autopilot_last_block_reason = block_reason[:200]
+            # Merge skip reason counts across all events (sum per-key)
+            row_counts = row.get("autopilot_skip_reason_counts", {})
+            if isinstance(row_counts, dict):
+                for reason, count in row_counts.items():
+                    reason_key = str(reason or "").strip()[:80]
+                    if reason_key:
+                        try:
+                            autopilot_skip_reason_counts[reason_key] = (
+                                int(autopilot_skip_reason_counts.get(reason_key, 0) or 0) + max(0, int(count or 0))
+                            )
+                        except Exception:
+                            pass
 
         latencies_sorted = sorted(latencies)
         p50_idx = max(
@@ -34949,6 +35320,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "autopilot_action_executed_count": int(autopilot_action_executed_count),
             "autopilot_action_blocked_count": int(autopilot_action_blocked_count),
             "autopilot_last_block_reason": str(autopilot_last_block_reason),
+            "autopilot_skip_reason_counts": autopilot_skip_reason_counts,
             "nudge_info_count": int(nudge_info_count),
             "nudge_warning_count": int(nudge_warning_count),
             "nudge_intervention_count": int(nudge_intervention_count),
@@ -50894,7 +51266,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             self.dashboard.append(self._cached_drift_chart_widget)
                         else:
                             plt_module = plt
-                            if plt_module is None or (FigureCanvas is None and FigureCanvasAgg is None):
+                            if plt_module is None or FigureCanvas is None:
                                 raise RuntimeError("Charts unavailable")
                             fig, ax = plt_module.subplots(figsize=(5.6, 3.0), dpi=100)
                             fig.patch.set_facecolor(chart_style["fig_bg"])
@@ -51260,7 +51632,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     else:
                         fig_w, fig_h = (4.6, 3.6) if not is_compact else (4.2, 3.1)
                         plt_module = plt
-                        if plt_module is None or (FigureCanvas is None and FigureCanvasAgg is None):
+                        if plt_module is None or FigureCanvas is None:
                             raise RuntimeError("Charts unavailable")
                         fig, ax = plt_module.subplots(figsize=(fig_w, fig_h), dpi=110)
                         fig.patch.set_facecolor(chart_style["fig_bg"])
@@ -51419,7 +51791,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         self.dashboard.append(self._cached_progress_chart_widget)
                     else:
                         plt_module = plt
-                        if plt_module is None or (FigureCanvas is None and FigureCanvasAgg is None):
+                        if plt_module is None or FigureCanvas is None:
                             raise RuntimeError("Charts unavailable")
                         fig, ax = plt_module.subplots(figsize=(5, 3.2), dpi=100)
                         fig.patch.set_facecolor(chart_style["fig_bg"])
@@ -51582,7 +51954,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 else:
                     fig_w, fig_h = (6.2, 3.4) if not is_compact else (5.6, 3.0)
                     plt_module = plt
-                    if plt_module is None or (FigureCanvas is None and FigureCanvasAgg is None):
+                    if plt_module is None or FigureCanvas is None:
                         raise RuntimeError("Charts unavailable")
                     fig, ax = plt_module.subplots(figsize=(fig_w, fig_h), dpi=100)
                     fig.patch.set_facecolor(chart_style["fig_bg"])
@@ -52867,7 +53239,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 try:
                     with open(streak_file, "r") as f:
                         data = json.load(f)
-                        if data is not None and "last_study_date" in data:
+                        if not isinstance(data, dict):
+                            data = {}
+                        if "last_study_date" in data:
                             try:
                                 self.last_study_date = datetime.date.fromisoformat(data["last_study_date"])
                             except ValueError:

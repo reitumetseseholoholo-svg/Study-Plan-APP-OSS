@@ -3448,6 +3448,153 @@ def test_sync_srs_with_questions_preserves_keyed_rows_after_removal(engine_no_io
     assert eng.srs_data[chapter][0]["interval"] == 9
 
 
+def test_delete_question_for_review_preserve_srs_removes_bank_row_but_keeps_mastery(
+    tmp_path, monkeypatch, engine_no_io
+):
+    eng = engine_no_io
+    chapter = "FM Function"
+    kept = {"question": "Kept?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}
+    flagged = {"question": "Delete me?", "options": ["A", "B", "C", "D"], "correct": "B", "explanation": ""}
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS_DEFAULT = {chapter: []}
+    eng.QUESTIONS = {chapter: [dict(kept), dict(flagged)]}
+    eng.DATA_FILE = str(tmp_path / "data.json")
+    eng.QUESTIONS_FILE = str(tmp_path / "questions.json")
+    meta_path = tmp_path / "question_quality_meta.json"
+    monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
+    eng.srs_data = {
+        chapter: [
+            {"last_review": "2026-02-01", "interval": 3, "efactor": 2.2, "question_key": eng._question_bank_fingerprint(kept)},
+            {"last_review": "2026-02-02", "interval": 30, "efactor": 2.4, "question_key": eng._question_bank_fingerprint(flagged)},
+        ]
+    }
+    eng.must_review = {chapter: {"0": "2026-02-05", "1": "2026-02-06"}}
+    eng.set_question_review_state(chapter, 1, quarantine=True, note="bad item", quality_reason="manual_review")
+
+    ok = eng.delete_question_for_review_preserve_srs(chapter, 1)
+
+    assert ok is True
+    assert eng.QUESTIONS[chapter] == [kept]
+    assert len(eng.srs_data[chapter]) == 1
+    assert eng.srs_data[chapter][0]["question_key"] == eng._question_bank_fingerprint(kept)
+    stats = eng.get_mastery_stats(chapter)
+    assert stats["total"] == 2
+    assert stats["mastered"] == 1
+    assert eng.must_review[chapter] == {"0": "2026-02-05"}
+    saved_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    archived = saved_meta[chapter][f"deleted:{eng._question_bank_fingerprint(flagged)}"]
+    assert archived["deleted_from_bank"] is True
+    assert archived["preserved_srs"]["interval"] == 30
+
+
+def test_delete_question_for_review_preserve_srs_reindexes_surviving_review_meta(
+    tmp_path, monkeypatch, engine_no_io
+):
+    eng = engine_no_io
+    chapter = "FM Function"
+    flagged = {"question": "Delete me?", "options": ["A", "B", "C", "D"], "correct": "B", "explanation": ""}
+    survivor = {"question": "Keep my note?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}
+    eng.CHAPTERS = [chapter]
+    eng.QUESTIONS_DEFAULT = {chapter: []}
+    eng.QUESTIONS = {chapter: [dict(flagged), dict(survivor)]}
+    eng.DATA_FILE = str(tmp_path / "data.json")
+    eng.QUESTIONS_FILE = str(tmp_path / "questions.json")
+    meta_path = tmp_path / "question_quality_meta.json"
+    monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
+    eng.srs_data = {
+        chapter: [
+            {"last_review": "2026-02-01", "interval": 10, "efactor": 2.2, "question_key": eng._question_bank_fingerprint(flagged)},
+            {"last_review": "2026-02-02", "interval": 5, "efactor": 2.4, "question_key": eng._question_bank_fingerprint(survivor)},
+        ]
+    }
+    eng.must_review = {chapter: {"1": "2026-02-06"}}
+    eng.set_question_review_state(chapter, 0, quarantine=True, note="delete this", quality_reason="manual_review")
+    eng.set_question_review_state(chapter, 1, note="survivor note")
+
+    ok = eng.delete_question_for_review_preserve_srs(chapter, 0)
+
+    assert ok is True
+    rows = eng.get_question_bank_review_rows(chapter)
+    assert len(rows) == 1
+    assert rows[0]["question"] == survivor["question"]
+    assert rows[0]["review_note"] == "survivor note"
+    assert eng.must_review[chapter] == {"0": "2026-02-06"}
+
+
+def test_auto_clean_flagged_questions_preserves_srs_and_reindexes_must_review(
+    tmp_path, monkeypatch, engine_no_io
+):
+    eng = engine_no_io
+    ch1 = "FM Function"
+    ch2 = "Investment appraisal"
+    keep1 = {
+        "question": "Which method discounts relevant cash flows?",
+        "options": ["NPV", "Audit", "Tax", "Payroll"],
+        "correct": "NPV",
+        "explanation": "NPV discounts relevant project cash flows.",
+        "outcome_ids": ["A1"],
+    }
+    bad1 = {
+        "question": "Which cost should be excluded from project appraisal?",
+        "options": ["Sunk cost", "Incremental cost", "Opportunity cost", "Working capital"],
+        "correct": "Sunk cost",
+        "explanation": "Sunk costs are past costs and are not relevant.",
+        "outcome_ids": ["A1"],
+    }
+    bad2 = {
+        "question": "Which method compares average profit with average investment?",
+        "options": ["ARR", "NPV", "IRR", "Payback"],
+        "correct": "ARR",
+        "explanation": "ARR uses accounting profit and average investment.",
+        "outcome_ids": ["B1"],
+    }
+    keep2 = {
+        "question": "Which method estimates the break-even cost of capital?",
+        "options": ["IRR", "ARR", "Payback", "ROCE"],
+        "correct": "IRR",
+        "explanation": "IRR is the discount rate where project NPV is zero.",
+        "outcome_ids": ["B1"],
+    }
+    eng.CHAPTERS = [ch1, ch2]
+    eng.QUESTIONS_DEFAULT = {ch1: [], ch2: []}
+    eng.QUESTIONS = {ch1: [dict(keep1), dict(bad1)], ch2: [dict(bad2), dict(keep2)]}
+    eng.syllabus_structure = {
+        ch1: {"learning_outcomes": [{"id": "A1", "text": "Appraise relevant cash flows.", "level": 2}]},
+        ch2: {"learning_outcomes": [{"id": "B1", "text": "Evaluate investment appraisal methods.", "level": 2}]},
+    }
+    eng.DATA_FILE = str(tmp_path / "data.json")
+    eng.QUESTIONS_FILE = str(tmp_path / "questions.json")
+    meta_path = tmp_path / "question_quality_meta.json"
+    monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
+    eng.srs_data = {
+        ch1: [
+            {"last_review": "2026-02-01", "interval": 3, "efactor": 2.2, "question_key": eng._question_bank_fingerprint(keep1)},
+            {"last_review": "2026-02-02", "interval": 30, "efactor": 2.4, "question_key": eng._question_bank_fingerprint(bad1)},
+        ],
+        ch2: [
+            {"last_review": "2026-02-03", "interval": 25, "efactor": 2.3, "question_key": eng._question_bank_fingerprint(bad2)},
+            {"last_review": "2026-02-04", "interval": 7, "efactor": 2.1, "question_key": eng._question_bank_fingerprint(keep2)},
+        ],
+    }
+    eng.must_review = {ch1: {"0": "2026-02-05", "1": "2026-02-06"}, ch2: {"1": "2026-02-07"}}
+    eng.set_question_review_state(ch1, 1, quarantine=True, quality_reason="manual_review")
+    eng.set_question_review_state(ch2, 0, quarantine=True, quality_reason="manual_review")
+
+    result = eng.auto_clean_flagged_questions_preserve_srs()
+
+    assert result["changed"] is True
+    assert result["removed_total"] == 2
+    assert eng.QUESTIONS[ch1] == [keep1]
+    assert eng.QUESTIONS[ch2] == [keep2]
+    assert eng.srs_data[ch1][0]["question_key"] == eng._question_bank_fingerprint(keep1)
+    assert eng.srs_data[ch2][0]["question_key"] == eng._question_bank_fingerprint(keep2)
+    assert eng.must_review[ch1] == {"0": "2026-02-05"}
+    assert eng.must_review[ch2] == {"0": "2026-02-07"}
+    saved_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert saved_meta[ch1][f"deleted:{eng._question_bank_fingerprint(bad1)}"]["preserved_srs"]["interval"] == 30
+    assert saved_meta[ch2][f"deleted:{eng._question_bank_fingerprint(bad2)}"]["preserved_srs"]["interval"] == 25
+
+
 def test_get_outcome_coverage_counts_session_cache(engine_no_io, monkeypatch):
     """Second call with same bank reuses cache (no extra resolve_question_outcomes work)."""
     eng = engine_no_io

@@ -2843,6 +2843,136 @@ class StudyPlanEngine:
             self._question_quality_meta_mtime = None
         self._question_quality_meta_cache = copy.deepcopy(meta)
 
+    def _reindex_question_quality_meta(
+        self,
+        chapter: str | None = None,
+        *,
+        meta: Dict[str, Dict[str, Any]] | None = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Re-key active review metadata by current row index and preserve deleted archives."""
+        source = copy.deepcopy(meta) if isinstance(meta, dict) else self._load_question_quality_meta()
+        chapters = [str(chapter).strip()] if isinstance(chapter, str) and str(chapter).strip() else list(self.CHAPTERS or [])
+        for chapter_name in chapters:
+            by_chapter = source.get(chapter_name, {})
+            if not isinstance(by_chapter, dict):
+                continue
+            rows = list((self.QUESTIONS or {}).get(chapter_name, []) or [])
+            by_fingerprint: Dict[str, Dict[str, Any]] = {}
+            by_index: Dict[str, Dict[str, Any]] = {}
+            archived: Dict[str, Dict[str, Any]] = {}
+            for key, entry in by_chapter.items():
+                if not isinstance(entry, dict):
+                    continue
+                fingerprint = str(entry.get("question_key", "") or "").strip()
+                if key.startswith("deleted:") or entry.get("preserved_srs") or entry.get("deleted_from_bank"):
+                    archived[f"deleted:{fingerprint or key}"] = copy.deepcopy(entry)
+                    continue
+                if fingerprint and fingerprint not in by_fingerprint:
+                    by_fingerprint[fingerprint] = copy.deepcopy(entry)
+                if key not in by_index:
+                    by_index[key] = copy.deepcopy(entry)
+
+            rebuilt: Dict[str, Dict[str, Any]] = {}
+            for idx, row in enumerate(rows):
+                fingerprint = self._question_bank_fingerprint(row)
+                entry = None
+                if fingerprint and fingerprint in by_fingerprint:
+                    entry = copy.deepcopy(by_fingerprint[fingerprint])
+                elif str(idx) in by_index:
+                    entry = copy.deepcopy(by_index[str(idx)])
+                if not isinstance(entry, dict):
+                    continue
+                if fingerprint:
+                    entry["question_key"] = fingerprint
+                rebuilt[str(idx)] = entry
+
+            rebuilt.update(archived)
+            source[chapter_name] = rebuilt
+        return source
+
+    def _mastery_srs_entries(self, chapter: str) -> List[Dict[str, Any]]:
+        """Return active SRS plus deleted-card SRS retained for mastery metrics only."""
+        chapter_key = str(chapter or "").strip()
+        active = [dict(item) for item in list(self.srs_data.get(chapter_key, []) or []) if isinstance(item, dict)]
+        seen_keys = {
+            str(item.get("question_key", "") or "").strip()
+            for item in active
+            if str(item.get("question_key", "") or "").strip()
+        }
+        meta = self._load_question_quality_meta()
+        by_chapter = meta.get(chapter_key, {})
+        if not isinstance(by_chapter, dict):
+            return active
+        archived: List[Dict[str, Any]] = []
+        for entry in by_chapter.values():
+            if not isinstance(entry, dict):
+                continue
+            preserved = entry.get("preserved_srs")
+            if not isinstance(preserved, dict):
+                continue
+            archived_entry = dict(preserved)
+            key = str(archived_entry.get("question_key", "") or entry.get("question_key", "") or "").strip()
+            if key:
+                archived_entry["question_key"] = key
+            if key and key in seen_keys:
+                continue
+            archived.append(archived_entry)
+            if key:
+                seen_keys.add(key)
+        return active + archived
+
+    def _reindex_must_review_after_question_bank_change(
+        self,
+        chapter: str,
+        old_rows: List[Any],
+        old_must_review: Dict[str, Any] | None = None,
+    ) -> None:
+        """Keep forced-review dates attached to surviving question fingerprints."""
+        chapter_key = str(chapter or "").strip()
+        if not chapter_key:
+            return
+        source = old_must_review
+        if not isinstance(source, dict):
+            source = self.must_review.get(chapter_key, {}) if isinstance(self.must_review, dict) else {}
+        if not isinstance(source, dict):
+            self.must_review[chapter_key] = {}
+            return
+
+        due_by_key: Dict[str, str] = {}
+        due_by_old_index: Dict[int, str] = {}
+        for raw_idx, raw_due in source.items():
+            try:
+                old_idx = int(raw_idx)
+            except (TypeError, ValueError):
+                continue
+            due_date = self._parse_date(raw_due)
+            if due_date is None:
+                continue
+            due_iso = due_date.isoformat()
+            due_by_old_index[old_idx] = due_iso
+            if 0 <= old_idx < len(old_rows):
+                fingerprint = self._question_bank_fingerprint(old_rows[old_idx])
+                if fingerprint:
+                    due_by_key[fingerprint] = due_iso
+
+        rebuilt: Dict[str, str] = {}
+        new_rows = list((self.QUESTIONS or {}).get(chapter_key, []) or [])
+        for new_idx, row in enumerate(new_rows):
+            fingerprint = self._question_bank_fingerprint(row)
+            if fingerprint and fingerprint in due_by_key:
+                rebuilt[str(new_idx)] = due_by_key[fingerprint]
+                continue
+            if new_idx in due_by_old_index:
+                old_fingerprint = ""
+                if 0 <= new_idx < len(old_rows):
+                    old_fingerprint = self._question_bank_fingerprint(old_rows[new_idx])
+                if old_fingerprint and fingerprint and old_fingerprint == fingerprint:
+                    rebuilt[str(new_idx)] = due_by_old_index[new_idx]
+
+        if not isinstance(self.must_review, dict):
+            self.must_review = {}
+        self.must_review[chapter_key] = rebuilt
+
     def get_quarantined_question_indices(self, chapter: str) -> Set[int]:
         """Return set of question indices for this chapter that are quarantined (poor quality / repeated errors)."""
         meta = self._load_question_quality_meta()
@@ -3090,6 +3220,177 @@ class StudyPlanEngine:
         if apply_now:
             self.update_question_outcome_ids(chapter, question_index, cleaned)
         return True
+
+    def _question_review_row_is_flagged(self, row: Dict[str, Any] | None) -> bool:
+        if not isinstance(row, dict):
+            return False
+        return (
+            bool(row.get("quarantine"))
+            or bool(row.get("quality_issues"))
+            or bool(str(row.get("quality_reason", "") or "").strip())
+            or bool(str(row.get("review_note", "") or "").strip())
+        )
+
+    def _mark_question_deleted_preserve_srs(
+        self,
+        meta: Dict[str, Dict[str, Any]],
+        chapter: str,
+        question_index: int,
+        *,
+        reason: str,
+    ) -> bool:
+        chapter_key = str(chapter or "").strip()
+        try:
+            qidx = int(question_index)
+        except Exception:
+            return False
+        rows = (self.QUESTIONS or {}).get(chapter_key, [])
+        if chapter_key not in self.CHAPTERS or not isinstance(rows, list) or not (0 <= qidx < len(rows)):
+            return False
+
+        row = rows[qidx]
+        fingerprint = self._question_bank_fingerprint(row)
+        srs_entry: Dict[str, Any] | None = None
+        srs_list = self.srs_data.get(chapter_key, [])
+        if isinstance(srs_list, list):
+            if 0 <= qidx < len(srs_list) and isinstance(srs_list[qidx], dict):
+                srs_entry = dict(srs_list[qidx])
+            elif fingerprint:
+                for item in srs_list:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("question_key", "") or "").strip() == fingerprint:
+                        srs_entry = dict(item)
+                        break
+        if isinstance(srs_entry, dict) and fingerprint:
+            srs_entry["question_key"] = fingerprint
+
+        by_chapter = meta.setdefault(chapter_key, {})
+        if not isinstance(by_chapter, dict):
+            by_chapter = {}
+            meta[chapter_key] = by_chapter
+        entry = by_chapter.get(str(qidx))
+        if not isinstance(entry, dict):
+            entry = {"quarantine": False, "error_streak": 0, "last_used_iso": ""}
+        if fingerprint:
+            entry["question_key"] = fingerprint
+        entry["quarantine"] = True
+        entry["remove"] = True
+        entry["deleted_from_bank"] = True
+        entry["deleted_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        entry["review_label"] = "deleted_preserve_srs"
+        if not str(entry.get("quality_reason", "") or "").strip():
+            entry["quality_reason"] = reason
+        if isinstance(srs_entry, dict):
+            entry["preserved_srs"] = srs_entry
+        by_chapter[str(qidx)] = entry
+        meta[chapter_key] = by_chapter
+        return True
+
+    def delete_question_for_review_preserve_srs(self, chapter: str, question_index: int) -> bool:
+        """Delete a flagged question from the live bank while preserving its mastery SRS history."""
+        chapter_key = str(chapter or "").strip()
+        try:
+            qidx = int(question_index)
+        except Exception:
+            return False
+        rows = (self.QUESTIONS or {}).get(chapter_key, [])
+        if chapter_key not in self.CHAPTERS or not isinstance(rows, list) or not (0 <= qidx < len(rows)):
+            return False
+
+        old_rows = list(rows)
+        old_must_review = dict(self.must_review.get(chapter_key, {})) if isinstance(self.must_review, dict) else {}
+        meta = self._load_question_quality_meta()
+        if not self._mark_question_deleted_preserve_srs(
+            meta,
+            chapter_key,
+            qidx,
+            reason="manual_delete_preserve_srs",
+        ):
+            return False
+        self._save_question_quality_meta(meta)
+
+        prune_result = self._prune_removed_questions_from_bank(persist=True)
+        if not bool(prune_result.get("changed", False)):
+            return False
+
+        self._reindex_must_review_after_question_bank_change(chapter_key, old_rows, old_must_review)
+        remapped_meta = self._reindex_question_quality_meta(chapter_key)
+        self._save_question_quality_meta(remapped_meta)
+        try:
+            self.save_data()
+        except Exception:
+            pass
+        return True
+
+    def auto_clean_flagged_questions_preserve_srs(self) -> Dict[str, Any]:
+        """Delete all currently flagged review rows while preserving SRS history."""
+        try:
+            review_rows = self.get_question_bank_review_rows()
+        except Exception:
+            review_rows = []
+        targets: Dict[str, set[int]] = {}
+        for row in list(review_rows or []):
+            if not isinstance(row, dict) or not self._question_review_row_is_flagged(row):
+                continue
+            chapter = str(row.get("chapter", "") or "").strip()
+            try:
+                qidx = int(row.get("index", -1))
+            except Exception:
+                continue
+            if chapter in self.CHAPTERS and qidx >= 0:
+                targets.setdefault(chapter, set()).add(qidx)
+
+        if not targets:
+            return {"changed": False, "removed_total": 0, "removed_by_chapter": {}}
+
+        old_rows_by_chapter: Dict[str, List[Any]] = {}
+        old_must_by_chapter: Dict[str, Dict[str, Any]] = {}
+        for chapter in targets:
+            old_rows_by_chapter[chapter] = list((self.QUESTIONS or {}).get(chapter, []) or [])
+            old_must_by_chapter[chapter] = (
+                dict(self.must_review.get(chapter, {})) if isinstance(self.must_review, dict) else {}
+            )
+
+        meta = self._load_question_quality_meta()
+        marked_by_chapter: Dict[str, int] = {}
+        for chapter, indices in targets.items():
+            marked = 0
+            for qidx in sorted(indices):
+                if self._mark_question_deleted_preserve_srs(
+                    meta,
+                    chapter,
+                    qidx,
+                    reason="auto_clean_flagged_review",
+                ):
+                    marked += 1
+            if marked:
+                marked_by_chapter[chapter] = marked
+        if not marked_by_chapter:
+            return {"changed": False, "removed_total": 0, "removed_by_chapter": {}}
+
+        self._save_question_quality_meta(meta)
+        prune_result = self._prune_removed_questions_from_bank(persist=True)
+        if not bool(prune_result.get("changed", False)):
+            return {"changed": False, "removed_total": 0, "removed_by_chapter": {}}
+
+        for chapter in old_rows_by_chapter:
+            self._reindex_must_review_after_question_bank_change(
+                chapter,
+                old_rows_by_chapter.get(chapter, []),
+                old_must_by_chapter.get(chapter, {}),
+            )
+        remapped_meta = self._reindex_question_quality_meta()
+        self._save_question_quality_meta(remapped_meta)
+        try:
+            self.save_data()
+        except Exception:
+            pass
+        return {
+            "changed": True,
+            "removed_total": int(prune_result.get("removed_total", 0) or 0),
+            "removed_by_chapter": dict(prune_result.get("removed_by_chapter", {}) or {}),
+        }
 
     def get_question_bank_review_rows(self, chapter: str | None = None) -> List[Dict[str, Any]]:
         """Return normalized rows for question-bank review UI.
@@ -12558,7 +12859,7 @@ class StudyPlanEngine:
 
         Also includes competence (0-100%) from engine state when available.
         """
-        srs_list = self.srs_data.get(chapter, [])
+        srs_list = self._mastery_srs_entries(chapter)
         if srs_list is None:
             srs_list = []
 
@@ -12636,7 +12937,7 @@ class StudyPlanEngine:
         sum_interval = 0.0
 
         for chapter in self.CHAPTERS:
-            srs_list = self.srs_data.get(chapter, [])
+            srs_list = self._mastery_srs_entries(chapter)
             if not isinstance(srs_list, list):
                 continue
             for item in srs_list:

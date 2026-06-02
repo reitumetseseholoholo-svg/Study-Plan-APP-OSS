@@ -2909,6 +2909,198 @@ def test_should_request_global_ai_tutor_decision_only_on_change_or_refresh():
     assert reason3 == "state_changed"
 
 
+def test_should_request_global_ai_tutor_decision_when_daily_plan_progress_changes():
+    dummy = types.SimpleNamespace(
+        _ai_tutor_global_last_event_sig="",
+        _ai_tutor_global_last_decision_at=0.0,
+        _ai_tutor_global_quiet_until=0.0,
+        _ai_tutor_recent_action_log=[],
+    )
+    dummy._ai_cache_sha1 = types.MethodType(StudyPlanGUI._ai_cache_sha1, dummy)
+    dummy._build_ai_tutor_autopilot_event_signature = types.MethodType(
+        StudyPlanGUI._build_ai_tutor_autopilot_event_signature, dummy
+    )
+    dummy._should_request_global_ai_tutor_decision = types.MethodType(
+        StudyPlanGUI._should_request_global_ai_tutor_decision, dummy
+    )
+    snapshot = {
+        "current_topic": "Topic A",
+        "coach_pick": "Topic A",
+        "must_review_due": 2,
+        "overdue_srs_count": 1,
+        "new_srs_count": 0,
+        "pomodoro_active": False,
+        "pomodoro_paused": False,
+        "pomodoro_remaining_sec": 0,
+        "focus_trend_14d": {"integrity_pct": 72.0},
+        "weak_topics_top3": [{"chapter": "Topic A", "competence": 40.0}],
+        "risk_snapshot_top3": [],
+        "due_snapshot_top3": [],
+        "recent_action_mix": [{"kind": "focus", "minutes": 20.0, "pct": 100.0}],
+        "daily_plan_progress": {"done": 0, "total": 3},
+        "pending_suggestion": {},
+        "runtime_scope": "app_wide",
+    }
+    should1, reason1, sig1 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, snapshot, now_ts=100.0)
+    assert should1 is True
+    assert reason1 == "first_run"
+    dummy._ai_tutor_global_last_event_sig = sig1
+    dummy._ai_tutor_global_last_decision_at = 100.0
+
+    changed = dict(snapshot)
+    changed["daily_plan_progress"] = {"done": 1, "total": 3}
+    should2, reason2, _sig2 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, changed, now_ts=130.0)
+    assert should2 is True
+    assert reason2 == "state_changed"
+
+
+def test_should_request_global_ai_tutor_decision_when_pending_suggestion_changes():
+    dummy = types.SimpleNamespace(
+        _ai_tutor_global_last_event_sig="",
+        _ai_tutor_global_last_decision_at=0.0,
+        _ai_tutor_global_quiet_until=0.0,
+        _ai_tutor_recent_action_log=[],
+    )
+    dummy._ai_cache_sha1 = types.MethodType(StudyPlanGUI._ai_cache_sha1, dummy)
+    dummy._build_ai_tutor_autopilot_event_signature = types.MethodType(
+        StudyPlanGUI._build_ai_tutor_autopilot_event_signature, dummy
+    )
+    dummy._should_request_global_ai_tutor_decision = types.MethodType(
+        StudyPlanGUI._should_request_global_ai_tutor_decision, dummy
+    )
+    snapshot = {
+        "current_topic": "Topic A",
+        "coach_pick": "Topic A",
+        "must_review_due": 2,
+        "overdue_srs_count": 1,
+        "new_srs_count": 0,
+        "pomodoro_active": False,
+        "pomodoro_paused": False,
+        "pomodoro_remaining_sec": 0,
+        "focus_trend_14d": {"integrity_pct": 72.0},
+        "weak_topics_top3": [],
+        "risk_snapshot_top3": [],
+        "due_snapshot_top3": [],
+        "recent_action_mix": [],
+        "daily_plan_progress": {"done": 0, "total": 3},
+        "pending_suggestion": {},
+        "runtime_scope": "app_wide",
+    }
+    should1, reason1, sig1 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, snapshot, now_ts=100.0)
+    assert should1 is True
+    assert reason1 == "first_run"
+    dummy._ai_tutor_global_last_event_sig = sig1
+    dummy._ai_tutor_global_last_decision_at = 100.0
+
+    changed = dict(snapshot)
+    changed["pending_suggestion"] = {
+        "action": "review_start",
+        "topic": "Topic A",
+        "requires_confirmation": True,
+    }
+    should2, reason2, _sig2 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, changed, now_ts=130.0)
+    assert should2 is True
+    assert reason2 == "state_changed"
+
+
+def test_should_request_global_ai_tutor_decision_when_session_elapsed_bucket_changes():
+    dummy = types.SimpleNamespace(
+        _ai_tutor_global_last_event_sig="",
+        _ai_tutor_global_last_decision_at=0.0,
+        _ai_tutor_global_quiet_until=0.0,
+        _ai_tutor_recent_action_log=[],
+    )
+    dummy._ai_cache_sha1 = types.MethodType(StudyPlanGUI._ai_cache_sha1, dummy)
+    dummy._build_ai_tutor_autopilot_event_signature = types.MethodType(
+        StudyPlanGUI._build_ai_tutor_autopilot_event_signature, dummy
+    )
+    dummy._should_request_global_ai_tutor_decision = types.MethodType(
+        StudyPlanGUI._should_request_global_ai_tutor_decision, dummy
+    )
+    snapshot = {
+        "current_topic": "Topic A",
+        "coach_pick": "Topic A",
+        "must_review_due": 2,
+        "overdue_srs_count": 1,
+        "new_srs_count": 0,
+        "pomodoro_active": True,
+        "pomodoro_paused": False,
+        "pomodoro_remaining_sec": 1200,
+        "active_session_kind": "pomodoro_focus",
+        "session_elapsed_sec": 240,
+        "idle_seconds": 0,
+        "focus_distraction_seconds": 0,
+        "focus_trend_14d": {"integrity_pct": 72.0},
+        "weak_topics_top3": [],
+        "risk_snapshot_top3": [],
+        "due_snapshot_top3": [],
+        "recent_action_mix": [],
+        "daily_plan_progress": {"done": 0, "total": 3},
+        "pending_suggestion": {},
+        "runtime_scope": "app_wide",
+    }
+    should1, reason1, sig1 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, snapshot, now_ts=100.0)
+    assert should1 is True
+    assert reason1 == "first_run"
+    dummy._ai_tutor_global_last_event_sig = sig1
+    dummy._ai_tutor_global_last_decision_at = 100.0
+
+    changed = dict(snapshot)
+    changed["session_elapsed_sec"] = 620
+    should2, reason2, _sig2 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, changed, now_ts=130.0)
+    assert should2 is True
+    assert reason2 == "state_changed"
+
+
+def test_should_request_global_ai_tutor_decision_when_idle_bucket_changes():
+    dummy = types.SimpleNamespace(
+        _ai_tutor_global_last_event_sig="",
+        _ai_tutor_global_last_decision_at=0.0,
+        _ai_tutor_global_quiet_until=0.0,
+        _ai_tutor_recent_action_log=[],
+    )
+    dummy._ai_cache_sha1 = types.MethodType(StudyPlanGUI._ai_cache_sha1, dummy)
+    dummy._build_ai_tutor_autopilot_event_signature = types.MethodType(
+        StudyPlanGUI._build_ai_tutor_autopilot_event_signature, dummy
+    )
+    dummy._should_request_global_ai_tutor_decision = types.MethodType(
+        StudyPlanGUI._should_request_global_ai_tutor_decision, dummy
+    )
+    snapshot = {
+        "current_topic": "Topic A",
+        "coach_pick": "Topic A",
+        "must_review_due": 2,
+        "overdue_srs_count": 1,
+        "new_srs_count": 0,
+        "pomodoro_active": True,
+        "pomodoro_paused": False,
+        "pomodoro_remaining_sec": 1200,
+        "active_session_kind": "pomodoro_focus",
+        "session_elapsed_sec": 300,
+        "idle_seconds": 5,
+        "focus_distraction_seconds": 0,
+        "focus_trend_14d": {"integrity_pct": 72.0},
+        "weak_topics_top3": [],
+        "risk_snapshot_top3": [],
+        "due_snapshot_top3": [],
+        "recent_action_mix": [],
+        "daily_plan_progress": {"done": 0, "total": 3},
+        "pending_suggestion": {},
+        "runtime_scope": "app_wide",
+    }
+    should1, reason1, sig1 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, snapshot, now_ts=100.0)
+    assert should1 is True
+    assert reason1 == "first_run"
+    dummy._ai_tutor_global_last_event_sig = sig1
+    dummy._ai_tutor_global_last_decision_at = 100.0
+
+    changed = dict(snapshot)
+    changed["idle_seconds"] = 75
+    should2, reason2, _sig2 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, changed, now_ts=130.0)
+    assert should2 is True
+    assert reason2 == "state_changed"
+
+
 def test_should_request_global_ai_tutor_decision_respects_quiet_window():
     dummy = types.SimpleNamespace(
         _ai_tutor_global_last_event_sig="",
@@ -2942,6 +3134,55 @@ def test_should_request_global_ai_tutor_decision_respects_quiet_window():
     should2, reason2, _sig2 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, snapshot, now_ts=200.0)
     assert should2 is False
     assert reason2 == "quiet_window"
+
+
+def test_ai_tutor_autopilot_diagnostic_summary_exposes_quiet_and_last_reason():
+    now = float(time.monotonic())
+    dummy = types.SimpleNamespace(
+        _ai_tutor_autopilot_stats={
+            "autopilot_last_block_reason": "quiet_window",
+            "autopilot_skip_reason_counts": {"quiet_window": 2, "tutor_generation_active": 1},
+            "updated_at": "2026-05-24T12:34:56",
+        },
+        _ai_tutor_global_quiet_until=now + 25.0,
+    )
+
+    summary = StudyPlanGUI._ai_tutor_autopilot_diagnostic_summary(dummy)
+
+    assert summary["last_reason"] == "quiet_window"
+    assert summary["last_eval_text"] == "last eval 12:34:56"
+    assert summary["quiet_text"].startswith("quiet ")
+    assert "quiet_window 2" in summary["top_reasons_text"]
+
+
+def test_record_ai_tutor_autopilot_metrics_accumulates_skip_reason_counts():
+    dummy = types.SimpleNamespace(
+        _ai_tutor_autopilot_stats={},
+        _effective_ai_tutor_autonomy_mode=lambda: "cockpit",
+        _refresh_ai_tutor_autopilot_surface=lambda: None,
+        save_preferences=lambda: None,
+        _coerce_ai_tutor_autonomy_mode=lambda value: str(value or "cockpit"),
+    )
+
+    stats1 = StudyPlanGUI._record_ai_tutor_autopilot_metrics(
+        dummy,
+        {"autopilot_last_block_reason": "quiet_window"},
+        persist=False,
+    )
+    stats2 = StudyPlanGUI._record_ai_tutor_autopilot_metrics(
+        dummy,
+        {"autopilot_last_block_reason": "quiet_window"},
+        persist=False,
+    )
+    stats3 = StudyPlanGUI._record_ai_tutor_autopilot_metrics(
+        dummy,
+        {"autopilot_last_block_reason": "tutor_generation_active"},
+        persist=False,
+    )
+
+    assert stats1["autopilot_skip_reason_counts"]["quiet_window"] == 1
+    assert stats2["autopilot_skip_reason_counts"]["quiet_window"] == 2
+    assert stats3["autopilot_skip_reason_counts"]["tutor_generation_active"] == 1
 
 
 def test_build_ai_tutor_autopilot_prompt_includes_runtime_contract():
@@ -7345,6 +7586,27 @@ def test_backoff_fires_for_three_pending_suggested():
         dummy, snapshot, now_ts=float(time.monotonic()) + 10.0
     )
     assert reason == "repeated_suggestion_backoff"
+
+
+def test_backoff_ignores_older_suggested_rows_once_latest_suggestion_was_resolved():
+    """Resolved suggestion cycles must not keep tripping backoff via old 'suggested' rows."""
+    dummy, snapshot = _make_backoff_dummy(
+        [
+            "suggested",
+            "suggested_accepted",
+            "executed",
+            "suggested",
+            "suggested_dismissed",
+        ]
+    )
+    sig = StudyPlanGUI._build_ai_tutor_autopilot_event_signature(dummy, snapshot)
+    dummy._ai_tutor_global_last_event_sig = sig
+
+    should, reason, _ = StudyPlanGUI._should_request_global_ai_tutor_decision(
+        dummy, snapshot, now_ts=float(time.monotonic()) + 10.0
+    )
+    assert should is False
+    assert reason != "repeated_suggestion_backoff"
 
 
 # ------------------------------------------------------------------
