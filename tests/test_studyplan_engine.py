@@ -1306,8 +1306,33 @@ def test_sanitize_question_bank_row_repairs_inline_options_from_stem(engine_no_i
     assert clean["question"].startswith("Which statement is correct about WACC?")
     assert clean["options"][1] == "It combines weighted component costs"
     assert clean["correct"] == "It combines weighted component costs"
-    assert bool(meta.get("repaired", False)) is True
-    assert "inline_options_extracted" in list(meta.get("repairs", []) or [])
+    assert bool(meta.get("normalized", False)) is True
+    assert "inline_options_extracted" in list(meta.get("normalizations", []) or [])
+
+
+def test_add_questions_sanitizer_rejects_numeric_explanation_mismatch(engine_no_io, monkeypatch):
+    eng = engine_no_io
+    chapter = "FM Function"
+    quarantined: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        eng,
+        "_append_question_quality_quarantine",
+        lambda ch, row, issues, **kwargs: quarantined.append((str(ch), list(issues))),
+    )
+    incoming = [
+        {
+            "question": "Calculate the NPV of the project from discounted cash flows.",
+            "options": ["$1,200", "$950", "$1,500", "$1,750"],
+            "correct": "$1,200",
+            "explanation": "The correct NPV is $950 after discounting.",
+        }
+    ]
+    added, stats = eng._add_questions_with_stats(chapter, incoming)
+    assert added == 0
+    assert int(stats.get("quality_quarantined", 0) or 0) == 1
+    issue_counts = stats.get("quality_issue_counts", {})
+    assert int(issue_counts.get("explanation_numeric_supports_distractor", 0) or 0) == 1
+    assert quarantined and "explanation_numeric_supports_distractor" in quarantined[0][1]
 
 
 def test_sanitize_question_bank_row_preserves_outcome_ids_and_outcomes(engine_no_io):

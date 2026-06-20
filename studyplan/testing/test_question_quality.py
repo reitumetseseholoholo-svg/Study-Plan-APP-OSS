@@ -12,6 +12,7 @@ from studyplan.question_quality import (
     QuestionBankEvaluator,
     assess_question_quality_extended,
     correct_option_length_guessable_reason,
+    generated_question_rejection_reasons,
     option_looks_like_see_explanation,
     get_poor_quality_indices,
 )
@@ -306,6 +307,42 @@ def test_assess_question_quality_extended_flags_malformed_numeric_options():
     }
     rpt = assess_question_quality_extended(item)
     assert "malformed_numeric_option" in rpt["issues"]
+
+
+def test_generated_question_rejects_explanation_numeric_supporting_distractor():
+    item = {
+        "question": "Calculate the NPV of the project from the discounted cash flows.",
+        "options": ["$1,200", "$950", "$1,500", "$1,750"],
+        "correct": "$1,200",
+        "explanation": "The discounted cash flows give a final NPV of $950.",
+    }
+    reasons = generated_question_rejection_reasons(item)
+    assert "explanation_numeric_supports_distractor" in reasons
+
+
+def test_generated_question_rejects_calculation_without_answer_value_in_explanation():
+    item = {
+        "question": "Calculate the payback period for the project.",
+        "options": ["2.4 years", "3.1 years", "4.0 years", "4.8 years"],
+        "correct": "3.1 years",
+        "explanation": "Divide the initial investment by annual cash inflows.",
+    }
+    reasons = generated_question_rejection_reasons(item)
+    assert "numeric_explanation_missing_answer_value" in reasons
+
+
+def test_get_poor_quality_indices_flags_numeric_answer_mismatch():
+    items = [
+        {
+            "question": "Calculate the NPV of the project.",
+            "options": ["$1,200", "$950", "$1,500", "$1,750"],
+            "correct": "$1,200",
+            "explanation": "The final NPV is $950.",
+        }
+    ]
+    assert get_poor_quality_indices("ch", items, detect_similar=False) == [
+        (0, "explanation_numeric_supports_distractor")
+    ]
 
 
 if __name__ == "__main__":

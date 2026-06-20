@@ -176,6 +176,7 @@ from studyplan.question_quality import (
     assess_question_quality_extended,
     correct_option_length_guessable_reason,
     gap_options_look_like_llm_placeholders,
+    generated_question_rejection_reasons,
 )
 from studyplan.services import (
     AITutorAssessmentService,
@@ -1066,72 +1067,6 @@ def _clamp_skip_reason_counts_static(value: Any) -> dict[str, int]:
         except Exception:
             continue
     return result
-
-
-def _configure_matplotlib_runtime() -> str:
-    configured = str(os.environ.get("MPLCONFIGDIR", "") or "").strip()
-    if configured:
-        return configured
-    default_dir = os.path.expanduser("~/.config/matplotlib")
-    try:
-        os.makedirs(default_dir, exist_ok=True)
-    except Exception:
-        pass
-    if os.path.isdir(default_dir) and os.access(default_dir, os.W_OK):
-        return default_dir
-    fallback_dir = os.path.join(tempfile.gettempdir(), "studyplan-matplotlib")
-    try:
-        os.makedirs(fallback_dir, exist_ok=True)
-        os.environ["MPLCONFIGDIR"] = fallback_dir
-        return fallback_dir
-    except Exception:
-        return ""
-
-
-_MATPLOTLIB_CONFIG_DIR = _configure_matplotlib_runtime()
-_MATPLOTLIB_EMBED_MODE = str(os.environ.get("STUDYPLAN_MPL_EMBED_MODE", "off") or "off").strip().lower()
-if _MATPLOTLIB_EMBED_MODE not in {"off", "gtk"}:
-    _MATPLOTLIB_EMBED_MODE = "off"
-
-plt: Any | None = None
-FigureCanvas: type[Any] | None = None
-FigureCanvasAgg: type[Any] | None = None
-_MATPLOTLIB_BACKEND_ERROR = ""
-try:
-    plt = cast(Any, importlib.import_module("matplotlib.pyplot"))
-    _backend_agg = importlib.import_module("matplotlib.backends.backend_agg")
-    FigureCanvasAgg = cast(Any, getattr(_backend_agg, "FigureCanvasAgg"))
-    if _MATPLOTLIB_EMBED_MODE == "gtk":
-        _backend_gtk4agg = importlib.import_module("matplotlib.backends.backend_gtk4agg")
-        _FigureCanvasGTK4Agg = cast(Any, getattr(_backend_gtk4agg, "FigureCanvasGTK4Agg"))
-
-        class _StudyPlanFigureCanvas(_FigureCanvasGTK4Agg):
-            def _update_device_pixel_ratio(self, *args, **kwargs):
-                native = self.get_native()
-                if not native:
-                    return
-                surface = native.get_surface()
-                if not surface:
-                    return
-                return super()._update_device_pixel_ratio(*args, **kwargs)
-
-            # Allow zoom on Ctrl+scroll; otherwise let parent scroll.
-            def scroll_event(self, controller, dx, dy):  # pyright: ignore[reportIncompatibleMethodOverride]
-                try:
-                    mods = self._mpl_modifiers(controller)
-                except Exception:
-                    mods = []
-                if "ctrl" in mods:
-                    return super().scroll_event(controller, dx, dy)
-                return False
-
-        FigureCanvas = _StudyPlanFigureCanvas
-except Exception as exc:
-    plt = None
-    FigureCanvas = None
-    FigureCanvasAgg = None
-    _MATPLOTLIB_BACKEND_ERROR = str(exc)
-# from matplotlib.backends.backend_gtk4 import NavigationToolbar2GTK3 as NavigationToolbar
 
 
 def configure_font_rendering() -> None:
@@ -29197,6 +29132,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if gap_options_look_like_llm_placeholders(norm_options):
                 reasons.append("placeholder_options")
                 continue
+            if [opt.strip().upper() for opt in norm_options] == ["A", "B", "C", "D"]:
+                reasons.append("placeholder_options_only")
+                continue
+            if strict_enabled and re.match(r"^[A-Da-d]$", correct):
+                reasons.append("correct_is_bare_letter")
+                continue
             # Normalize correct value: map label (A/B/C/D) to option text if needed
             correct_upper = correct.upper()
             if correct_upper in {"A", "B", "C", "D"} and len(norm_options) == 4:
@@ -29256,6 +29197,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if length_reason:
                     reasons.append(str(length_reason))
                     continue
+                deterministic_reasons = generated_question_rejection_reasons(length_row, strict=True)
+                deterministic_reasons = [
+                    str(reason)
+                    for reason in deterministic_reasons
+                    if str(reason)
+                    not in {
+                        "question_too_short",
+                        "options_not_four",
+                        "empty_option",
+                        "duplicate_options",
+                        "placeholder_options",
+                        "correct_not_in_options",
+                        "explanation_too_short",
+                    }
+                ]
+                if deterministic_reasons:
+                    reasons.extend(deterministic_reasons)
+                    continue
             fingerprint = _cache_sha1(
                 json.dumps(
                     {
@@ -29311,7 +29270,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "options_not_four": "questions did not have four options",
             "empty_option": "at least one answer option was empty",
             "correct_not_in_options": "the correct answer did not match an option",
+            "correct_is_bare_letter": "the correct answer used a position letter instead of answer text",
             "explanation_too_short": "explanations were too short",
+            "explanation_numeric_supports_distractor": "the numerical explanation supported a distractor",
+            "explanation_supports_distractor": "the explanation supported a distractor",
+            "low_quality_score": "quality scoring marked the question as poor",
+            "malformed_numeric_option": "a numerical answer option was malformed",
+            "near_duplicate_distractors": "distractors were too similar",
+            "numeric_explanation_missing_answer_value": "the explanation did not support the numerical answer",
+            "numeric_option_format_inconsistent": "numerical answer formats were inconsistent",
+            "numeric_options_but_correct_not_numeric": "numerical options had a non-numerical correct answer",
             "placeholder_options": "placeholder answer options were returned",
             "placeholder_options_only": "placeholder answer options were returned",
             "invalid_chapter": "the selected topic was not valid for this module",
@@ -29416,6 +29384,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if any(not o for o in norm_opts):
                 continue
             if corr not in norm_opts:
+                continue
+            if generated_question_rejection_reasons(
+                {
+                    "question": q,
+                    "options": norm_opts,
+                    "correct": corr,
+                    "explanation": expl,
+                },
+                strict=True,
+            ):
                 continue
             safe_rows.append(
                 {
@@ -49774,21 +49752,212 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         )
         return False
 
-    def _build_matplotlib_chart_widget(
+    @staticmethod
+    def _chart_rgb(hex_color: str) -> tuple[float, float, float]:
+        text = str(hex_color or "").strip().lstrip("#")
+        if len(text) != 6:
+            return (1.0, 1.0, 1.0)
+        try:
+            return (
+                int(text[0:2], 16) / 255.0,
+                int(text[2:4], 16) / 255.0,
+                int(text[4:6], 16) / 255.0,
+            )
+        except Exception:
+            return (1.0, 1.0, 1.0)
+
+    @classmethod
+    def _chart_set_color(cls, ctx: Any, hex_color: str, alpha: float = 1.0) -> None:
+        r, g, b = cls._chart_rgb(hex_color)
+        try:
+            ctx.set_source_rgba(r, g, b, max(0.0, min(1.0, float(alpha))))
+        except Exception:
+            ctx.set_source_rgb(r, g, b)
+
+    @staticmethod
+    def _chart_text(ctx: Any, text: str, x: float, y: float, *, size: float = 10.0, weight: int = 0) -> None:
+        try:
+            ctx.select_font_face("Sans", 0, int(weight))
+            ctx.set_font_size(float(size))
+            ctx.move_to(float(x), float(y))
+            ctx.show_text(str(text or ""))
+        except Exception:
+            pass
+
+    @classmethod
+    def _build_gtk_chart_widget(
         self,
-        fig: Any,
+        spec: dict[str, Any],
         *,
         width: int,
         height: int,
         tooltip: str = "",
     ) -> Gtk.Widget:
-        if FigureCanvas is not None:
-            canvas = FigureCanvas(fig)
-            if tooltip:
-                canvas.set_tooltip_text(tooltip)
-            canvas.set_size_request(int(width), int(height))
-            return cast(Gtk.Widget, canvas)
-        raise RuntimeError(_MATPLOTLIB_BACKEND_ERROR or "Charts disabled for GTK stability")
+        chart_spec = dict(spec or {})
+        style = dict(chart_spec.get("style", {}) or {})
+        drawing = Gtk.DrawingArea()
+        drawing.set_content_width(int(width))
+        drawing.set_content_height(int(height))
+        drawing.set_size_request(int(width), int(height))
+        if tooltip:
+            drawing.set_tooltip_text(tooltip)
+
+        def _draw(widget: Gtk.DrawingArea, ctx: Any, w: int, h: int) -> None:
+            w_f = float(max(1, w))
+            h_f = float(max(1, h))
+            bg = str(style.get("fig_bg", "#1c2230"))
+            ax_bg = str(style.get("ax_bg", bg))
+            text = str(style.get("text", "#e8edf7"))
+            muted = str(style.get("muted", "#b1bcd3"))
+            grid = str(style.get("grid", "#42526f"))
+            self._chart_set_color(ctx, bg)
+            ctx.rectangle(0, 0, w_f, h_f)
+            ctx.fill()
+            kind = str(chart_spec.get("kind", "") or "")
+            title = str(chart_spec.get("title", "") or "")
+            if title:
+                self._chart_set_color(ctx, text)
+                self._chart_text(ctx, title, 14, 22, size=11, weight=1)
+
+            def _plot_area(bottom: float = 44.0) -> tuple[float, float, float, float]:
+                left = 42.0
+                top = 34.0 if title else 18.0
+                right = 14.0
+                self._chart_set_color(ctx, ax_bg)
+                ctx.rectangle(left, top, max(1.0, w_f - left - right), max(1.0, h_f - top - bottom))
+                ctx.fill()
+                return left, top, w_f - right, h_f - bottom
+
+            def _grid(left: float, top: float, right: float, bottom: float, ymax: float = 100.0) -> None:
+                self._chart_set_color(ctx, grid, 0.65)
+                ctx.set_line_width(0.7)
+                for step in range(0, 101, 25):
+                    y = bottom - ((bottom - top) * (step / max(1.0, ymax)))
+                    ctx.move_to(left, y)
+                    ctx.line_to(right, y)
+                    ctx.stroke()
+                    self._chart_set_color(ctx, muted)
+                    self._chart_text(ctx, str(step), 8, y + 4, size=8)
+                    self._chart_set_color(ctx, grid, 0.65)
+
+            if kind == "bar":
+                labels = [str(x) for x in list(chart_spec.get("labels", []) or [])]
+                values = [float(x or 0.0) for x in list(chart_spec.get("values", []) or [])]
+                left, top, right, bottom = _plot_area()
+                _grid(left, top, right, bottom)
+                count = max(1, len(values))
+                slot = (right - left) / count
+                color = str(chart_spec.get("color", style.get("accent_c", "#f6c453")))
+                for idx, value in enumerate(values):
+                    v = max(0.0, min(100.0, value))
+                    bar_w = min(44.0, slot * 0.58)
+                    x = left + idx * slot + (slot - bar_w) / 2.0
+                    y = bottom - ((bottom - top) * v / 100.0)
+                    self._chart_set_color(ctx, color)
+                    ctx.rectangle(x, y, bar_w, bottom - y)
+                    ctx.fill()
+                    self._chart_set_color(ctx, text)
+                    self._chart_text(ctx, f"{v:.0f}", x, max(top + 10, y - 5), size=8)
+                    label = labels[idx] if idx < len(labels) else str(idx + 1)
+                    self._chart_set_color(ctx, muted)
+                    self._chart_text(ctx, label[:8], x - 2, bottom + 18, size=8)
+
+            elif kind == "donut":
+                labels = [str(x) for x in list(chart_spec.get("labels", []) or [])]
+                values = [max(0.0, float(x or 0.0)) for x in list(chart_spec.get("values", []) or [])]
+                colors = [str(x) for x in list(chart_spec.get("colors", []) or [])]
+                total = sum(values)
+                cx = w_f / 2.0
+                cy = h_f / 2.0 - 8.0
+                radius = min(w_f, h_f) * 0.28
+                line_w = max(18.0, radius * 0.34)
+                if total <= 0:
+                    return
+                start = -math.pi / 2.0
+                ctx.set_line_width(line_w)
+                for idx, value in enumerate(values):
+                    frac = value / total
+                    end = start + (2.0 * math.pi * frac)
+                    self._chart_set_color(ctx, colors[idx % len(colors)] if colors else text)
+                    ctx.arc(cx, cy, radius, start, end)
+                    ctx.stroke()
+                    start = end
+                self._chart_set_color(ctx, text)
+                self._chart_text(ctx, str(chart_spec.get("center", int(total))), cx - 18, cy - 2, size=14, weight=1)
+                self._chart_set_color(ctx, muted)
+                self._chart_text(ctx, str(chart_spec.get("subcenter", "cards")), cx - 18, cy + 15, size=9)
+                note = str(chart_spec.get("note", "") or "")
+                if note:
+                    self._chart_set_color(ctx, str(style.get("accent_c", "#f6c453")))
+                    self._chart_text(ctx, note, cx - 32, cy + 34, size=8)
+                legend_y = h_f - 22
+                x = 16.0
+                for idx, label in enumerate(labels[:3]):
+                    self._chart_set_color(ctx, colors[idx % len(colors)] if colors else text)
+                    ctx.rectangle(x, legend_y - 9, 9, 9)
+                    ctx.fill()
+                    self._chart_set_color(ctx, muted)
+                    self._chart_text(ctx, label[:18], x + 14, legend_y, size=8)
+                    x += min(125.0, max(74.0, len(label) * 5.8))
+
+            elif kind == "line":
+                series = list(chart_spec.get("series", []) or [])
+                labels = [str(x) for x in list(chart_spec.get("labels", []) or [])]
+                left, top, right, bottom = _plot_area(bottom=42.0)
+                _grid(left, top, right, bottom)
+                count = max(1, max((len(s.get("values", [])) for s in series if isinstance(s, dict)), default=0))
+                for sidx, row in enumerate(series):
+                    if not isinstance(row, dict):
+                        continue
+                    vals = [float(x or 0.0) for x in list(row.get("values", []) or [])]
+                    if len(vals) < 2:
+                        continue
+                    ymax = max(100.0, float(row.get("max", 100.0) or 100.0), max(vals) if vals else 100.0)
+                    color = str(row.get("color", text))
+                    self._chart_set_color(ctx, color)
+                    ctx.set_line_width(2.0 if sidx == 0 else 1.5)
+                    for idx, val in enumerate(vals):
+                        x = left + ((right - left) * idx / max(1, count - 1))
+                        y = bottom - ((bottom - top) * max(0.0, min(ymax, val)) / ymax)
+                        if idx == 0:
+                            ctx.move_to(x, y)
+                        else:
+                            ctx.line_to(x, y)
+                    ctx.stroke()
+                    self._chart_text(ctx, str(row.get("label", ""))[:18], right - 116, top + 14 + (sidx * 14), size=8)
+                if labels:
+                    self._chart_set_color(ctx, muted)
+                    self._chart_text(ctx, labels[0][:10], left, bottom + 18, size=8)
+                    self._chart_text(ctx, labels[-1][:10], max(left, right - 58), bottom + 18, size=8)
+
+            elif kind == "grouped_bar":
+                labels = [str(x) for x in list(chart_spec.get("labels", []) or [])]
+                series = [row for row in list(chart_spec.get("series", []) or []) if isinstance(row, dict)]
+                left, top, right, bottom = _plot_area()
+                _grid(left, top, right, bottom)
+                count = max(1, len(labels))
+                group_w = (right - left) / count
+                bar_count = max(1, len(series))
+                bar_w = min(18.0, (group_w * 0.72) / bar_count)
+                for sidx, row in enumerate(series):
+                    color = str(row.get("color", text))
+                    vals = [float(x or 0.0) for x in list(row.get("values", []) or [])]
+                    self._chart_set_color(ctx, color)
+                    for idx, val in enumerate(vals[:count]):
+                        v = max(0.0, min(100.0, val))
+                        start_x = left + idx * group_w + (group_w - (bar_w * bar_count)) / 2.0
+                        x = start_x + sidx * bar_w
+                        y = bottom - ((bottom - top) * v / 100.0)
+                        ctx.rectangle(x, y, max(1.0, bar_w - 1.0), bottom - y)
+                        ctx.fill()
+                    self._chart_text(ctx, str(row.get("label", ""))[:14], right - 116, top + 14 + (sidx * 14), size=8)
+                self._chart_set_color(ctx, muted)
+                for idx, label in enumerate(labels):
+                    x = left + idx * group_w + 2
+                    self._chart_text(ctx, label[:6], x, bottom + 18, size=7)
+
+        drawing.set_draw_func(_draw)
+        return cast(Gtk.Widget, drawing)
 
     def _render_dashboard(self) -> bool:  # pyright: ignore[reportGeneralTypeIssues]
         self._consume_tracked_glib_source_attr("_dashboard_update_source")
@@ -49894,36 +50063,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             _dashboard_section_fallback,
         )
 
-        charts_available = plt is not None and FigureCanvas is not None and not focus_mode and not tile_mode
-        if not charts_available and not tile_mode:
-            charts_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            charts_card.add_css_class("card")
-            charts_title = self._ui.section_title("Charts")
-            charts_message = "Charts unavailable."
-            charts_detail = ""
-            if _MATPLOTLIB_BACKEND_ERROR:
-                charts_message = f"Charts unavailable — {_MATPLOTLIB_BACKEND_ERROR[:160]}"
-            elif plt is None:
-                charts_message = "Charts unavailable — install matplotlib to enable charts."
-            elif _MATPLOTLIB_EMBED_MODE != "gtk":
-                charts_message = "Charts disabled for GTK stability on this system."
-                charts_detail = (
-                    "The rest of the dashboard and tutor remain available. "
-                    "Set STUDYPLAN_MPL_EMBED_MODE=gtk only if you want to test the native matplotlib GTK backend again."
-                )
-            charts_body = Gtk.Label(label=charts_message)
-            charts_body.set_halign(Gtk.Align.START)
-            charts_body.set_wrap(True)
-            charts_body.add_css_class("muted")
-            charts_card.append(charts_title)
-            charts_card.append(charts_body)
-            if charts_detail:
-                charts_hint = Gtk.Label(label=charts_detail)
-                charts_hint.set_halign(Gtk.Align.START)
-                charts_hint.set_wrap(True)
-                charts_hint.add_css_class("muted")
-                charts_card.append(charts_hint)
-            self.dashboard.append(charts_card)
+        charts_available = not focus_mode and not tile_mode
 
         # Safe exam-date handling (engine.reset_data() may set exam_date to None)
         today = datetime.date.today()
@@ -51265,50 +51405,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         if self._cached_drift_chart_sig == sig and self._cached_drift_chart_widget is not None:
                             self.dashboard.append(self._cached_drift_chart_widget)
                         else:
-                            plt_module = plt
-                            if plt_module is None or FigureCanvas is None:
-                                raise RuntimeError("Charts unavailable")
-                            fig, ax = plt_module.subplots(figsize=(5.6, 3.0), dpi=100)
-                            fig.patch.set_facecolor(chart_style["fig_bg"])
-                            ax.set_facecolor(chart_style["ax_bg"])
-                            ax.bar(
-                                range(len(labels)),
-                                values,
-                                color=chart_style["accent_c"],
-                            )
-                            ax.set_ylim(0, 100)
-                            ax.set_ylabel("Gap %", color=chart_style["text"])
-                            ax.set_xticks(range(len(labels)))
-                            ax.set_xticklabels(
-                                labels_short,
-                                rotation=30,
-                                ha="right",
-                                fontsize=8,
-                                color=chart_style["text"],
-                            )
-                            ax.tick_params(axis="y", colors=chart_style["text"])
-                            for spine in ax.spines.values():
-                                spine.set_color(chart_style["spine"])
-                            ax.grid(
-                                axis="y",
-                                color=chart_style["grid"],
-                                linestyle="--",
-                                linewidth=0.6,
-                                alpha=0.6,
-                            )
-                            ax.set_title(
-                                "Confidence Drift (Top Gaps)",
-                                color=chart_style["text"],
-                                pad=8,
-                            )
-                            with warnings.catch_warnings():
-                                warnings.simplefilter("ignore", UserWarning)
-                                fig.tight_layout()
-                            canvas = self._build_matplotlib_chart_widget(
-                                fig,
+                            canvas = self._build_gtk_chart_widget(
+                                {
+                                    "kind": "bar",
+                                    "title": "Confidence Drift (Top Gaps)",
+                                    "labels": labels_short,
+                                    "values": values,
+                                    "color": chart_style["accent_c"],
+                                    "style": chart_style,
+                                },
                                 width=430,
                                 height=240,
-                                tooltip="Tip: hold Ctrl and scroll to zoom charts.",
+                                tooltip="Confidence minus observed mastery/quiz performance.",
                             )
                             chart_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
                             chart_wrap.add_css_class("card")
@@ -51318,10 +51426,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             self.dashboard.append(chart_wrap)
                             self._cached_drift_chart_sig = sig
                             self._cached_drift_chart_widget = chart_wrap
-                            try:
-                                plt_module.close(fig)
-                            except Exception:
-                                pass
                     else:
                         self._cached_drift_chart_sig = None
                         self._cached_drift_chart_widget = None
@@ -51630,101 +51734,31 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if self._cached_pie_chart_sig == pie_sig and self._cached_pie_chart_widget is not None:
                         self.dashboard.append(self._cached_pie_chart_widget)
                     else:
-                        fig_w, fig_h = (4.6, 3.6) if not is_compact else (4.2, 3.1)
-                        plt_module = plt
-                        if plt_module is None or FigureCanvas is None:
-                            raise RuntimeError("Charts unavailable")
-                        fig, ax = plt_module.subplots(figsize=(fig_w, fig_h), dpi=110)
-                        fig.patch.set_facecolor(chart_style["fig_bg"])
-                        ax.set_facecolor(chart_style["ax_bg"])
                         colors = [
                             chart_style["accent_a"],
                             chart_style["accent_c"],
                             chart_style["accent_d"],
                         ]
-                        pie_result = ax.pie(
-                            sizes,
-                            labels=None,
-                            autopct=_pct,
-                            pctdistance=0.78,
-                            startangle=90,
-                            counterclock=False,
-                            colors=colors,
-                            textprops={
-                                "fontsize": 9,
-                                "color": chart_style["text"],
-                                "fontweight": "bold",
-                            },
-                            wedgeprops={
-                                "linewidth": 1.1,
-                                "edgecolor": chart_style["fig_bg"],
-                                "width": 0.35,
-                            },
-                        )
-                        wedges = pie_result[0]
-                        autotexts = pie_result[2] if len(pie_result) > 2 else []
-                        for t in autotexts:
-                            t.set_fontsize(9)
-                            t.set_color(chart_style["text"])
-
-                        ax.text(
-                            0,
-                            0.10,
-                            f"{total_cards}",
-                            ha="center",
-                            va="center",
-                            color=chart_style["text"],
-                            fontsize=13,
-                            fontweight="bold",
-                        )
-                        ax.text(
-                            0,
-                            -0.08,
-                            "cards",
-                            ha="center",
-                            va="center",
-                            color=chart_style["muted"],
-                            fontsize=9,
-                        )
-                        if overdue_cards > 0:
-                            ax.text(
-                                0,
-                                -0.28,
-                                f"{overdue_cards} overdue",
-                                ha="center",
-                                va="center",
-                                color=chart_style["accent_c"],
-                                fontsize=8,
-                            )
-
                         legend_labels = [
                             f"Mastered {mastered}",
                             f"Learning {learning}",
                             f"New {new_cards}",
                         ]
-                        ax.legend(
-                            wedges,
-                            legend_labels,
-                            loc="lower center",
-                            bbox_to_anchor=(0.5, -0.06),
-                            ncol=3,
-                            frameon=False,
-                            labelcolor=chart_style["muted"],
-                            fontsize=9,
-                        )
-                        ax.set_title(
-                            "Mastery Distribution (SRS)",
-                            color=chart_style["text"],
-                            fontsize=11,
-                            pad=8,
-                        )
-                        ax.set_aspect("equal")
-                        fig.subplots_adjust(bottom=0.18)
-                        canvas = self._build_matplotlib_chart_widget(
-                            fig,
+                        canvas = self._build_gtk_chart_widget(
+                            {
+                                "kind": "donut",
+                                "title": "Mastery Distribution (SRS)",
+                                "labels": legend_labels,
+                                "values": sizes,
+                                "colors": colors,
+                                "center": str(total_cards),
+                                "subcenter": "cards",
+                                "note": f"{overdue_cards} overdue" if overdue_cards > 0 else "",
+                                "style": chart_style,
+                            },
                             width=360 if is_compact else 400,
                             height=260 if is_compact else 300,
-                            tooltip="Tip: hold Ctrl and scroll to zoom charts.",
+                            tooltip="SRS card distribution.",
                         )
                         pie_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
                         pie_card.add_css_class("card")
@@ -51734,10 +51768,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         self.dashboard.append(pie_card)
                         self._cached_pie_chart_sig = pie_sig
                         self._cached_pie_chart_widget = pie_card
-                        try:
-                            plt_module.close(fig)
-                        except Exception:
-                            pass
                 else:
                     self._cached_pie_chart_sig = None
                     self._cached_pie_chart_widget = None
@@ -51790,61 +51820,30 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if self._cached_progress_chart_sig == prog_sig and self._cached_progress_chart_widget is not None:
                         self.dashboard.append(self._cached_progress_chart_widget)
                     else:
-                        plt_module = plt
-                        if plt_module is None or FigureCanvas is None:
-                            raise RuntimeError("Charts unavailable")
-                        fig, ax = plt_module.subplots(figsize=(5, 3.2), dpi=100)
-                        fig.patch.set_facecolor(chart_style["fig_bg"])
-                        ax.set_facecolor(chart_style["ax_bg"])
-                        (mastery_line,) = ax.plot(
-                            dates_series,
-                            masteries,
-                            color=chart_style["accent_a"],
-                            linewidth=2,
-                            label="Mastery %",
-                        )
-                        ax.set_ylim(0, 100)
-                        ax.set_ylabel("Mastery %", color=chart_style["accent_a"])
-                        ax.tick_params(axis="y", colors=chart_style["accent_a"])
-                        ax2 = ax.twinx()
-                        (minutes_line,) = ax2.plot(
-                            dates_series,
-                            minutes_series,
-                            color=chart_style["accent_b"],
-                            linewidth=1.6,
-                            label="Total Minutes",
-                        )
-                        ax2.set_ylabel("Total Minutes", color=chart_style["accent_b"])
-                        ax2.tick_params(axis="y", colors=chart_style["accent_b"])
-                        ax.set_title("Progress Over Time", color=chart_style["text"])
-                        ax.tick_params(colors=chart_style["text"])
-                        for spine in ax.spines.values():
-                            spine.set_color(chart_style["spine"])
-                        for spine in ax2.spines.values():
-                            spine.set_color(chart_style["spine"])
-                        ax.grid(
-                            color=chart_style["grid"],
-                            linestyle="--",
-                            linewidth=0.6,
-                            alpha=0.6,
-                        )
-                        legend = ax.legend(
-                            handles=[mastery_line, minutes_line],
-                            loc="upper left",
-                            fontsize=8,
-                            facecolor=chart_style["legend_bg"],
-                            framealpha=0.8,
-                        )
-                        legend.get_frame().set_edgecolor(chart_style["spine"])
-                        fig.autofmt_xdate()
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("ignore", UserWarning)
-                            fig.tight_layout()
-                        canvas = self._build_matplotlib_chart_widget(
-                            fig,
+                        canvas = self._build_gtk_chart_widget(
+                            {
+                                "kind": "line",
+                                "title": "Progress Over Time",
+                                "labels": [d.isoformat()[5:] for d in dates],
+                                "series": [
+                                    {
+                                        "label": "Mastery %",
+                                        "values": masteries,
+                                        "max": 100.0,
+                                        "color": chart_style["accent_a"],
+                                    },
+                                    {
+                                        "label": "Total Minutes",
+                                        "values": minutes_series,
+                                        "max": max(100.0, max(minutes_series) if minutes_series else 100.0),
+                                        "color": chart_style["accent_b"],
+                                    },
+                                ],
+                                "style": chart_style,
+                            },
                             width=400,
                             height=260,
-                            tooltip="Tip: hold Ctrl and scroll to zoom charts.",
+                            tooltip="Mastery and cumulative study minutes over time.",
                         )
                         progress_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
                         progress_card.add_css_class("card")
@@ -51854,10 +51853,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         self.dashboard.append(progress_card)
                         self._cached_progress_chart_sig = prog_sig
                         self._cached_progress_chart_widget = progress_card
-                        try:
-                            plt_module.close(fig)
-                        except Exception:
-                            pass
                 else:
                     self._cached_progress_chart_sig = None
                     self._cached_progress_chart_widget = None

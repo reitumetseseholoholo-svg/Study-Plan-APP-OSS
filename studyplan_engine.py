@@ -26,6 +26,7 @@ from studyplan.mastery_kernel import MasteryKernel
 from studyplan.persistence_layer import PersistenceLayer
 from studyplan.question_quality import (
     assess_question_quality_extended,
+    generated_question_rejection_reasons,
     get_poor_quality_indices,
     option_looks_like_see_explanation,
 )
@@ -8799,7 +8800,7 @@ class StudyPlanEngine:
         quarantine_on_fail: bool = False,
     ) -> tuple[dict | None, list[str], dict[str, Any]]:
         issues: list[str] = []
-        meta: dict[str, Any] = {"repaired": False, "repairs": []}
+        meta: dict[str, Any] = {"normalized": False, "normalizations": []}
         if chapter not in getattr(self, "CHAPTERS", []):
             issues.append("invalid_chapter")
             return None, issues, meta
@@ -8924,8 +8925,8 @@ class StudyPlanEngine:
                     options,
                     labels,
                 )
-                meta["repaired"] = True
-                meta["repairs"].append("inline_options_extracted")
+                meta["normalized"] = True
+                meta["normalizations"].append("inline_options_extracted")
 
         if len(question) < 8:
             issues.append("question_too_short")
@@ -8961,6 +8962,27 @@ class StudyPlanEngine:
             "correct": str(correct),
             "explanation": str(explanation),
         }
+        deterministic_rejects = generated_question_rejection_reasons(cleaned, strict=True)
+        deterministic_rejects = [
+            reason
+            for reason in deterministic_rejects
+            if reason
+            not in {
+                # Already covered above; keep the original sanitizer issue names stable.
+                "question_too_short",
+                "options_not_four",
+                "empty_option",
+                "duplicate_options",
+                "placeholder_options",
+                "see_explanation_in_options",
+                "correct_not_in_options",
+                "missing_correct",
+            }
+        ]
+        if deterministic_rejects:
+            if quarantine_on_fail:
+                self._append_question_quality_quarantine(chapter, row, deterministic_rejects, source=source)
+            return None, sorted(set(deterministic_rejects)), meta
         # Preserve optional metadata: outcome linking and semantic match (for coverage and diagnostics)
         for extra_key in (
             "outcome_ids",
@@ -9417,7 +9439,7 @@ class StudyPlanEngine:
             "method": "fallback",
             "threshold": float(getattr(self, "IMPORT_SEMANTIC_DEDUP_MIN_SCORE", 0.90) or 0.90),
             "quality_checked": 0,
-            "quality_repaired": 0,
+            "quality_normalized": 0,
             "quality_quarantined": 0,
             "quality_issue_counts": {},
         }
@@ -9444,14 +9466,14 @@ class StudyPlanEngine:
                         continue
                     issue_counts[key] = int(issue_counts.get(key, 0) or 0) + 1
                 continue
-            if bool((sanitize_meta or {}).get("repaired", False)):
-                semantic_dedup["quality_repaired"] = int(semantic_dedup.get("quality_repaired", 0) or 0) + 1
+            if bool((sanitize_meta or {}).get("normalized", False)) or bool((sanitize_meta or {}).get("repaired", False)):
+                semantic_dedup["quality_normalized"] = int(semantic_dedup.get("quality_normalized", 0) or 0) + 1
             valid.append(clean_q)
 
         valid = self._deduplicate_questions(chapter, valid)
         quality_meta = {
             "quality_checked": int(semantic_dedup.get("quality_checked", 0) or 0),
-            "quality_repaired": int(semantic_dedup.get("quality_repaired", 0) or 0),
+            "quality_normalized": int(semantic_dedup.get("quality_normalized", 0) or 0),
             "quality_quarantined": int(semantic_dedup.get("quality_quarantined", 0) or 0),
             "quality_issue_counts": dict(semantic_dedup.get("quality_issue_counts", {}) or {}),
         }

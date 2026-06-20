@@ -271,7 +271,50 @@ def _parse_numeric_option(text: str) -> tuple[bool, str]:
         compact = compact[1:].strip()
     if re.match(r"^-?\d+(?:\.\d+)?$", compact):
         return True, kind
+    if re.match(r"^-?\d+(?:\.\d+)?\s+[A-Za-z][A-Za-z\s./-]*$", compact):
+        return True, kind
     return False, kind
+
+
+def _parse_numeric_value(text: str) -> tuple[bool, float | None, str]:
+    raw = str(text or "").strip()
+    ok, kind = _parse_numeric_option(raw)
+    if not ok:
+        return False, None, kind
+    compact = raw.replace(",", "").replace("$", "").replace("\u00a3", "").replace("\u20ac", "").replace("%", "").strip()
+    if compact.startswith("(") and compact.endswith(")"):
+        compact = "-" + compact[1:-1].strip()
+    if compact.startswith("+"):
+        compact = compact[1:].strip()
+    try:
+        return True, float(compact), kind
+    except Exception:
+        match = re.match(r"^(-?\d+(?:\.\d+)?)\s+[A-Za-z][A-Za-z\s./-]*$", compact)
+        if match:
+            try:
+                return True, float(match.group(1)), kind
+            except Exception:
+                pass
+        return False, None, kind
+
+
+def _numeric_values_close(left: float | None, right: float | None) -> bool:
+    if left is None or right is None:
+        return False
+    tolerance = max(0.01, abs(right) * 0.0001)
+    return abs(float(left) - float(right)) <= tolerance
+
+
+def _extract_numeric_values(text: str) -> list[float]:
+    raw = str(text or "")
+    if not raw:
+        return []
+    values: list[float] = []
+    for match in re.finditer(r"(?<![A-Za-z0-9])-?\(?[\$\u00a3\u20ac]?\d[\d,]*(?:\.\d+)?%?\)?", raw):
+        ok, value, _kind = _parse_numeric_value(match.group(0))
+        if ok and value is not None:
+            values.append(value)
+    return values
 
 
 def _numeric_option_format_issue(item: dict[str, Any]) -> str | None:
@@ -288,6 +331,40 @@ def _numeric_option_format_issue(item: dict[str, Any]) -> str | None:
     kinds = {kind for kind in parseable if kind}
     if len(parseable) >= 3 and len(kinds) > 1:
         return "numeric_option_format_inconsistent"
+    return None
+
+
+def _numeric_answer_consistency_issue(item: dict[str, Any]) -> str | None:
+    question_text = str(item.get("question", "") or "")
+    explanation = str(item.get("explanation", "") or "").strip()
+    opts = _options_list_from_item(item)
+    if len(opts) < 3 or not explanation:
+        return None
+    parsed_options = [(opt, *_parse_numeric_value(opt)) for opt in opts]
+    numeric_options = [(opt, value, kind) for opt, ok, value, kind in parsed_options if ok and value is not None]
+    if len(numeric_options) < 3:
+        return None
+    correct_text = _resolve_correct_option_text(item, opts)
+    if not correct_text:
+        return None
+    correct_ok, correct_value, correct_kind = _parse_numeric_value(correct_text)
+    if not correct_ok or correct_value is None:
+        return "numeric_options_but_correct_not_numeric"
+    explanation_values = _extract_numeric_values(explanation)
+    if not explanation_values:
+        if CALC_KEYWORDS_PATTERN.search(question_text):
+            return "numeric_explanation_missing_answer_value"
+        return None
+    mentions_correct_value = any(_numeric_values_close(value, correct_value) for value in explanation_values)
+    for opt, value, kind in numeric_options:
+        if opt == correct_text:
+            continue
+        if kind and correct_kind and kind != correct_kind:
+            continue
+        if any(_numeric_values_close(value, mentioned) for mentioned in explanation_values) and not mentions_correct_value:
+            return "explanation_numeric_supports_distractor"
+    if CALC_KEYWORDS_PATTERN.search(question_text) and not mentions_correct_value:
+        return "numeric_explanation_missing_answer_value"
     return None
 
 
@@ -392,6 +469,10 @@ def assess_question_quality_extended(item: Any) -> dict[str, Any]:
         if numeric_issue and numeric_issue not in issues:
             issues.append(numeric_issue)
             penalty += 0.1
+        numeric_answer_issue = _numeric_answer_consistency_issue(item)
+        if numeric_answer_issue and numeric_answer_issue not in issues:
+            issues.append(numeric_answer_issue)
+            penalty += 0.25
         explanation_issue = _explanation_consistency_issue(item)
         if explanation_issue and explanation_issue not in issues:
             issues.append(explanation_issue)
@@ -615,6 +696,14 @@ def get_poor_quality_indices(
             lg_reason = correct_option_length_guessable_reason(item)
             if lg_reason:
                 poor.append((idx, lg_reason))
+        if not any(i == idx for i, _ in poor):
+            numeric_issue = _numeric_option_format_issue(item) or _numeric_answer_consistency_issue(item)
+            if numeric_issue:
+                poor.append((idx, numeric_issue))
+        if not any(i == idx for i, _ in poor):
+            explanation_issue = _explanation_consistency_issue(item)
+            if explanation_issue:
+                poor.append((idx, explanation_issue))
     if not detect_similar or similar_min_words < 1:
         return sorted(poor, key=lambda x: x[0])
     # Build normalized question text; mark later duplicates/similar as poor
@@ -646,6 +735,96 @@ def get_poor_quality_indices(
             continue
         seen_normalized[qtext] = idx
     return sorted(poor, key=lambda x: x[0])
+
+
+GENERATED_QUESTION_HARD_REJECTION_ISSUES = {
+    "correct_is_bare_letter",
+    "correct_not_in_options",
+    "duplicate_options",
+    "empty_option",
+    "explanation_numeric_supports_distractor",
+    "explanation_supports_distractor",
+    "malformed_numeric_option",
+    "missing_correct",
+    "near_duplicate_distractors",
+    "numeric_explanation_missing_answer_value",
+    "numeric_option_format_inconsistent",
+    "numeric_options_but_correct_not_numeric",
+    "options_not_four",
+    "placeholder_options",
+    "placeholder_options_only",
+    "question_too_short",
+    "see_explanation_in_options",
+}
+
+
+def generated_question_rejection_reasons(
+    item: Any,
+    *,
+    strict: bool = True,
+    score_threshold: float = 0.6,
+) -> list[str]:
+    """Return deterministic reasons to reject/quarantine a generated question.
+
+    This intentionally does not ask another LLM to repair the item. Callers may do
+    lossless parsing/normalization before this check, then reject anything that
+    fails answer-key, numeric, or quality gates.
+    """
+    if not isinstance(item, dict):
+        return ["non_object_row"]
+    reasons: list[str] = []
+    opts = _options_list_from_item(item)
+    question = str(item.get("question", "") or "").strip()
+    correct = str(item.get("correct", "") or "").strip()
+    explanation = str(item.get("explanation", "") or "").strip()
+
+    if len(question) < (8 if strict else 4):
+        reasons.append("question_too_short")
+    if len(opts) != 4:
+        reasons.append("options_not_four")
+    elif any(not opt for opt in opts):
+        reasons.append("empty_option")
+    if opts and len({opt.lower() for opt in opts}) != len(opts):
+        reasons.append("duplicate_options")
+    if gap_options_look_like_llm_placeholders(opts):
+        reasons.append("placeholder_options")
+    if correct_is_bare_letter(item):
+        reasons.append("correct_is_bare_letter")
+    elif opts and correct and correct not in opts:
+        reasons.append("correct_not_in_options")
+    elif opts and not correct:
+        reasons.append("missing_correct")
+    for opt in opts:
+        if option_looks_like_see_explanation(opt):
+            reasons.append("see_explanation_in_options")
+            break
+
+    for issue in (
+        correct_option_length_guessable_reason(item),
+        _near_duplicate_distractor_reason(item),
+        _numeric_option_format_issue(item),
+        _numeric_answer_consistency_issue(item),
+        _explanation_consistency_issue(item),
+    ):
+        if issue:
+            reasons.append(str(issue))
+
+    report = assess_question_quality_extended(item)
+    for issue in list(report.get("issues", []) or []):
+        text = str(issue or "").strip()
+        if text in GENERATED_QUESTION_HARD_REJECTION_ISSUES:
+            reasons.append(text)
+    if strict and float(report.get("score", 0.0) or 0.0) < float(score_threshold):
+        reasons.append("low_quality_score")
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for reason in reasons:
+        key = str(reason or "").strip()
+        if key and key not in seen:
+            out.append(key)
+            seen.add(key)
+    return out
 
 
 if __name__ == "__main__":

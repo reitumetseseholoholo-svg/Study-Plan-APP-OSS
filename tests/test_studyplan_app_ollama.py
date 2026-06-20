@@ -3395,6 +3395,60 @@ def test_validate_generated_gap_questions_uses_engine_sanitizer_for_placeholder_
     assert "placeholder_options_only" in reasons
 
 
+def test_validate_generated_gap_questions_rejects_numeric_explanation_mismatch():
+    engine = types.SimpleNamespace(
+        CHAPTERS=["Topic A"],
+        QUESTIONS={"Topic A": []},
+        _question_dedupe_key=lambda row: (
+            str(row.get("question", "")).strip().lower(),
+            tuple(str(v).strip().lower() for v in list(row.get("options", []) or [])),
+            str(row.get("correct", "")).strip().lower(),
+        ),
+    )
+    dummy = types.SimpleNamespace(engine=engine, ai_tutor_gap_autosave_strict_gate=True)
+    valid, reasons = StudyPlanGUI._validate_generated_gap_questions(
+        dummy,
+        "Topic A",
+        [
+            {
+                "question": "Calculate the NPV of the project from discounted cash flows.",
+                "options": ["$1,200", "$950", "$1,500", "$1,750"],
+                "correct": "$1,200",
+                "explanation": "The correct NPV is $950 after discounting.",
+            }
+        ],
+    )
+    assert valid == []
+    assert "explanation_numeric_supports_distractor" in reasons
+
+
+def test_validate_generated_gap_questions_rejects_bare_letter_correct_key():
+    engine = types.SimpleNamespace(
+        CHAPTERS=["Topic A"],
+        QUESTIONS={"Topic A": []},
+        _question_dedupe_key=lambda row: (
+            str(row.get("question", "")).strip().lower(),
+            tuple(str(v).strip().lower() for v in list(row.get("options", []) or [])),
+            str(row.get("correct", "")).strip().lower(),
+        ),
+    )
+    dummy = types.SimpleNamespace(engine=engine, ai_tutor_gap_autosave_strict_gate=True)
+    valid, reasons = StudyPlanGUI._validate_generated_gap_questions(
+        dummy,
+        "Topic A",
+        [
+            {
+                "question": "Which method discounts future project cash flows?",
+                "options": ["NPV", "Payback", "ARR", "Receivables days"],
+                "correct": "A",
+                "explanation": "NPV discounts future project cash flows.",
+            }
+        ],
+    )
+    assert valid == []
+    assert "correct_is_bare_letter" in reasons
+
+
 def test_format_gap_question_reject_summary_includes_specific_reasons():
     dummy = types.SimpleNamespace()
     msg = StudyPlanGUI._format_gap_question_reject_summary(
