@@ -2862,6 +2862,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.verified_minutes_badge.set_halign(Gtk.Align.START)
         self.verified_minutes_badge.set_tooltip_text("Verified focus time in allowed apps today.")
         coach_card.append(self.verified_minutes_badge)
+        self.weak_concept_badge = Gtk.Label(label="")
+        self.weak_concept_badge.add_css_class("badge")
+        self.weak_concept_badge.add_css_class("status-warn")
+        self.weak_concept_badge.set_halign(Gtk.Align.START)
+        self.weak_concept_badge.set_visible(False)
+        coach_card.append(self.weak_concept_badge)
         left_panel.append(coach_card)
 
         # Daily Plan box
@@ -5796,6 +5802,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         line += f"\nErrors: {', '.join(errors[:3])}"
                     if mis_tags:
                         line += f"\nMisconceptions: {', '.join(mis_tags[:3])}"
+                    concept_ids = tuple(getattr(result_obj, "concept_ids", ()) or ())
+                    if concept_ids:
+                        line += f"\nConcepts: {', '.join(concept_ids[:3])}"
+                    failed_steps = tuple(getattr(result_obj, "failed_steps", ()) or ())
+                    if failed_steps:
+                        line += f"\nFailed steps: {', '.join(failed_steps[:3])}"
+                    error_patterns = tuple(getattr(result_obj, "error_patterns", ()) or ())
+                    if error_patterns:
+                        line += f"\nError patterns: {', '.join(error_patterns[:3])}"
+                    try:
+                        diag_conf = getattr(result_obj, "diagnostic_confidence", None)
+                        if diag_conf is not None:
+                            line += f"\nDiagnostic confidence: {float(diag_conf):.0%}"
+                    except Exception:
+                        pass
                     if feedback_text:
                         line += f"\n{feedback_text}"
                     self._set_label_text_if_changed(practice_feedback_label, line)
@@ -24492,6 +24513,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 lines.append(f"- Repeated misconceptions: {misconceptions}")
             if weak_caps:
                 lines.append(f"- Weak answer signals: {weak_caps}")
+            weak_concepts = _join_items(getattr(learner_profile, "weak_concept_ids_top", ()), 3)
+            if weak_concepts:
+                lines.append(f"- Weak domain concepts: {weak_concepts}")
             if loop_metrics:
                 try:
                     assess_total = max(0, int(loop_metrics.get("assessments_total", 0) or 0))
@@ -24597,6 +24621,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     recent_parts.append(f"errors={errors}")
                 if mis_tags:
                     recent_parts.append(f"mis={mis_tags}")
+                failed_steps = _join_items(getattr(practice_result, "failed_steps", ()), 3)
+                if failed_steps:
+                    recent_parts.append(f"failed_steps={failed_steps}")
+                diag_conf = float(getattr(practice_result, "diagnostic_confidence", 0.0) or 0.0)
+                if diag_conf > 0:
+                    recent_parts.append(f"diag_conf={diag_conf:.2f}")
                 if recent_parts:
                     lines.append("- Most recent assessed response: " + " | ".join(recent_parts))
                 if feedback:
@@ -25477,6 +25507,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 generate_fn=self._ollama_generate_for_practice_judge,
                 get_suggested_tags=self._get_suggested_tags_for_judge,
             )
+        else:
+            engine = getattr(self, "engine", None)
+            domain_reasoner = getattr(engine, "domain_reason_question", None) if engine else None
+            assess_svc = DeterministicTutorAssessmentService(domain_reasoner=domain_reasoner)
         ctrl = PracticeLoopController(assess_svc=assess_svc)
         self._practice_loop_controller = ctrl
         return ctrl
@@ -26491,6 +26525,41 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             error_pattern_rows = []
 
+        weak_concept_ids_top: list[str] = []
+        concept_error_summary: list[dict[str, Any]] = []
+        try:
+            rs = getattr(self, "_tutor_workspace_state", None)
+            lp: TutorLearnerProfileSnapshot | None = None
+            if isinstance(rs, TutorWorkspaceState):
+                lp = rs.practice_learner_profile()
+            if lp is None:
+                lstore = getattr(self, "_tutor_learner_model_store", None)
+                if lstore is not None and hasattr(lstore, "get_or_create_profile"):
+                    lp = cast(
+                        TutorLearnerProfileSnapshot,
+                        cast(Any, lstore).get_or_create_profile("local-user", module_title),
+                    )
+            if isinstance(lp, TutorLearnerProfileSnapshot):
+                wids = getattr(lp, "weak_concept_ids_top", ()) or ()
+                if isinstance(wids, (tuple, list)):
+                    weak_concept_ids_top = [str(x) for x in wids if x]
+                ceps = getattr(lp, "concept_error_patterns", {}) or {}
+                if isinstance(ceps, dict):
+                    for cid, tags in sorted(ceps.items(), key=lambda x: -len(x[1])):
+                        if not isinstance(cid, str) or not cid:
+                            continue
+                        if isinstance(tags, (tuple, list)):
+                            tstrs = [str(t) for t in tags if t]
+                            concept_error_summary.append({
+                                "concept_id": cid,
+                                "total_errors": len(tstrs),
+                                "error_tags": list(dict.fromkeys(tstrs)),
+                            })
+                    concept_error_summary = concept_error_summary[:5]
+        except Exception:
+            weak_concept_ids_top = []
+            concept_error_summary = []
+
         confidence_calibration: dict[str, Any] = {}
         try:
             quiz_sess = getattr(self, "quiz_session", None)
@@ -26560,6 +26629,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "recent_action_mix": action_mix_rows,
             "cognitive_posteriors_top5": cognitive_posteriors,
             "error_patterns_top5": error_pattern_rows,
+            "weak_concept_ids_top": weak_concept_ids_top,
+            "concept_error_summary": concept_error_summary,
             "confidence_calibration": confidence_calibration,
             "daily_plan_progress": daily_plan_progress,
             "tutor_recent_activity": list(getattr(engine, "tutor_activity_log", []) or [])[-50:],
@@ -26651,6 +26722,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             row for row in list(packet.get("cognitive_posteriors_top5", []) or []) if isinstance(row, dict)
         ]
         error_patterns = [row for row in list(packet.get("error_patterns_top5", []) or []) if isinstance(row, dict)]
+        weak_concept_ids = [str(x) for x in list(packet.get("weak_concept_ids_top", []) or []) if x]
+        concept_errors = [row for row in list(packet.get("concept_error_summary", []) or []) if isinstance(row, dict)]
         conf_calibration = (
             packet.get("confidence_calibration", {})
             if isinstance(packet.get("confidence_calibration", {}), dict)
@@ -26671,6 +26744,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         include_memory = bool(memory_topic or memory_intent or memory_next_step or memory_notes)
         include_posteriors = bool(cog_posteriors)
         include_errors = bool(error_patterns)
+        include_concept_diagnostics = bool(weak_concept_ids or concept_errors)
         include_confidence = bool(conf_calibration)
         include_plan_progress = bool(plan_progress)
         include_tutor_past_days = bool(tutor_recent_activity)
@@ -26788,6 +26862,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if not parts:
                 return ""
             return "Error patterns: " + " | ".join(parts)
+
+        def _concept_diagnostics_line(
+            weak_ids: list[str],
+            err_summary: list[dict[str, Any]],
+        ) -> str:
+            lines: list[str] = []
+            if weak_ids:
+                lines.append("Weak concepts: " + ", ".join(weak_ids[:5]))
+            if err_summary:
+                for row in err_summary[:3]:
+                    cid = str(row.get("concept_id", "") or "").strip()
+                    if not cid:
+                        continue
+                    total = int(row.get("total_errors", 0) or 0)
+                    tags = [str(t) for t in list(row.get("error_tags", []) or []) if t]
+                    if tags:
+                        lines.append(f"  {cid} ({total}: {','.join(tags[:3])})")
+                    else:
+                        lines.append(f"  {cid} ({total})")
+            if not lines:
+                return ""
+            return "Concept diagnostics: " + " | ".join(lines)
 
         def _plan_progress_line(info: dict[str, Any]) -> str:
             if not info:
@@ -26912,6 +27008,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 err_line = _error_patterns_line(error_patterns)
                 if err_line:
                     lines.append(err_line)
+            if include_concept_diagnostics:
+                cd_line = _concept_diagnostics_line(weak_concept_ids, concept_errors)
+                if cd_line:
+                    lines.append(cd_line)
             if include_confidence and conf_calibration:
                 feedback = str(conf_calibration.get("feedback", "") or "").strip()
                 if feedback:
@@ -27989,11 +28089,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 int(stats.get("autopilot_action_blocked_count", 0) or 0) + 1
                             )
                             reason_text = str(local_blocked)[:200]
-                            prev_reason = str(stats.get("autopilot_last_block_reason", "") or "").strip()
-                            if reason_text != prev_reason:
-                                reason_counts_dict = dict(stats.get("autopilot_skip_reason_counts", {}) or {})
-                                reason_counts_dict[reason_text] = int(reason_counts_dict.get(reason_text, 0) or 0) + 1
-                                updates["autopilot_skip_reason_counts"] = reason_counts_dict
                             updates["autopilot_last_block_reason"] = reason_text
                             # Failure backoff for action-level failures (e.g.
                             # action_failed, action_duplicate_guard) so the
@@ -28015,22 +28110,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 int(stats.get("autopilot_action_blocked_count", 0) or 0) + 1
                             )
                             reason_text = str(blocked_reason)[:200]
-                            prev_reason = str(stats.get("autopilot_last_block_reason", "") or "").strip()
-                            if reason_text != prev_reason:
-                                reason_counts_dict = dict(stats.get("autopilot_skip_reason_counts", {}) or {})
-                                reason_counts_dict[reason_text] = int(reason_counts_dict.get(reason_text, 0) or 0) + 1
-                                updates["autopilot_skip_reason_counts"] = reason_counts_dict
                             updates["autopilot_last_block_reason"] = reason_text
                         elif decision_err:
                             updates["autopilot_action_blocked_count"] = (
                                 int(stats.get("autopilot_action_blocked_count", 0) or 0) + 1
                             )
                             reason_text = str(decision_err)[:200]
-                            prev_reason = str(stats.get("autopilot_last_block_reason", "") or "").strip()
-                            if reason_text != prev_reason:
-                                reason_counts_dict = dict(stats.get("autopilot_skip_reason_counts", {}) or {})
-                                reason_counts_dict[reason_text] = int(reason_counts_dict.get(reason_text, 0) or 0) + 1
-                                updates["autopilot_skip_reason_counts"] = reason_counts_dict
                             updates["autopilot_last_block_reason"] = reason_text
                 if executed:
                     updates["autopilot_action_executed_count"] = (
@@ -28052,11 +28137,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         pass
                 elif decision_skip_reason and decision_skip_reason != "no_material_change":
                     reason_text = str(decision_skip_reason)[:200]
-                    prev_reason = str(stats.get("autopilot_last_block_reason", "") or "").strip()
-                    if reason_text != prev_reason:
-                        reason_counts_dict = dict(stats.get("autopilot_skip_reason_counts", {}) or {})
-                        reason_counts_dict[reason_text] = int(reason_counts_dict.get(reason_text, 0) or 0) + 1
-                        updates["autopilot_skip_reason_counts"] = reason_counts_dict
                     updates["autopilot_last_block_reason"] = reason_text
                 # Failure backoff: set a shorter quiet window so the autopilot
                 # doesn't hot-loop when the AI keeps producing invalid actions
@@ -28238,6 +28318,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "recent_action_mix": list(packet.get("recent_action_mix", []) or []),
             "cognitive_posteriors_top5": list(packet.get("cognitive_posteriors_top5", []) or []),
             "error_patterns_top5": list(packet.get("error_patterns_top5", []) or []),
+            "weak_concept_ids_top": list(packet.get("weak_concept_ids_top", []) or []),
+            "concept_error_summary": list(packet.get("concept_error_summary", []) or []),
             "confidence_calibration": dict(packet.get("confidence_calibration", {}) or {}),
             "daily_plan_progress": dict(packet.get("daily_plan_progress", {}) or {}),
             "pomodoro_active": bool(pom_active),
@@ -28269,10 +28351,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 else {}
             ),
             "total_question_count": int(self._get_total_question_count()),
-            "question_generation_cap": int(getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 1500) or 1500),
+            "question_generation_cap": int(getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 10000) or 10000),
             "gap_generation_recommended": (
                 int(self._get_total_question_count())
-                < int(getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 1500) or 1500)
+                < int(getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 10000) or 10000)
                 or self._tutor_deems_gap_generation_necessary(
                     {
                         "total_question_count": int(self._get_total_question_count()),
@@ -28419,6 +28501,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             chapter = str(weak_rows[0].get("chapter", "") or "").strip()
             if chapter:
                 rows.append(f"weak_topic={chapter}")
+        weak_cids = [str(x) for x in list(snapshot.get("weak_concept_ids_top", []) or []) if x]
+        if action in {"weak_drill_start", "drill_start"} and weak_cids:
+            rows.append(f"weak_concepts={','.join(weak_cids[:3])}")
+        concept_errs = [
+            row for row in list(snapshot.get("concept_error_summary", []) or []) if isinstance(row, dict)
+        ]
+        if concept_errs and action in {"weak_drill_start", "drill_start"}:
+            err_parts: list[str] = []
+            for row in concept_errs[:2]:
+                cid = str(row.get("concept_id", "") or "").strip()
+                if not cid:
+                    continue
+                total = int(row.get("total_errors", 0) or 0)
+                err_parts.append(f"{cid}({total})")
+            if err_parts:
+                rows.append("concept_errors=" + "|".join(err_parts))
         due_rows = [row for row in list(snapshot.get("due_snapshot_top3", []) or []) if isinstance(row, dict)]
         if action == "review_start" and due_rows:
             chapter = str(due_rows[0].get("chapter", "") or "").strip()
@@ -28527,17 +28625,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         weak_topics = [
             row for row in list(snapshot.get("weak_topics_top3", []) or []) if isinstance(row, dict)
         ]
+        weak_cids = [str(x) for x in list(snapshot.get("weak_concept_ids_top", []) or []) if x]
         action = "focus_start"
         if must_review_due >= 3:
             action = "review_start"
         elif overdue_srs_count > 0:
             action = "leitner_drill_start"
-        elif weak_topics:
+        elif weak_topics or weak_cids:
             action = "weak_drill_start"
-            weak_chapter = str(weak_topics[0].get("chapter", "") or "").strip()
-            if weak_chapter in chapters:
-                current_topic = weak_chapter
-        reason = "Fallback cockpit action from current due-review and focus signals."
+            if weak_cids and not weak_topics:
+                current_topic = str(snapshot.get("current_topic", "") or "").strip()
+            else:
+                weak_chapter = str(weak_topics[0].get("chapter", "") or "").strip() if weak_topics else ""
+                if weak_chapter in chapters:
+                    current_topic = weak_chapter
+        reason_parts: list[str] = []
+        if weak_cids:
+            reason_parts.append(f"weak concepts: {','.join(weak_cids[:3])}")
+        reason_parts.append("due-review and focus signals")
+        reason = f"Fallback cockpit action from {', '.join(reason_parts)}."
         if issue:
             reason = f"{reason} ({issue})"
         evidence_builder = getattr(self, "_derive_ai_tutor_action_evidence", None)
@@ -28733,6 +28839,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except KeyError:
             task_id = TASK_ID_GAP_GENERATION
             spec = get_task_prompt_spec(task_id)
+        weak_cids = [str(x) for x in list(snapshot.get("weak_concept_ids_top", []) or []) if x]
+        concept_errors = [
+            row for row in list(snapshot.get("concept_error_summary", []) or []) if isinstance(row, dict)
+        ]
         payload = {
             "topic": str(topic or ""),
             "count": int(count),
@@ -28741,6 +28851,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "weak_topics_top3": list(snapshot.get("weak_topics_top3", []) or []),
             "risk_snapshot_top3": list(snapshot.get("risk_snapshot_top3", []) or []),
             "learning_context": str(snapshot.get("learning_context", "") or ""),
+            "weak_concept_ids_top": weak_cids,
+            "concept_error_summary": concept_errors,
         }
         role = str(spec.get("role_base", "") or "").strip()
         _rules = spec.get("rules", []) or []
@@ -28750,6 +28862,23 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         extra_rules: list[str] = []
         if syllabus_scope and syllabus_scope.strip():
             extra_rules.append("Syllabus scope (strict — only examinable content): " + syllabus_scope.strip())
+        if weak_cids:
+            extra_rules.append(
+                "Target the following weak concepts: " + ", ".join(weak_cids)
+                + ". Generate questions that specifically test these concepts or the skills they represent."
+            )
+            if concept_errors:
+                error_lines = []
+                for ce in concept_errors:
+                    cid = str(ce.get("concept_id", "") or "").strip()
+                    errs = ce.get("error_patterns", [])
+                    if cid and errs:
+                        error_lines.append(f"{cid}: {', '.join(str(e) for e in errs)}")
+                if error_lines:
+                    extra_rules.append(
+                        "Common error patterns for these weak concepts: " + " | ".join(error_lines)
+                        + ". Craft distractors that reflect these misunderstandings."
+                    )
         if task_id == TASK_ID_GAP_GENERATION:
             extra_rules.extend(
                 gap_fr_classification_extra_rules(
@@ -29937,7 +30066,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _default_section_c_question(self, chapter: str) -> dict[str, Any]:
         scenario = (
-            f"ACCA Section C style case – {chapter}. "
+            f"Section C style case – {chapter}. "
             "A company scenario with figures and context is given. "
             "Respond in exam format: address each requirement (a), (b), (c) with clear workings and recommendation."
         )
@@ -31833,14 +31962,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
         else:
             eval_lines.append(
-                "Grade this ACCA Section C constructed-response. Return JSON only (no prose). Total marks = 20."
+                "Grade this Section C constructed-response. Return JSON only (no prose). Total marks = 20."
             )
         eval_lines.extend(
             [
                 "Schema:",
                 schema_line,
                 "Examiner fairness (apply consistently):",
-                "- Mark like an ACCA examiner: one criterion_scores row per rubric line. Sum of criterion score values MUST equal total_mark.",
+                "- Mark like an examiner: one criterion_scores row per rubric line. Sum of criterion score values MUST equal total_mark.",
                 "- Use mark bands strictly: 0–2 = little/no relevant content; 3–4 = partial; 5–6 = adequate with gaps; 7–8 = strong.",
                 "- Award marks only for content that addresses the requirement and uses case facts.",
                 "- When uncertain between bands, choose the lower band.",
@@ -33907,7 +34036,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _tutor_deems_gap_generation_necessary(self, snapshot: dict[str, Any]) -> bool:
         """True when the tutor should recommend gap generation despite being at or above the cap (e.g. topic has very few questions)."""
-        cap = int(getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 1500) or 1500)
+        cap = int(getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 10000) or 10000)
         total = int(snapshot.get("total_question_count", 0) or 0)
         if total < cap:
             return True
@@ -33925,15 +34054,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return False
 
     def _run_daily_auto_question_generation_if_due(self) -> bool:
-        """Run once per calendar day when below cap; generate one batch (e.g. coach pick). Returns True if the timer should not repeat (one-shot)."""
+        """Run when below cap with at least 2h between runs (repeating timer). Returns False (one-shot semantics for timer compatibility)."""
         if bool(getattr(self, "_core_runtime_shutdown", False)):
             return False
         try:
-            today = datetime.date.today().isoformat()
-            last = str(getattr(self, "last_auto_question_generation_date", "") or "").strip()
-            if last == today:
+            now = time.monotonic()
+            last_ts = float(getattr(self, "_last_auto_question_gen_ts", 0.0) or 0.0)
+            min_interval = 7200.0
+            if (now - last_ts) < min_interval:
                 return False
-            cap = int(getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 1500) or 1500)
+            cap = int(getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 10000) or 10000)
             total = self._get_total_question_count()
             if total >= cap:
                 return False
@@ -33948,15 +34078,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
             if topic not in chapters:
                 topic = chapters[0]
-            budget = int(getattr(Config, "AUTO_QUESTION_GENERATION_DAILY_BUDGET", 30) or 30)
-            count = min(AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS, max(1, budget // 3))
+            count = AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS
             snapshot = self._build_ai_tutor_autopilot_snapshot()
             ok, _msg = self._generate_gap_drill_questions(topic, snapshot, requested_count=count)
             if ok:
-                self.last_auto_question_generation_date = today
+                self._last_auto_question_gen_ts = now
+                self.last_auto_question_generation_date = datetime.date.today().isoformat()
                 self.save_preferences()
         except Exception:
-            logging.getLogger("studyplan").warning("daily gap generation failed", exc_info=True)
+            logging.getLogger("studyplan").warning("auto gap generation failed", exc_info=True)
         return False
 
     def _generate_gap_drill_questions(
@@ -34377,8 +34507,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             snapshot = self._build_ai_tutor_autopilot_snapshot()
             cap = int(
                 snapshot.get("question_generation_cap", 0)
-                or getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 1500)
-                or 1500
+                or getattr(Config, "AUTO_QUESTION_GENERATION_CAP", 10000)
+                or 10000
             )
             total = int(snapshot.get("total_question_count", 0) or 0)
             if total >= cap and not self._tutor_deems_gap_generation_necessary(snapshot):
@@ -35165,16 +35295,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 nudge_intervention_count,
                 max(0, int(row.get("nudge_intervention_count", 0) or 0)),
             )
-            coverage_target_count = max(
-                coverage_target_count,
-                max(0, int(row.get("coverage_target_count", 0) or 0)),
-            )
-            coverage_hit_count = max(coverage_hit_count, max(0, int(row.get("coverage_hit_count", 0) or 0)))
-            rag_target_count = max(rag_target_count, max(0, int(row.get("rag_target_count", 0) or 0)))
-            rag_target_hit_count = max(
-                rag_target_hit_count,
-                max(0, int(row.get("rag_target_hit_count", 0) or 0)),
-            )
+            coverage_target_count += max(0, int(row.get("coverage_target_count", 0) or 0))
+            coverage_hit_count += max(0, int(row.get("coverage_hit_count", 0) or 0))
+            rag_target_count += max(0, int(row.get("rag_target_count", 0) or 0))
+            rag_target_hit_count += max(0, int(row.get("rag_target_hit_count", 0) or 0))
             rag_insufficient_flag = max(
                 rag_insufficient_flag,
                 max(0, int(row.get("rag_insufficient_flag", 0) or 0)),
@@ -35191,24 +35315,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 gap_q_quarantined_count,
                 max(0, int(row.get("gap_q_quarantined_count", 0) or 0)),
             )
-            rag_doc_cache_hit = max(rag_doc_cache_hit, max(0, int(row.get("rag_doc_cache_hit", 0) or 0)))
-            rag_query_cache_hit = max(rag_query_cache_hit, max(0, int(row.get("rag_query_cache_hit", 0) or 0)))
-            embedding_cache_hits = max(
-                embedding_cache_hits,
-                max(0, int(row.get("embedding_cache_hits", 0) or 0)),
-            )
-            embedding_cache_misses = max(
-                embedding_cache_misses,
-                max(0, int(row.get("embedding_cache_misses", 0) or 0)),
-            )
-            prompt_cache_hit = max(prompt_cache_hit, max(0, int(row.get("prompt_cache_hit", 0) or 0)))
-            response_cache_hit = max(response_cache_hit, max(0, int(row.get("response_cache_hit", 0) or 0)))
-            token_est_cache_hit = max(token_est_cache_hit, max(0, int(row.get("token_est_cache_hit", 0) or 0)))
-            model_stats_persisted = max(
-                model_stats_persisted,
-                max(0, int(row.get("model_stats_persisted", 0) or 0)),
-            )
-            prefilter_kept = max(prefilter_kept, max(0, int(row.get("prefilter_kept", 0) or 0)))
+            rag_doc_cache_hit += max(0, int(row.get("rag_doc_cache_hit", 0) or 0))
+            rag_query_cache_hit += max(0, int(row.get("rag_query_cache_hit", 0) or 0))
+            embedding_cache_hits += max(0, int(row.get("embedding_cache_hits", 0) or 0))
+            embedding_cache_misses += max(0, int(row.get("embedding_cache_misses", 0) or 0))
+            prompt_cache_hit += max(0, int(row.get("prompt_cache_hit", 0) or 0))
+            response_cache_hit += max(0, int(row.get("response_cache_hit", 0) or 0))
+            token_est_cache_hit += max(0, int(row.get("token_est_cache_hit", 0) or 0))
+            model_stats_persisted += max(0, int(row.get("model_stats_persisted", 0) or 0))
+            prefilter_kept += max(0, int(row.get("prefilter_kept", 0) or 0))
             block_reason = str(row.get("autopilot_last_block_reason", "") or "").strip()
             if block_reason:
                 autopilot_last_block_reason = block_reason[:200]
@@ -39272,12 +39387,30 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pace_status = "unknown"
             pace_delta = 0.0
+        weak_concept_count = 0
+        try:
+            rs_cc = getattr(self, "_tutor_workspace_state", None)
+            lp_cc = rs_cc.practice_learner_profile() if isinstance(rs_cc, TutorWorkspaceState) else None
+            if lp_cc is None:
+                ls_cc = getattr(self, "_tutor_learner_model_store", None)
+                if ls_cc is not None and hasattr(ls_cc, "get_or_create_profile"):
+                    lp_cc = cast(
+                        TutorLearnerProfileSnapshot,
+                        cast(Any, ls_cc).get_or_create_profile("local-user", str(getattr(self, "module_title", "selected module"))),
+                    )
+            if isinstance(lp_cc, TutorLearnerProfileSnapshot):
+                wids_cc = tuple(getattr(lp_cc, "weak_concept_ids_top", ()) or ())
+                weak_concept_count = len(wids_cc)
+        except Exception:
+            pass
         tooltip_parts = [
             f"Competence: {comp_val:.0f}%",
             f"Reviews due: {int(due)}",
             f"Pace: {pace_status}",
             f"Pick source: {source}",
         ]
+        if weak_concept_count > 0:
+            tooltip_parts.append(f"Weak concepts: {weak_concept_count}")
         try:
             daily_poms = int(self.daily_pomodoros_by_chapter.get(topic, 0) or 0)
         except Exception:
@@ -39323,6 +39456,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
             if verified <= 0:
                 self.verified_minutes_badge.add_css_class("badge-locked")
+        if getattr(self, "weak_concept_badge", None):
+            try:
+                if weak_concept_count > 0:
+                    self.weak_concept_badge.set_text(f"Weak concepts: {weak_concept_count}")
+                    self.weak_concept_badge.set_visible(True)
+                    if weak_concept_count >= 3:
+                        self.weak_concept_badge.add_css_class("nudge-warn")
+                    else:
+                        self.weak_concept_badge.remove_css_class("nudge-warn")
+                else:
+                    self.weak_concept_badge.set_visible(False)
+            except Exception:
+                pass
         if self.coach_only_view:
             self._apply_coach_only_mode()
 
@@ -40156,12 +40302,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         def _daily_question_generation_tick() -> bool:
             self._run_daily_auto_question_generation_if_due()
-            return False
+            return True
 
         schedule_items.append(
             (
                 "_daily_question_generation_timer_id",
-                90_000,
+                7_200_000,
                 _daily_question_generation_tick,
             )
         )
@@ -49786,7 +49932,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     @classmethod
     def _build_gtk_chart_widget(
-        self,
+        self,  # pyright: ignore[reportSelfClsParameterName]
         spec: dict[str, Any],
         *,
         width: int,
@@ -49954,7 +50100,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self._chart_set_color(ctx, muted)
                 for idx, label in enumerate(labels):
                     x = left + idx * group_w + 2
-                    self._chart_text(ctx, label[:6], x, bottom + 18, size=7)
+                    self._chart_text(ctx, label[:8], x, bottom + 18, size=7)
 
         drawing.set_draw_func(_draw)
         return cast(Gtk.Widget, drawing)
@@ -50505,6 +50651,52 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
         except Exception:
             pass
+        try:
+            lp_diag: TutorLearnerProfileSnapshot | None = None
+            rs_diag = getattr(self, "_tutor_workspace_state", None)
+            if isinstance(rs_diag, TutorWorkspaceState):
+                lp_diag = rs_diag.practice_learner_profile()
+            if lp_diag is None:
+                lstore_diag = getattr(self, "_tutor_learner_model_store", None)
+                if lstore_diag is not None and hasattr(lstore_diag, "get_or_create_profile"):
+                    lp_diag = cast(
+                        TutorLearnerProfileSnapshot,
+                        cast(Any, lstore_diag).get_or_create_profile("local-user", module_title),
+                    )
+            if isinstance(lp_diag, TutorLearnerProfileSnapshot):
+                wids_diag = tuple(getattr(lp_diag, "weak_concept_ids_top", ()) or ())
+                ceps_diag = getattr(lp_diag, "concept_error_patterns", {}) or {}
+                if wids_diag:
+                    _append_diagnostic(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+                    concept_header = Gtk.Label(label="Domain Concepts")
+                    concept_header.set_halign(Gtk.Align.START)
+                    concept_header.add_css_class("section-title")
+                    concept_header.set_margin_bottom(2)
+                    _append_diagnostic(concept_header)
+                    weak_line = Gtk.Label(label=f"Weak: {', '.join(str(x) for x in wids_diag[:5])}")
+                    weak_line.set_halign(Gtk.Align.START)
+                    weak_line.set_ellipsize(Pango.EllipsizeMode.END)
+                    weak_line.set_max_width_chars(80)
+                    weak_line.add_css_class("muted")
+                    weak_line.add_css_class("single-line-lock")
+                    weak_line.set_tooltip_text(f"Weak concepts: {', '.join(str(x) for x in wids_diag)}")
+                    _append_diagnostic(weak_line)
+                    if isinstance(ceps_diag, dict):
+                        for cid, tags in sorted(ceps_diag.items(), key=lambda x: -len(x[1]))[:3]:
+                            if not isinstance(cid, str) or not cid or not isinstance(tags, (tuple, list)):
+                                continue
+                            tstrs = [str(t) for t in tags if t]
+                            if tstrs:
+                                err_line = Gtk.Label(label=f"  {cid}: {', '.join(tstrs[:4])}")
+                                err_line.set_halign(Gtk.Align.START)
+                                err_line.set_ellipsize(Pango.EllipsizeMode.END)
+                                err_line.set_max_width_chars(80)
+                                err_line.add_css_class("muted")
+                                err_line.add_css_class("single-line-lock")
+                                _append_diagnostic(err_line)
+        except Exception:
+            pass
+
         _append_diagnostic(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         try:
             drift = self.engine.get_semantic_drift_kpi(days=7)
@@ -51880,41 +52072,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 comp = getattr(self.engine, "competence", {}) or {}
                 quiz = getattr(self.engine, "quiz_results", {}) or {}
 
-                def _safe_float(val):
-                    try:
-                        return float(val)
-                    except Exception:
-                        return 0.0
-
-                def _chart_topic_label(chapter_title: str, index_1based: int) -> str:
-                    """Module-agnostic short label: chapter number + abbrev (e.g. 1 IFRS, 2 CF, 3 Inv)."""
-                    rest = (chapter_title or "").strip()
-                    for pattern in (
-                        r"^Chapter\s+\d+\s*:\s*",
-                        r"^Chapter\s+\d+\s*:",
-                        r"^\d+\.\s*",
-                        r"^Part\s+\d+\s*:\s*",
-                        r"^[A-Z]\s*\.\s*",
-                    ):
-                        rest = re.sub(pattern, "", rest, flags=re.IGNORECASE).strip()
-                    if not rest:
-                        return str(index_1based)
-                    words = re.split(r"[\s,]+", rest)
-                    chars = []
-                    for w in words:
-                        if not w:
-                            continue
-                        if w.isdigit():
-                            chars.append(w[0])
-                        elif len(w) <= 2 and w.isalpha():
-                            chars.append(w.upper())
-                        else:
-                            chars.append(w[0].upper())
-                        if len(chars) >= 4:
-                            break
-                    abbrev = "".join(chars)[:4]
-                    return f"{index_1based} {abbrev}" if abbrev else str(index_1based)
-
                 # If many chapters, focus on the lowest-competence ones for readability.
                 subtitle = "All topics"
                 if len(topics) > 12:
@@ -51947,39 +52104,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if self._cached_topic_chart_sig == topic_sig and self._cached_topic_chart_widget is not None:
                     self.dashboard.append(self._cached_topic_chart_widget)
                 else:
-                    fig_w, fig_h = (6.2, 3.4) if not is_compact else (5.6, 3.0)
-                    plt_module = plt
-                    if plt_module is None or FigureCanvas is None:
-                        raise RuntimeError("Charts unavailable")
-                    fig, ax = plt_module.subplots(figsize=(fig_w, fig_h), dpi=100)
-                    fig.patch.set_facecolor(chart_style["fig_bg"])
-                    ax.set_facecolor(chart_style["ax_bg"])
-                    x = list(range(len(topics)))
-                    width = 0.25
-                    ax.bar(
-                        [i - width for i in x],
-                        competence_vals,
-                        width,
-                        color=chart_style["accent_a"],
-                        label="Competence",
-                    )
-                    ax.bar(
-                        x,
-                        mastery_vals,
-                        width,
-                        color=chart_style["accent_d"],
-                        label="Mastery",
-                    )
-                    ax.bar(
-                        [i + width for i in x],
-                        quiz_vals,
-                        width,
-                        color=chart_style["accent_c"],
-                        label="Quiz",
-                    )
-                    ax.set_ylim(0, 100)
-                    ax.set_ylabel("%", color=chart_style["text"])
-                    ax.set_xticks(x)
                     all_chapters = list(self.engine.CHAPTERS)
                     chart_labels = [
                         _chart_topic_label(
@@ -51988,38 +52112,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         )
                         for i, ch in enumerate(topics)
                     ]
-                    ax.set_xticklabels(
-                        chart_labels,
-                        rotation=35,
-                        ha="right",
-                        fontsize=8,
-                        color=chart_style["text"],
-                    )
-                    ax.tick_params(axis="y", colors=chart_style["text"])
-                    for spine in ax.spines.values():
-                        spine.set_color(chart_style["spine"])
-                    ax.grid(
-                        axis="y",
-                        color=chart_style["grid"],
-                        linestyle="--",
-                        linewidth=0.6,
-                        alpha=0.6,
-                    )
-                    ax.set_title(f"Per-Topic Snapshot ({subtitle})", color=chart_style["text"])
-                    legend = ax.legend(
-                        loc="upper right",
-                        fontsize=8,
-                        facecolor=chart_style["legend_bg"],
-                        framealpha=0.8,
-                    )
-                    legend.get_frame().set_edgecolor(chart_style["spine"])
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", UserWarning)
-                        fig.tight_layout()
-                    canvas = self._build_matplotlib_chart_widget(
-                        fig,
-                        width=430,
-                        height=260,
+                    fig_w, fig_h = (430, 260) if not is_compact else (380, 240)
+                    canvas = self._build_gtk_chart_widget(
+                        {
+                            "kind": "grouped_bar",
+                            "title": f"Per-Topic Snapshot ({subtitle})",
+                            "labels": chart_labels,
+                            "series": [
+                                {"label": "Competence", "values": competence_vals, "color": chart_style["accent_a"]},
+                                {"label": "Mastery", "values": mastery_vals, "color": chart_style["accent_d"]},
+                                {"label": "Quiz", "values": quiz_vals, "color": chart_style["accent_c"]},
+                            ],
+                            "style": chart_style,
+                        },
+                        width=fig_w,
+                        height=fig_h,
                         tooltip="Tip: hold Ctrl and scroll to zoom charts.",
                     )
                     topic_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -52030,10 +52137,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     self.dashboard.append(topic_card)
                     self._cached_topic_chart_sig = topic_sig
                     self._cached_topic_chart_widget = topic_card
-                    try:
-                        plt_module.close(fig)
-                    except Exception:
-                        pass
             except Exception as e:
                 print(f"Per-topic chart error: {e}")
 

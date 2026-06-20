@@ -1,5 +1,43 @@
 # Domain Reasoning Architecture
 
+> **Status:** Phases 1–4 implemented (see [Current Implementation Status](#current-implementation-status)).  
+> This document is the original architectural proposal. The section below summarises what has been built and how it differs from the original plan.
+
+## Current Implementation Status
+
+The core reasoning engine (`studyplan/domain_reasoning/`) has been implemented end-to-end for the FM (Financial Management) domain:
+
+| Phase | Description | Status |
+|---|---|---|---|
+| 1 | Parameter key detection via candidate-function probing | ✅ Done |
+| 2 | Multi-path fallback (alternative providers per output slot) | ✅ Done |
+| 3 | Input gap analysis (greedy fixed-point provider insertion) | ✅ Done |
+| 4 | Weighted confidence (`avg_quality × success_rate`) | ✅ Done |
+| 2a | **Contract enrichment** — `concept_ids`, `template_ref`, `template_inputs` on `TutorPracticeItem`; `concept_ids`, `template_ref`, `failed_steps`, `error_patterns`, `diagnostic_confidence` on `TutorAssessmentResult`; `weak_concept_ids_top`, `concept_error_patterns` on `TutorLearnerProfileSnapshot` | ✅ Done |
+| 4a | **Practice loop integration** — `_assess_domain_item()` in `DeterministicTutorAssessmentService`; concept error pattern tracking in `InMemoryTutorLearnerModelStore.note_assessment()` | ✅ Done |
+| 5a | **Tutor context surface** — `weak_concept_ids_top`, `failed_steps`, `diagnostic_confidence` surfaced in `_build_ai_tutor_learner_profile_brief()` | ✅ Done |
+| 6a | **Autopilot concept awareness** — `weak_concept_ids_top` + `concept_error_summary` injected into autopilot snapshot, context block, action evidence, and fallback reasoning | ✅ Done |
+| 5–7 | Full coach/autopilot upgrade, authoring tooling | 📋 Partial (see 6a) |
+
+### Key deviations from the proposal
+
+- **Solver strategy**: The proposal recommended starting with `FM.npv` then `FM.wacc` then `F7.goodwill`. Implementation covers all 10 FM concepts (NPV, WACC, CAPM, IRR, payback, ARR, CCC, EOQ, gearing, cost_of_equity_dvm). F7/FR consolidation has not been started.
+- **Template interface**: Uses `FormulaTemplate` base class with `solve(**inputs)` (positional args from domain templates), not the `ConceptTemplate` protocol with `input_schema`/`output_schema`. Candidate-function probing detects parameter keys dynamically; `inspect.signature` is NOT used because domain templates override `solve()` with positional args whose param names differ from input dict keys.
+- **No concept metadata in module JSON**: The original proposal required explicit `concepts` arrays in module JSON. Instead, `BUILTIN_CONCEPTS` in `concepts.py` hardcodes the FM concept definitions. The module JSON extension path remains future work.
+- **Packaging**: The original proposal envisioned `concepts.py`, `dependencies.py`, `templates.py`, `evaluator.py`, `diagnostics.py`, `planner.py`. The actual implementation has `concepts.py`, `templates.py`, `evaluator.py`, `diagnostics.py`, `reasoning_engine.py` (which subsumes the planned `planner.py` and `dependencies.py` roles).
+- **Phase 2/4/5 integration**: The original proposal was still in "planned" status for phases 2, 4, and 5. These have now been implemented: contract fields, practice loop assessment integration, and tutor context surfacing. The `DeterministicTutorAssessmentService._assess_domain_item()` method and `InMemoryTutorLearnerModelStore` concept error pattern tracking complete the feedback loop from domain solver → assessment → learner profile → tutor context.
+- **220 test functions** across 3 files (`test_reasoning_engine.py`, `test_domain_reasoning.py`, `test_numerical_solver.py`) — 17 custom tests for fallback, gap analysis, and weighted confidence specifically; plus 10 new tests for domain-aware assessment integration.
+
+### Known limitations
+
+- `_plug_input_gaps` does NOT resolve transitive dependencies of newly inserted concepts; relies on multi-path fallback at execution time.
+- Only `cost_equity` has multiple providers (`fm.cost_of_equity_dvm` ↔ `fm.capm`); all other output slots have exactly one provider.
+- WACC template applies `(1-tax)` to `cost_debt` internally; `cost_of_debt` solver returns after-tax value — double-tax is existing behaviour, not a regression.
+- Input source quality weights are heuristics tuned to pass existing test assertions, not calibrated against real student data.
+- Domain-aware assessment only fires when the practice item has an explicit `template_ref` AND `domain_reasoner` is configured — no automatic concept detection from question text during practice.
+- Learner answers are compared by final numeric value only; step-by-step learner working is not yet compared against truth steps.
+- Coach urgency (`engine.get_daily_plan`) does not yet consume `weak_concept_ids_top` or `concept_error_patterns` — still operates at chapter-level competence only. Autopilot snapshot, evidence builder, fallback action, and context block now include concept diagnostics.
+
 ## Purpose
 
 This document proposes a codebase-specific path for evolving StudyPlan from a strong adaptive planner/tutor into a domain-aware reasoning tutor without breaking the current local-first architecture.
@@ -62,34 +100,36 @@ Add a GTK-free domain reasoning package that can:
 - emit structured error patterns and failed steps
 - surface those diagnostics upward to tutor, learner profile, coach, and autopilot
 
-## Proposed Package
+## Implemented Package
 
-Add a new package under `studyplan/`:
+The package exists at `studyplan/domain_reasoning/` with the following structure:
 
 ```text
 studyplan/domain_reasoning/
   __init__.py
-  concepts.py
-  dependencies.py
-  templates.py
-  evaluator.py
-  diagnostics.py
-  planner.py
+  concepts.py            # BUILTIN_CONCEPTS, concept definitions, output slot groups
+  templates.py           # FormulaTemplate base class for executable solvers
+  evaluator.py           # Step-by-step learner answer comparison
+  diagnostics.py         # Structured error pattern emission
+  reasoning_engine.py    # Plan compilation, execution, fallback, gap analysis, confidence
   domains/
     __init__.py
-    acca_f7/
-      __init__.py
-      consolidation.py
-      groups.py
-      cashflow.py
     acca_fm/
       __init__.py
       npv.py
       wacc.py
-      working_capital.py
+      capm.py
+      irr.py
+      payback.py
+      arr.py
+      ccc.py
+      eoq.py
+      gearing.py
 ```
 
-This package should remain:
+The intended `dependencies.py` and `planner.py` modules were not created as separate files — their logic is folded into `reasoning_engine.py` (plan compilation, dependency resolution, execution orchestration).
+
+The package remains:
 
 - GTK-free
 - deterministic-first
@@ -498,89 +538,90 @@ This implies a layered capability model:
 
 ## Rollout Plan
 
-### Phase 1: Concept Schema Upgrade
+### Phase 1: Concept Schema Upgrade (✅ Done)
 
-Add:
+The concept definitions live in `studyplan/domain_reasoning/concepts.py` as `BUILTIN_CONCEPTS` (a hardcoded dict of FM concepts). This replaced the original plan of extending module JSON with concept metadata. Key differences from the original proposal:
 
-- explicit module concept definitions
-- dependency edges
-- concept centrality field
-- template references
+- No module JSON extension — concepts are code-defined
+- No centrality field — not needed for the first implementation
+- Dependency edges are encoded in `_OUTPUT_SLOT_GROUPS` and concept `requires`/`provides` fields
 
-Implementation notes:
+Future work: extend module JSON with explicit concept metadata for user-authored modules.
 
-- extend module loader and validation
-- prefer explicit concepts when present
-- retain current concept synthesis as fallback
+### Phase 2: Contract And Profile Enrichment (✅ Done)
 
-### Phase 2: Contract And Profile Enrichment
+The original proposal to add `concept_ids`, `error_patterns`, `failed_steps`, etc. to assessment/profile artifacts has been implemented:
 
-Add to assessment/profile/session artifacts:
+- `TutorPracticeItem` — added `concept_ids`, `template_ref`, `template_inputs`
+- `TutorAssessmentResult` — added `concept_ids`, `template_ref`, `failed_steps`, `error_patterns`, `diagnostic_confidence`
+- `TutorLearnerProfileSnapshot` — added `weak_concept_ids_top`, `concept_error_patterns`
 
-- `concept_ids`
-- `primary_concept_id`
-- `error_patterns`
-- `failed_steps`
-- `weak_concept_ids_top`
-- `error_pattern_counts`
+All fields include `to_dict()`/`from_dict()` serialization. The reasoning engine produces `ReasoningTrace` objects which are merged into `TutorAssessmentResult` by the assessment service.
 
-Implementation notes:
+### Phase 3: First Deterministic Template Slice (✅ Done — expanded scope)
 
-- keep old fields
-- treat new fields as optional
+Implemented all 10 FM concepts instead of the proposed 2–3:
 
-### Phase 3: First Deterministic Template Slice
+| Concept | File |
+|---|---|
+| NPV | `domains/acca_fm/npv.py` |
+| WACC | `domains/acca_fm/wacc.py` |
+| CAPM | `domains/acca_fm/capm.py` |
+| IRR | `domains/acca_fm/irr.py` |
+| Payback | `domains/acca_fm/payback.py` |
+| ARR | `domains/acca_fm/arr.py` |
+| Cash Conversion Cycle | `domains/acca_fm/ccc.py` |
+| EOQ | `domains/acca_fm/eoq.py` |
+| Gearing | `domains/acca_fm/gearing.py` |
+| Cost of Equity (DVM) | integrated via gearing |
 
-Implement one narrow domain end to end.
+F7/FR consolidation (goodwill, NCI, group retained earnings) remains future work.
 
-Recommended order:
+### Phase 4: Practice Loop Integration (✅ Done)
 
-1. `acca_fm.npv`
-2. `acca_fm.wacc`
-3. `acca_f7.consolidation.goodwill`
+Deterministic evaluation path is connected to the practice loop through `DeterministicTutorAssessmentService._assess_domain_item()`:
 
-or reverse that order if product value is clearly F7-first.
+1. When a practice item has `template_ref` and the assessment service has a `domain_reasoner` configured, the assessment calls `reason_question()` via the engine's `domain_reason_question()` method.
+2. The deterministic truth is computed and compared against the learner's submitted answer.
+3. Step-level diagnostics (`failed_steps`, `error_patterns`, `diagnostic_confidence`) are merged into the `TutorAssessmentResult`.
+4. `InMemoryTutorLearnerModelStore.note_assessment()` tracks concept error patterns per concept ID and maintains `weak_concept_ids_top`.
 
-Criteria for choosing first slice:
+The integration point in `studyplan_app.py._get_practice_loop_controller()` passes `self.engine.domain_reason_question` as the `domain_reasoner` callback.
 
-- stable formulas
-- known error patterns
-- frequent learner mistakes
-- easy test oracle generation
+Limitations:
+- Only final numeric answer comparison (no step-by-step learner working comparison yet)
+- Requires explicit `template_ref` on the practice item (no automatic concept detection during practice)
+- Only wired for the deterministic (non-LLM) assessment path; the `AITutorAssessmentService` path does not include domain reasoning
 
-### Phase 4: Practice Loop Integration
+### Phase 5: Tutor Context Upgrade (✅ Partial)
 
-Add deterministic evaluation path for supported items:
+`_build_ai_tutor_learner_profile_brief()` in `studyplan_app.py` now surfaces:
+- `weak_concept_ids_top` as "Weak domain concepts"
+- `failed_steps` and `diagnostic_confidence` in "Most recent assessed response"
 
-- call template
-- compare learner output
-- emit structured diagnostics
-- store results in learner profile
+These appear in the `planner_brief` section of the tutor prompt, enabling the LLM to reference specific concept-level weaknesses.
 
-### Phase 5: Tutor Context Upgrade
+Not yet implemented: practice item planning context injection, post-assessment feedback generation using concept diagnostics.
 
-Inject concept-level state into:
+### Phase 6: Coach And Autopilot Upgrade (✅ Partial — Autopilot Done)
 
-- tutor turn context
-- practice item planning context
-- post-assessment feedback generation
+Concept diagnostics (`weak_concept_ids_top`, `concept_error_summary`) now flow through the autopilot pipeline:
 
-### Phase 6: Coach And Autopilot Upgrade
+1. **`_build_local_ai_context_packet()`** — Extracts `weak_concept_ids_top` and `concept_error_summary` from the learner profile via `TutorWorkspaceState.practice_learner_profile()` with fallback to `InMemoryTutorLearnerModelStore.get_or_create_profile()`.
+2. **`_format_local_ai_context_block()`** — Renders concept diagnostics as a "Concept diagnostics: Weak concepts: ID1, ID2 | ID3 (errors: tag1,tag2)" line in the context block.
+3. **`_build_ai_tutor_autopilot_snapshot()`** — Passes `weak_concept_ids_top` and `concept_error_summary` through the snapshot dict (serialized into the LLM prompt payload via `json.dumps`).
+4. **`_derive_ai_tutor_action_evidence()`** — Adds `weak_concepts=ID1,ID2` and `concept_errors=ID1(N)|ID2(M)` evidence lines when the action is `weak_drill_start` or `drill_start`.
+5. **`_build_ai_tutor_fallback_action()`** — Includes concept IDs in the fallback reason string (e.g., "weak concepts: fm.npv, fm.wacc") and triggers weak_drill_start when weak concepts exist even without chapter-level weak topics.
 
-Use concept-aware aggregates to drive:
+The LLM now sees concept diagnostics in two places:
+- The formatted `learning_context` text block (rendered by `_format_local_ai_context_block`)
+- The raw `weak_concept_ids_top` and `concept_error_summary` JSON keys in the snapshot payload
 
-- coach prioritization bias
-- drill targeting
-- review suggestions
-- autopilot justification
+Not yet implemented:
+- Coach urgency (`engine.get_daily_plan`, `engine.top_recommendations`) — operates at chapter-level only; engine does not have access to concept-level learner profile data
+- Coach pick; concept-level error pattern aggregation
 
-### Phase 7: Authoring And Tooling
-
-Only after the end-to-end pattern is proven:
-
-- add scripts to validate concept metadata
-- add helper tools for template refs and dependency graphs
-- add reporting for concept coverage and unsupported high-frequency topics
+### Phase 7: Authoring And Tooling (📋 Not started)
 
 ## Testing Strategy
 

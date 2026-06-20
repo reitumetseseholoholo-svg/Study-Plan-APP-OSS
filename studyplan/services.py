@@ -1754,17 +1754,17 @@ def get_syllabus_scope_instruction(module_id: str) -> str:
 
 
 def get_module_display_code(module_id: str) -> str:
-    """Return a short display label for the module for tutor/coach context (e.g. 'ACCA FM', 'ACCA FR')."""
+    """Return a short display label for the module for tutor/coach context (e.g. 'FM', 'FR')."""
     code = _normalize_module_code_for_adapter(module_id or "")
     if not code:
         return ""
     labels: dict[str, str] = {
-        "FM": "ACCA FM",
-        "FR": "ACCA FR",
-        "AA": "ACCA AA",
-        "TX": "ACCA TX",
+        "FM": "FM",
+        "FR": "FR",
+        "AA": "AA",
+        "TX": "TX",
     }
-    return labels.get(code, f"ACCA {code}")
+    return labels.get(code, code)
 
 
 def build_default_module_adapter_registry() -> ModuleAdapterRegistry:
@@ -2807,10 +2807,41 @@ class InMemoryTutorLearnerModelStore:
             )
             profile_meta = dict(getattr(profile, "meta", {}) or {})
             profile_meta["learning_loop_metrics"] = loop_metrics
+
+            # Track concept-level error patterns
+            concept_ids: tuple[str, ...] = tuple(
+                str(c) for c in (getattr(assessment, "concept_ids", ()) or ())
+            )
+            error_patterns: tuple[str, ...] = tuple(
+                str(e) for e in (getattr(assessment, "error_patterns", ()) or ())
+            )
+            concept_error_patterns: dict[str, tuple[str, ...]] = dict(
+                getattr(profile, "concept_error_patterns", {}) or {}
+            )
+            if concept_ids and error_patterns:
+                for cid in concept_ids:
+                    existing = concept_error_patterns.get(cid, ())
+                    seen = set(existing)
+                    new_tags = tuple(t for t in error_patterns if t not in seen)
+                    if new_tags:
+                        merged = tuple(existing) + new_tags
+                        concept_error_patterns[cid] = merged[:self.max_tags]
+
+            # Compute weak concept IDs from error counts
+            weak_concept_ids_top: tuple[str, ...] = ()
+            if concept_error_patterns:
+                sorted_concepts = sorted(
+                    concept_error_patterns.items(),
+                    key=lambda kv: -len(kv[1]),
+                )
+                weak_concept_ids_top = tuple(c for c, _ in sorted_concepts[:self.max_tags])
+
             updated = replace(
                 profile,
                 misconception_tags_top=misconception_tags,
                 weak_capabilities_top=weak_caps,
+                weak_concept_ids_top=weak_concept_ids_top,
+                concept_error_patterns=concept_error_patterns,
                 confidence_calibration_bias=bias,
                 chat_to_quiz_transfer_score=blended_transfer,
                 last_practice_outcome=outcome,
@@ -3313,10 +3344,21 @@ class DeterministicTutorPracticeService:
 
 @dataclass
 class DeterministicTutorAssessmentService:
-    """Phase 3 deterministic micro-assessment scoring for short Tutor practice items."""
+    """Phase 3 deterministic micro-assessment scoring for short Tutor practice items.
+
+    Parameters
+    ----------
+    domain_reasoner : callable or None
+        Optional function ``(question, *, template_ref, template_inputs, learner_answer, ...) -> dict``
+        wrapping ``engine.domain_reason_question``.  When set, practice items that carry a
+        ``template_ref`` are additionally evaluated by the domain reasoning engine, and the
+        resulting step-level diagnostics (*failed_steps*, *error_patterns*, *diagnostic_confidence*)
+        are merged into the assessment result.
+    """
 
     partial_threshold: float = 0.4
     correct_threshold: float = 0.75
+    domain_reasoner: Callable[..., dict] | None = None
 
     def assess(
         self,
@@ -3329,6 +3371,13 @@ class DeterministicTutorAssessmentService:
         item_type = str(getattr(item, "item_type", "") or "").strip().lower()
         meta = dict(getattr(item, "meta", {}) or {})
         answer_text = str(getattr(submission, "answer_text", "") or "")
+
+        # Domain-reasoning path: item carries a template_ref or concept_ids
+        template_ref = str(getattr(item, "template_ref", "") or "").strip()
+        concept_ids = tuple(str(c) for c in (getattr(item, "concept_ids", ()) or ()))
+        if (template_ref or concept_ids) and self.domain_reasoner is not None:
+            return self._assess_domain_item(item, answer_text)
+
         if item_type == "mcq":
             return self._assess_mcq(item, answer_text)
         if item_type == "calculation_step":
@@ -3474,6 +3523,101 @@ class DeterministicTutorAssessmentService:
             error_tags=("numeric_mismatch",),
             retry_recommended=True,
             next_difficulty="easier",
+        )
+
+    def _assess_domain_item(
+        self,
+        item: TutorPracticeItem,
+        answer_text: str,
+    ) -> TutorAssessmentResult:
+        """Evaluate a domain-reasoning item via the deterministic solver engine.
+
+        Uses *self.domain_reasoner* (wrapping ``engine.domain_reason_question``)
+        to obtain the reference truth and step-level diagnostics.  The result
+        carries *concept_ids*, *template_ref*, *failed_steps*, *error_patterns*,
+        and *diagnostic_confidence*.
+        """
+        template_ref = str(getattr(item, "template_ref", "") or "").strip()
+        template_inputs = dict(getattr(item, "template_inputs", {}) or {})
+        concept_ids = tuple(str(c) for c in (getattr(item, "concept_ids", ()) or ()))
+        item_meta = dict(getattr(item, "meta", {}) or {})
+        marks_max = float(item_meta.get("marks_max", 1.0) or 1.0)
+        prompt = str(getattr(item, "prompt", "") or "")
+
+        trace: dict[str, Any] = {}
+        if self.domain_reasoner is not None:
+            try:
+                trace = self.domain_reasoner(
+                    prompt,
+                    template_ref=template_ref,
+                    template_inputs=template_inputs,
+                    learner_answer=answer_text,
+                )
+            except Exception:
+                trace = {}
+
+        has_result = bool(trace.get("has_result"))
+        truth = trace.get("final_result")
+        confidence = float(trace.get("confidence", 0.0) or 0.0)
+
+        # Compare learner answer to deterministic truth
+        learner_val: float | None = None
+        try:
+            learner_val = float(answer_text.strip().replace(",", "").replace("%", ""))
+        except (ValueError, TypeError, AttributeError):
+            learner_val = None
+
+        outcome: str = "incorrect"
+        marks_awarded = 0.0
+        feedback: str = ""
+
+        if has_result and truth is not None and learner_val is not None:
+            tolerance = max(0.01, abs(float(truth)) * 0.005)
+            delta = abs(learner_val - float(truth))
+            if delta <= tolerance:
+                outcome = "correct"
+                marks_awarded = marks_max
+                feedback = f"Correct (deterministic truth: {float(truth):g})."
+            elif delta <= tolerance * 5.0:
+                outcome = "partial"
+                marks_awarded = round(marks_max * 0.5, 2)
+                feedback = f"Close — expected about {float(truth):g}, got {learner_val:g}."
+            else:
+                feedback = f"Incorrect — expected {float(truth):g}, got {learner_val:g}."
+        elif has_result:
+            feedback = "Could not parse your answer as a number."
+            outcome = "incorrect"
+        else:
+            outcome = "partial"
+            marks_awarded = round(marks_max * 0.5, 2)
+            feedback = "Domain reasoning unavailable; partial credit awarded."
+
+        # Extract diagnostics
+        diag_error_tags: tuple[str, ...] = tuple(
+            str(t) for t in (trace.get("diagnostic_error_tags") or [])
+        )
+        failed_steps: tuple[str, ...] = ()
+        if has_result and outcome in ("incorrect", "partial"):
+            exec_records = trace.get("execution") or []
+            failed_steps = tuple(
+                str(e.get("concept_id", "?")) for e in exec_records
+                if not e.get("success")
+            )
+
+        return TutorAssessmentResult(
+            item_id=item.item_id,
+            outcome=outcome,
+            marks_awarded=marks_awarded,
+            marks_max=marks_max,
+            feedback=feedback,
+            error_tags=diag_error_tags,
+            concept_ids=concept_ids,
+            template_ref=template_ref,
+            failed_steps=failed_steps,
+            error_patterns=diag_error_tags,
+            diagnostic_confidence=confidence,
+            retry_recommended=(outcome != "correct"),
+            next_difficulty="easier" if outcome == "incorrect" else "same",
         )
 
     def _assess_keyword_based(

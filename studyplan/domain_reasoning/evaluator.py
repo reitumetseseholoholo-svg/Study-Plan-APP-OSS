@@ -1,0 +1,208 @@
+"""Evaluation pipeline: question → concept detection → template execution → diagnostics.
+
+This is the primary entry point for deterministic concept evaluation.
+It connects the concept registry, template registry, numerical solver
+input extraction, and diagnostic output.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Any
+
+from studyplan.numerical_solver import (
+    extract_numbers,
+    detect_formulas,
+    verify_numerical_answer,
+)
+from studyplan.domain_reasoning.concepts import (
+    BUILTIN_CONCEPTS,
+    detect_concepts,
+)
+from studyplan.domain_reasoning.templates import TEMPLATE_REGISTRY
+from studyplan.domain_reasoning.diagnostics import (
+    ConceptEvaluation,
+    QuestionDiagnostic,
+    StepEvaluation,
+    merge_concept_results,
+)
+
+
+def evaluate_question(
+    question: str,
+    options: list[str] | None = None,
+    correct: str | None = None,
+    *,
+    template_ref: str | None = None,
+    template_inputs: dict[str, Any] | None = None,
+    explanation: str | None = None,
+    learner_answer: str | None = None,
+) -> QuestionDiagnostic:
+    """Run the full deterministic evaluation pipeline on a question.
+
+    Steps:
+      1. Detect formula names from question text.
+      2. Map to concept IDs.
+      3. For each concept, try to execute its template.
+      4. Aggregate concept-level evaluations into a ``QuestionDiagnostic``.
+
+    This is a best-effort pipeline — it returns whatever diagnostics are
+    available without raising on missing data.
+    """
+    formulas = detect_formulas(question)
+    concept_ids = detect_concepts(question, formulas)
+    nums = extract_numbers(question)
+    parsed_correct = _try_parse_correct(correct)
+
+    evaluations: list[ConceptEvaluation] = []
+
+    # Tier 1: Exact template execution (if template_ref provided)
+    if template_ref and template_inputs:
+        ev = _evaluate_single_concept(
+            template_ref, template_inputs,
+            parsed_correct, learner_answer,
+            is_primary=True,
+        )
+        if ev is not None:
+            evaluations.append(ev)
+
+    # Tier 2: Detected concept evaluation
+    for cid in concept_ids:
+        if cid == template_ref:
+            continue  # Already evaluated as Tier 1
+        if cid not in TEMPLATE_REGISTRY:
+            continue
+        inputs = _extract_inputs_for_concept(cid, nums, question)
+        if not inputs:
+            continue
+        ev = _evaluate_single_concept(
+            cid, inputs,
+            parsed_correct, learner_answer,
+            is_primary=False,
+        )
+        if ev is not None:
+            evaluations.append(ev)
+
+    # Tier 3: Numerical verification using existing verify_numerical_answer
+    if options and correct and not evaluations:
+        v_result = verify_numerical_answer(
+            question, options, correct,
+            template_ref=template_ref,
+            template_inputs=template_inputs,
+            explanation=explanation,
+        )
+        if v_result is not None:
+            evaluations.append(ConceptEvaluation(
+                concept_id="builtin.numerical_verification",
+                result=0.0,
+                error_tags=[v_result],
+                confidence=0.5,
+            ))
+
+    if not evaluations:
+        return QuestionDiagnostic(
+            question_slug=question[:80],
+            has_deterministic_truth=False,
+        )
+
+    return merge_concept_results(evaluations, BUILTIN_CONCEPTS)
+
+
+def _try_parse_correct(correct: str | None) -> float | None:
+    if not correct:
+        return None
+    stripped = str(correct).strip().lstrip("$").lstrip("\u00a3").lstrip("\u20ac")
+    stripped = stripped.replace(",", "").replace("%", "")
+    try:
+        return float(stripped)
+    except (ValueError, TypeError):
+        return None
+
+
+def _evaluate_single_concept(
+    concept_id: str,
+    inputs: dict[str, Any],
+    correct_value: float | None,
+    learner_answer: str | None,
+    is_primary: bool = False,
+) -> ConceptEvaluation | None:
+    template = TEMPLATE_REGISTRY.get(concept_id)
+    if template is None:
+        return None
+    try:
+        truth = template.solve(inputs)
+    except Exception:
+        return None
+    if not truth or truth.get("is_nan", False):
+        return None
+
+    result = truth.get("result")
+    truth_steps = truth.get("steps", [])
+
+    # Build step evaluations
+    step_evals: list[StepEvaluation] = []
+    for s in truth_steps or []:
+        step_evals.append(StepEvaluation(
+            step_id=s.get("step_id", ""),
+            description=s.get("description", ""),
+            expected=float(s.get("value", 0)) if s.get("value") is not None else None,
+        ))
+
+    # Error classification
+    error_tags: list[str] = []
+    if correct_value is not None and result is not None:
+        if not _value_matches(result, correct_value):
+            error_tags.append("final_answer_mismatch")
+
+    # Classify via template if learner answer available
+    if learner_answer is not None:
+        try:
+            learner_val = float(learner_answer)
+            learner_steps = [{"step_id": "learner_final", "value": learner_val}]
+            tags_from_template = template.classify_errors(learner_steps, truth)
+            error_tags.extend(tags_from_template)
+        except (ValueError, TypeError):
+            pass
+
+    confidence = 0.9 if is_primary else 0.7
+    if error_tags:
+        confidence = max(0.3, confidence - len(error_tags) * 0.1)
+
+    return ConceptEvaluation(
+        concept_id=concept_id,
+        template_version=getattr(template, "template_version", "1.0.0"),
+        result=float(result) if result is not None else None,
+        is_nan=truth.get("is_nan", False),
+        steps=step_evals,
+        error_tags=error_tags,
+        confidence=confidence,
+        inputs_used=dict(inputs),
+    )
+
+
+def _extract_inputs_for_concept(
+    concept_id: str,
+    nums: list[dict[str, Any]],
+    question: str,
+) -> dict[str, Any] | None:
+    """Extract numerical parameters from question text for a given concept.
+
+    Uses the same candidate functions as the numerical solver's Tier 3,
+    returning the first plausible parameter set.
+    """
+    from studyplan.numerical_solver import _FORMULA_CANDIDATES, _FORMULA_SOLVERS
+    formula_name = concept_id.replace("fm.", "", 1)
+    candidate_fn = _FORMULA_CANDIDATES.get(formula_name)
+    if candidate_fn is None:
+        return None
+    param_sets = candidate_fn(nums)
+    if not param_sets:
+        return None
+    return param_sets[0]
+
+
+def _value_matches(ref: float, candidate: float) -> bool:
+    if math.isnan(ref) or math.isnan(candidate):
+        return False
+    abs_tol = max(0.01, abs(ref) * 0.005)
+    return abs(ref - candidate) <= abs_tol

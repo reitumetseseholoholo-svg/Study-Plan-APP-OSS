@@ -1993,7 +1993,7 @@ def test_summarize_ai_tutor_telemetry_computes_rates_and_error_breakdown():
     assert summary["p95_latency_ms"] == pytest.approx(1200.0)
     assert summary["avg_prompt_chars"] == pytest.approx((120 + 100 + 80 + 60) / 4.0)
     assert summary["error_classes"] == {"busy": 2, "timeout": 1}
-    assert summary["rag_target_count"] == 2
+    assert summary["rag_target_count"] == 4
     assert summary["rag_target_hit_count"] == 1
     assert summary["rag_insufficient_flag"] == 1
     assert summary["rag_source_mix"] == "notes:1"
@@ -6839,7 +6839,7 @@ def test_start_stop_core_housekeeping_timers_registers_and_cleans_sources(monkey
 
     StudyPlanGUI._start_core_housekeeping_timers(dummy)
 
-    assert [row[0] for row in timer_calls] == [60000, 4000, 2000, 90000]
+    assert [row[0] for row in timer_calls] == [60000, 4000, 2000, 7200000]
     assert registered == [101, 102, 103, 104]
     assert int(dummy._auto_train_timer_id) == 101
     assert int(dummy._semantic_warmup_timer_id) == 102
@@ -6889,7 +6889,7 @@ def test_start_core_housekeeping_timers_skips_semantic_and_auto_train_in_smoke_m
 
     StudyPlanGUI._start_core_housekeeping_timers(dummy)
 
-    assert [row[0] for row in timer_calls] == [2000, 90000]
+    assert [row[0] for row in timer_calls] == [2000, 7200000]
     assert registered == [201, 202]
     assert int(dummy._auto_train_timer_id) == 0
     assert int(dummy._semantic_warmup_timer_id) == 0

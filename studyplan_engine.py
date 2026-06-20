@@ -24,6 +24,9 @@ from studyplan.config import Config as StudyPlanConfig
 from studyplan.cognitive_state import CognitiveState
 from studyplan.mastery_kernel import MasteryKernel
 from studyplan.persistence_layer import PersistenceLayer
+from studyplan.numerical_solver import verify_numerical_answer
+from studyplan.domain_reasoning import detect_concepts as _domain_detect_concepts
+from studyplan.domain_reasoning import reason_question as _domain_reason_question
 from studyplan.question_quality import (
     assess_question_quality_extended,
     generated_question_rejection_reasons,
@@ -3019,6 +3022,24 @@ class StudyPlanEngine:
                 detect_similar=True,
                 similar_min_words=8,
             )
+            # Numerical accuracy audit: catch arithmetically wrong answers
+            # that may have escaped the sanitization gate.
+            for idx, row in enumerate(items):
+                if not isinstance(row, dict):
+                    continue
+                if any(i == idx for i, _ in poor):
+                    continue
+                num_issue = verify_numerical_answer(
+                    str(row.get("question", "") or ""),
+                    list(row.get("options", []) or []),
+                    str(row.get("correct", "") or ""),
+                    explanation=str(row.get("explanation", "") or "") or None,
+                )
+                if num_issue:
+                    poor.append((idx, num_issue))
+                    self._append_question_quality_quarantine(
+                        chapter, row, [num_issue], source="numerical_audit",
+                    )
             if not poor:
                 continue
             by_chapter = meta.setdefault(str(chapter), {})
@@ -8979,6 +9000,16 @@ class StudyPlanEngine:
                 "missing_correct",
             }
         ]
+        # Numerical verification: reject if the "correct" answer is arithmetically wrong
+        num_issue = verify_numerical_answer(
+            str(question),
+            [str(opt) for opt in options],
+            str(correct),
+            explanation=str(explanation) if explanation else None,
+        )
+        if num_issue:
+            deterministic_rejects.append(num_issue)
+
         if deterministic_rejects:
             if quarantine_on_fail:
                 self._append_question_quality_quarantine(chapter, row, deterministic_rejects, source=source)
@@ -9002,6 +9033,11 @@ class StudyPlanEngine:
                 cleaned[extra_key] = max(0.0, min(1.0, float(val)))
             else:
                 cleaned[extra_key] = val
+        # Domain reasoning enrichment: detect deterministic concept IDs
+        try:
+            cleaned["concept_ids"] = _domain_detect_concepts(str(question))
+        except Exception:
+            pass
         return cleaned, [], meta
 
     def _question_dedupe_key(self, q: Dict[str, Any]) -> Tuple[str, Tuple[str, ...], str]:
@@ -13957,6 +13993,58 @@ class StudyPlanEngine:
                     os.remove(tmp_path)
             except OSError:
                 pass
+
+    # -----------------------------------------------------------------------
+    # Domain reasoning API
+    # -----------------------------------------------------------------------
+
+    def domain_detect_concepts(self, question: str) -> list[str]:
+        """Detect deterministic concept IDs from question text.
+
+        Returns a list of concept IDs (e.g. ``["fm.npv", "fm.irr"]``)
+        that can be evaluated by the domain reasoning layer, or an
+        empty list if no concepts are recognized.
+
+        This never raises — failures degrade to empty results.
+        """
+        try:
+            return _domain_detect_concepts(str(question or ""))
+        except Exception:
+            return []
+
+    def domain_reason_question(
+        self,
+        question: str,
+        *,
+        options: list[str] | None = None,
+        correct: str | None = None,
+        learner_answer: str | None = None,
+        explanation: str | None = None,
+        template_ref: str | None = None,
+        template_inputs: dict | None = None,
+    ) -> dict:
+        """Run the reasoning engine and return a serialisable trace dict.
+
+        Accepts the same parameters as the standalone
+        ``reason_question()`` function.  Returns a dict (via
+        ``ReasoningTrace.to_dict()``) suitable for JSON serialisation
+        and pipeline integration.
+
+        This never raises — failures degrade to a minimal trace dict.
+        """
+        try:
+            trace = _domain_reason_question(
+                str(question or ""),
+                options=options,
+                correct=correct,
+                learner_answer=learner_answer,
+                explanation=explanation,
+                template_ref=template_ref,
+                template_inputs=template_inputs,
+            )
+            return trace.to_dict()
+        except Exception:
+            return {"question": str(question or ""), "has_result": False, "trace_summary": "error"}
 
     def record_progress_snapshot(self, when: datetime.date | None = None) -> None:
         """Record a daily snapshot of overall mastery and total minutes."""

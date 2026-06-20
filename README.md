@@ -60,8 +60,9 @@ pytest
 pytest tests/ studyplan/testing/
 ```
 
-- **Default (no GTK):** **388 tests** run. Path helpers live in `studyplan_app_path_utils.py`, so `tests/test_studyplan_app_paths.py` no longer needs `studyplan_app`. The remaining gap is `tests/test_studyplan_app_ollama.py` (157 tests), which requires `studyplan_app` and thus PyGObject/GTK4.
-- **Full suite (500+ tests):** install the optional extra and system GTK4 so the ollama app tests run: `pip install -e ".[test-full]"` (or `poetry install -E test-full`). Requires system libraries (e.g. Debian/Ubuntu: `apt install python3-gi gir1.2-gtk-4.0`). Then `pytest` runs **545 tests**.
+- **Default (no GTK):** **~1,328 test items** run. GTK-free tests live in `tests/` (minus `tests/test_studyplan_app_ollama.py`) and `studyplan/testing/`. The GTK-dependent `tests/test_studyplan_app_ollama.py` (~322 test functions, parametrized to ~348 items) requires `studyplan_app` and thus PyGObject/GTK4.
+- **Full suite:** install the optional extra and system GTK4 so the ollama app tests run: `pip install -e ".[test-full]"` (or `poetry install -E test-full`). Requires system libraries (e.g. Debian/Ubuntu: `apt install python3-gi gir1.2-gtk-4.0`). Then `pytest` runs **~1,676 test items** (1675 passed + 1 skipped).
+- **Domain reasoning engine** (80 tests): `tests/test_reasoning_engine.py` (76) + `tests/test_domain_reasoning.py` (63) + `tests/test_numerical_solver.py` (81) = 220 test functions covering solver correctness, multi-path fallback, gap analysis, and weighted confidence.
 
 ### Protected no-regression flows
 
@@ -77,7 +78,7 @@ pytest tests/ studyplan/testing/
 The primary desktop no-regression gate is `.github/workflows/linux-ci.yml`:
 
 - `python tools/gtk4_lint.py`
-- `pyright studyplan_app.py studyplan_ai_tutor.py studyplan_engine.py studyplan tests`
+- `pyright studyplan_app.py studyplan_ai_tutor.py studyplan_engine.py studyplan`
 - `pytest -q`
 - `xvfb-run -a timeout 180s python studyplan_app.py --dialog-smoke-strict`
 
@@ -115,6 +116,9 @@ The primary desktop no-regression gate is `.github/workflows/linux-ci.yml`:
 - **Hardest Concepts**: tracks repeated misses per chapter
 - **Time Analytics**: time per action + per‑topic leaderboards
 - **Balance checks**: topic saturation + confidence drift (competence vs mastery/quiz)
+- **Domain reasoning engine**: deterministic concept solver with 10 FM concepts (NPV, WACC, CAPM, IRR, payback, ARR, CCC, EOQ, gearing), multi-path fallback, input gap analysis, and weighted confidence scoring
+- **Domain-aware assessment**: practice loop integration via `DeterministicTutorAssessmentService._assess_domain_item()` — items with `template_ref` are evaluated against deterministic truth; step-level diagnostics (`failed_steps`, `error_patterns`) flow into `TutorAssessmentResult` and `TutorLearnerProfileSnapshot`
+- **Concept error tracking**: learner profile tracks `weak_concept_ids_top` and `concept_error_patterns`; surfaced in tutor context brief as "Weak domain concepts"
 - **Semantic graph + clusters**: canonical concept graph and outcome cluster graph for stable semantic routing
 - **Semantic Drift KPI**: thresholded drift alerts when chapter competence diverges from outcome mastery
 - **Confidence Drift chart**: top gap visualization
@@ -327,13 +331,15 @@ Strict smoke KPI thresholds:
 - Fixed a quiz runtime issue where full dashboard rebuilds could trigger high CPU/jank during answer confirmation
 - Added defensive quiz selection/history handling to reduce repetitive card loops and corrupted history impact
 - Hardened file chooser path handling to avoid noisy GTK deprecation warnings in normal use
+- **Domain reasoning engine** (`studyplan/domain_reasoning/`): four-phase implementation adding parameter key detection, multi-path fallback (alternative concepts for same output slot), input gap analysis (greedy fixed-point provider insertion), and weighted confidence (`avg_quality × success_rate`). 220 test functions; pyright-clean.
 
 ## Files
 
-- `studyplan_app.py` — GTK4 app UI (~51,000 lines; StudyPlanGUI/StudyApp)
-- `studyplan_engine.py` — engine + data model (~13,500 lines; SRS, coach, ML, persistence)
+- `studyplan_app.py` — GTK4 app UI (~53,500 lines; StudyPlanGUI/StudyApp)
+- `studyplan_engine.py` — engine + data model (~14,400 lines; SRS, coach, ML, persistence)
 - `studyplan_ai_tutor.py` — AI tutor session management, RAG, prompt assembly
 - `studyplan/` — pure-Python library: config, FSRS, contracts, coach FSM, cognitive state, AI routing
+- `studyplan/domain_reasoning/` — GTK-free domain reasoning engine: deterministic concept solver, multi-path fallback, gap analysis, weighted confidence
 - `modules/*.json` — built-in module configs (ACCA F6, F7, F8, F9) and question banks
 - `tools/` — ML training scripts, GTK4 linter, tutor quality pipeline
 - `tests/` — unit tests (~388 no-GTK tests + tutor quality suite)

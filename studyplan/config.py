@@ -337,7 +337,7 @@ class Config:
 
     # In-app question generation: daily auto-generation runs until this cap (cards/questions) is reached; after that, generation is on user demand or when the tutor deems it necessary (e.g. topic has very few questions).
     AUTO_QUESTION_GENERATION_CAP = _parse_int(
-        "STUDYPLAN_AUTO_QUESTION_GENERATION_CAP", 1500, min_value=100, max_value=50000
+        "STUDYPLAN_AUTO_QUESTION_GENERATION_CAP", 10000, min_value=100, max_value=50000
     )
     # Max questions to generate per calendar day during the auto phase (below cap), to avoid long runs.
     AUTO_QUESTION_GENERATION_DAILY_BUDGET = _parse_int(

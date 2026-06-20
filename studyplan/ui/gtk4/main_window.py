@@ -162,7 +162,7 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
         session = self.session_controller.get_or_create_session(
             session_id="main", module="ACCA", topic="General"
         )
-        self.header_bar.set_title_widget(Gtk.Label(label=f"ACCA Study Plan - {session.topic}"))
+        self.header_bar.set_title_widget(Gtk.Label(label=f"Study Plan - {session.topic}"))
 
     def _restore_application_state(self):
         """Restore persisted state for the secondary GTK4 shell."""

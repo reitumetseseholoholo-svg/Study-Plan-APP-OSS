@@ -198,10 +198,13 @@ class TutorPracticeItem:
     source: str = "tutor_micro"
     capability_tags: tuple[str, ...] = ()
     rubric_hints: tuple[str, ...] = ()
+    concept_ids: tuple[str, ...] = ()
+    template_ref: str = ""
+    template_inputs: dict[str, Any] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "item_id": str(self.item_id or ""),
             "item_type": str(self.item_type or ""),
             "prompt": str(self.prompt or ""),
@@ -213,6 +216,13 @@ class TutorPracticeItem:
             "rubric_hints": list(self.rubric_hints),
             "meta": dict(self.meta or {}),
         }
+        if self.concept_ids:
+            d["concept_ids"] = list(self.concept_ids)
+        if self.template_ref:
+            d["template_ref"] = self.template_ref
+        if self.template_inputs:
+            d["template_inputs"] = dict(self.template_inputs)
+        return d
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "TutorPracticeItem":
@@ -227,6 +237,9 @@ class TutorPracticeItem:
             source=str(data.get("source", "tutor_micro") or "tutor_micro"),
             capability_tags=_tuple_str(data.get("capability_tags")),
             rubric_hints=_tuple_str(data.get("rubric_hints")),
+            concept_ids=_tuple_str(data.get("concept_ids")),
+            template_ref=str(data.get("template_ref", "") or ""),
+            template_inputs=_dict_str_any(data.get("template_inputs")),
             meta=_dict_str_any(data.get("meta")),
         )
 
@@ -280,13 +293,18 @@ class TutorAssessmentResult:
     feedback: str
     error_tags: tuple[str, ...] = ()
     misconception_tags: tuple[str, ...] = ()
+    concept_ids: tuple[str, ...] = ()
+    template_ref: str = ""
+    failed_steps: tuple[str, ...] = ()
+    error_patterns: tuple[str, ...] = ()
+    diagnostic_confidence: float = 0.0
     retry_recommended: bool = False
     next_difficulty: str = "same"
     suggested_next_step: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "item_id": str(self.item_id or ""),
             "outcome": str(self.outcome or "incorrect"),
             "marks_awarded": float(self.marks_awarded),
@@ -299,6 +317,17 @@ class TutorAssessmentResult:
             "suggested_next_step": str(self.suggested_next_step or ""),
             "meta": dict(self.meta or {}),
         }
+        if self.concept_ids:
+            d["concept_ids"] = list(self.concept_ids)
+        if self.template_ref:
+            d["template_ref"] = self.template_ref
+        if self.failed_steps:
+            d["failed_steps"] = list(self.failed_steps)
+        if self.error_patterns:
+            d["error_patterns"] = list(self.error_patterns)
+        if self.diagnostic_confidence:
+            d["diagnostic_confidence"] = self.diagnostic_confidence
+        return d
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "TutorAssessmentResult":
@@ -313,6 +342,11 @@ class TutorAssessmentResult:
             feedback=str(data.get("feedback", "") or ""),
             error_tags=_tuple_str(data.get("error_tags")),
             misconception_tags=_tuple_str(data.get("misconception_tags")),
+            concept_ids=_tuple_str(data.get("concept_ids")),
+            template_ref=str(data.get("template_ref", "") or ""),
+            failed_steps=_tuple_str(data.get("failed_steps")),
+            error_patterns=_tuple_str(data.get("error_patterns")),
+            diagnostic_confidence=float(data.get("diagnostic_confidence", 0.0) or 0.0),
             retry_recommended=bool(data.get("retry_recommended", False)),
             next_difficulty=str(data.get("next_difficulty", "same") or "same"),
             suggested_next_step=str(data.get("suggested_next_step", "") or ""),
@@ -327,6 +361,8 @@ class TutorLearnerProfileSnapshot:
     schema_version: int = 1
     misconception_tags_top: tuple[str, ...] = ()
     weak_capabilities_top: tuple[str, ...] = ()
+    weak_concept_ids_top: tuple[str, ...] = ()
+    concept_error_patterns: dict[str, tuple[str, ...]] = field(default_factory=dict)
     preferred_explanation_style: str = "worked_example"
     response_speed_tier: str = "unknown"
     confidence_calibration_bias: float = 0.0
@@ -336,7 +372,7 @@ class TutorLearnerProfileSnapshot:
     meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "learner_id": str(self.learner_id or ""),
             "module": str(self.module or ""),
             "schema_version": int(self.schema_version),
@@ -350,16 +386,29 @@ class TutorLearnerProfileSnapshot:
             "last_updated_ts": str(self.last_updated_ts or ""),
             "meta": dict(self.meta or {}),
         }
+        if self.weak_concept_ids_top:
+            d["weak_concept_ids_top"] = list(self.weak_concept_ids_top)
+        if self.concept_error_patterns:
+            d["concept_error_patterns"] = {
+                k: list(v) for k, v in self.concept_error_patterns.items()
+            }
+        return d
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "TutorLearnerProfileSnapshot":
         data = payload if isinstance(payload, dict) else {}
+        raw_cep = data.get("concept_error_patterns", {})
+        cep: dict[str, tuple[str, ...]] = {}
+        if isinstance(raw_cep, dict):
+            cep = {str(k): _tuple_str(v) for k, v in raw_cep.items()}
         return cls(
             learner_id=str(data.get("learner_id", "") or ""),
             module=str(data.get("module", "") or ""),
             schema_version=_clamp_int(data.get("schema_version", 1), 1, 1, 999),
             misconception_tags_top=_tuple_str(data.get("misconception_tags_top")),
             weak_capabilities_top=_tuple_str(data.get("weak_capabilities_top")),
+            weak_concept_ids_top=_tuple_str(data.get("weak_concept_ids_top")),
+            concept_error_patterns=cep,
             preferred_explanation_style=str(data.get("preferred_explanation_style", "worked_example") or "worked_example"),
             response_speed_tier=str(data.get("response_speed_tier", "unknown") or "unknown"),
             confidence_calibration_bias=_clamp_float(data.get("confidence_calibration_bias", 0.0), 0.0, -5.0, 5.0),

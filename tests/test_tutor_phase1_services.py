@@ -1182,3 +1182,223 @@ def test_structure_registry_infers_default_fm_structures_from_topic_and_tags():
     assert s1 is not None and s1.structure_type == StructureType.NPV_ANNUITY_TIMING
     assert s2 is not None and s2.structure_type == StructureType.WACC_OPTIMIZATION
     assert s3 is not None and s3.structure_type == StructureType.WORKING_CAPITAL_CYCLE
+
+
+# ---------------------------------------------------------------------------
+# Domain-aware assessment integration
+# ---------------------------------------------------------------------------
+
+
+def _make_domain_item(
+    template_ref: str = "fm.npv",
+    concept_ids: tuple[str, ...] = ("fm.npv",),
+    prompt: str = "Calculate NPV given cost 1000, return 1200, rate 10%",
+    marks_max: float = 5.0,
+) -> TutorPracticeItem:
+    return TutorPracticeItem(
+        item_id="domain-001",
+        item_type="calculation_step",
+        topic="Investment Appraisal",
+        prompt=prompt,
+        template_ref=template_ref,
+        template_inputs={"cost": 1000, "return": 1200, "rate": 0.10},
+        concept_ids=concept_ids,
+        difficulty="medium",
+        meta={"marks_max": marks_max},
+    )
+
+
+def _make_correct_trace() -> dict:
+    """Simulate a domain_reasoner returning a correct trace."""
+    return {
+        "has_result": True,
+        "final_result": 1090.91,
+        "confidence": 0.95,
+        "diagnostic_error_tags": [],
+        "execution": [
+            {"concept_id": "fm.npv", "success": True, "result": 1090.91},
+        ],
+    }
+
+
+def _make_incorrect_trace() -> dict:
+    """Simulate a domain_reasoner returning an incorrect trace."""
+    return {
+        "has_result": True,
+        "final_result": 1090.91,
+        "confidence": 0.85,
+        "diagnostic_error_tags": ["final_answer_mismatch"],
+        "execution": [
+            {"concept_id": "fm.npv", "success": True, "result": 1090.91},
+        ],
+    }
+
+
+def _make_error_trace() -> dict:
+    """Simulate a domain_reasoner with execution failures."""
+    return {
+        "has_result": True,
+        "final_result": 1090.91,
+        "confidence": 0.45,
+        "diagnostic_error_tags": ["sign_error", "final_answer_mismatch"],
+        "execution": [
+            {"concept_id": "fm.npv", "success": True, "result": 1090.91},
+            {"concept_id": "fm.pv_calc", "success": False, "result": None},
+        ],
+    }
+
+
+class TestDomainAwareAssessment:
+    """DeterministicTutorAssessmentService domain reasoning integration."""
+
+    def test_domain_item_correct_answer(self):
+        """Correct learner answer against deterministic truth."""
+        svc = DeterministicTutorAssessmentService(
+            domain_reasoner=lambda *a, **kw: _make_correct_trace(),
+        )
+        item = _make_domain_item()
+        sub = TutorAssessmentSubmission(item_id=item.item_id, answer_text="1090.91")
+        result = svc.assess(item=item, submission=sub, session_state=None, learner_profile=None)
+        assert result.outcome == "correct"
+        assert result.marks_awarded == 5.0
+        assert result.concept_ids == ("fm.npv",)
+        assert result.template_ref == "fm.npv"
+        assert result.diagnostic_confidence == 0.95
+
+    def test_domain_item_incorrect_answer(self):
+        """Incorrect learner answer produces failed steps and error patterns."""
+        svc = DeterministicTutorAssessmentService(
+            domain_reasoner=lambda *a, **kw: _make_incorrect_trace(),
+        )
+        item = _make_domain_item()
+        sub = TutorAssessmentSubmission(item_id=item.item_id, answer_text="500")
+        result = svc.assess(item=item, submission=sub, session_state=None, learner_profile=None)
+        assert result.outcome == "incorrect"
+        assert result.error_patterns == ("final_answer_mismatch",)
+        assert result.retry_recommended is True
+
+    def test_domain_item_partial_near_miss(self):
+        """Answer within 5x tolerance gets partial credit."""
+        svc = DeterministicTutorAssessmentService(
+            domain_reasoner=lambda *a, **kw: _make_correct_trace(),
+        )
+        item = _make_domain_item()
+        # tolerance = max(0.01, 1090.91 * 0.005) ≈ 5.45, so within 5x = 27.3
+        sub = TutorAssessmentSubmission(item_id=item.item_id, answer_text="1080")
+        result = svc.assess(item=item, submission=sub, session_state=None, learner_profile=None)
+        assert result.outcome == "partial"
+        assert 0 < result.marks_awarded < 5.0
+
+    def test_domain_item_with_execution_failures(self):
+        """Failed steps propagated from execution records."""
+        svc = DeterministicTutorAssessmentService(
+            domain_reasoner=lambda *a, **kw: _make_error_trace(),
+        )
+        item = _make_domain_item()
+        sub = TutorAssessmentSubmission(item_id=item.item_id, answer_text="500")
+        result = svc.assess(item=item, submission=sub, session_state=None, learner_profile=None)
+        assert result.outcome == "incorrect"
+        assert "fm.pv_calc" in result.failed_steps
+        assert "sign_error" in result.error_patterns
+
+    def test_domain_item_no_reasoner_fallback(self):
+        """No domain_reasoner configured → falls through to default path (calculation_step)."""
+        svc = DeterministicTutorAssessmentService(domain_reasoner=None)
+        item = _make_domain_item()
+        # Set meta numeric_answer so _assess_numeric can match
+        item_numeric = TutorPracticeItem(
+            item_id="domain-001",
+            item_type="calculation_step",
+            topic="Investment Appraisal",
+            prompt="Calculate NPV given cost 1000, return 1200, rate 10%",
+            template_ref="fm.npv",
+            template_inputs={"cost": 1000, "return": 1200, "rate": 0.10},
+            concept_ids=("fm.npv",),
+            difficulty="medium",
+            meta={"marks_max": 5.0, "numeric_answer": 1090.91},
+        )
+        sub = TutorAssessmentSubmission(item_id=item_numeric.item_id, answer_text="1090.91")
+        result = svc.assess(item=item_numeric, submission=sub, session_state=None, learner_profile=None)
+        assert result.outcome == "correct"
+        assert result.marks_awarded == 5.0
+
+    def test_domain_item_no_template_ref_skips_domain(self):
+        """Item without template_ref goes through normal numeric path."""
+        svc = DeterministicTutorAssessmentService(
+            domain_reasoner=lambda *a, **kw: _make_correct_trace(),
+        )
+        item = TutorPracticeItem(
+            item_id="normal-001",
+            item_type="calculation_step",
+            topic="Test",
+            prompt="Compute 2+2",
+            meta={"numeric_answer": 4, "marks_max": 1.0},
+        )
+        sub = TutorAssessmentSubmission(item_id=item.item_id, answer_text="4")
+        result = svc.assess(item=item, submission=sub, session_state=None, learner_profile=None)
+        assert result.outcome == "correct"
+        # No domain fields
+        assert result.template_ref == ""
+        assert result.concept_ids == ()
+
+    def test_domain_item_non_numeric_learner_answer(self):
+        """Non-numeric learner answer gets incorrect with helpful feedback."""
+        svc = DeterministicTutorAssessmentService(
+            domain_reasoner=lambda *a, **kw: _make_correct_trace(),
+        )
+        item = _make_domain_item()
+        sub = TutorAssessmentSubmission(item_id=item.item_id, answer_text="I don't know")
+        result = svc.assess(item=item, submission=sub, session_state=None, learner_profile=None)
+        assert result.outcome == "incorrect"
+
+
+class TestConceptProfileTracking:
+    """InMemoryTutorLearnerModelStore concept error pattern tracking."""
+
+    def test_note_assessment_tracks_concept_ids(self):
+        store = InMemoryTutorLearnerModelStore()
+        result = TutorAssessmentResult(
+            item_id="t1",
+            outcome="incorrect",
+            marks_awarded=0.0,
+            marks_max=5.0,
+            feedback="wrong",
+            concept_ids=("fm.npv", "fm.pv"),
+            template_ref="fm.npv",
+            error_patterns=("sign_error", "wrong_rate"),
+            diagnostic_confidence=0.85,
+            failed_steps=("fm.pv",),
+        )
+        profile = store.note_assessment("u1", "acca_fm", result)
+        assert "fm.npv" in profile.weak_concept_ids_top
+        assert "fm.npv" in profile.concept_error_patterns
+        assert "sign_error" in profile.concept_error_patterns["fm.npv"]
+
+    def test_note_assessment_concept_no_tags_noop(self):
+        """Assessment without concept_ids or error_patterns does not change profile."""
+        store = InMemoryTutorLearnerModelStore()
+        result = TutorAssessmentResult(
+            item_id="t2",
+            outcome="correct",
+            marks_awarded=1.0,
+            marks_max=1.0,
+            feedback="ok",
+        )
+        profile = store.note_assessment("u1", "acca_fm", result)
+        assert profile.weak_concept_ids_top == ()
+        assert profile.concept_error_patterns == {}
+
+    def test_note_assessment_merges_consecutive_error_patterns(self):
+        store = InMemoryTutorLearnerModelStore()
+        r1 = TutorAssessmentResult(
+            item_id="t1", outcome="incorrect", marks_awarded=0, marks_max=5, feedback="",
+            concept_ids=("fm.npv",), error_patterns=("sign_error",),
+        )
+        r2 = TutorAssessmentResult(
+            item_id="t1", outcome="incorrect", marks_awarded=0, marks_max=5, feedback="",
+            concept_ids=("fm.npv",), error_patterns=("sign_error", "wrong_rate"),
+        )
+        store.note_assessment("u1", "acca_fm", r1)
+        profile = store.note_assessment("u1", "acca_fm", r2)
+        assert len(profile.concept_error_patterns.get("fm.npv", ())) >= 2
+        assert "fm.npv" in profile.weak_concept_ids_top

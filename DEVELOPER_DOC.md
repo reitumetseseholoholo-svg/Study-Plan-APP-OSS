@@ -21,8 +21,9 @@ This document covers the application architecture, key subsystems, internal desi
 15. [GTK4 Application Architecture](#gtk4-application-architecture)
 16. [Testing Architecture](#testing-architecture)
 17. [CI Workflow](#ci-workflow)
-18. [Configuration Reference](#configuration-reference)
-19. [Deployment](#deployment)
+18. [Domain Reasoning Engine](#domain-reasoning-engine)
+19. [Configuration Reference](#configuration-reference)
+20. [Deployment](#deployment)
 
 ---
 
@@ -43,23 +44,27 @@ Study Assistant is a **single-process GTK4 desktop application**. There is no ba
 ┌─────────────────────────────────────────────────────────┐
 │                   studyplan_engine.py                   │
 │  StudyPlanEngine — data model, SRS, scheduling, ML,     │
-│  syllabus parsing, persistence, semantic routing        │
-└────────────────────────┬────────────────────────────────┘
-                         │
-          ┌──────────────┼──────────────┐
-          ▼              ▼              ▼
-    studyplan/        studyplan/     studyplan/
-     fsrs.py          ai/ (LLM)    cognitive_state.py
-     contracts.py     services.py  mastery_kernel.py
-     config.py        ...          coach_fsm.py
+│  syllabus parsing, semantic routing, persistence        │
+└──────────────┬──────────────────────────┬───────────────┘
+               │                          │
+               ▼                          ▼
+     studyplan/domain_reasoning/     studyplan/
+     reasoning_engine.py             fsrs.py
+     concepts.py                     contracts.py
+     templates.py                    config.py
+     evaluator.py                    ai/ (LLM)
+     diagnostics.py                  services.py
+     domains/acca_fm/                cognitive_state.py
+       npv, wacc, capm, irr, ...    mastery_kernel.py
+                                     coach_fsm.py
 ```
 
 ### Files and their roles
 
 | File | Role |
 |---|---|
-| `studyplan_app.py` | GTK4 main window. All UI construction, event handlers, Pomodoro, quiz flow, AI cockpit, preferences. ~51,000 lines. |
-| `studyplan_engine.py` | Data model, SRS (FSRS-4.5/SM-2), daily plan, coach urgency scoring, ML inference, syllabus parsing, semantic routing, persistence. ~13,500 lines. |
+| `studyplan_app.py` | GTK4 main window. All UI construction, event handlers, Pomodoro, quiz flow, AI cockpit, preferences. ~53,500 lines. |
+| `studyplan_engine.py` | Data model, SRS (FSRS-4.5/SM-2), daily plan, coach urgency scoring, ML inference, syllabus parsing, semantic routing, persistence. ~14,400 lines. |
 | `studyplan_ai_tutor.py` | AI tutor session management: prompt assembly, RAG retrieval, Ollama/gateway calls, streaming, response sanitization. |
 | `studyplan_app_kpi_routing.py` | KPI thresholds and smoke/soak test routing helpers. GTK-independent. |
 | `studyplan_app_path_utils.py` | Path helpers extracted for unit-testability without GTK. |
@@ -68,6 +73,12 @@ Study Assistant is a **single-process GTK4 desktop application**. There is no ba
 | `studyplan/config.py` | `Config` class — single source of truth for all runtime configuration. All settings are environment-variable-driven with typed defaults. |
 | `studyplan/contracts.py` | Typed dataclass API contracts shared between engine, tutor, and services. |
 | `studyplan/services.py` | Python Protocol interfaces (`TutorService`, `CoachService`, `RagService`, `AutopilotService`, etc.). |
+| `studyplan/domain_reasoning/reasoning_engine.py` | Deterministic domain reasoning entry point: `reason_question()`, plan compilation, execution, multi-path fallback, gap analysis, confidence scoring. |
+| `studyplan/domain_reasoning/concepts.py` | Concept registry: `BUILTIN_CONCEPTS`, `_OUTPUT_SLOT_GROUPS`, concept loading from module JSON. |
+| `studyplan/domain_reasoning/templates.py` | `FormulaTemplate`: base class for executable solver templates with input schema, output schema, and `solve()`. |
+| `studyplan/domain_reasoning/evaluator.py` | Step-by-step learner answer comparison and error classification against deterministic truth. |
+| `studyplan/domain_reasoning/diagnostics.py` | Structured error pattern emission from solver comparison results. |
+| `studyplan/domain_reasoning/domains/acca_fm/` | FM domain solvers: `npv.py` (NPV), `wacc.py` (WACC), `capm.py` (CAPM), `irr.py` (IRR), `payback.py`, `arr.py`, `ccc.py` (Cash Cycle), `eoq.py` (EOQ), `gearing.py`. |
 
 ### Key design invariants
 
@@ -532,6 +543,75 @@ View stats: **Tools → More → View Performance Stats** | Clear: **Tools → M
 
 ---
 
+## Domain Reasoning Engine
+
+`studyplan/domain_reasoning/reasoning_engine.py`
+
+A GTK-free deterministic reasoning layer that executes domain concepts (formulas, procedures) and computes solution confidence. It augments the existing LLM/coach pipeline with verifiable intermediate computations.
+
+### Architecture phases
+
+**Phase 1 — Parameter key detection:** `_build_inputs_for()` probes candidate source functions to resolve which input keys a solver needs. Backward-compatible wrapper `_build_inputs_with_sources()` returns `(inputs, sources)` for provenance tracking.
+
+**Phase 2 — Multi-path fallback:** `_OUTPUT_SLOT_GROUPS` derived from `BUILTIN_CONCEPTS`. `_find_alternatives()` queries same-slot providers. `_execute_plan` retries via alternatives when a step fails (e.g. `fm.cost_of_equity_dvm` falls back to `fm.capm`).
+
+**Phase 3 — Input gap analysis:** `_plug_input_gaps()` runs after plan compilation. A greedy fixed-point algorithm inserts provider concepts when a missing parameter has a fully-available provider. Transitive dependencies are resolved at execution time.
+
+**Phase 4 — Weighted confidence:** `_compute_confidence()` blends `input_source_quality` (explicit=1.0, inferred=0.85, extracted=0.70) with step success rate via product `avg_quality × success_rate`.
+
+### Supported FM concepts
+
+| Concept | Solver | Output slot | Fallback provider |
+|---|---|---|---|
+| NPV | `npv.py` | `npv` | — |
+| WACC | `wacc.py` | `wacc` | — |
+| CAPM | `capm.py` | `cost_equity` | cost_of_equity_dvm |
+| DVM | `dvm.py` (via gearing) | `cost_equity` | capm |
+| IRR | `irr.py` | `irr` | — |
+| Payback | `payback.py` | `payback` | — |
+| ARR | `arr.py` | `arr` | — |
+| CCC | `ccc.py` | `ccc` | — |
+| EOQ | `eoq.py` | `eoq` | — |
+| Gearing | `gearing.py` | `gearing` | — |
+
+### Entry point
+
+```python
+from studyplan.domain_reasoning.reasoning_engine import reason_question
+
+result = reason_question("WACC",
+                         template_ref="fm.wacc",
+                         template_inputs={"equity": 60, "debt": 40})
+# result.confidence  → 0.111
+# result.steps       → plan with provenance and quality per step
+```
+
+### Key invariants
+
+- Domain templates override `solve()` with positional args; solver param names do NOT match input dict keys. Candidate-function probing is the primary key-detection method.
+- `_plug_input_gaps` does NOT resolve transitive dependencies of newly inserted concepts; relies on multi-path fallback at execution time.
+- WACC template applies `(1-tax)` to `cost_debt` internally; `cost_of_debt` solver returns after-tax value — double-tax is existing behaviour, not a regression.
+
+### Practice loop integration
+
+When `DeterministicTutorAssessmentService` has a `domain_reasoner` callable (wrapping `engine.domain_reason_question`), practice items that carry a `template_ref` are evaluated deterministically in `_assess_domain_item()`:
+
+1. The domain solver computes the reference truth from the item's `template_ref` + `template_inputs`
+2. The learner's final numeric answer is compared against the truth
+3. Execution failures (`failed_steps`) and error tags (`error_patterns`) are extracted from the trace
+4. These are merged into the `TutorAssessmentResult` alongside `concept_ids` and `diagnostic_confidence`
+
+The learner profile store tracks concept error patterns across assessments via `concept_error_patterns` and `weak_concept_ids_top` on `TutorLearnerProfileSnapshot`. These fields are surfaced in the tutor context brief as "Weak domain concepts".
+
+### Related test files
+
+- `tests/test_reasoning_engine.py` (76 test functions) — engine integration: fallback, gap analysis, confidence
+- `tests/test_domain_reasoning.py` (63 test functions) — concept registry and solver registry
+- `tests/test_numerical_solver.py` (81 test functions) — per-solver correctness and edge cases
+- `tests/test_tutor_phase1_services.py` — `TestDomainAwareAssessment` (7 tests) + `TestConceptProfileTracking` (3 tests)
+
+---
+
 ## GTK4 Application Architecture
 
 `StudyPlanGUI` (a `Gtk.ApplicationWindow`) is constructed by `StudyApp.do_activate()`. The class is large by necessity — GTK4 requires widget construction and callback wiring in the same scope.
@@ -560,10 +640,12 @@ All menu actions are declared in `studyplan/app/action_registry.py` as `ActionBi
 ### Test surface
 
 | Suite | Where | GTK needed? | Coverage |
-|---|---|---|---|
-| Unit (default) | `tests/` | No | ~388 tests |
-| Integration | `studyplan/testing/` | No | ~80 tests |
-| Full (with GTK) | both | Yes | ~545 tests |
+|---|---|---|---|---|
+| Unit (default) | `tests/` | No | ~1,134 test functions in 40 files |
+| Integration | `studyplan/testing/` | No | ~533 test functions in 47 files |
+| GTK-dependent | `tests/test_studyplan_app_ollama.py` | Yes | ~322 test functions (parametrized → ~348 items) |
+| Full suite | both | Yes | ~1,676 test items (1,675 passed + 1 skipped) |
+| Domain reasoning | `tests/test_reasoning_engine.py`, `tests/test_domain_reasoning.py`, `tests/test_numerical_solver.py` | No | ~220 test functions |
 | Tutor quality | `tests/tutor_quality/` | No | Prompt quality scores |
 
 ### Tutor quality pipeline

@@ -1460,7 +1460,7 @@ def test_restart_preserves_learning_cards_for_json_added_questions(tmp_path, mon
     monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
 
     extra_questions = [
-        {"question": "Extra Q1", "options": ["Opt 1", "Opt 2", "Opt 3", "Opt 4"], "correct": "Opt 1", "explanation": ""},
+        {"question": "Extra Q1", "options": ["Revenue", "Costs", "Profit", "Margin"], "correct": "Revenue", "explanation": ""},
         {"question": "Extra Q2", "options": ["Alpha", "Beta", "Gamma", "Delta"], "correct": "Alpha", "explanation": ""},
     ]
     questions_file.write_text(json.dumps({chapter: extra_questions}), encoding="utf-8")
@@ -4116,6 +4116,9 @@ def test_select_semantic_interleave_questions_prioritizes_due_and_targets(engine
 def test_select_semantic_interleave_questions_falls_back_to_srs(engine_no_io, monkeypatch):
     eng = engine_no_io
     chapter = "FM Function"
+    eng.QUESTIONS[chapter] = [
+        {"id": 0, "question": "q", "options": ["a", "b", "c", "d"], "correct": "a", "explanation": ""},
+    ]
     eng.syllabus_structure = {}
     monkeypatch.setattr(eng, "select_srs_questions", lambda _chapter, count: [7, 6, 5][:count])
     picked = eng.select_semantic_interleave_questions(chapter, count=3)
