@@ -13,6 +13,8 @@ from studyplan.numerical_solver import (
     solve_gearing, solve_interest_cover, solve_eps,
     solve_dividend_yield, solve_dividend_cover,
     solve_asset_beta, solve_equity_beta,
+    solve_pe_ratio, solve_roe, solve_cost_of_preference,
+    solve_terp, solve_perpetuity_npv, solve_roce,
     extract_numbers, detect_formulas,
     verify_numerical_answer,
     safe_expression_evaluate, extract_expressions, freeform_verify,
@@ -46,8 +48,8 @@ class TestSolveWACC:
         assert abs(result - expected) < 0.001
 
     def test_with_tax(self):
-        result = solve_wacc(60, 40, 0.12, 0.06, 0.30)
-        expected = (60/100)*0.12 + (40/100)*0.06*(1-0.30)
+        result = solve_wacc(60, 40, 0.12, 0.042, 0.30)
+        expected = (60/100)*0.12 + (40/100)*0.042
         assert abs(result - expected) < 0.001
 
     def test_nan_on_zero_value(self):
@@ -508,3 +510,138 @@ class TestVerifyNumericalAnswer:
         )
         # EPS = 2,000,000/500,000 = 4.00, not 3.00
         assert reason is not None
+
+
+# ===================================================================
+# New concept solver tests
+# ===================================================================
+
+class TestSolvePeRatio:
+    def test_basic(self):
+        result = solve_pe_ratio(10.0, 2.0)
+        assert abs(result - 5.0) < 0.001
+
+    def test_inverse(self):
+        result = solve_pe_ratio(20.0, 0.50)
+        assert abs(result - 40.0) < 0.001
+
+    def test_nan_on_zero_eps(self):
+        assert math.isnan(solve_pe_ratio(10.0, 0.0))
+
+
+class TestSolveRoe:
+    def test_basic(self):
+        result = solve_roe(500000, 2000000)
+        assert abs(result - 0.25) < 0.001
+
+    def test_nan_on_zero_equity(self):
+        assert math.isnan(solve_roe(100, 0))
+
+
+class TestSolveCostOfPreference:
+    def test_basic(self):
+        result = solve_cost_of_preference(0.08, 1.00)
+        assert abs(result - 0.08) < 0.001
+
+    def test_above_par(self):
+        result = solve_cost_of_preference(0.08, 1.20)
+        assert abs(result - 0.0667) < 0.001
+
+    def test_nan_on_zero_price(self):
+        assert math.isnan(solve_cost_of_preference(0.05, 0))
+
+
+class TestSolveTerp:
+    def test_one_for_four(self):
+        result = solve_terp(2.00, 1.50, 4)
+        expected = (4 * 2.00 + 1.50) / 5.0
+        assert abs(result - expected) < 0.001
+
+    def test_one_for_two(self):
+        result = solve_terp(3.00, 2.00, 2)
+        expected = (2 * 3.00 + 2.00) / 3.0
+        assert abs(result - expected) < 0.001
+
+    def test_nan_on_zero_ratio(self):
+        assert math.isnan(solve_terp(10, 5, 0))
+
+
+class TestSolvePerpetuityNpv:
+    def test_basic(self):
+        result = solve_perpetuity_npv(1000, 0.10)
+        assert abs(result - 10000) < 0.01
+
+    def test_nan_on_zero_rate(self):
+        assert math.isnan(solve_perpetuity_npv(100, 0))
+
+
+class TestSolveRoce:
+    def test_basic(self):
+        result = solve_roce(50000, 250000)
+        assert abs(result - 0.20) < 0.001
+
+    def test_nan_on_zero_capital(self):
+        assert math.isnan(solve_roce(100, 0))
+
+
+# ---------------------------------------------------------------------------
+# DSL-registered formula solvers (accessed via _FORMULA_SOLVERS)
+# ---------------------------------------------------------------------------
+
+class TestSolveDividendGrowthRate:
+    def test_basic(self):
+        from studyplan.numerical_solver import _FORMULA_SOLVERS
+        s = _FORMULA_SOLVERS["dividend_growth_rate"]
+        result = s(roe=0.15, retention_ratio=0.6)
+        assert abs(result - 0.09) < 0.001
+
+    def test_nan_on_missing_param(self):
+        from studyplan.numerical_solver import _FORMULA_SOLVERS
+        s = _FORMULA_SOLVERS["dividend_growth_rate"]
+        assert math.isnan(s(roe=0.15))
+
+    def test_detection(self):
+        result = detect_formulas("What is the dividend growth rate?")
+        assert "dividend_growth_rate" in result
+
+
+class TestSolveEarningYield:
+    def test_basic(self):
+        from studyplan.numerical_solver import _FORMULA_SOLVERS
+        s = _FORMULA_SOLVERS["earning_yield"]
+        result = s(eps=2.5, market_price=50.0)
+        assert abs(result - 0.05) < 0.001
+
+    def test_detection(self):
+        result = detect_formulas("Calculate the earnings yield.")
+        assert "earning_yield" in result
+
+
+class TestSolveQuickRatio:
+    def test_basic(self):
+        from studyplan.numerical_solver import _FORMULA_SOLVERS
+        s = _FORMULA_SOLVERS["quick_ratio"]
+        result = s(current_assets=100.0, inventory=30.0, current_liabilities=50.0)
+        assert abs(result - 1.4) < 0.001
+
+    def test_nan_on_zero_liabilities(self):
+        from studyplan.numerical_solver import _FORMULA_SOLVERS
+        s = _FORMULA_SOLVERS["quick_ratio"]
+        result = s(current_assets=100.0, inventory=30.0, current_liabilities=0.0)
+        assert math.isnan(result) or abs(result) > 1e6
+
+    def test_detection(self):
+        result = detect_formulas("What is the acid test ratio?")
+        assert "quick_ratio" in result
+
+
+class TestSolveAssetTurnover:
+    def test_basic(self):
+        from studyplan.numerical_solver import _FORMULA_SOLVERS
+        s = _FORMULA_SOLVERS["asset_turnover"]
+        result = s(sales=500.0, capital_employed=250.0)
+        assert abs(result - 2.0) < 0.001
+
+    def test_detection(self):
+        result = detect_formulas("Calculate the asset turnover.")
+        assert "asset_turnover" in result

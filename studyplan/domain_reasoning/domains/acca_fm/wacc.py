@@ -11,7 +11,7 @@ from studyplan.domain_reasoning.templates import FormulaTemplate
 
 class WaccTemplate(FormulaTemplate):
     def __init__(self) -> None:
-        super().__init__("fm.wacc", solve_wacc, version="1.0.0")
+        super().__init__("fm.wacc", solve_wacc, version="1.1.0")
 
     def solve(self, inputs: dict[str, Any]) -> dict[str, Any]:
         eq = float(inputs.get("equity", 0))
@@ -20,6 +20,7 @@ class WaccTemplate(FormulaTemplate):
         rd = float(inputs.get("cost_debt", 0))
         tax = float(inputs.get("tax_rate", 0))
         v = eq + db
+        # cost_debt is after-tax (consistent with fm.cost_of_debt output)
         result = self._solver(eq, db, re, rd, tax)
 
         steps: list[dict[str, Any]] = []
@@ -29,10 +30,8 @@ class WaccTemplate(FormulaTemplate):
             steps.append({"step_id": "weight_equity", "description": "Equity weight", "value": w_e, "formula": f"{eq}/{v}"})
             steps.append({"step_id": "weight_debt", "description": "Debt weight", "value": w_d, "formula": f"{db}/{v}"})
             steps.append({"step_id": "cost_equity_component", "description": "Equity component", "value": w_e * re, "formula": f"{w_e}*{re}"})
-            rd_after_tax = rd * (1 - tax)
-            steps.append({"step_id": "cost_debt_after_tax", "description": "Debt cost after tax", "value": rd_after_tax, "formula": f"{rd}*(1-{tax})"})
-            steps.append({"step_id": "cost_debt_component", "description": "Debt component", "value": w_d * rd_after_tax, "formula": f"{w_d}*{rd_after_tax}"})
-        steps.append({"step_id": "wacc", "description": "WACC", "value": result, "formula": f"{w_e if v>0 else 0}*{re}+{w_d if v>0 else 0}*{rd}*(1-{tax})"})
+            steps.append({"step_id": "cost_debt_component", "description": "Debt component (after-tax)", "value": w_d * rd, "formula": f"{w_d}*{rd}"})
+        steps.append({"step_id": "wacc", "description": "WACC", "value": result, "formula": f"{w_e if v>0 else 0}*{re}+{w_d if v>0 else 0}*{rd}"})
 
         return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
 
@@ -46,11 +45,11 @@ class WaccTemplate(FormulaTemplate):
                 sv = step.get("value")
                 if sv is not None and not (0 <= float(sv) <= 1):
                     tags.append("wrong_weighting")
-            if "tax" in sid or "debt_after" in sid:
+            if sid == "cost_debt_component":
                 sv = step.get("value")
                 if sv is not None:
                     truth_steps = truth.get("steps", [])
                     ts = next((s for s in truth_steps if s["step_id"] == sid), None)
                     if ts and abs(float(sv) - float(ts["value"])) > 0.01:
-                        tags.append("omit_tax_shield")
+                        tags.append("debt_component_error")
         return tags

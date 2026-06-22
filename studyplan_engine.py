@@ -9010,6 +9010,41 @@ class StudyPlanEngine:
         if num_issue:
             deterministic_rejects.append(num_issue)
 
+        # Domain-reasoning verification: use the full reasoning engine to
+        # check numerical consistency when heuristic detection was inconclusive.
+        domain_template_ref = None
+        if not num_issue:
+            try:
+                _detected = _domain_detect_concepts(str(question))
+                if _detected:
+                    _trace = _domain_reason_question(
+                        str(question),
+                        options=[str(o) for o in options],
+                        correct=str(correct),
+                        explanation=str(explanation) if explanation else None,
+                    )
+                    if getattr(_trace, "has_result", False) and getattr(_trace, "confidence", 0.0) > 0.5:
+                        _truth = getattr(_trace, "final_result", None)
+                        _correct_parsed = None
+                        if correct:
+                            _cs = str(correct).strip().lstrip("$").lstrip("\u00a3").lstrip("\u20ac").replace(",", "").replace("%", "")
+                            try:
+                                _correct_parsed = float(_cs)
+                            except (ValueError, TypeError):
+                                pass
+                        if _correct_parsed is not None and _truth is not None:
+                            _tol = max(0.01, abs(_truth) * 0.005)
+                            if abs(_correct_parsed - _truth) > _tol:
+                                deterministic_rejects.append(
+                                    f"numerical_answer_mismatch:{getattr(_trace, 'target_concept_id', 'unknown')}"
+                                )
+                        if getattr(_trace, "confidence", 0.0) > 0.7:
+                            _tc = getattr(_trace, "target_concept_id", None)
+                            if _tc:
+                                domain_template_ref = str(_tc)
+            except Exception:
+                pass
+
         if deterministic_rejects:
             if quarantine_on_fail:
                 self._append_question_quality_quarantine(chapter, row, deterministic_rejects, source=source)
@@ -9038,6 +9073,11 @@ class StudyPlanEngine:
             cleaned["concept_ids"] = _domain_detect_concepts(str(question))
         except Exception:
             pass
+        if domain_template_ref:
+            try:
+                cleaned["template_ref"] = domain_template_ref
+            except Exception:
+                pass
         return cleaned, [], meta
 
     def _question_dedupe_key(self, q: Dict[str, Any]) -> Tuple[str, Tuple[str, ...], str]:

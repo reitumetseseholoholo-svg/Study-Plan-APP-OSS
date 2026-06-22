@@ -48,9 +48,9 @@ BUILTIN_CONCEPTS: dict[str, ConceptMetadata] = {
         concept_id="fm.wacc",
         label="Weighted average cost of capital",
         template_ref="fm.wacc",
-        dependencies=("fm.cost_of_equity_dvm", "fm.cost_of_debt"),
+        dependencies=("fm.cost_of_equity_dvm",),
         output_slots=("wacc",),
-        diagnostic_tags=("wrong_weighting", "omit_tax_shield", "wrong_cost_component"),
+        diagnostic_tags=("wrong_weighting", "debt_component_error", "wrong_cost_component"),
         centrality=0.85,
         chapter_refs=("cost_of_capital",),
     ),
@@ -234,6 +234,66 @@ BUILTIN_CONCEPTS: dict[str, ConceptMetadata] = {
         centrality=0.7,
         chapter_refs=("business_finance",),
     ),
+    "fm.pe_ratio": ConceptMetadata(
+        concept_id="fm.pe_ratio",
+        label="Price / Earnings ratio",
+        template_ref="fm.pe_ratio",
+        dependencies=(),
+        output_slots=("pe_ratio",),
+        diagnostic_tags=("eps_error", "price_error"),
+        centrality=0.65,
+        chapter_refs=("business_finance",),
+    ),
+    "fm.roe": ConceptMetadata(
+        concept_id="fm.roe",
+        label="Return on equity",
+        template_ref="fm.roe",
+        dependencies=(),
+        output_slots=("roe",),
+        diagnostic_tags=("equity_error", "profit_error"),
+        centrality=0.65,
+        chapter_refs=("business_finance",),
+    ),
+    "fm.cost_of_preference": ConceptMetadata(
+        concept_id="fm.cost_of_preference",
+        label="Cost of preference shares",
+        template_ref="fm.cost_of_preference",
+        dependencies=(),
+        output_slots=("cost_of_preference",),
+        diagnostic_tags=("price_error", "dividend_error"),
+        centrality=0.6,
+        chapter_refs=("cost_of_capital",),
+    ),
+    "fm.terp": ConceptMetadata(
+        concept_id="fm.terp",
+        label="Theoretical ex-rights price",
+        template_ref="fm.terp",
+        dependencies=(),
+        output_slots=("terp",),
+        diagnostic_tags=("value_error", "ratio_error"),
+        centrality=0.65,
+        chapter_refs=("business_finance",),
+    ),
+    "fm.perpetuity_npv": ConceptMetadata(
+        concept_id="fm.perpetuity_npv",
+        label="Present value of a perpetuity",
+        template_ref="fm.perpetuity_npv",
+        dependencies=(),
+        output_slots=("perpetuity_npv",),
+        diagnostic_tags=("rate_error", "cashflow_error"),
+        centrality=0.55,
+        chapter_refs=("investment_appraisal",),
+    ),
+    "fm.roce": ConceptMetadata(
+        concept_id="fm.roce",
+        label="Return on capital employed",
+        template_ref="fm.roce",
+        dependencies=(),
+        output_slots=("roce",),
+        diagnostic_tags=("capital_error", "profit_error"),
+        centrality=0.6,
+        chapter_refs=("investment_appraisal",),
+    ),
 }
 
 
@@ -248,9 +308,11 @@ def _get_structure_type_concepts() -> dict[str, list[str]]:
         "npv_annuity_timing": [
             "fm.npv", "fm.payback", "fm.discounted_payback",
             "fm.irr", "fm.equivalent_annual_cost", "fm.profitability_index",
+            "fm.perpetuity_npv",
         ],
         "wacc_optimization": [
             "fm.wacc", "fm.cost_of_debt", "fm.cost_of_equity_dvm",
+            "fm.cost_of_preference",
         ],
         "fx_exposure_hedge": [],
         "working_capital_cycle": [
@@ -258,6 +320,7 @@ def _get_structure_type_concepts() -> dict[str, list[str]]:
         ],
         "dividend_policy_tradeoff": [
             "fm.eps", "fm.dividend_yield", "fm.dividend_cover",
+            "fm.pe_ratio", "fm.roe",
         ],
         "capm_required_return": [
             "fm.capm", "fm.cost_of_equity_dvm",
@@ -265,8 +328,12 @@ def _get_structure_type_concepts() -> dict[str, list[str]]:
         "gearing_financial_risk": [
             "fm.gearing", "fm.interest_cover",
             "fm.asset_beta", "fm.equity_beta",
+            "fm.roce",
         ],
         "foreign_investment_appraisal": [],
+        "rights_issue_valuation": [
+            "fm.terp",
+        ],
     }
 
 
@@ -299,7 +366,24 @@ _FORMULA_TO_CONCEPT: dict[str, str] = {
     "dividend_cover": "fm.dividend_cover",
     "asset_beta": "fm.asset_beta",
     "equity_beta": "fm.equity_beta",
+    "pe_ratio": "fm.pe_ratio",
+    "roe": "fm.roe",
+    "cost_of_preference": "fm.cost_of_preference",
+    "terp": "fm.terp",
+    "perpetuity_npv": "fm.perpetuity_npv",
+    "roce": "fm.roce",
 }
+
+
+# Merge in formula registry entries
+from studyplan.domain_reasoning.formula_registry import (
+    build_concept_dict,
+    build_formula_to_concept,
+    build_structure_type_concepts,
+)
+BUILTIN_CONCEPTS = build_concept_dict(BUILTIN_CONCEPTS)
+_FORMULA_TO_CONCEPT = build_formula_to_concept(_FORMULA_TO_CONCEPT)
+STRUCTURE_TYPE_CONCEPTS = build_structure_type_concepts(STRUCTURE_TYPE_CONCEPTS)
 
 
 def detect_concepts(

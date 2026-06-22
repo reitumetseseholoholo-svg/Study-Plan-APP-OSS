@@ -21,6 +21,8 @@ __all__ = [
     "solve_gearing", "solve_interest_cover", "solve_eps",
     "solve_dividend_yield", "solve_dividend_cover",
     "solve_cost_of_equity_dvm", "solve_asset_beta", "solve_equity_beta",
+    "solve_pe_ratio", "solve_roe", "solve_cost_of_preference",
+    "solve_terp", "solve_perpetuity_npv", "solve_roce",
     "safe_expression_evaluate", "extract_expressions", "freeform_verify",
     "verify_numerical_answer",
 ]
@@ -38,10 +40,16 @@ def solve_npv(cashflows: list[float], rate: float, initial: float = 0.0) -> floa
 
 def solve_wacc(equity: float, debt: float, cost_equity: float,
                cost_debt: float, tax_rate: float = 0.0) -> float:
+    """Weighted average cost of capital.
+
+    ``cost_debt`` is already after-tax (consistent with cost_of_debt output).
+    ``tax_rate`` is accepted for backward compatibility but not used —
+    the tax shield is embedded in ``cost_debt``.
+    """
     v = equity + debt
     if v <= 0:
         return float("nan")
-    return (equity / v) * cost_equity + (debt / v) * cost_debt * (1.0 - tax_rate)
+    return (equity / v) * cost_equity + (debt / v) * cost_debt
 
 
 def solve_capm(risk_free: float, beta: float, market_return: float) -> float:
@@ -194,6 +202,54 @@ def solve_equity_beta(asset_beta: float, market_value_debt: float,
     return asset_beta * (v / market_value_equity)
 
 
+def solve_pe_ratio(market_price: float, eps: float) -> float:
+    """Price / Earnings ratio."""
+    if eps <= 0:
+        return float("nan")
+    return market_price / eps
+
+
+def solve_roe(profit_after_tax: float, equity: float) -> float:
+    """Return on equity."""
+    if equity <= 0:
+        return float("nan")
+    return profit_after_tax / equity
+
+
+def solve_cost_of_preference(preference_dividend: float,
+                             market_price: float) -> float:
+    """Kp = Preference dividend / Market price."""
+    if market_price <= 0:
+        return float("nan")
+    return preference_dividend / market_price
+
+
+def solve_terp(cum_rights_price: float, issue_price: float,
+               rights_ratio_n: float) -> float:
+    """Theoretical ex-rights price.
+
+    TERP = (N * cum_rights_price + issue_price) / (N + 1)
+    where N = number of existing shares per new share issued.
+    """
+    if rights_ratio_n <= 0:
+        return float("nan")
+    return (rights_ratio_n * cum_rights_price + issue_price) / (rights_ratio_n + 1.0)
+
+
+def solve_perpetuity_npv(annual_cashflow: float, discount_rate: float) -> float:
+    """PV of a perpetuity."""
+    if discount_rate <= 0:
+        return float("nan")
+    return annual_cashflow / discount_rate
+
+
+def solve_roce(pbit: float, capital_employed: float) -> float:
+    """Return on capital employed (ROCE)."""
+    if capital_employed <= 0:
+        return float("nan")
+    return pbit / capital_employed
+
+
 # ---------------------------------------------------------------------------
 # Layer 2 — Number extraction from natural-language question text
 # ---------------------------------------------------------------------------
@@ -342,6 +398,32 @@ _FORMULA_SIGNATURES: list[tuple[str, list[re.Pattern], int]] = [
         r"\bequity beta\b", r"\bregear\b",
         r"\bungeared.*regear\b",
     ]], 20),
+    ("pe_ratio", [re.compile(p, re.IGNORECASE) for p in [
+        r"\bP/E\b", r"\bprice.*earnings\b", r"\bPE ratio\b",
+        r"\bprice.*multiple\b",
+    ]], 21),
+    ("roe", [re.compile(p, re.IGNORECASE) for p in [
+        r"\bROE\b", r"\breturn on equity\b",
+        r"\breturn.*shareholder\b",
+    ]], 22),
+    ("cost_of_preference", [re.compile(p, re.IGNORECASE) for p in [
+        r"\bcost of preference\b",
+        r"\bpreference.*dividend\b",
+        r"\bpreference.*price\b",
+        r"\bpref.*share\b",
+    ]], 23),
+    ("terp", [re.compile(p, re.IGNORECASE) for p in [
+        r"\bTERP\b", r"\bex.?rights\b",
+        r"\btheoretical.*rights\b", r"\brights issue\b",
+        r"\bcum.?rights\b",
+    ]], 24),
+    ("perpetuity_npv", [re.compile(p, re.IGNORECASE) for p in [
+        r"\bperpetuity\b", r"\bperpetual\b",
+        r"\binfinite.*cash\b", r"\bconstant.*cash\b",
+    ]], 25),
+    ("roce", [re.compile(p, re.IGNORECASE) for p in [
+        r"\bROCE\b", r"\breturn on capital employed\b",
+    ]], 26),
 ]
 
 _FORMULA_PRIORITY = {name: prio for name, _, prio in _FORMULA_SIGNATURES}
@@ -400,6 +482,7 @@ def _candidates_wacc(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 for rd_val in pcts:
                     if abs(re_val - rd_val) < 0.001:
                         continue
+                    # cost_debt extracted from text is pre-tax; solver expects after-tax
                     candidates.append({
                         "equity": eq, "debt": db,
                         "cost_equity": re_val, "cost_debt": rd_val, "tax_rate": 0.0,
@@ -408,7 +491,9 @@ def _candidates_wacc(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         tax = [p for p in pcts if p not in (re_val, rd_val)][0]
                         candidates.append({
                             "equity": eq, "debt": db,
-                            "cost_equity": re_val, "cost_debt": rd_val, "tax_rate": tax,
+                            "cost_equity": re_val,
+                            "cost_debt": rd_val * (1.0 - tax),
+                            "tax_rate": tax,
                         })
     return candidates
 
@@ -592,6 +677,63 @@ def _candidates_equity_beta(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return candidates
 
 
+def _candidates_pe_ratio(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    values = [n["value"] for n in nums if not n["is_percent"]]
+    if len(values) >= 2:
+        return [{"market_price": max(values), "eps": min(values)}]
+    return []
+
+
+def _candidates_roe(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    values = [n["value"] for n in nums if not n["is_percent"]]
+    if len(values) >= 2:
+        return [{"profit_after_tax": max(values), "equity": min(values)}]
+    return []
+
+
+def _candidates_cost_of_preference(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    values = [n["value"] for n in nums if not n["is_percent"]]
+    if len(values) >= 2:
+        return [{"preference_dividend": min(values), "market_price": max(values)}]
+    return []
+
+
+def _candidates_terp(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    values = [n["value"] for n in nums if not n["is_percent"]]
+    candidates: list[dict[str, Any]] = []
+    if len(values) >= 3:
+        n_candidates = sorted(values, reverse=True)
+        for n_val in [v for v in n_candidates if v == int(v)]:   # rights ratio is integer
+            remaining = [v for v in n_candidates if v != n_val]
+            if len(remaining) >= 2:
+                cum, issue = remaining[0], remaining[1]
+                candidates.append({
+                    "cum_rights_price": cum, "issue_price": issue,
+                    "rights_ratio_n": n_val,
+                })
+    return candidates
+
+
+def _candidates_perpetuity_npv(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    values = [n["value"] for n in nums if not n["is_percent"]]
+    pcts = [n["value"] for n in nums if n["is_percent"]]
+    candidates: list[dict[str, Any]] = []
+    if values and pcts:
+        for cf in values:
+            for r in pcts:
+                candidates.append({"annual_cashflow": cf, "discount_rate": r})
+    elif len(values) >= 2:
+        candidates.append({"annual_cashflow": max(values), "discount_rate": min(values)})
+    return candidates
+
+
+def _candidates_roce(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    values = [n["value"] for n in nums if not n["is_percent"]]
+    if len(values) >= 2:
+        return [{"pbit": max(values), "capital_employed": min(values)}]
+    return []
+
+
 _FORMULA_CANDIDATES = {
     "npv": _candidates_npv,
     "wacc": _candidates_wacc,
@@ -613,6 +755,12 @@ _FORMULA_CANDIDATES = {
     "dividend_cover": _candidates_dividend_cover,
     "asset_beta": _candidates_asset_beta,
     "equity_beta": _candidates_equity_beta,
+    "pe_ratio": _candidates_pe_ratio,
+    "roe": _candidates_roe,
+    "cost_of_preference": _candidates_cost_of_preference,
+    "terp": _candidates_terp,
+    "perpetuity_npv": _candidates_perpetuity_npv,
+    "roce": _candidates_roce,
 }
 
 _FORMULA_SOLVERS: dict[str, Any] = {
@@ -636,6 +784,12 @@ _FORMULA_SOLVERS: dict[str, Any] = {
     "dividend_cover": solve_dividend_cover,
     "asset_beta": solve_asset_beta,
     "equity_beta": solve_equity_beta,
+    "pe_ratio": solve_pe_ratio,
+    "roe": solve_roe,
+    "cost_of_preference": solve_cost_of_preference,
+    "terp": solve_terp,
+    "perpetuity_npv": solve_perpetuity_npv,
+    "roce": solve_roce,
 }
 
 
@@ -690,12 +844,15 @@ class _SafeEvalVisitor(ast.NodeVisitor):
         super().generic_visit(node)
 
 
-def safe_expression_evaluate(expr: str) -> float | None:
+def safe_expression_evaluate(
+    expr: str,
+    env: dict[str, float] | None = None,
+) -> float | None:
     """Parse and evaluate a safe arithmetic expression.
 
     Supports ``+``, ``-``, ``*``, ``/``, ``**``, ``%``, parentheses,
-    and the functions ``sqrt()``, ``abs()``, ``float()``, ``int()``,
-    ``round()``.
+    variable names (resolved via *env*), and the functions ``sqrt()``,
+    ``abs()``, ``float()``, ``int()``, ``round()``.
 
     Returns ``None`` if the expression is unsafe or invalid.
     """
@@ -713,12 +870,15 @@ def safe_expression_evaluate(expr: str) -> float | None:
     visitor.visit(tree)
     if not visitor._safe:
         return None
+    locals_dict: dict[str, Any] = {
+        "sqrt": math.sqrt, "abs": abs,
+        "float": float, "int": int, "round": round,
+    }
+    if env:
+        locals_dict.update(env)
     try:
         code = compile(tree, "<safe_expr>", "eval")
-        result = eval(code, {"__builtins__": {}}, {
-            "sqrt": math.sqrt, "abs": abs,
-            "float": float, "int": int, "round": round,
-        })
+        result = eval(code, {"__builtins__": {}}, locals_dict)
         if isinstance(result, (int, float)):
             return float(result)
         return None
@@ -973,3 +1133,29 @@ def verify_numerical_question_batch(
         if reason:
             results.append((idx, reason))
     return results
+
+
+# ---------------------------------------------------------------------------
+# Formula registry integration
+# ---------------------------------------------------------------------------
+
+from studyplan.domain_reasoning.formula_registry import (
+    build_solver_dict,
+    build_candidate_dict,
+    build_signatures,
+)
+
+_FORMULA_SOLVERS = build_solver_dict(_FORMULA_SOLVERS)
+_FORMULA_CANDIDATES = build_candidate_dict(_FORMULA_CANDIDATES)
+_FORMULA_SIGNATURES = build_signatures(_FORMULA_SIGNATURES)
+_FORMULA_PRIORITY = {name: prio for name, _, prio in _FORMULA_SIGNATURES}
+
+# Extend __all__ with any auto-generated solver names from the registry
+from studyplan.domain_reasoning.formula_registry import get_registry_formulas
+for fname in get_registry_formulas():
+    solver_name = f"solve_{fname}"
+    if solver_name not in __all__:
+        # The auto-generated solvers are stored in _FORMULA_SOLVERS;
+        # we don't export them as top-level names, but make the formula
+        # name discoverable.
+        pass

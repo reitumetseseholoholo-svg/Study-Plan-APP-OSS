@@ -35,7 +35,8 @@ class TestResolveDependencyChain:
     def test_two_deps(self):
         order = _resolve_dependency_chain("fm.wacc", BUILTIN_CONCEPTS)
         assert "fm.cost_of_equity_dvm" in order
-        assert "fm.cost_of_debt" in order
+        # cost_of_debt no longer a formal dependency — gap filler handles it via output slots
+        assert "fm.cost_of_debt" not in order
         assert order[-1] == "fm.wacc"
 
     def test_irr_depends_on_npv(self):
@@ -166,7 +167,7 @@ class TestReasonQuestion:
         r = reason_question("WACC",
                             template_ref="fm.wacc",
                             template_inputs={"equity": 60, "debt": 40, "cost_equity": 0.12,
-                                             "cost_debt": 0.06, "tax_rate": 0.30})
+                                             "cost_debt": 0.042, "tax_rate": 0.30})
         assert r.has_result
         assert abs(r.final_result - 0.0888) < 0.001
         # WACC itself should succeed even if dep steps fail
@@ -214,6 +215,50 @@ class TestReasonQuestion:
                             template_inputs={"average_profit": 15000, "initial_investment": 100000})
         assert r.has_result
         assert abs(r.final_result - 0.30) < 0.01
+
+    def test_pe_ratio(self):
+        r = reason_question("P/E ratio",
+                            template_ref="fm.pe_ratio",
+                            template_inputs={"market_price": 10.0, "eps": 2.0})
+        assert r.has_result
+        assert abs(r.final_result - 5.0) < 0.001
+
+    def test_roe(self):
+        r = reason_question("ROE",
+                            template_ref="fm.roe",
+                            template_inputs={"profit_after_tax": 500000, "equity": 2000000})
+        assert r.has_result
+        assert abs(r.final_result - 0.25) < 0.001
+
+    def test_cost_of_preference(self):
+        r = reason_question("Cost of preference shares",
+                            template_ref="fm.cost_of_preference",
+                            template_inputs={"preference_dividend": 0.08, "market_price": 1.00})
+        assert r.has_result
+        assert abs(r.final_result - 0.08) < 0.001
+
+    def test_terp(self):
+        r = reason_question("TERP",
+                            template_ref="fm.terp",
+                            template_inputs={"cum_rights_price": 2.00, "issue_price": 1.50,
+                                             "rights_ratio_n": 4})
+        assert r.has_result
+        expected = (4 * 2.00 + 1.50) / 5.0
+        assert abs(r.final_result - expected) < 0.001
+
+    def test_perpetuity_npv(self):
+        r = reason_question("Perpetuity NPV",
+                            template_ref="fm.perpetuity_npv",
+                            template_inputs={"annual_cashflow": 1000, "discount_rate": 0.10})
+        assert r.has_result
+        assert abs(r.final_result - 10000) < 0.01
+
+    def test_roce(self):
+        r = reason_question("ROCE",
+                            template_ref="fm.roce",
+                            template_inputs={"pbit": 50000, "capital_employed": 250000})
+        assert r.has_result
+        assert abs(r.final_result - 0.20) < 0.001
 
     def test_interest_cover(self):
         r = reason_question("Interest cover",
@@ -497,10 +542,9 @@ class TestMultiPathFallback:
         )
         assert r.has_result
         # CAPM: 0.05 + 1.2 * (0.12 - 0.05) = 0.134
-        # cost_of_debt: 0.08 * (1 - 0.30) = 0.056 (after-tax)
-        # WACC template applies (1-tax) AGAIN to cost_debt:
-        # WACC = 0.6*0.134 + 0.4*0.056*(1-0.30) = 0.0804 + 0.01568 = 0.09608
-        assert abs(r.final_result - 0.09608) < 0.001
+        # cost_of_debt (after-tax): 0.08 * (1 - 0.30) = 0.056
+        # WACC = We*Ke + Wd*Kd_after_tax = 0.6*0.134 + 0.4*0.056 = 0.1028
+        assert abs(r.final_result - 0.1028) < 0.001
         capm_entries = [e for e in r.execution if e.concept_id == "fm.capm"]
         assert len(capm_entries) >= 1
         assert all(e.success for e in capm_entries)

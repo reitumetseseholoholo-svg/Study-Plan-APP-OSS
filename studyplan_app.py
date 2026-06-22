@@ -825,6 +825,9 @@ AI_TUTOR_ALLOWED_ACTIONS = (
     "coach_next",
     "gap_drill_generate",
     "section_c_start",
+    "practice_plan",
+    "practice_check",
+    "practice_hint",
 )
 AI_TUTOR_SAFE_AUTONOMOUS_ACTIONS = {
     "focus_start",
@@ -842,6 +845,9 @@ AI_TUTOR_SAFE_AUTONOMOUS_ACTIONS = {
     "leech_drill_start",
     "interleave_start",
     "review_start",
+    "practice_plan",
+    "practice_check",
+    "practice_hint",
 }
 AI_TUTOR_GAP_GENERATION_MIN_QUESTIONS = 1
 AI_TUTOR_GAP_GENERATION_MAX_QUESTIONS = 6
@@ -2467,7 +2473,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "preferences": "settings",
         }
         self._tutor_workspace_status_label: Gtk.Label | None = None
-        self._tutor_workspace_ai_status_label: Gtk.Label | None = None
+        self._tutor_workspace_compact_status: Gtk.Label | None = None
         self._tutor_workspace_summary_label: Gtk.Label | None = None
         self._tutor_workspace_pending_suggestion_box: Gtk.Box | None = None
         self._tutor_workspace_pending_suggestion_title_label: Gtk.Label | None = None
@@ -2495,7 +2501,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._tutor_workspace_copy_last_btn: Gtk.Button | None = None
         self._tutor_workspace_follow_btn: Gtk.Button | None = None
         self._tutor_workspace_jump_btn: Gtk.Button | None = None
-        self._tutor_workspace_cockpit_label: Gtk.Label | None = None
+        self._tutor_workspace_practice_plan_btn: Gtk.Button | None = None
+        self._tutor_workspace_practice_check_btn: Gtk.Button | None = None
+        self._tutor_workspace_practice_hint_btn: Gtk.Button | None = None
         self._tutor_workspace_context_label: Gtk.Label | None = None
         self._tutor_workspace_state: TutorWorkspaceState = TutorWorkspaceState()
         self._coach_workspace_status_label: Gtk.Label | None = None
@@ -4369,12 +4377,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         page_scroll.set_vexpand(True)
         page_scroll.add_css_class("workbench-page")
 
-        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         page_box.add_css_class("card")
         page_box.add_css_class("workbench-page-card")
         page_box.add_css_class("tutor-workbench")
-        page_box.set_margin_top(6)
-        page_box.set_margin_bottom(6)
+        page_box.set_margin_top(4)
+        page_box.set_margin_bottom(4)
         page_box.set_margin_start(6)
         page_box.set_margin_end(6)
         page_scroll.set_child(page_box)
@@ -4395,35 +4403,17 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         page_box.append(title)
         page_box.append(subtitle)
 
-        host_label = Gtk.Label(label=f"Host: {self._normalize_ollama_host()}")
-        host_label.set_halign(Gtk.Align.START)
-        host_label.set_ellipsize(Pango.EllipsizeMode.END)
-        host_label.set_max_width_chars(72)
-        host_label.add_css_class("muted")
-        host_label.add_css_class("single-line-lock")
-        host_label.set_tooltip_text(f"Host: {self._normalize_ollama_host()}")
-        page_box.append(host_label)
-
-        cockpit_label = Gtk.Label(label="Tutor cockpit: initializing")
-        cockpit_label.set_halign(Gtk.Align.START)
-        cockpit_label.set_ellipsize(Pango.EllipsizeMode.END)
-        cockpit_label.set_max_width_chars(72)
-        cockpit_label.add_css_class("muted")
-        cockpit_label.add_css_class("tutor-cockpit-line")
-        cockpit_label.add_css_class("single-line-lock")
-        self._tutor_workspace_cockpit_label = cockpit_label
-        page_box.append(cockpit_label)
-
-        ai_status_label = Gtk.Label(label="")
-        ai_status_label.set_halign(Gtk.Align.START)
-        ai_status_label.set_wrap(False)
-        ai_status_label.set_ellipsize(Pango.EllipsizeMode.END)
-        ai_status_label.set_max_width_chars(120)
-        ai_status_label.add_css_class("single-line-lock")
-        ai_status_label.add_css_class("status-line")
-        ai_status_label.add_css_class("muted")
-        self._tutor_workspace_ai_status_label = ai_status_label
-        page_box.append(ai_status_label)
+        compact_status = Gtk.Label(label="Tutor cockpit: initializing")
+        compact_status.set_halign(Gtk.Align.START)
+        compact_status.set_ellipsize(Pango.EllipsizeMode.END)
+        compact_status.set_max_width_chars(120)
+        compact_status.add_css_class("muted")
+        compact_status.add_css_class("single-line-lock")
+        compact_status.set_tooltip_text(
+            f"Host: {self._normalize_ollama_host()}"
+        )
+        self._tutor_workspace_compact_status = compact_status
+        page_box.append(compact_status)
 
         suggestion_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         suggestion_box.add_css_class("subtle-panel")
@@ -4454,7 +4444,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         page_box.append(suggestion_box)
 
         autopilot_panel = Gtk.Expander(label="Autopilot cockpit panel")
-        autopilot_panel.set_expanded(True)
+        autopilot_panel.set_expanded(False)
         autopilot_panel_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         autopilot_panel_box.set_margin_top(4)
         autopilot_panel_box.set_margin_bottom(4)
@@ -4520,8 +4510,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         model_row.append(popout_btn)
         page_box.append(model_row)
 
-        mode_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        mode_row.add_css_class("inline-toolbar")
         concise_check = Gtk.CheckButton(label="Concise mode")
         concise_check.set_tooltip_text("Keep tutor responses short (under 6–8 sentences) unless you ask for more.")
         concise_check.set_active(bool(getattr(self, "ai_tutor_concise_mode", False)))
@@ -4547,10 +4535,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "toggled",
             lambda btn: setattr(self, "ai_tutor_suppress_load_notice", btn.get_active()) or self.save_preferences(),
         )
-        mode_row.append(concise_check)
-        mode_row.append(exam_tech_check)
-        mode_row.append(suppress_load_check)
-        page_box.append(mode_row)
         self._tutor_workspace_concise_check = concise_check
         self._tutor_workspace_exam_technique_check = exam_tech_check
         self._tutor_workspace_suppress_load_notice_check = suppress_load_check
@@ -4718,6 +4702,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._tutor_workspace_prompt_scroller = prompt_scroller
         self._tutor_workspace_prompt_view = prompt_view
         page_box.append(prompt_scroller)
+        prompt_hint = Gtk.Label(label="Ctrl+Enter to send")
+        prompt_hint.set_halign(Gtk.Align.END)
+        prompt_hint.add_css_class("muted")
+        prompt_hint.add_css_class("tutor-prompt-hint")
+        page_box.append(prompt_hint)
 
         topic_for_summaries = str(self._effective_tutor_topic() or "").strip()
         outcome_ids_for_summaries: list[str] = []
@@ -4826,11 +4815,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             secondary_actions_box.set_margin_end(6)
         except Exception:
             pass
+        mode_label = Gtk.Label(label="Tutor mode")
+        mode_label.set_halign(Gtk.Align.START)
+        mode_label.add_css_class("section-title")
+        mode_label.set_margin_top(4)
+        secondary_actions_box.append(mode_label)
+        secondary_actions_box.append(concise_check)
+        secondary_actions_box.append(exam_tech_check)
+        secondary_actions_box.append(suppress_load_check)
+        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        sep.set_margin_top(4)
+        sep.set_margin_bottom(4)
+        secondary_actions_box.append(sep)
         for btn in (
             gap_generate_btn,
             gap_classify_btn,
-            # Cancel + working indicator for non-streaming gap generation.
-            # (Spinner is toggled by _set_gap_generation_running below.)
             section_c_btn,
             clear_prompt_btn,
             copy_btn,
@@ -4864,13 +4863,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._tutor_workspace_follow_btn = follow_btn
         self._tutor_workspace_jump_btn = jump_btn
 
+        practice_expander = Gtk.Expander(label="Practice Loop")
+        practice_expander.set_expanded(False)
         practice_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         practice_box.add_css_class("card")
         practice_box.add_css_class("card-tight")
-        practice_title = Gtk.Label(label="Practice Loop")
-        practice_title.set_halign(Gtk.Align.START)
-        practice_title.add_css_class("section-title")
-        practice_box.append(practice_title)
+
 
         practice_state_label = Gtk.Label(label="Planner ready. Click Plan to generate a personal micro-practice step.")
         practice_state_label.set_halign(Gtk.Align.START)
@@ -4965,6 +4963,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         practice_actions_scroller.set_min_content_height(42)
         practice_actions_scroller.set_child(practice_actions)
         practice_box.append(practice_actions_scroller)
+        self._tutor_workspace_practice_plan_btn = practice_plan_btn
+        self._tutor_workspace_practice_check_btn = practice_check_btn
+        self._tutor_workspace_practice_hint_btn = practice_hint_btn
 
         practice_assessment_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         practice_assessment_box.add_css_class("subtle-panel")
@@ -5090,7 +5091,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         practice_box.append(practice_action_box)
 
-        page_box.append(practice_box)
+        practice_expander.set_child(practice_box)
+        page_box.append(practice_expander)
 
         status_label = Gtk.Label(label="")
         status_label.set_halign(Gtk.Align.START)
@@ -5109,9 +5111,29 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         response_label.add_css_class("section-title")
         page_box.append(response_label)
 
+        thinking_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        thinking_row.set_visible(False)
+        thinking_row.add_css_class("inline-toolbar")
+        thinking_row.add_css_class("tutor-thinking-row")
+        thinking_spinner = Gtk.Spinner()
+        thinking_spinner.set_size_request(16, 16)
+        thinking_label = Gtk.Label(label="Thinking...")
+        thinking_label.add_css_class("muted")
+        thinking_row.append(thinking_spinner)
+        thinking_row.append(thinking_label)
+        page_box.append(thinking_row)
+
+        stream_pulse = Gtk.ProgressBar()
+        stream_pulse.set_visible(False)
+        stream_pulse.set_halign(Gtk.Align.FILL)
+        stream_pulse.set_hexpand(True)
+        stream_pulse.set_size_request(-1, 4)
+        stream_pulse.add_css_class("tutor-stream-pulse")
+        page_box.append(stream_pulse)
+
         response_scroller = Gtk.ScrolledWindow()
         response_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        response_scroller.set_min_content_height(320)
+        response_scroller.set_min_content_height(240)
         response_scroller.set_vexpand(True)
         response_scroller.add_css_class("tutor-response-scroll")
         response_view = Gtk.TextView()
@@ -7424,6 +7446,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return ""
             return text_val
 
+        _pulse_source_id: list[int] = [0]
+
+        def _do_pulse() -> bool:
+            stream_pulse.pulse()
+            return True
+
         def _set_running(running: bool) -> None:
             turn = run_state.turn()
             stream = run_state.stream()
@@ -7481,6 +7509,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
             section_c_btn.set_sensitive(not bool(running))
+            thinking_row.set_visible(bool(running))
+            stream_pulse.set_visible(bool(running))
+            if bool(running):
+                thinking_spinner.start()
+                if _pulse_source_id[0] == 0:
+                    _pulse_source_id[0] = GLib.timeout_add(200, _do_pulse)
+            else:
+                thinking_spinner.stop()
+                if _pulse_source_id[0] > 0:
+                    GLib.source_remove(_pulse_source_id[0])
+                    _pulse_source_id[0] = 0
+                stream_pulse.set_fraction(0.0)
             _update_tutor_request_buttons()
             _refresh_help_feedback_buttons()
             _update_follow_button()
@@ -7523,6 +7563,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 pass
 
+        _copy_toast_source_id: list[int] = [0]
+
+        def _clear_status_label() -> None:
+            prefix_display, _ = _build_tutor_status_prefix()
+            self._set_label_text_if_changed(status_label, prefix_display)
+
         def _copy_to_clipboard(text: str, success_message: str, empty_message: str) -> None:
             payload = str(text or "").strip()
             if not payload:
@@ -7536,6 +7582,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     return
                 clipboard.set(payload)
                 _set_status(success_message)
+                if _copy_toast_source_id[0] > 0:
+                    GLib.source_remove(_copy_toast_source_id[0])
+                _copy_toast_source_id[0] = GLib.timeout_add(2500, _clear_status_label)
             except Exception:
                 _set_status("Clipboard unavailable.")
 
@@ -7557,25 +7606,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pending_suffix = ""
             if isinstance(pending, dict):
                 pending_suffix = " • pending suggestion"
+            ws_state = getattr(self, "_tutor_workspace_state", None)
+            if ws_state is not None:
+                ai_model = str(ws_state.turn().model or getattr(self, "_last_llm_inference_model", "") or "").strip()
+            else:
+                ai_model = str(getattr(self, "_last_llm_inference_model", "") or "").strip()
+            ai_backend = str(getattr(self, "_last_llm_inference_backend", "") or "").strip()
+            ai_tag = f" • AI: {ai_model}" if ai_model else ""
+            ai_suffix = f" ({ai_backend})" if ai_backend and ai_model else ""
             cockpit_full = (
-                f"Tutor autopilot: {ap_label} • mode {mode} • {scope} • dialog {'open' if dialog_open else 'closed'}{pending_suffix}"
+                f"Autopilot: {ap_label} • mode {mode} • {scope} • dialog {'open' if dialog_open else 'closed'}{pending_suffix}{ai_tag}{ai_suffix}"
             )
             if very_narrow:
                 cockpit_text = (
                     f"AP: {ap_label} • {mode} • {'app' if ap_active else scope} • "
-                    f"dlg {'open' if dialog_open else 'closed'}"
+                    f"dlg {'open' if dialog_open else 'closed'}{ai_tag}"
                 )
             elif narrow:
                 cockpit_text = (
-                    f"Tutor autopilot: {ap_label} • {mode} • {scope} • dialog {'open' if dialog_open else 'closed'}"
+                    f"Autopilot: {ap_label} • {mode} • {scope} • dialog {'open' if dialog_open else 'closed'}{ai_tag}"
                 )
             else:
                 cockpit_text = cockpit_full
-            self._set_label_text_if_changed(cockpit_label, cockpit_text)
-            try:
-                cockpit_label.set_tooltip_text(cockpit_full)
-            except Exception:
-                pass
+            status_label = self._tutor_workspace_compact_status
+            if status_label is not None:
+                self._set_label_text_if_changed(status_label, cockpit_text)
+                try:
+                    status_label.set_tooltip_text(cockpit_full)
+                except Exception:
+                    pass
             try:
                 self._refresh_ai_tutor_autopilot_surface()
             except Exception:
@@ -9454,7 +9513,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         state = getattr(self, "_tutor_workspace_state", None)
         if not isinstance(state, TutorWorkspaceState):
             return
-        ai_status_label = getattr(self, "_tutor_workspace_ai_status_label", None)
         concise_check = getattr(self, "_tutor_workspace_concise_check", None)
         exam_tech_check = getattr(self, "_tutor_workspace_exam_technique_check", None)
         suppress_load_check = getattr(self, "_tutor_workspace_suppress_load_notice_check", None)
@@ -9484,19 +9542,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if callable(refresh_status):
             try:
                 refresh_status()
-            except Exception:
-                pass
-        if ai_status_label is not None:
-            turn = state.turn()
-            ai_text, ai_tooltip = self._format_ai_status_line(
-                backend=str(turn.backend or getattr(self, "_last_llm_inference_backend", "") or "").strip(),
-                model_name=str(turn.model or getattr(self, "_last_llm_inference_model", "") or "").strip(),
-                fallback_model=str(getattr(self, "local_llm_model", "") or "").strip(),
-                idle_prefix="AI",
-            )
-            self._set_label_text_if_changed(ai_status_label, ai_text)
-            try:
-                ai_status_label.set_tooltip_text(ai_tooltip)
             except Exception:
                 pass
         fr_vis = bool(self._is_fr_financial_reporting_module())
@@ -34529,6 +34574,40 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return False, "No valid topic available for Section C practice."
             self._open_section_c_practice_dialog(topic=chapter)
             return True, f"Opened Section C practice for {chapter}."
+        if action == "practice_plan":
+            plan_cb = getattr(self, "_tutor_workspace_practice_plan_btn", None)
+            if plan_cb is not None:
+                try:
+                    plan_cb.emit("clicked")
+                    return True, "Practice plan requested."
+                except Exception:
+                    return False, "Failed to request practice plan."
+            return False, "Practice loop not available in this context."
+        if action == "practice_check":
+            check_cb = getattr(self, "_tutor_workspace_practice_check_btn", None)
+            if check_cb is not None:
+                try:
+                    check_cb.emit("clicked")
+                    return True, "Practice answer checked."
+                except Exception:
+                    return False, "Failed to check practice answer."
+            return False, "Practice loop not available in this context."
+        if action == "practice_hint":
+            hint_cb = getattr(self, "_tutor_workspace_practice_hint_btn", None)
+            if hint_cb is not None:
+                try:
+                    hint_cb.emit("clicked")
+                    return True, "Practice hint requested."
+                except Exception:
+                    return False, "Failed to request practice hint."
+            playlist = getattr(self, "_tutor_workspace_practice_plan_btn", None)
+            if playlist is not None:
+                try:
+                    playlist.emit("clicked")
+                    return True, "Practice plan auto-started for hint context."
+                except Exception:
+                    return False, "Practice loop not ready."
+            return False, "Practice loop not available in this context."
         return False, f"Unsupported tutor action: {action}"
 
     def _get_ai_tutor_latency_profile(self, window: int = AI_TUTOR_LATENCY_ADAPT_WINDOW) -> dict[str, Any]:
@@ -49996,17 +50075,22 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 color = str(chart_spec.get("color", style.get("accent_c", "#f6c453")))
                 for idx, value in enumerate(values):
                     v = max(0.0, min(100.0, value))
-                    bar_w = min(44.0, slot * 0.58)
+                    bar_w = max(12.0, min(52.0, slot * 0.55))
                     x = left + idx * slot + (slot - bar_w) / 2.0
                     y = bottom - ((bottom - top) * v / 100.0)
-                    self._chart_set_color(ctx, color)
+                    self._chart_set_color(ctx, color, 0.85)
                     ctx.rectangle(x, y, bar_w, bottom - y)
                     ctx.fill()
+                    self._chart_set_color(ctx, color, 1.0)
+                    ctx.rectangle(x, y, bar_w, max(2.0, bottom - y))
+                    ctx.set_line_width(0.5)
+                    ctx.stroke()
                     self._chart_set_color(ctx, text)
-                    self._chart_text(ctx, f"{v:.0f}", x, max(top + 10, y - 5), size=8)
+                    label_y = max(top + 8, y - 7)
+                    self._chart_text(ctx, f"{v:.0f}", x + bar_w / 2.0 - 8, label_y, size=9, weight=1)
                     label = labels[idx] if idx < len(labels) else str(idx + 1)
                     self._chart_set_color(ctx, muted)
-                    self._chart_text(ctx, label[:8], x - 2, bottom + 18, size=8)
+                    self._chart_text(ctx, label[:8], x + bar_w / 2.0 - 16, bottom + 18, size=8)
 
             elif kind == "donut":
                 labels = [str(x) for x in list(chart_spec.get("labels", []) or [])]
@@ -50014,37 +50098,48 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 colors = [str(x) for x in list(chart_spec.get("colors", []) or [])]
                 total = sum(values)
                 cx = w_f / 2.0
-                cy = h_f / 2.0 - 8.0
-                radius = min(w_f, h_f) * 0.28
-                line_w = max(18.0, radius * 0.34)
+                cy = h_f / 2.0 - 12.0
+                radius = min(w_f, h_f) * 0.27
+                line_w = max(20.0, radius * 0.38)
                 if total <= 0:
                     return
-                start = -math.pi / 2.0
+                gap = 0.04
                 ctx.set_line_width(line_w)
+                ctx.set_line_cap(2)
+                start = -math.pi / 2.0
                 for idx, value in enumerate(values):
                     frac = value / total
-                    end = start + (2.0 * math.pi * frac)
-                    self._chart_set_color(ctx, colors[idx % len(colors)] if colors else text)
-                    ctx.arc(cx, cy, radius, start, end)
-                    ctx.stroke()
-                    start = end
+                    seg_angle = 2.0 * math.pi * frac
+                    usable = seg_angle - gap
+                    if usable > 0.0:
+                        end = start + usable
+                        self._chart_set_color(ctx, colors[idx % len(colors)] if colors else text)
+                        ctx.arc(cx, cy, radius, start, end)
+                        ctx.stroke()
+                    mid_angle = start + seg_angle / 2.0
+                    if frac >= 0.06:
+                        pct_x = cx + (radius + line_w * 0.7) * math.cos(mid_angle)
+                        pct_y = cy + (radius + line_w * 0.7) * math.sin(mid_angle)
+                        self._chart_set_color(ctx, text)
+                        self._chart_text(ctx, f"{frac * 100:.0f}%", pct_x - 10, pct_y + 4, size=9, weight=1)
+                    start += seg_angle
                 self._chart_set_color(ctx, text)
-                self._chart_text(ctx, str(chart_spec.get("center", int(total))), cx - 18, cy - 2, size=14, weight=1)
+                self._chart_text(ctx, str(chart_spec.get("center", int(total))), cx - 16, cy - 3, size=15, weight=1)
                 self._chart_set_color(ctx, muted)
-                self._chart_text(ctx, str(chart_spec.get("subcenter", "cards")), cx - 18, cy + 15, size=9)
+                self._chart_text(ctx, str(chart_spec.get("subcenter", "cards")), cx - 16, cy + 16, size=9)
                 note = str(chart_spec.get("note", "") or "")
                 if note:
                     self._chart_set_color(ctx, str(style.get("accent_c", "#f6c453")))
-                    self._chart_text(ctx, note, cx - 32, cy + 34, size=8)
-                legend_y = h_f - 22
-                x = 16.0
+                    self._chart_text(ctx, note, cx - 28, cy + 34, size=8)
+                legend_y = h_f - 18
+                x = 20.0
                 for idx, label in enumerate(labels[:3]):
                     self._chart_set_color(ctx, colors[idx % len(colors)] if colors else text)
-                    ctx.rectangle(x, legend_y - 9, 9, 9)
+                    ctx.arc(x + 5, legend_y - 5, 5, 0, 2.0 * math.pi)
                     ctx.fill()
                     self._chart_set_color(ctx, muted)
-                    self._chart_text(ctx, label[:18], x + 14, legend_y, size=8)
-                    x += min(125.0, max(74.0, len(label) * 5.8))
+                    self._chart_text(ctx, label[:20], x + 14, legend_y, size=8)
+                    x += min(128.0, max(78.0, len(label) * 5.6))
 
             elif kind == "line":
                 series = list(chart_spec.get("series", []) or [])
@@ -50060,21 +50155,40 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         continue
                     ymax = max(100.0, float(row.get("max", 100.0) or 100.0), max(vals) if vals else 100.0)
                     color = str(row.get("color", text))
-                    self._chart_set_color(ctx, color)
-                    ctx.set_line_width(2.0 if sidx == 0 else 1.5)
+                    points: list[tuple[float, float]] = []
                     for idx, val in enumerate(vals):
                         x = left + ((right - left) * idx / max(1, count - 1))
                         y = bottom - ((bottom - top) * max(0.0, min(ymax, val)) / ymax)
-                        if idx == 0:
-                            ctx.move_to(x, y)
-                        else:
-                            ctx.line_to(x, y)
-                    ctx.stroke()
+                        points.append((x, y))
+                    if len(points) >= 2:
+                        self._chart_set_color(ctx, color, 0.10)
+                        ctx.move_to(points[0][0], bottom)
+                        for px, py in points:
+                            ctx.line_to(px, py)
+                        ctx.line_to(points[-1][0], bottom)
+                        ctx.close_path()
+                        ctx.fill()
+                        self._chart_set_color(ctx, color)
+                        ctx.set_line_width(2.0 if sidx == 0 else 1.5)
+                        ctx.move_to(points[0][0], points[0][1])
+                        for px, py in points[1:]:
+                            ctx.line_to(px, py)
+                        ctx.stroke()
+                        for px, py in points:
+                            self._chart_set_color(ctx, color)
+                            ctx.arc(px, py, 3.0, 0, 2.0 * math.pi)
+                            ctx.fill()
+                            self._chart_set_color(ctx, bg)
+                            ctx.arc(px, py, 1.5, 0, 2.0 * math.pi)
+                            ctx.fill()
                     self._chart_text(ctx, str(row.get("label", ""))[:18], right - 116, top + 14 + (sidx * 14), size=8)
                 if labels:
                     self._chart_set_color(ctx, muted)
-                    self._chart_text(ctx, labels[0][:10], left, bottom + 18, size=8)
-                    self._chart_text(ctx, labels[-1][:10], max(left, right - 58), bottom + 18, size=8)
+                    step = max(1, len(labels) // 5)
+                    for li, lbl in enumerate(labels):
+                        if li % step == 0 or li == len(labels) - 1:
+                            lx = left + ((right - left) * li / max(1, count - 1))
+                            self._chart_text(ctx, lbl[:6], lx - 10, bottom + 18, size=7)
 
             elif kind == "grouped_bar":
                 labels = [str(x) for x in list(chart_spec.get("labels", []) or [])]
@@ -50084,23 +50198,31 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 count = max(1, len(labels))
                 group_w = (right - left) / count
                 bar_count = max(1, len(series))
-                bar_w = min(18.0, (group_w * 0.72) / bar_count)
+                bar_w = max(6.0, (group_w * 0.7) / bar_count)
                 for sidx, row in enumerate(series):
                     color = str(row.get("color", text))
                     vals = [float(x or 0.0) for x in list(row.get("values", []) or [])]
-                    self._chart_set_color(ctx, color)
                     for idx, val in enumerate(vals[:count]):
                         v = max(0.0, min(100.0, val))
                         start_x = left + idx * group_w + (group_w - (bar_w * bar_count)) / 2.0
                         x = start_x + sidx * bar_w
                         y = bottom - ((bottom - top) * v / 100.0)
+                        self._chart_set_color(ctx, color, 0.85)
                         ctx.rectangle(x, y, max(1.0, bar_w - 1.0), bottom - y)
                         ctx.fill()
-                    self._chart_text(ctx, str(row.get("label", ""))[:14], right - 116, top + 14 + (sidx * 14), size=8)
+                        if v >= 8:
+                            self._chart_set_color(ctx, text)
+                            self._chart_text(ctx, f"{v:.0f}", x + bar_w / 2.0 - 6, max(top + 6, y - 5), size=7)
+                    label_text = str(row.get("label", ""))[:14]
+                    self._chart_set_color(ctx, muted)
+                    self._chart_text(ctx, label_text, right - 116, top + 14 + (sidx * 14), size=8)
+                    self._chart_set_color(ctx, str(row.get("color", text)), 0.7)
+                    ctx.rectangle(right - 120, top + 11 + (sidx * 14), 6, 6)
+                    ctx.fill()
                 self._chart_set_color(ctx, muted)
                 for idx, label in enumerate(labels):
                     x = left + idx * group_w + 2
-                    self._chart_text(ctx, label[:8], x, bottom + 18, size=7)
+                    self._chart_text(ctx, label[:6], x, bottom + 18, size=7)
 
         drawing.set_draw_func(_draw)
         return cast(Gtk.Widget, drawing)
@@ -51919,8 +52041,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
                 if total_cards > 0:
 
-                    def _pct(pct):
-                        return f"{pct:.0f}%" if pct >= 6 else ""
+                    def _pct_str(n):
+                        return f"{(n / total_cards * 100):.0f}%"
 
                     pie_sig = (is_compact, mastered, learning, new_cards, overdue_cards)
                     if self._cached_pie_chart_sig == pie_sig and self._cached_pie_chart_widget is not None:
@@ -51932,9 +52054,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             chart_style["accent_d"],
                         ]
                         legend_labels = [
-                            f"Mastered {mastered}",
-                            f"Learning {learning}",
-                            f"New {new_cards}",
+                            f"Mastered {mastered} ({_pct_str(mastered)})",
+                            f"Learning {learning} ({_pct_str(learning)})",
+                            f"New {new_cards} ({_pct_str(new_cards)})",
                         ]
                         canvas = self._build_gtk_chart_widget(
                             {

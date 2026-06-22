@@ -134,11 +134,6 @@ def _build_registry() -> dict[str, ConceptTemplate]:
     Uses domain-specific step-aware templates where available,
     falling back to generic FormulaTemplate wrappers.
     """
-    from studyplan.numerical_solver import (
-        solve_cost_of_debt, solve_cost_of_equity_dvm,
-        solve_equivalent_annual_cost, solve_profitability_index,
-        solve_asset_beta, solve_equity_beta,
-    )
     from studyplan.domain_reasoning.domains.acca_fm.npv import NpvTemplate
     from studyplan.domain_reasoning.domains.acca_fm.wacc import WaccTemplate
     from studyplan.domain_reasoning.domains.acca_fm.capm import CapmTemplate
@@ -148,6 +143,18 @@ def _build_registry() -> dict[str, ConceptTemplate]:
     from studyplan.domain_reasoning.domains.acca_fm.gearing import GearingTemplate, InterestCoverTemplate, EpsTemplate, DividendYieldTemplate, DividendCoverTemplate
     from studyplan.domain_reasoning.domains.acca_fm.eoq import EoqTemplate
     from studyplan.domain_reasoning.domains.acca_fm.arr import ArrTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.cost_of_debt import CostOfDebtTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.cost_of_equity_dvm import CostOfEquityDvmTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.equivalent_annual_cost import EquivalentAnnualCostTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.profitability_index import ProfitabilityIndexTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.asset_beta import AssetBetaTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.equity_beta import EquityBetaTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.pe_ratio import PeRatioTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.roe import RoeTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.cost_of_preference import CostOfPreferenceTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.terp import TerpTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.perpetuity_npv import PerpetuityNpvTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.roce import RoceTemplate
 
     return {
         "fm.npv": NpvTemplate(),
@@ -156,24 +163,34 @@ def _build_registry() -> dict[str, ConceptTemplate]:
         "fm.payback": PaybackTemplate(),
         "fm.discounted_payback": DiscountedPaybackTemplate(),
         "fm.ccc": CccTemplate(),
-        "fm.cost_of_debt": FormulaTemplate("fm.cost_of_debt", solve_cost_of_debt),
-        "fm.cost_of_equity_dvm": FormulaTemplate("fm.cost_of_equity_dvm", solve_cost_of_equity_dvm),
+        "fm.cost_of_debt": CostOfDebtTemplate(),
+        "fm.cost_of_equity_dvm": CostOfEquityDvmTemplate(),
         "fm.irr": IrrTemplate(),
         "fm.arr": ArrTemplate(),
         "fm.eoq": EoqTemplate(),
-        "fm.equivalent_annual_cost": FormulaTemplate("fm.equivalent_annual_cost", solve_equivalent_annual_cost),
-        "fm.profitability_index": FormulaTemplate("fm.profitability_index", solve_profitability_index),
+        "fm.equivalent_annual_cost": EquivalentAnnualCostTemplate(),
+        "fm.profitability_index": ProfitabilityIndexTemplate(),
         "fm.gearing": GearingTemplate(),
         "fm.interest_cover": InterestCoverTemplate(),
         "fm.eps": EpsTemplate(),
         "fm.dividend_yield": DividendYieldTemplate(),
         "fm.dividend_cover": DividendCoverTemplate(),
-        "fm.asset_beta": FormulaTemplate("fm.asset_beta", solve_asset_beta),
-        "fm.equity_beta": FormulaTemplate("fm.equity_beta", solve_equity_beta),
+        "fm.asset_beta": AssetBetaTemplate(),
+        "fm.equity_beta": EquityBetaTemplate(),
+        "fm.pe_ratio": PeRatioTemplate(),
+        "fm.roe": RoeTemplate(),
+        "fm.cost_of_preference": CostOfPreferenceTemplate(),
+        "fm.terp": TerpTemplate(),
+        "fm.perpetuity_npv": PerpetuityNpvTemplate(),
+        "fm.roce": RoceTemplate(),
     }
 
 
 TEMPLATE_REGISTRY: dict[str, ConceptTemplate] = _build_registry()
+
+# Merge in auto-generated templates from formula registry
+from studyplan.domain_reasoning.formula_registry import build_template_registry
+TEMPLATE_REGISTRY = build_template_registry(TEMPLATE_REGISTRY)
 
 
 def run_template(

@@ -30,7 +30,8 @@ class TestConceptMetadata:
     def test_wacc_dependencies(self):
         w = BUILTIN_CONCEPTS["fm.wacc"]
         assert "fm.cost_of_equity_dvm" in w.dependencies
-        assert "fm.cost_of_debt" in w.dependencies
+        # cost_of_debt removed — WACC now expects after-tax cost_debt directly
+        assert "fm.cost_of_debt" not in w.dependencies
 
     def test_irr_depends_on_npv(self):
         assert "fm.npv" in BUILTIN_CONCEPTS["fm.irr"].dependencies
@@ -61,6 +62,7 @@ class TestStructureTypeConcepts:
             "fx_exposure_hedge", "working_capital_cycle",
             "dividend_policy_tradeoff", "capm_required_return",
             "gearing_financial_risk", "foreign_investment_appraisal",
+            "rights_issue_valuation",
         }
         assert set(STRUCTURE_TYPE_CONCEPTS) == expected
 
@@ -114,8 +116,8 @@ class TestFormulaTemplate:
 
     def test_wacc(self):
         t = TEMPLATE_REGISTRY["fm.wacc"]
-        r = t.solve({"equity": 60, "debt": 40, "cost_equity": 0.12, "cost_debt": 0.06, "tax_rate": 0.30})
-        expected = 0.6*0.12 + 0.4*0.06*0.7
+        r = t.solve({"equity": 60, "debt": 40, "cost_equity": 0.12, "cost_debt": 0.042, "tax_rate": 0.30})
+        expected = 0.6*0.12 + 0.4*0.042
         assert abs(r["result"] - expected) < 0.001
         assert len(r["steps"]) >= 4
 
@@ -190,6 +192,26 @@ class TestFormulaTemplate:
                 r = t.solve({"dividend_per_share": 0.50, "market_price": 10.0})
             elif cid == "fm.dividend_cover":
                 r = t.solve({"eps": 0.40, "dividend_per_share": 0.20})
+            elif cid == "fm.pe_ratio":
+                r = t.solve({"market_price": 10.0, "eps": 2.0})
+            elif cid == "fm.roe":
+                r = t.solve({"profit_after_tax": 500000, "equity": 2000000})
+            elif cid == "fm.cost_of_preference":
+                r = t.solve({"preference_dividend": 0.08, "market_price": 1.00})
+            elif cid == "fm.terp":
+                r = t.solve({"cum_rights_price": 2.00, "issue_price": 1.50, "rights_ratio_n": 4})
+            elif cid == "fm.perpetuity_npv":
+                r = t.solve({"annual_cashflow": 1000, "discount_rate": 0.10})
+            elif cid == "fm.roce":
+                r = t.solve({"pbit": 50000, "capital_employed": 250000})
+            elif cid == "fm.dividend_growth_rate":
+                r = t.solve({"roe": 0.15, "retention_ratio": 0.6})
+            elif cid == "fm.earning_yield":
+                r = t.solve({"eps": 2.5, "market_price": 50.0})
+            elif cid == "fm.quick_ratio":
+                r = t.solve({"current_assets": 100.0, "inventory": 30.0, "current_liabilities": 50.0})
+            elif cid == "fm.asset_turnover":
+                r = t.solve({"sales": 500.0, "capital_employed": 250.0})
             else:
                 continue
             assert not r["is_nan"], f"{cid} returned nan"

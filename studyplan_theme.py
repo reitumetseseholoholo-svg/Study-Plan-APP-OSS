@@ -858,6 +858,32 @@ window.pomodoro-active .badges-card {
     line-height: 1.52;
     padding: 8px 10px;
 }
+.tutor-thinking-row {
+    padding: 4px 10px;
+    min-height: 28px;
+    background: alpha(@theme_fg_color, 0.03);
+    border-radius: 8px;
+}
+.tutor-prompt-hint {
+    font-size: 11px;
+    padding: 2px 6px 2px 0;
+}
+.tutor-stream-pulse {
+    min-height: 4px;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+.tutor-stream-pulse trough {
+    min-height: 4px;
+    border-radius: 2px;
+    background: alpha(@theme_fg_color, 0.08);
+}
+.tutor-stream-pulse progress {
+    min-height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(to right, @theme_selected_bg_color, alpha(@theme_selected_bg_color, 0.5));
+}
 /* KPI/metric labels */
 .kpi-line {
     font-size: 12px;
@@ -1951,6 +1977,33 @@ window.pomodoro-active .badges-card {
     padding: 8px 10px;
     color: #eaf0ff;
 }
+.tutor-thinking-row {
+    padding: 4px 10px;
+    min-height: 28px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 8px;
+}
+.tutor-prompt-hint {
+    font-size: 11px;
+    padding: 2px 6px 2px 0;
+    color: rgba(234, 240, 255, 0.45);
+}
+.tutor-stream-pulse {
+    min-height: 4px;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+.tutor-stream-pulse trough {
+    min-height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.08);
+}
+.tutor-stream-pulse progress {
+    min-height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(to right, #6fa8ff, rgba(111, 168, 255, 0.35));
+}
 .kpi-line {
     font-size: 12px;
     font-weight: 620;
@@ -2516,7 +2569,7 @@ window.study-window .coach-diagnostics-box {{
     padding-top: 4px;
 }}
 window.study-window .tutor-workbench {{
-    padding-top: 12px;
+    padding-top: 6px;
 }}
 window.study-window .tutor-workbench .tutor-prompt-scroll,
 window.study-window .tutor-workbench .tutor-response-scroll {{
@@ -2541,13 +2594,12 @@ window.study-window .tutor-workbench .inline-toolbar button {{
     min-height: 32px;
     border-radius: 8px;
 }}
-window.study-window .tutor-workbench .tutor-cockpit-line,
-window.study-window .tutor-workbench .tutor-status-line,
-window.study-window .tutor-workbench .tutor-summary-line {{
+window.study-window .tutor-workbench .single-line-lock {{
     border: 1px solid alpha({color["text"]}, 0.10);
     border-radius: 8px;
     background: alpha({color["text"]}, 0.03);
-    padding: 5px 8px;
+    padding: 4px 8px;
+    font-size: 12px;
 }}
 window.study-window .workbench-status {{
     border: 1px solid alpha({color["text"]}, 0.10);

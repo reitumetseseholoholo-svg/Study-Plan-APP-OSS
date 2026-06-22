@@ -1545,7 +1545,8 @@ def format_ai_tutor_transcript(history: list[dict[str, Any]]) -> str:
             continue
         label = "You" if role == "user" else "Tutor"
         blocks.append(f"{label}:\n{content}")
-    return "\n\n".join(blocks).strip()
+    text = "\n\n───\n\n".join(blocks).strip()
+    return text
 
 
 class AITutorDialogController:
@@ -1713,6 +1714,11 @@ class AITutorDialogController:
         )
         prompt_scroller.set_child(prompt_view)
         content.append(prompt_scroller)
+        prompt_hint = Gtk.Label(label="Ctrl+Enter to send")
+        prompt_hint.set_halign(Gtk.Align.END)
+        prompt_hint.add_css_class("muted")
+        prompt_hint.add_css_class("tutor-prompt-hint")
+        content.append(prompt_hint)
 
         action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         action_row.add_css_class("inline-toolbar")
@@ -1768,6 +1774,24 @@ class AITutorDialogController:
         response_toolbar.append(jump_latest_btn)
         response_toolbar.append(copy_last_btn)
         content.append(response_toolbar)
+        thinking_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        thinking_row.set_visible(False)
+        thinking_row.add_css_class("inline-toolbar")
+        thinking_row.add_css_class("tutor-thinking-row")
+        thinking_spinner = Gtk.Spinner()
+        thinking_spinner.set_size_request(16, 16)
+        thinking_label = Gtk.Label(label="Thinking...")
+        thinking_label.add_css_class("muted")
+        thinking_row.append(thinking_spinner)
+        thinking_row.append(thinking_label)
+        content.append(thinking_row)
+        dialog_stream_pulse = Gtk.ProgressBar()
+        dialog_stream_pulse.set_visible(False)
+        dialog_stream_pulse.set_halign(Gtk.Align.FILL)
+        dialog_stream_pulse.set_hexpand(True)
+        dialog_stream_pulse.set_size_request(-1, 4)
+        dialog_stream_pulse.add_css_class("tutor-stream-pulse")
+        content.append(dialog_stream_pulse)
         response_scroller = Gtk.ScrolledWindow()
         response_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         response_scroller.set_min_content_height(260)
@@ -2100,6 +2124,12 @@ class AITutorDialogController:
             _update_prompt_meta()
             _set_running(bool(run_state.get("active", False)))
 
+        _dialog_pulse_source_id: list[int] = [0]
+
+        def _dialog_do_pulse() -> bool:
+            dialog_stream_pulse.pulse()
+            return True
+
         def _set_running(running: bool) -> None:
             run_state["active"] = bool(running)
             try:
@@ -2145,6 +2175,18 @@ class AITutorDialogController:
             copy_btn.set_sensitive(bool(controls.get("copy_transcript_enabled", False)))
             copy_last_btn.set_sensitive(bool(controls.get("copy_last_enabled", False)))
             jump_latest_btn.set_sensitive(bool(controls.get("jump_latest_enabled", False)))
+            thinking_row.set_visible(bool(running))
+            dialog_stream_pulse.set_visible(bool(running))
+            if bool(running):
+                thinking_spinner.start()
+                if _dialog_pulse_source_id[0] == 0:
+                    _dialog_pulse_source_id[0] = GLib.timeout_add(200, _dialog_do_pulse)
+            else:
+                thinking_spinner.stop()
+                if _dialog_pulse_source_id[0] > 0:
+                    GLib.source_remove(_dialog_pulse_source_id[0])
+                    _dialog_pulse_source_id[0] = 0
+                dialog_stream_pulse.set_fraction(0.0)
             _sync_cockpit_controls()
             _refresh_ai_status_line()
 
@@ -2372,37 +2414,50 @@ class AITutorDialogController:
             except Exception:
                 pass
 
+        _copy_toast_id: list[int] = [0]
+        _saved_status: list[str] = [""]
+
+        def _restore_status() -> None:
+            status_label.set_text(_saved_status[0])
+
+        def _show_copy_toast(msg: str) -> None:
+            if _copy_toast_id[0] > 0:
+                GLib.source_remove(_copy_toast_id[0])
+            _saved_status[0] = str(status_label.get_text() or "")
+            status_label.set_text(msg)
+            _copy_toast_id[0] = GLib.timeout_add(2500, _restore_status)
+
         def _copy_chat(*_args):
             text = _transcript_text_for_clipboard()
             if not text:
-                status_label.set_text("Nothing to copy.")
+                _show_copy_toast("Nothing to copy.")
                 return
             try:
                 display = Gdk.Display.get_default()
                 clipboard = display.get_clipboard() if display is not None else None
                 if clipboard is not None:
                     clipboard.set_text(text)
-                    status_label.set_text("Chat copied to clipboard.")
+                    _show_copy_toast("Chat copied to clipboard.")
                 else:
-                    status_label.set_text("Clipboard unavailable.")
+                    _show_copy_toast("Clipboard unavailable.")
             except Exception:
-                status_label.set_text("Clipboard unavailable.")
+                _show_copy_toast("Clipboard unavailable.")
 
         def _copy_last_answer(*_args):
             text = _latest_assistant_answer().strip()
             if not text:
-                status_label.set_text("No tutor answer to copy yet.")
+                _show_copy_toast("No tutor answer to copy yet.")
                 return
             try:
                 display = Gdk.Display.get_default()
                 clipboard = display.get_clipboard() if display is not None else None
                 if clipboard is None:
-                    status_label.set_text("Clipboard unavailable.")
+                    _show_copy_toast("Clipboard unavailable.")
                     return
                 clipboard.set_text(text)
-                status_label.set_text("Last tutor answer copied.")
+                _show_copy_toast("Last tutor answer copied.")
             except Exception:
-                status_label.set_text("Clipboard unavailable.")
+                _show_copy_toast("Clipboard unavailable.")
 
         def _generate(*_args):
             if not bool(app.local_llm_enabled):
