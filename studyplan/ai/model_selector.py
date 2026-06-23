@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .gguf_registry import GgufModel
+from .model_ranker import score_quality, resolve_tier
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +34,12 @@ _PURPOSE_TIERS: dict[str, str] = {
     Purpose.DEEP_REASON: "quality",
     Purpose.COACH: "balanced",
     Purpose.GENERAL: "balanced",
+    "section_c_judgment": "quality",
+    "section_c_evaluation": "balanced",
+    "section_c_generation": "balanced",
+    "section_c_loop_diff": "balanced",
+    "gap_generation": "balanced",
+    "autopilot": "balanced",
 }
 
 
@@ -145,163 +152,28 @@ class ModelSelector:
     def _score_model(
         self, model: GgufModel, tier: str, purpose: str
     ) -> ModelRanking:
-        score = 0.0
-        rationale_parts: list[str] = [f"tier={tier}", f"purpose={purpose}"]
-
-        size_score = self._score_size(model, tier)
-        score += size_score
-        self._append_rationale_part(
-            rationale_parts, "size", size_score, self._describe_size(model)
-        )
-
-        quant_score = self._score_quant(model, tier)
-        score += quant_score
-        self._append_rationale_part(
-            rationale_parts, "quant", quant_score, model.quant_tag
-        )
-
-        instruct_score = self._score_instruct(model)
-        score += instruct_score
-        self._append_rationale_part(
-            rationale_parts,
-            "instruct",
-            instruct_score,
-            "yes" if model.is_instruct else "no",
-        )
-
-        arch_score = self._score_architecture(model)
-        score += arch_score
-        self._append_rationale_part(
-            rationale_parts, "arch", arch_score, model.architecture
+        quality = score_quality(
+            model.name,
+            tier,
+            param_b=model.param_billions,
+            quant=model.quant_tag,
+            is_instruct=model.is_instruct,
+            arch=model.architecture,
         )
 
         ram_score = self._score_ram_fit(model)
-        score += ram_score
-        self._append_rationale_part(
-            rationale_parts, "ram_fit", ram_score, self._describe_ram_fit(model)
-        )
-
         perf_stats = self.get_model_stats(model.name)
         perf_score = self._score_historical_perf(model, purpose, perf_stats)
-        score += perf_score
-        self._append_rationale_part(
-            rationale_parts, "history", perf_score, self._describe_history(perf_stats)
-        )
 
-        rationale = "; ".join(rationale_parts)
+        total = quality + ram_score + perf_score
+        rationale = (
+            f"tier={tier}; purpose={purpose}; quality={quality:.2f}; "
+            f"ram_fit={ram_score:+.2f}; history={perf_score:+.2f}; "
+            f"samples={perf_stats.get('samples', 0)}"
+        )
         return ModelRanking(
-            model=model, score=round(score, 3), tier=tier, rationale=rationale
+            model=model, score=round(total, 3), tier=tier, rationale=rationale
         )
-
-    @staticmethod
-    def _append_rationale_part(
-        parts: list[str], label: str, component_score: float, detail: str = ""
-    ) -> None:
-        suffix = f" {detail}" if str(detail or "").strip() else ""
-        parts.append(f"{label}({component_score:+.2f}){suffix}")
-
-    @staticmethod
-    def _describe_size(model: GgufModel) -> str:
-        b = float(model.param_billions or 0.0)
-        if b <= 0.0:
-            return "unknown"
-        return f"{b:.1f}B"
-
-    def _describe_ram_fit(self, model: GgufModel) -> str:
-        if self.ram_budget_bytes <= 0:
-            return "no_budget"
-        overhead = 500_000_000
-        available = max(0, int(self.ram_budget_bytes - overhead))
-        return f"{int(model.size_bytes / 1_000_000)}MB/{int(available / 1_000_000)}MB"
-
-    @staticmethod
-    def _describe_history(stats: dict[str, Any]) -> str:
-        samples = int(stats.get("samples", 0) or 0)
-        if samples <= 0:
-            return "samples=0"
-        success = float(stats.get("success_rate", 0.0) or 0.0) * 100.0
-        avg_latency = float(stats.get("avg_latency_ms", 0.0) or 0.0)
-        return f"samples={samples},success={success:.0f}%,lat={avg_latency:.0f}ms"
-
-    def _score_size(self, model: GgufModel, tier: str) -> float:
-        b = model.param_billions
-        if b <= 0:
-            b = model.size_bytes / (600_000_000)  # rough estimate from file size
-
-        if tier == "fast":
-            if b <= 1.5:
-                return 10.0
-            if b <= 3.0:
-                return 5.0
-            if b <= 7.0:
-                return 1.0
-            return -5.0
-        elif tier == "quality":
-            if b >= 7.0:
-                return 10.0
-            if b >= 3.0:
-                return 6.0
-            if b >= 1.5:
-                return 2.0
-            return 0.0
-        else:  # balanced
-            if 1.5 <= b <= 3.0:
-                return 10.0
-            if 3.0 < b <= 7.0:
-                return 7.0
-            if b < 1.5:
-                return 4.0
-            return 2.0
-
-    def _score_quant(self, model: GgufModel, tier: str) -> float:
-        q = model.quant_tag.lower()
-        if tier == "fast":
-            if "q4_0" in q:
-                return 3.0
-            if "q4_k" in q:
-                return 2.5
-            if "q2" in q or "q3" in q:
-                return 3.5
-            if "q8" in q or "fp16" in q or "f16" in q:
-                return -1.0
-            return 1.0
-        elif tier == "quality":
-            if "q4_k_m" in q:
-                return 3.0
-            if "q5" in q or "q6" in q:
-                return 4.0
-            if "q8" in q:
-                return 5.0
-            if "q4_0" in q:
-                return 1.5
-            if "q2" in q or "q3" in q:
-                return -1.0
-            return 2.0
-        else:  # balanced
-            if "q4_k_m" in q or "q4_k_s" in q:
-                return 3.0
-            if "q4_0" in q:
-                return 2.0
-            if "q5" in q:
-                return 2.5
-            if "q2" in q:
-                return -0.5
-            return 1.5
-
-    @staticmethod
-    def _score_instruct(model: GgufModel) -> float:
-        return 3.0 if model.is_instruct else -1.0
-
-    @staticmethod
-    def _score_architecture(model: GgufModel) -> float:
-        bonuses = {
-            "qwen": 1.5,
-            "llama": 1.5,
-            "phi": 1.0,
-            "gemma": 1.0,
-            "deepseek": 0.5,
-        }
-        return bonuses.get(model.architecture, 0.0)
 
     def _score_ram_fit(self, model: GgufModel) -> float:
         """Bonus for fitting in RAM; only used when not filtering by fit (e.g. no budget)."""

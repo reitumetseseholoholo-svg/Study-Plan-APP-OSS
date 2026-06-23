@@ -390,7 +390,7 @@ def test_phase3_practice_service_generates_micro_items_for_guided_practice():
             session_id="s3",
             module="FM",
             topic="Cash Management",
-            mode="guided_practice",
+            mode="teach",
             loop_phase="practice",
             active=True,
         ),
@@ -415,6 +415,30 @@ def test_phase3_practice_service_generates_micro_items_for_guided_practice():
     assert any(item.item_type == "teach_back" for item in items)
     assert any(item.item_type in {"short_answer", "mcq"} for item in items)
     assert all(item.topic for item in items)
+
+
+def test_phase3_no_teach_back_for_non_teach_mode():
+    service = DeterministicTutorPracticeService()
+    items = service.build_practice_items(
+        session_state=TutorSessionState(
+            session_id="s-noteach",
+            module="FM",
+            topic="Working Capital",
+            mode="guided_practice",
+            loop_phase="practice",
+            active=True,
+        ),
+        learner_profile=TutorLearnerProfileSnapshot(
+            learner_id="u-noteach", module="FM",
+        ),
+        app_snapshot=AppStateSnapshot(
+            module="FM", current_topic="Working Capital", coach_pick="", days_to_exam=30,
+            must_review_due=0, overdue_srs_count=0,
+        ),
+        max_items=3,
+    )
+    assert all(item.item_type != "teach_back" for item in items)
+    assert any(item.item_type in {"short_answer", "mcq"} for item in items)
 
 
 def test_phase3_assessment_service_marks_mcq_and_keyword_short_answer():

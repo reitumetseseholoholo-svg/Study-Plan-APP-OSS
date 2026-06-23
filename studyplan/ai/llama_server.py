@@ -23,6 +23,11 @@ from dataclasses import dataclass, field
 from collections import deque
 from typing import Any
 
+from studyplan.ai.host_inference_profile import (
+    mem_snapshot,
+    memory_auto_pause_eligible,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -67,6 +72,7 @@ class LlamaServerManager:
     _startup_latency_ms: int = field(default=0, init=False, repr=False)
     _last_activity_mono: float = field(default=0.0, init=False, repr=False)
     _idle_watcher_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _memory_guard_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _stderr_lines: deque[str] = field(default_factory=lambda: deque(maxlen=200), init=False, repr=False)
     _stderr_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _binary_available: bool | None = field(default=None, init=False, repr=False)
@@ -236,6 +242,7 @@ class LlamaServerManager:
         if ok:
             self._last_activity_mono = time.monotonic()
             self._ensure_idle_watcher_started_unlocked()
+            self._ensure_memory_guard_started_unlocked()
             log.info(
                 "llama-server ready in %dms (pid=%d, model=%s)",
                 elapsed,
@@ -265,6 +272,47 @@ class LlamaServerManager:
         )
         self._idle_watcher_thread = thread
         thread.start()
+
+    def _ensure_memory_guard_started_unlocked(self) -> None:
+        if self._memory_guard_thread is not None and self._memory_guard_thread.is_alive():
+            return
+        thread = threading.Thread(
+            target=self._memory_guard_loop,
+            name="studyplan-llama-memguard",
+            daemon=True,
+        )
+        self._memory_guard_thread = thread
+        thread.start()
+
+    def _memory_guard_loop(self) -> None:
+        while True:
+            time.sleep(2.0)
+            to_finalize: subprocess.Popen[bytes] | None = None
+            avail_mb = 0.0
+            with self._lock:
+                proc = self._process
+                if proc is None or proc.poll() is not None:
+                    continue
+                try:
+                    if not memory_auto_pause_eligible():
+                        continue
+                except Exception:
+                    continue
+                try:
+                    avail_mb = mem_snapshot().mem_available_mb
+                except Exception:
+                    pass
+                log.warning(
+                    "System memory critically low (%.0f MB available); "
+                    "killing llama-server to prevent OOM",
+                    avail_mb,
+                )
+                self._process = None
+                self._current_model_path = ""
+                self._current_model_name = ""
+                to_finalize = proc
+            if to_finalize is not None:
+                self._finalize_subprocess(to_finalize)
 
     def _idle_watcher_loop(self) -> None:
         poll = float(self.config.idle_poll_interval_seconds or 10.0)

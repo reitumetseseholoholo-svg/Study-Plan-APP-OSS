@@ -192,6 +192,10 @@ class ReasoningTrace:
                 list(self.diagnostic.all_error_tags)
                 if self.diagnostic else []
             ),
+            "diagnostic_error_summary": (
+                self.diagnostic.error_summary
+                if self.diagnostic and self.diagnostic.error_summary else ""
+            ),
         }
 
 
@@ -208,7 +212,7 @@ def _get_expected_param_keys(concept_id: str) -> set[str] | None:
     from studyplan.numerical_solver import _FORMULA_CANDIDATES
 
     # -- Build a synthetic number pool rich enough to trigger every
-    #    candidate function. -------------------------------------------------
+    #    candidate function (including chain formulas with many percent params). --
     _pool = [
         {"value": 500.0, "raw": "500",  "is_percent": False, "is_currency": False, "is_year_like": False, "is_negative": False},
         {"value": 300.0, "raw": "300",  "is_percent": False, "is_currency": False, "is_year_like": False, "is_negative": False},
@@ -216,6 +220,10 @@ def _get_expected_param_keys(concept_id: str) -> set[str] | None:
         {"value": 0.12,  "raw": "12%",  "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
         {"value": 0.08,  "raw": "8%",   "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
         {"value": 0.30,  "raw": "30%",  "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
+        {"value": 0.06,  "raw": "6%",   "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
+        {"value": 1.2,   "raw": "120%", "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
+        {"value": 0.60,  "raw": "60%",  "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
+        {"value": 0.40,  "raw": "40%",  "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
     ]
 
     formula = concept_id.replace("fm.", "", 1) if concept_id.startswith("fm.") else concept_id

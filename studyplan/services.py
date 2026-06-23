@@ -477,6 +477,13 @@ class LlamaCppTutorService:
         backend_source = self._coerce_text(getattr(self.resolved_backend, "source", ""), "")
 
         if backend_source in {"gateway", "llama_cpp_cloud"}:
+            from .config import remote_llm_backends_allowed as _cloud_allowed
+            if not _cloud_allowed():
+                logger.warning(
+                    "Cloud LLM backends disabled by policy; skipping %s model resolution",
+                    backend_source,
+                )
+                return [], {}, {"mode": "cloud_disabled", "cache_hit": False}
             if backend_source == "gateway":
                 gateway_model = self._coerce_text(getattr(Config, "LLM_GATEWAY_MODEL", ""), configured)
                 gateway_fallbacks = self._coerce_text(getattr(Config, "LLM_GATEWAY_MODEL_FALLBACKS", ""), "")
@@ -3051,6 +3058,8 @@ class DeterministicTutorPracticeService:
             return ()
 
         mode = str(getattr(session_state, "mode", "auto") or "auto").strip().lower()
+        if mode == "auto":
+            mode = "guided_practice"
         topic = (
             str(getattr(session_state, "topic", "") or getattr(app_snapshot, "current_topic", "") or "").strip()
             or "current topic"
@@ -3077,29 +3086,41 @@ class DeterministicTutorPracticeService:
             base = re.sub(r"[^a-z0-9]+", "-", _normalize_free_text(topic)).strip("-") or "topic"
             return f"{base}-{suffix}-{idx}"
 
-        # Universal quick teach-back item (good after explanation)
-        items.append(
-            TutorPracticeItem(
-                item_id=_mk_id("teachback", 1),
-                item_type="teach_back",
-                topic=topic,
-                prompt=f"Explain {topic} in 2-4 lines and include one practical use.",
-                expected_format="2-4 short lines",
-                difficulty=_difficulty("easy" if mode == "teach" else "medium"),
-                source="tutor_micro",
-                capability_tags=weak_caps[:2],
-                rubric_hints=("definition", "application"),
-                meta={
-                    "keywords": list(core_keywords[:2]),
-                    "marks_max": 2.0,
-                    "misconception_tags_by_missing_keyword": {
-                        str(core_keywords[0]): "concept_anchor_missing" if core_keywords else "concept_anchor_missing",
-                    },
-                },
-            )
-        )
+        # Teach-back item: only when mode is "teach" (explanation just given)
+        # AND this is the first practice item after teach (no prior assessment
+        # outcome in this session — prevents teach-back on every plan click
+        # after the initial post-teach one).
+        phase = str(getattr(session_state, "loop_phase", "") or "").strip().lower()
+        last_outcome = str(getattr(session_state, "last_assessment_outcome", "") or "").strip()
 
-        if mode in {"guided_practice", "retrieval_drill", "error_clinic", "revision_planner"} and len(items) < limit:
+        _include_teach_back = (
+            mode == "teach"
+            and phase == "practice"
+            and not last_outcome
+        )
+        if _include_teach_back:
+            items.append(
+                TutorPracticeItem(
+                    item_id=_mk_id("teachback", 1),
+                    item_type="teach_back",
+                    topic=topic,
+                    prompt=f"Explain {topic} in 2-4 lines and include one practical use.",
+                    expected_format="2-4 short lines",
+                    difficulty=_difficulty("easy" if mode == "teach" else "medium"),
+                    source="tutor_micro",
+                    capability_tags=weak_caps[:2],
+                    rubric_hints=("definition", "application"),
+                    meta={
+                        "keywords": list(core_keywords[:2]),
+                        "marks_max": 2.0,
+                        "misconception_tags_by_missing_keyword": {
+                            str(core_keywords[0]): "concept_anchor_missing" if core_keywords else "concept_anchor_missing",
+                        },
+                    },
+                )
+            )
+
+        if mode in {"teach", "guided_practice", "retrieval_drill", "error_clinic", "revision_planner"} and len(items) < limit:
             weak_topic = str(weak_topics[0] if weak_topics else topic).strip() or topic
             weak_tokens = [t for t in _tokenize_words(weak_topic) if len(t) >= 3][:3]
             items.append(
@@ -3122,7 +3143,7 @@ class DeterministicTutorPracticeService:
                 )
             )
 
-        if mode in {"retrieval_drill", "guided_practice", "revision_planner"} and len(items) < limit:
+        if mode in {"teach", "retrieval_drill", "guided_practice", "revision_planner"} and len(items) < limit:
             items.append(
                 TutorPracticeItem(
                     item_id=_mk_id("mcq", 3),
@@ -3215,13 +3236,19 @@ class DeterministicTutorPracticeService:
         base_meta["variant_trigger_outcome"] = result_outcome or "unknown"
         base_meta["variant_source_item_id"] = source_item_id
 
+        # After 2+ failed rounds, break the retest cycle by switching to a
+        # multiple-choice variant to avoid endless open-ended retries.
+        effective_type: str = item_type
+        if variant_round >= 2:
+            effective_type = "mcq"
+
         def _variant_id() -> str:
             base = re.sub(r"[^a-z0-9]+", "-", _normalize_free_text(variant_of)).strip("-") or "variant"
             return f"{base}-v{variant_round}"
 
         # Prefer keyword-preserving short-answer/teach-back variants because they can be
         # scored deterministically with the existing assessment service.
-        if item_type in {"teach_back", "short_answer", "error_spot", "section_c_part"}:
+        if effective_type in {"teach_back", "short_answer", "error_spot", "section_c_part"}:
             keywords = list(source_meta.get("keywords") or [])
             if not keywords:
                 keywords = [kw for kw in _tokenize_words(topic) if len(kw) >= 3][:3]
@@ -3259,7 +3286,7 @@ class DeterministicTutorPracticeService:
             )
             return TutorPracticeItem(
                 item_id=_variant_id(),
-                item_type="short_answer" if item_type != "section_c_part" else "section_c_part",
+                item_type="short_answer" if effective_type != "section_c_part" else "section_c_part",
                 topic=topic,
                 prompt=prompt,
                 expected_format=expected_format,
@@ -3270,7 +3297,7 @@ class DeterministicTutorPracticeService:
                 meta=base_meta,
             )
 
-        if item_type == "mcq":
+        if effective_type == "mcq":
             correct_opt = str(source_meta.get("correct_option", "") or "B").strip().upper() or "B"
             variant_kind = "mcq_rephrase"
             prompt = (
@@ -3372,11 +3399,14 @@ class DeterministicTutorAssessmentService:
         meta = dict(getattr(item, "meta", {}) or {})
         answer_text = str(getattr(submission, "answer_text", "") or "")
 
-        # Domain-reasoning path: item carries a template_ref or concept_ids
+        # Domain-reasoning path: try domain reasoning when the solver is available
         template_ref = str(getattr(item, "template_ref", "") or "").strip()
         concept_ids = tuple(str(c) for c in (getattr(item, "concept_ids", ()) or ()))
-        if (template_ref or concept_ids) and self.domain_reasoner is not None:
-            return self._assess_domain_item(item, answer_text)
+        if self.domain_reasoner is not None:
+            if template_ref or concept_ids:
+                return self._assess_domain_item(item, answer_text)
+            if item_type == "calculation_step":
+                return self._assess_domain_item(item, answer_text)
 
         if item_type == "mcq":
             return self._assess_mcq(item, answer_text)
@@ -3536,6 +3566,10 @@ class DeterministicTutorAssessmentService:
         to obtain the reference truth and step-level diagnostics.  The result
         carries *concept_ids*, *template_ref*, *failed_steps*, *error_patterns*,
         and *diagnostic_confidence*.
+
+        When the item has no explicit ``template_ref``, the method auto-detects
+        domain concepts from the prompt text.  If none are found it falls back
+        to ``_assess_numeric`` so that generic calculation items still work.
         """
         template_ref = str(getattr(item, "template_ref", "") or "").strip()
         template_inputs = dict(getattr(item, "template_inputs", {}) or {})
@@ -3543,6 +3577,18 @@ class DeterministicTutorAssessmentService:
         item_meta = dict(getattr(item, "meta", {}) or {})
         marks_max = float(item_meta.get("marks_max", 1.0) or 1.0)
         prompt = str(getattr(item, "prompt", "") or "")
+
+        # Auto-detect concepts when there is no explicit template_ref.
+        # This lets domain reasoning fire for any calculation_step item
+        # that mentions a known domain concept (NPV, WACC, CAPM, etc).
+        if not template_ref and not concept_ids:
+            try:
+                from studyplan.domain_reasoning.concepts import detect_concepts
+                detected = detect_concepts(prompt)
+            except Exception:
+                detected = []
+            if not detected:
+                return self._assess_numeric(item, answer_text)
 
         trace: dict[str, Any] = {}
         if self.domain_reasoner is not None:
@@ -3593,6 +3639,7 @@ class DeterministicTutorAssessmentService:
             feedback = "Domain reasoning unavailable; partial credit awarded."
 
         # Extract diagnostics
+        error_summary = str(trace.get("diagnostic_error_summary", trace.get("error_summary", "")) or "")
         diag_error_tags: tuple[str, ...] = tuple(
             str(t) for t in (trace.get("diagnostic_error_tags") or [])
         )
@@ -3604,6 +3651,10 @@ class DeterministicTutorAssessmentService:
                 if not e.get("success")
             )
 
+        # Enrich feedback with error summary when available
+        if outcome in ("incorrect", "partial") and error_summary and "expected" not in feedback:
+            feedback = f"{feedback} {error_summary}"
+
         return TutorAssessmentResult(
             item_id=item.item_id,
             outcome=outcome,
@@ -3611,7 +3662,7 @@ class DeterministicTutorAssessmentService:
             marks_max=marks_max,
             feedback=feedback,
             error_tags=diag_error_tags,
-            concept_ids=concept_ids,
+            concept_ids=tuple(str(c) for c in (trace.get("concept_ids", concept_ids) or concept_ids)),
             template_ref=template_ref,
             failed_steps=failed_steps,
             error_patterns=diag_error_tags,
@@ -4468,7 +4519,7 @@ class RuleBasedTutorLearningLoopService:
         if adapter_mode is not None:
             return adapter_mode
 
-        return "teach", "default_teach"
+        return "guided_practice", "default_guided_practice"
 
     def _cognitive_runtime_meta(self, request: TutorLoopTurnRequest) -> dict[str, Any]:
         raw = getattr(request, "meta", {}) or {}

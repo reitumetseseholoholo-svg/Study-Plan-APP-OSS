@@ -5947,28 +5947,12 @@ def test_cloud_endpoint_candidate_disabled_when_offline(monkeypatch) -> None:
     assert dummy._cloud_endpoint_is_candidate() is False
 
 
-def test_brave_candidate_disabled_when_offline(monkeypatch) -> None:
-    dummy = _make_dummy()
-    dummy._brave_search_ai_is_candidate = types.MethodType(StudyPlanGUI._brave_search_ai_is_candidate, dummy)
-
-    monkeypatch.setattr("studyplan.config.Config.BRAVE_SEARCH_AI_ENABLED", True)
-    monkeypatch.setattr(
-        "studyplan.config.Config.BRAVE_SEARCH_AI_ENDPOINT",
-        "https://api.search.brave.com/res/v1/chat/completions",
-    )
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-token")
-    monkeypatch.setattr(dummy, "_has_internet_connectivity", lambda force_refresh=False: False)
-
-    assert dummy._brave_search_ai_is_candidate() is False
-
-
 def test_ollama_generate_uses_local_fallback_when_offline_even_with_cloud_configured(monkeypatch) -> None:
     dummy = _make_dummy()
     dummy._resolve_openai_compatible_endpoint = types.MethodType(
         StudyPlanGUI._resolve_openai_compatible_endpoint, dummy
     )
     dummy._cloud_endpoint_is_candidate = types.MethodType(StudyPlanGUI._cloud_endpoint_is_candidate, dummy)
-    dummy._brave_search_ai_is_candidate = types.MethodType(StudyPlanGUI._brave_search_ai_is_candidate, dummy)
 
     monkeypatch.setattr(
         "studyplan.config.Config.LLM_GATEWAY_ENDPOINT", "https://gateway.example.com/v1/chat/completions"
@@ -6076,8 +6060,9 @@ def test_format_ai_status_line_falls_back_to_selected_model_when_idle() -> None:
     assert "selected/default model" in tooltip
 
 
-def test_select_ollama_cloud_model_filters_to_cloud_candidates() -> None:
+def test_select_ollama_cloud_model_filters_to_cloud_candidates(monkeypatch) -> None:
     dummy = _make_dummy()
+    monkeypatch.setattr(dummy, "_remote_llm_backends_allowed", lambda: True)
     dummy._get_ollama_models_cached = lambda force_refresh=False: (
         ["gpt4all-qwen3-4b-q4-0:latest", "qwen3.5:cloud", "gpt-oss:20b-cloud"],
         None,
@@ -6129,6 +6114,7 @@ def test_reconfig_cloud_llm_available_rejects_local_only_models(monkeypatch) -> 
 def test_syllabus_ai_llm_generate_prefers_gateway_for_reconfig(monkeypatch) -> None:
     dummy = _make_dummy()
     dummy._syllabus_ai_llm_generate = types.MethodType(StudyPlanGUI._syllabus_ai_llm_generate, dummy)
+    monkeypatch.setattr(dummy, "_remote_llm_backends_allowed", lambda: True)
     monkeypatch.setattr(dummy, "_cloud_endpoint_is_candidate", lambda: True)
     monkeypatch.setattr(dummy, "_resolve_cloud_candidate_models", lambda **_kwargs: ["openrouter/model"])
     monkeypatch.setattr(
@@ -6145,6 +6131,7 @@ def test_syllabus_ai_llm_generate_prefers_gateway_for_reconfig(monkeypatch) -> N
 def test_syllabus_ai_llm_generate_falls_back_to_ollama_cloud_model(monkeypatch) -> None:
     dummy = _make_dummy()
     dummy._syllabus_ai_llm_generate = types.MethodType(StudyPlanGUI._syllabus_ai_llm_generate, dummy)
+    monkeypatch.setattr(dummy, "_remote_llm_backends_allowed", lambda: True)
     monkeypatch.setattr(dummy, "_cloud_endpoint_is_candidate", lambda: False)
     monkeypatch.setattr(dummy, "_select_ollama_cloud_model", lambda purpose="general": ("qwen3.5:cloud", None))
     monkeypatch.setattr(
@@ -6159,6 +6146,7 @@ def test_syllabus_ai_llm_generate_falls_back_to_ollama_cloud_model(monkeypatch) 
 def test_syllabus_ai_llm_generate_rejects_local_only_ollama_models(monkeypatch) -> None:
     dummy = _make_dummy()
     dummy._syllabus_ai_llm_generate = types.MethodType(StudyPlanGUI._syllabus_ai_llm_generate, dummy)
+    monkeypatch.setattr(dummy, "_remote_llm_backends_allowed", lambda: True)
     monkeypatch.setattr(dummy, "_cloud_endpoint_is_candidate", lambda: False)
     monkeypatch.setattr(dummy, "_select_ollama_cloud_model", lambda purpose="general": ("", "No Ollama cloud models found."))
     logged: list[tuple[str, str]] = []

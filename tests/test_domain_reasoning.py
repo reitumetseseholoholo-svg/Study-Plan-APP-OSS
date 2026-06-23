@@ -467,3 +467,246 @@ class TestDiagnosticsEdgeCases:
     def test_format_empty(self):
         s = format_error_summary(QuestionDiagnostic())
         assert "no deterministic truth" in s
+
+
+# ===================================================================
+# Hybrid DSL tests (formula_registry — declare_formula / declare_formula_chain)
+# ===================================================================
+
+import pytest
+
+from studyplan.domain_reasoning.formula_registry import (
+    get_registry,
+    get_registry_formulas,
+    validate_registry,
+    declare_formula,
+    declare_formula_chain,
+    RegistryValidationError,
+    ExpressionTemplate,
+    ChainTemplate,
+    ChainStep,
+)
+
+
+class TestFormulaRegistry:
+    def test_registry_has_dsl_formulas(self):
+        reg = get_registry()
+        assert "fm.dividend_growth_rate" in reg
+        assert "fm.quick_ratio" in reg
+        assert "fm.asset_turnover" in reg
+        assert "fm.cost_equity_capm_to_wacc" in reg
+
+    def test_registry_formula_names(self):
+        names = get_registry_formulas()
+        assert "dividend_growth_rate" in names
+        assert "asset_turnover" in names
+        assert "ungear_regear" in names
+
+    def test_validation_passes(self):
+        msgs = validate_registry()
+        # Should have no critical errors (warnings about builtin deps are OK)
+        critical = [m for m in msgs if "error" in m.lower()]
+        assert len(critical) == 0, f"Validation errors: {critical}"
+
+    def test_expression_template_single_step(self):
+        t = ExpressionTemplate("fm.test", lambda **kw: kw.get("x", 0) * 2, "x * 2")
+        result = t.solve({"x": 5.0})
+        assert result["result"] == 10.0
+        assert not result["is_nan"]
+        assert len(result["steps"]) == 1
+
+    def test_expression_template_nan_input(self):
+        t = ExpressionTemplate("fm.test", lambda **kw: float("nan"), "bad")
+        result = t.solve({"x": 1.0})
+        assert result["is_nan"]
+
+    def test_expression_template_evaluate_steps(self):
+        t = ExpressionTemplate("fm.test", lambda **kw: 42.0, "x")
+        results = t.evaluate_steps(
+            [{"step_id": "s1", "value": 42.0}],
+            {"result": 42.0},
+        )
+        assert results[0]["match"] is True
+
+    def test_expression_template_classify_errors(self):
+        t = ExpressionTemplate("fm.test", lambda **kw: 50.0, "x")
+        tags = t.classify_errors(
+            [{"step_id": "s1", "value": 10.0}],
+            {"result": 50.0},
+        )
+        assert "s1_mismatch" in tags
+
+
+class TestChainTemplate:
+    def test_chain_two_steps(self):
+        steps = [
+            ChainStep(slot="a", expression="x + y", param_names=("x", "y")),
+            ChainStep(slot="b", expression="a * z", param_names=("z",)),
+        ]
+        t = ChainTemplate("fm.chain_test", steps)
+        result = t.solve({"x": 2.0, "y": 3.0, "z": 4.0})
+        assert result["result"] == 20.0  # (2+3) * 4
+        assert len(result["steps"]) == 2
+        assert not result["is_nan"]
+
+    def test_chain_intermediate_forwarded(self):
+        """Step 2 should see step 1's output automatically."""
+        steps = [
+            ChainStep(slot="half", expression="full / 2", param_names=("full",)),
+            ChainStep(slot="quarter", expression="half / 2", param_names=()),
+        ]
+        t = ChainTemplate("fm.halving", steps)
+        result = t.solve({"full": 100.0})
+        assert result["result"] == 25.0
+        assert result["steps"][0]["value"] == 50.0
+
+    def test_chain_nan_early_exit(self):
+        steps = [
+            ChainStep(slot="a", expression="x + y", param_names=("x", "y")),
+            ChainStep(slot="b", expression="a / z", param_names=("z",)),
+        ]
+        t = ChainTemplate("fm.nan_chain", steps)
+        # z=0 gives step2 nan, but step1 succeeds
+        result = t.solve({"x": 1.0, "y": 2.0, "z": 0.0})
+        assert result["steps"][0]["value"] == 3.0
+        assert result["steps"][1]["value"] is None or math.isnan(result["steps"][1]["value"])
+
+    def test_chain_evaluate_steps(self):
+        steps = [
+            ChainStep(slot="a", expression="x * 2", param_names=("x",)),
+        ]
+        t = ChainTemplate("fm.eval_chain", steps)
+        results = t.evaluate_steps(
+            [{"step_id": "a", "value": 20.0}],
+            {"result": 20.0},
+        )
+        assert results[0]["match"] is True
+
+    def test_chain_classify_errors(self):
+        steps = [
+            ChainStep(slot="a", expression="x * 2", param_names=("x",)),
+        ]
+        t = ChainTemplate("fm.err_chain", steps)
+        tags = t.classify_errors(
+            [{"step_id": "a", "value": 5.0}],
+            {"result": 10.0},
+        )
+        assert "a_mismatch" in tags
+
+
+class TestFormulaCandidatePermutation:
+    """Verify permutation-aware candidate extraction."""
+
+    def test_quick_ratio_candidates(self):
+        from studyplan.numerical_solver import _FORMULA_CANDIDATES, extract_numbers
+        fn = _FORMULA_CANDIDATES.get("quick_ratio")
+        assert fn is not None
+        nums = extract_numbers("Current assets 500, inventory 200, liabilities 250")
+        candidates = fn(nums)
+        assert len(candidates) >= 1
+        c = candidates[0]
+        assert "current_assets" in c
+        assert "current_liabilities" in c
+
+    def test_quick_ratio_correct_order(self):
+        from studyplan.numerical_solver import _FORMULA_CANDIDATES, extract_numbers
+        fn = _FORMULA_CANDIDATES.get("quick_ratio")
+        nums = extract_numbers("CA=500, Inv=200, CL=250")
+        candidates = fn(nums)
+        # The best candidate should assign 500→CA, 200→Inv, 250→CL
+        c = candidates[0]
+        assert c["current_assets"] == 500.0
+        assert c["inventory"] == 200.0
+        assert c["current_liabilities"] == 250.0
+
+    def test_ungear_regear_candidates(self):
+        from studyplan.numerical_solver import _FORMULA_CANDIDATES, extract_numbers
+        fn = _FORMULA_CANDIDATES.get("ungear_regear")
+        assert fn is not None
+        nums = extract_numbers("Equity beta 1.2, tax 25%, D/E 50%, new D/E 80%")
+        candidates = fn(nums)
+        assert len(candidates) >= 1
+        c = candidates[0]
+        assert abs(c["equity_beta"] - 1.2) < 0.01
+        assert abs(c["tax"] - 0.25) < 0.01
+
+
+class TestFullPipelineDSL:
+    """End-to-end tests of DSL formulas in the reasoning pipeline."""
+
+    def test_quick_ratio_detection_and_solve(self):
+        from studyplan.domain_reasoning.reasoning_engine import reason_question
+        trace = reason_question(
+            "What is the quick ratio with CA=500, Inv=200, CL=250?"
+        )
+        assert trace.target_concept_id == "fm.quick_ratio"
+        assert trace.final_result is not None
+        assert abs(trace.final_result - 1.2) < 0.01
+
+    def test_asset_turnover_detection(self):
+        from studyplan.domain_reasoning.concepts import detect_concepts
+        concepts = detect_concepts("Calculate asset turnover with sales 1000 and CE 500")
+        assert "fm.asset_turnover" in concepts
+
+    def test_dividend_growth_rate_solve(self):
+        from studyplan.domain_reasoning.reasoning_engine import reason_question
+        trace = reason_question(
+            "g = ROE * retention ratio (ROE 15%, retention 60%)",
+            template_ref="fm.dividend_growth_rate",
+        )
+        assert trace.final_result is not None
+        assert abs(trace.final_result - 0.09) < 0.001  # 0.15 * 0.60
+
+    def test_ungear_regear_chain_solve(self):
+        from studyplan.domain_reasoning.reasoning_engine import reason_question
+        trace = reason_question(
+            "Ungear equity beta 1.2 (tax 25%, D/E 50%) and regear to D/E 80%",
+            template_ref="fm.ungear_regear",
+        )
+        assert trace.final_result is not None
+        assert abs(trace.final_result - 1.3964) < 0.01
+
+    def test_capm_to_wacc_chain_solve(self):
+        from studyplan.domain_reasoning.reasoning_engine import reason_question
+        trace = reason_question(
+            "WACC via CAPM: Rf 3%, beta 1.2, Rm 10%, Kd 5%, tax 25%, E/V 60%, D/V 40%",
+            template_ref="fm.cost_equity_capm_to_wacc",
+        )
+        assert trace.final_result is not None
+        assert abs(trace.final_result - 0.0834) < 0.001
+
+    def test_dvm_to_wacc_chain_solve(self):
+        from studyplan.domain_reasoning.reasoning_engine import reason_question
+        trace = reason_question(
+            "WACC via DVM: dividend 0.50, growth 5%, price 5.00, Kd 5%, tax 25%, E/V 60%, D/V 40%",
+            template_ref="fm.cost_equity_dvm_to_wacc",
+        )
+        assert trace.final_result is not None
+        assert trace.final_result > 0
+
+    def test_blank_question_returns_empty(self):
+        from studyplan.domain_reasoning.reasoning_engine import reason_question
+        trace = reason_question("")
+        assert trace.target_concept_id is None
+        assert trace.final_result is None
+
+
+class TestDeclareFormulaAPIDetails:
+    """Unit-level API contract tests for declare_formula and declare_formula_chain."""
+
+    def test_declare_formula_errors_on_both_expr_and_solver(self):
+        import pytest
+        with pytest.raises(ValueError, match="not both"):
+            declare_formula("fm.bad",
+                expression="x + y",
+                solver_fn=lambda **kw: 1.0,
+                param_names=["x", "y"])
+
+    def test_declare_formula_errors_on_no_expr_or_solver(self):
+        import pytest
+        with pytest.raises(ValueError, match="expression or solver_fn"):
+            declare_formula("fm.bad")
+
+    def test_declare_chain_requires_slot_expression(self):
+        with pytest.raises(Exception):
+            declare_formula_chain("fm.bad_chain", steps=[{}])

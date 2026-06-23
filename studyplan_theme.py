@@ -72,6 +72,13 @@ window.sidebar-collapsed .panel-right {
 .chart-card {
     padding-top: 8px;
     padding-bottom: 6px;
+    padding-left: 4px;
+    padding-right: 4px;
+}
+.chart-card:hover {
+    border-color: #b2caff;
+    background: #263653;
+    box-shadow: 0 0 0 1px rgba(139, 175, 255, 0.40), 0 7px 22px rgba(139, 175, 255, 0.22);
 }
 .hero-card {
     border-color: alpha(@theme_selected_bg_color, 0.62);
@@ -1176,6 +1183,13 @@ window.sidebar-collapsed .panel-right {
 .chart-card {
     padding-top: 8px;
     padding-bottom: 6px;
+    padding-left: 4px;
+    padding-right: 4px;
+}
+.chart-card:hover {
+    border-color: #b2caff;
+    background: #263653;
+    box-shadow: 0 0 0 1px rgba(139, 175, 255, 0.40), 0 7px 22px rgba(139, 175, 255, 0.22);
 }
 .hero-card {
     border-color: #7b95c8;

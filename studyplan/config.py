@@ -1,5 +1,7 @@
 import os
 import shlex
+import socket
+import time
 from enum import Enum
 
 from studyplan.ai.host_inference_profile import (
@@ -107,6 +109,68 @@ def _resolved_llama_server_extra_args() -> list[str]:
     return out
 
 
+# Module-level probe cache so non-GUI code paths (Ollama fallback,
+# services) don't hammer the network on every call.
+_probe_cache: dict[str, float | bool] = {}
+_PROBE_CACHE_TTL_SECONDS = 30.0
+_PROBE_TIMEOUT_SECONDS = 2.0
+_PROBE_TARGETS: list[tuple[str, int]] = [
+    ("1.1.1.1", 443),
+    ("8.8.8.8", 53),
+]
+
+
+def _probe_internet() -> bool:
+    now = time.monotonic()
+    expires = _probe_cache.get("expires_at")
+    if isinstance(expires, float) and expires > now:
+        cached = _probe_cache.get("online")
+        if isinstance(cached, bool):
+            return cached
+    online = False
+    for host, port in _PROBE_TARGETS:
+        try:
+            with socket.create_connection((host, port), timeout=_PROBE_TIMEOUT_SECONDS):
+                online = True
+                break
+        except Exception:
+            continue
+    _probe_cache["online"] = online
+    _probe_cache["expires_at"] = now + _PROBE_CACHE_TTL_SECONDS
+    return online
+
+
+def cloud_connectivity_mode() -> str:
+    """Return 'online', 'offline', or 'auto' based on env var.
+
+    Deterministic single source of truth for whether cloud LLM backends
+    (gateway, Ollama cloud models) should be considered available.
+    Non-GUI code should use this instead of duplicating the env-var logic.
+    """
+    raw = _env_text("STUDYPLAN_CLOUD_CONNECTIVITY_POLICY", "auto").lower()
+    if raw in {"online", "force_online", "always_online"}:
+        return "online"
+    if raw in {"offline", "force_offline", "local_only"}:
+        return "offline"
+    return "auto"
+
+
+def remote_llm_backends_allowed() -> bool:
+    """Return True when cloud LLM backends are allowed by policy.
+
+    * ``online`` / ``force_online`` → always ``True``
+    * ``offline`` / ``force_offline`` → always ``False``
+    * ``auto`` (default) → lightweight TCP probe cached for 30 s.
+    """
+    mode = cloud_connectivity_mode()
+    if mode == "online":
+        return True
+    if mode == "offline":
+        return False
+    # auto: probe once, cache the result
+    return _probe_internet()
+
+
 class Config:
     """Centralized configuration with environment-aware defaults."""
 
@@ -161,7 +225,7 @@ class Config:
     )
     LLAMA_CPP_TIMEOUT_SECONDS = _parse_float(
         "STUDYPLAN_LLAMA_CPP_TIMEOUT_SECONDS",
-        30.0,
+        120.0,
         min_value=1.0,
         max_value=600.0,
     )
@@ -217,19 +281,6 @@ class Config:
     )
     CLOUD_LLAMACPP_AUTH_BEARER = _env_text("STUDYPLAN_CLOUD_LLAMACPP_AUTH_BEARER", "")
 
-    # Brave Search AI (OpenAI-compatible, web-grounded answers)
-    BRAVE_SEARCH_AI_ENABLED = _parse_bool("STUDYPLAN_BRAVE_SEARCH_AI_ENABLED", default=False)
-    BRAVE_SEARCH_AI_ENDPOINT = _env_text(
-        "STUDYPLAN_BRAVE_SEARCH_AI_ENDPOINT",
-        "https://api.search.brave.com/res/v1/chat/completions",
-    )
-    BRAVE_SEARCH_AI_MODEL = _env_text("STUDYPLAN_BRAVE_SEARCH_AI_MODEL", "brave")
-    BRAVE_SEARCH_AI_TIMEOUT_SECONDS = _parse_float(
-        "STUDYPLAN_BRAVE_SEARCH_AI_TIMEOUT_SECONDS",
-        12.0,
-        min_value=1.0,
-        max_value=60.0,
-    )
     LLAMA_CPP_AUTO_MODEL_DISCOVERY = _parse_bool(
         "STUDYPLAN_LLAMA_CPP_AUTO_MODEL_DISCOVERY",
         default=True,

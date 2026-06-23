@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
+from .model_ranker import estimate_param_b
+
 log = logging.getLogger(__name__)
 
 _GGUF_MAGIC = b"GGUF"
@@ -335,15 +337,7 @@ def _infer_quant(name: str) -> str:
 
 
 def _infer_param_billions(name: str) -> float:
-    normalized = name.replace("_", ".")
-    for pattern in _PARAM_PATTERNS:
-        m = pattern.search(normalized)
-        if m:
-            try:
-                return float(m.group(1))
-            except ValueError:
-                continue
-    return 0.0
+    return estimate_param_b(name)
 
 
 def _infer_instruct(name: str) -> bool:

@@ -31,6 +31,14 @@ from ..config import Config
 from .gguf_registry import GgufModel, GgufRegistry, GgufRegistryConfig
 from .llama_server import LlamaServerConfig, LlamaServerManager
 from .model_infer_tuning import resolve_model_runtime_tuning
+from .model_ranker import (
+    estimate_param_b,
+    estimate_ram,
+    pick_best,
+    quant_bpp,
+    resolve_tier,
+    score_quality,
+)
 from .model_selector import ModelSelector, Purpose
 
 log = logging.getLogger(__name__)
@@ -415,11 +423,22 @@ class LlamaRuntime:
                 error="Ollama reachable but no models found",
             )
 
+        # When offline, exclude cloud-tagged Ollama models (e.g. ``:cloud``).
+        if not _online_mode():
+            cloud_tagged = _filter_cloud_tagged_models(models)
+            if cloud_tagged:
+                log.info(
+                    "Offline mode: excluding %d cloud-tagged Ollama model(s) from fallback candidates",
+                    len(cloud_tagged),
+                )
+                models = [m for m in models if m not in cloud_tagged]
+
         model_name = _pick_ollama_model_safe_for_ram(models, purpose)
         log.info(
-            "Using Ollama backend at %s (model=%s, RAM-safe selection)",
+            "Using Ollama backend at %s (model=%s, RAM-safe selection, %d models available)",
             host,
             model_name or "(auto)",
+            len(models),
         )
         return RuntimeStatus(
             backend="ollama",
@@ -436,8 +455,35 @@ class LlamaRuntime:
 # Helpers
 # ------------------------------------------------------------------
 
+def _estimate_param_b_from_name(model_name: str) -> float:
+    return estimate_param_b(model_name)
+
+
+def _estimate_model_ram_bytes(
+    model_name: str,
+    *,
+    actual_size_bytes: int | None = None,
+    num_ctx: int = 4096,
+) -> int:
+    return estimate_ram(model_name, actual_size_bytes=actual_size_bytes, num_ctx=num_ctx)
+
+
 def _get_ollama_ram_budget_bytes() -> int:
-    """RAM budget for Ollama model choice (bytes). 0 = no filter."""
+    """RAM budget for model choice (bytes). 0 = no filter.
+
+    Checks (in priority order):
+    1. ``STUDYPLAN_LLAMA_CPP_RAM_BUDGET_MB`` env var (Config)
+    2. ``STUDYPLAN_OLLAMA_RAM_BUDGET_MB`` env var (deprecated)
+    3. Auto-detect: 75 % of available system RAM
+    """
+    # Priority 1: Config-level env var
+    try:
+        from ..config import Config
+        if int(getattr(Config, "LLAMA_CPP_RAM_BUDGET_MB", 0) or 0) > 0:
+            return int(Config.LLAMA_CPP_RAM_BUDGET_MB) * 1024 * 1024
+    except Exception:
+        pass
+    # Priority 2: legacy env var (backward compat)
     try:
         env_mb = os.environ.get("STUDYPLAN_OLLAMA_RAM_BUDGET_MB", "").strip()
         if env_mb:
@@ -446,6 +492,37 @@ def _get_ollama_ram_budget_bytes() -> int:
                 return mb * 1024 * 1024
     except (ValueError, TypeError):
         pass
+    # Priority 3: auto-detect
+    detected = _detect_available_ram()
+    return detected if detected > 0 else 0
+
+
+def _purpose_tier_from_name(purpose: str) -> str:
+    return resolve_tier(purpose)
+
+
+def _score_ollama_model_quality(model_name: str, purpose_tier: str) -> float:
+    return score_quality(model_name, purpose_tier)
+
+
+def _pick_ollama_model_safe_for_ram(models: list[str], purpose: str) -> str:
+    if not models:
+        return ""
+    budget = _get_ollama_ram_budget_bytes()
+    best = pick_best(models, purpose, ram_budget=budget)
+    return best or models[0]
+
+
+def _pick_ollama_model_by_purpose(models: list[str], purpose_tier: str) -> str:
+    if not models:
+        return ""
+    purpose_obj = "quality" if purpose_tier == "quality" else "tutor"
+    best = pick_best(models, purpose_obj)
+    return best or models[0]
+
+
+def _detect_available_ram() -> int:
+    """Return 75 % of available system RAM (bytes), or 0 on error."""
     try:
         with open("/proc/meminfo", "r") as f:
             for line in f:
@@ -453,111 +530,6 @@ def _get_ollama_ram_budget_bytes() -> int:
                     parts = line.split()
                     available_kb = int(parts[1])
                     return int(available_kb * 1024 * 0.75)
-    except (OSError, ValueError, IndexError):
-        pass
-    return 0
-
-
-def _estimate_ollama_model_ram_bytes(model_name: str) -> int:
-    """Estimate RAM (bytes) to load this Ollama model. 0 = unknown."""
-    import re
-    raw = str(model_name or "").strip().lower()
-    if not raw:
-        return 0
-    m = re.search(r"(?<![a-z0-9])(\d+(?:\.\d+)?)\s*(?:b|bn)(?![a-z0-9])", raw)
-    if not m:
-        return 0
-    try:
-        size_b = float(m.group(1))
-    except (ValueError, TypeError):
-        return 0
-    if size_b <= 0:
-        return 0
-    if "q2" in raw or "q2_k" in raw:
-        bpp = 0.35
-    elif "q3" in raw or "q3_k" in raw:
-        bpp = 0.45
-    elif "q4" in raw or "q4_0" in raw or "q4_k" in raw:
-        bpp = 0.58
-    elif "q5" in raw or "q5_k" in raw:
-        bpp = 0.75
-    elif "q6" in raw or "q8" in raw or "f16" in raw or "fp16" in raw:
-        bpp = 1.0
-    else:
-        bpp = 0.58
-    model_bytes = int(size_b * 1e9 * bpp)
-    return model_bytes + 550_000_000
-
-
-def _pick_ollama_model_safe_for_ram(models: list[str], purpose: str) -> str:
-    """Pick an Ollama model that fits in RAM and aligns with purpose when possible."""
-    if not models:
-        return ""
-    purpose_tier = _purpose_tier_from_name(purpose)
-    budget = _get_ollama_ram_budget_bytes()
-    if budget <= 0:
-        return _pick_ollama_model_by_purpose(models, purpose_tier)
-    fitting = []
-    for name in models:
-        need = _estimate_ollama_model_ram_bytes(name)
-        if need <= 0 or need <= budget:
-            fitting.append(name)
-    if fitting:
-        return _pick_ollama_model_by_purpose(fitting, purpose_tier)
-    # None fit: pick smallest estimated to reduce OOM risk (treat unknown as large)
-    def _ram_key(name: str) -> tuple[int, int]:
-        est = _estimate_ollama_model_ram_bytes(name)
-        return (1 if est == 0 else 0, est or 0)
-    all_sorted = sorted(models, key=_ram_key)
-    return all_sorted[0]
-
-
-def _purpose_tier_from_name(purpose: str) -> str:
-    normalized = str(purpose or "").strip().lower()
-    if normalized in {str(Purpose.HINT), "fast"}:
-        return "fast"
-    if normalized in {str(Purpose.DEEP_REASON), "quality"}:
-        return "quality"
-    return "balanced"
-
-
-def _pick_ollama_model_by_purpose(models: list[str], purpose_tier: str) -> str:
-    if not models:
-        return ""
-    rows: list[tuple[str, int]] = []
-    for name in models:
-        rows.append((name, _estimate_ollama_model_ram_bytes(name)))
-    known = [(name, est) for name, est in rows if est > 0]
-    if purpose_tier == "fast":
-        if known:
-            known.sort(key=lambda row: row[1])
-            return known[0][0]
-        return models[0]
-    if purpose_tier == "quality":
-        if known:
-            known.sort(key=lambda row: row[1], reverse=True)
-            return known[0][0]
-        return models[0]
-
-    # balanced: aim near median known size to avoid extremes (too tiny/too heavy)
-    if known:
-        sizes = sorted(est for _, est in known)
-        median = sizes[len(sizes) // 2]
-        best_name = min(
-            known,
-            key=lambda row: (abs(row[1] - median), row[0]),
-        )[0]
-        return best_name
-    return models[0]
-
-
-def _detect_available_ram() -> int:
-    try:
-        with open("/proc/meminfo", "r") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    parts = line.split()
-                    return int(parts[1]) * 1024
     except (OSError, ValueError, IndexError):
         pass
     return 0
@@ -588,4 +560,37 @@ def _ollama_list_models(host: str) -> list[str]:
             name = str(item.get("name", "") or "").strip()
             if name:
                 out.append(name)
+    return out
+
+
+# ------------------------------------------------------------------
+# Connectivity helpers (env-var deterministic, no TCP probe needed)
+# ------------------------------------------------------------------
+
+def _online_mode() -> bool:
+    """Return True when cloud LLM backends are allowed by policy.
+
+    Reads ``STUDYPLAN_CLOUD_CONNECTIVITY_POLICY``; does *not* perform a
+    live TCP probe so this is safe to call from background threads.
+    """
+    from ..config import remote_llm_backends_allowed as _allowed
+    return _allowed()
+
+
+def _filter_cloud_tagged_models(models: list[str]) -> list[str]:
+    """Return models whose name contains a cloud tag (``:cloud``, ``-cloud``)."""
+    out: list[str] = []
+    for name in models:
+        lower = str(name or "").strip().lower()
+        if not lower:
+            continue
+        if lower.endswith(":cloud") or lower.endswith("-cloud"):
+            out.append(name)
+            continue
+        parts = [p.strip() for p in lower.split(":") if str(p or "").strip()]
+        if len(parts) >= 2:
+            for tag in parts[1:]:
+                if tag == "cloud" or tag.endswith("-cloud"):
+                    out.append(name)
+                    break
     return out

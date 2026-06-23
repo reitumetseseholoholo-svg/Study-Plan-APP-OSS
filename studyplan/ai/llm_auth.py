@@ -142,8 +142,6 @@ def _endpoint_provider_hint(endpoint: str | None) -> tuple[str, bool]:
         return "moonshot", False
     if "mistral.ai" in host:
         return "mistral", False
-    if "api.search.brave.com" in host or host.endswith(".search.brave.com"):
-        return "brave_search", False
     return "generic", False
 
 
@@ -186,15 +184,6 @@ def _provider_rules_for(provider: str) -> list[tuple[str, tuple[str, ...], dict[
         return [
             ("mistral", ("MISTRAL_API_KEY",), {"Authorization": "Bearer {token}"}, "provider_env"),
         ]
-    if provider == "brave_search":
-        return [
-            (
-                "brave_search",
-                ("BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY", "BRAVE_SUBSCRIPTION_TOKEN"),
-                {"X-Subscription-Token": "{token}"},
-                "provider_env",
-            ),
-        ]
     return []
 
 
@@ -215,7 +204,6 @@ def _common_fallback_rules() -> list[tuple[str, tuple[str, ...], dict[str, str],
         ("generic", ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_KEY"), {"api-key": "{token}"}, "fallback_env"),
         ("generic", ("MOONSHOT_API_KEY", "KIMI_API_KEY"), {"Authorization": "Bearer {token}"}, "fallback_env"),
         ("generic", ("MISTRAL_API_KEY",), {"Authorization": "Bearer {token}"}, "fallback_env"),
-        ("generic", ("BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY", "BRAVE_SUBSCRIPTION_TOKEN"), {"X-Subscription-Token": "{token}"}, "fallback_env"),
     ]
 
 

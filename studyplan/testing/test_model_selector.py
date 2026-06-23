@@ -119,9 +119,6 @@ class TestRationale:
         rationale = ranked[0].rationale
         assert "tier=" in rationale
         assert "purpose=" in rationale
-        assert "size(" in rationale
-        assert "quant(" in rationale
-        assert "instruct(" in rationale
-        assert "arch(" in rationale
-        assert "ram_fit(" in rationale
-        assert "history(" in rationale
+        assert "quality=" in rationale
+        assert "ram_fit=" in rationale
+        assert "history=" in rationale

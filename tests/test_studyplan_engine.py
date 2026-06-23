@@ -3503,8 +3503,9 @@ def test_delete_question_for_review_preserve_srs_removes_bank_row_but_keeps_mast
     assert len(eng.srs_data[chapter]) == 1
     assert eng.srs_data[chapter][0]["question_key"] == eng._question_bank_fingerprint(kept)
     stats = eng.get_mastery_stats(chapter)
-    assert stats["total"] == 2
-    assert stats["mastered"] == 1
+    assert stats["total"] == 1
+    assert stats["mastered"] == 0
+    assert stats["learning"] == 1
     assert eng.must_review[chapter] == {"0": "2026-02-05"}
     saved_meta = json.loads(meta_path.read_text(encoding="utf-8"))
     archived = saved_meta[chapter][f"deleted:{eng._question_bank_fingerprint(flagged)}"]

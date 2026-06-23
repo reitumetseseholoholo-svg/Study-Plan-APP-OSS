@@ -2907,6 +2907,11 @@ class StudyPlanEngine:
         by_chapter = meta.get(chapter_key, {})
         if not isinstance(by_chapter, dict):
             return active
+        live_keys: Set[str] = set()
+        for q in self.QUESTIONS.get(chapter_key, []) or []:
+            fp = self._question_bank_fingerprint(q)
+            if fp:
+                live_keys.add(fp)
         archived: List[Dict[str, Any]] = []
         for entry in by_chapter.values():
             if not isinstance(entry, dict):
@@ -2919,6 +2924,8 @@ class StudyPlanEngine:
             if key:
                 archived_entry["question_key"] = key
             if key and key in seen_keys:
+                continue
+            if key and key not in live_keys:
                 continue
             archived.append(archived_entry)
             if key:

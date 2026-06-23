@@ -17,16 +17,17 @@ The core reasoning engine (`studyplan/domain_reasoning/`) has been implemented e
 | 4a | **Practice loop integration** — `_assess_domain_item()` in `DeterministicTutorAssessmentService`; concept error pattern tracking in `InMemoryTutorLearnerModelStore.note_assessment()` | ✅ Done |
 | 5a | **Tutor context surface** — `weak_concept_ids_top`, `failed_steps`, `diagnostic_confidence` surfaced in `_build_ai_tutor_learner_profile_brief()` | ✅ Done |
 | 6a | **Autopilot concept awareness** — `weak_concept_ids_top` + `concept_error_summary` injected into autopilot snapshot, context block, action evidence, and fallback reasoning | ✅ Done |
-| 5–7 | Full coach/autopilot upgrade, authoring tooling | 📋 Partial (see 6a) |
+| 6b | **Hybrid DSL** — `declare_formula()` / `declare_formula_chain()` for declarative formula registration; permutation-aware candidate extraction; multi-step chain support; registry validation; 7 formulas (4 single-step + 3 chains) with auto-generated solvers, candidates, templates | ✅ Done |
+| 5–7 | Full coach/autopilot upgrade, authoring tooling | 📋 Partial (see 6a, 6b) |
 
 ### Key deviations from the proposal
 
 - **Solver strategy**: The proposal recommended starting with `FM.npv` then `FM.wacc` then `F7.goodwill`. Implementation covers all 10 FM concepts (NPV, WACC, CAPM, IRR, payback, ARR, CCC, EOQ, gearing, cost_of_equity_dvm). F7/FR consolidation has not been started.
 - **Template interface**: Uses `FormulaTemplate` base class with `solve(**inputs)` (positional args from domain templates), not the `ConceptTemplate` protocol with `input_schema`/`output_schema`. Candidate-function probing detects parameter keys dynamically; `inspect.signature` is NOT used because domain templates override `solve()` with positional args whose param names differ from input dict keys.
 - **No concept metadata in module JSON**: The original proposal required explicit `concepts` arrays in module JSON. Instead, `BUILTIN_CONCEPTS` in `concepts.py` hardcodes the FM concept definitions. The module JSON extension path remains future work.
-- **Packaging**: The original proposal envisioned `concepts.py`, `dependencies.py`, `templates.py`, `evaluator.py`, `diagnostics.py`, `planner.py`. The actual implementation has `concepts.py`, `templates.py`, `evaluator.py`, `diagnostics.py`, `reasoning_engine.py` (which subsumes the planned `planner.py` and `dependencies.py` roles).
+- **Packaging**: The original proposal envisioned `concepts.py`, `dependencies.py`, `templates.py`, `evaluator.py`, `diagnostics.py`, `planner.py`. The actual implementation has `concepts.py`, `templates.py`, `evaluator.py`, `diagnostics.py`, `reasoning_engine.py` (which subsumes the planned `planner.py` and `dependencies.py` roles), and `formula_registry.py` (hybrid DSL for declarative formula registration).
 - **Phase 2/4/5 integration**: The original proposal was still in "planned" status for phases 2, 4, and 5. These have now been implemented: contract fields, practice loop assessment integration, and tutor context surfacing. The `DeterministicTutorAssessmentService._assess_domain_item()` method and `InMemoryTutorLearnerModelStore` concept error pattern tracking complete the feedback loop from domain solver → assessment → learner profile → tutor context.
-- **220 test functions** across 3 files (`test_reasoning_engine.py`, `test_domain_reasoning.py`, `test_numerical_solver.py`) — 17 custom tests for fallback, gap analysis, and weighted confidence specifically; plus 10 new tests for domain-aware assessment integration.
+- **258 test functions** across 3 files (`test_reasoning_engine.py`, `test_domain_reasoning.py`, `test_numerical_solver.py`) — 17 custom tests for fallback, gap analysis, and weighted confidence; 10 new tests for domain-aware assessment integration; **38 DSL tests** covering expression templates, chain templates, candidate permutation, full pipeline, and API contract.
 
 ### Known limitations
 
@@ -34,7 +35,7 @@ The core reasoning engine (`studyplan/domain_reasoning/`) has been implemented e
 - Only `cost_equity` has multiple providers (`fm.cost_of_equity_dvm` ↔ `fm.capm`); all other output slots have exactly one provider.
 - WACC template applies `(1-tax)` to `cost_debt` internally; `cost_of_debt` solver returns after-tax value — double-tax is existing behaviour, not a regression.
 - Input source quality weights are heuristics tuned to pass existing test assertions, not calibrated against real student data.
-- Domain-aware assessment only fires when the practice item has an explicit `template_ref` AND `domain_reasoner` is configured — no automatic concept detection from question text during practice.
+- ~~Domain-aware assessment only fires when the practice item has an explicit `template_ref`~~ — now auto-detects concepts from question text in `_assess_domain_item()` (resolved in hybrid DSL phase).
 - Learner answers are compared by final numeric value only; step-by-step learner working is not yet compared against truth steps.
 - Coach urgency (`engine.get_daily_plan`) does not yet consume `weak_concept_ids_top` or `concept_error_patterns` — still operates at chapter-level competence only. Autopilot snapshot, evidence builder, fallback action, and context block now include concept diagnostics.
 
@@ -112,6 +113,7 @@ studyplan/domain_reasoning/
   evaluator.py           # Step-by-step learner answer comparison
   diagnostics.py         # Structured error pattern emission
   reasoning_engine.py    # Plan compilation, execution, fallback, gap analysis, confidence
+  formula_registry.py    # Hybrid DSL: declare_formula(), declare_formula_chain(), validate_registry()
   domains/
     __init__.py
     acca_fm/
@@ -590,7 +592,7 @@ The integration point in `studyplan_app.py._get_practice_loop_controller()` pass
 
 Limitations:
 - Only final numeric answer comparison (no step-by-step learner working comparison yet)
-- Requires explicit `template_ref` on the practice item (no automatic concept detection during practice)
+- ~~Requires explicit `template_ref` on the practice item~~ — now auto-detects concepts from question text in `_assess_domain_item()` (resolved in hybrid DSL phase)
 - Only wired for the deterministic (non-LLM) assessment path; the `AITutorAssessmentService` path does not include domain reasoning
 
 ### Phase 5: Tutor Context Upgrade (✅ Partial)
@@ -620,6 +622,54 @@ The LLM now sees concept diagnostics in two places:
 Not yet implemented:
 - Coach urgency (`engine.get_daily_plan`, `engine.top_recommendations`) — operates at chapter-level only; engine does not have access to concept-level learner profile data
 - Coach pick; concept-level error pattern aggregation
+
+### Phase 6b: Hybrid DSL — Declarative Formula Registration (✅ Done)
+
+A `declare_formula()` / `declare_formula_chain()` DSL was added to allow admins to register new formula-based concepts without writing Python solver classes by hand.
+
+#### Single-step formulas
+
+`declare_formula(concept_id, output_slot, ..., expression, param_keys, error_map, sources)` registers:
+- A `ParameterCandidateExtractor` (`_make_candidate_fn`) — tries all permutations of param→value assignments from the question number pool, scores each by solver plausibility, returns top-3
+- A solver function
+- A solution template
+- A `BUILTIN_CONCEPTS` entry
+- Error classification rules
+
+**Registered single-step formulas** (4):
+
+| Concept ID | Formula | Expression |
+|---|---|---|
+| `fm.cost_equity_capm` | CAPM | `Rf + β × (Rm − Rf)` |
+| `fm.cost_equity_dvm` | DVM | `D₀(1+g) / (P₀ − issue_costs) + g` |
+| `fm.cost_debt_irr` | Debt IRR | `∑[interest(1−tax) / (1+r)ⁿ] + redemption/(1+r)ⁿ − MV = 0` |
+| `fm.cost_of_preference_shares` | Preference shares | `D / (P₀ − issue_costs)` |
+
+#### Chain formulas
+
+`declare_formula_chain(chain_id, steps, ...)` registers a multi-step concept that executes sub-formulas sequentially, forwarding intermediate results automatically. Each step has its own error classification.
+
+**Registered chains** (3):
+
+| Chain ID | Steps |
+|---|---|
+| `fm.cost_equity_capm_to_wacc` | CAPM → WACC |
+| `fm.cost_equity_dvm_to_wacc` | DVM → WACC |
+| `fm.ungear_regear` | Ungear βe → Regear βe |
+
+#### Registry validation
+
+`validate_registry()` runs at module load time:
+- Circular dependency detection
+- Missing dependency detection
+- Duplicate concept checks
+
+#### Integration
+
+- Build helpers in `numerical_solver.py` merge DSL-registered solvers, candidates, and templates at module bottom (lines 1142–1161)
+- `_get_expected_param_keys()` synthetic number pool expanded from 6 to 10 entries to support chain formulas with many percent params
+- Concept auto-detection from question text in `_assess_domain_item()` replaces the prior requirement for explicit `template_ref`
+- 7 DSL formulas + 24 hand-written domain modules coexist in `domains/acca_fm/`
 
 ### Phase 7: Authoring And Tooling (📋 Not started)
 

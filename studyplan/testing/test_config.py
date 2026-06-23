@@ -123,7 +123,7 @@ def test_config_llama_cpp_invalid_values_use_defaults(monkeypatch):
     )
     assert mod.Config.LLAMA_CPP_ENABLED is True
     assert mod.Config.LLAMA_CPP_CONTEXT_WINDOW == 8192
-    assert mod.Config.LLAMA_CPP_TIMEOUT_SECONDS == 30.0
+    assert mod.Config.LLAMA_CPP_TIMEOUT_SECONDS == 120.0
     assert mod.Config.LLAMA_CPP_MAX_RETRIES == 2
     assert mod.Config.LLAMA_CPP_TEMPERATURE == 0.2
     assert mod.Config.LLAMA_CPP_TOP_P == 0.95

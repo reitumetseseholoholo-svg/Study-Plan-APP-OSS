@@ -250,38 +250,35 @@ class TestRuntimeFromConfig:
 
 class TestOllamaPurposeSelection:
     def test_no_budget_picks_by_purpose_tier(self):
-        models = ["tiny", "medium", "large"]
-        estimates = {
-            "tiny": 1_000_000_000,
-            "medium": 2_000_000_000,
-            "large": 3_000_000_000,
-        }
+        models = ["qwen2-1-5b-instruct-q4-0:latest", "llama-3-2-3b-instruct-q4-0:latest", "qwen2-5-7b-instruct-q4-0:latest"]
         with patch(
             "studyplan.ai.llama_runtime._get_ollama_ram_budget_bytes",
             return_value=0,
-        ), patch(
-            "studyplan.ai.llama_runtime._estimate_ollama_model_ram_bytes",
-            side_effect=lambda name: estimates.get(name, 0),
         ):
-            assert _pick_ollama_model_safe_for_ram(models, Purpose.HINT) == "tiny"
-            assert _pick_ollama_model_safe_for_ram(models, Purpose.DEEP_REASON) == "large"
-            assert _pick_ollama_model_safe_for_ram(models, Purpose.TUTOR) == "medium"
+            picked_hint = _pick_ollama_model_safe_for_ram(models, Purpose.HINT)
+            picked_deep = _pick_ollama_model_safe_for_ram(models, Purpose.DEEP_REASON)
+            picked_tutor = _pick_ollama_model_safe_for_ram(models, Purpose.TUTOR)
+            # HINT should pick the smallest model (1.5B)
+            assert "1-5b" in picked_hint or "1.5b" in picked_hint
+            # DEEP_REASON should pick the largest model (7B)
+            assert "7b" in picked_deep
+            # TUTOR (balanced) should avoid extremes
+            assert "3b" in picked_tutor
 
     def test_budget_filtered_picks_by_purpose_tier(self):
-        models = ["tiny", "medium", "large"]
-        estimates = {
-            "tiny": 1_000_000_000,
-            "medium": 2_000_000_000,
-            "large": 3_000_000_000,
-        }
+        models = ["qwen2-1-5b-instruct-q4-0:latest", "llama-3-2-3b-instruct-q4-0:latest", "qwen2-5-7b-instruct-q4-0:latest"]
         with patch(
             "studyplan.ai.llama_runtime._get_ollama_ram_budget_bytes",
-            return_value=2_500_000_000,
-        ), patch(
-            "studyplan.ai.llama_runtime._estimate_ollama_model_ram_bytes",
-            side_effect=lambda name: estimates.get(name, 0),
+            return_value=3_500_000_000,  # ~3.5 GiB: fits 1.5B and 3B but not 7B
         ):
-            # large filtered out by RAM budget
-            assert _pick_ollama_model_safe_for_ram(models, Purpose.HINT) == "tiny"
-            assert _pick_ollama_model_safe_for_ram(models, Purpose.DEEP_REASON) == "medium"
-            assert _pick_ollama_model_safe_for_ram(models, Purpose.TUTOR) == "medium"
+            picked_hint = _pick_ollama_model_safe_for_ram(models, Purpose.HINT)
+            picked_deep = _pick_ollama_model_safe_for_ram(models, Purpose.DEEP_REASON)
+            picked_tutor = _pick_ollama_model_safe_for_ram(models, Purpose.TUTOR)
+            # All picks should exclude the 7B model (over budget)
+            for picked in (picked_hint, picked_deep, picked_tutor):
+                assert picked, "a model should be picked"
+                assert "7b" not in picked, f"{picked} should have been filtered by RAM budget"
+            # HINT picks smallest fitting (1.5B)
+            assert "1-5b" in picked_hint or "1.5b" in picked_hint
+            # DEEP_REASON without 7B picks the next best fitting (3B)
+            assert "3b" in picked_deep

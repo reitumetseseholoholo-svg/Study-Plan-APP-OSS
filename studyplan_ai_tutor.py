@@ -468,6 +468,8 @@ def classify_ollama_error(err: str, host: str = "") -> tuple[str, str]:
         or "nodename nor servname" in lower
         or "no route to host" in lower
         or "network is unreachable" in lower
+        or "cannot assign requested address" in lower
+        or "temporary failure in name resolution" in lower
     ):
         suffix = f" ({host_hint})" if host_hint else ""
         return "host_unreachable", f"Cannot reach Ollama{suffix}. Start `ollama serve` and retry."
@@ -484,10 +486,15 @@ def classify_ollama_error(err: str, host: str = "") -> tuple[str, str]:
         or "rate limit" in lower
         or "too many requests" in lower
         or "http 429" in lower
+        or "server overloaded" in lower
     ):
         return "busy", "Ollama is busy. Wait for active jobs to finish, then retry."
     if "http 404" in lower:
         return "endpoint_missing", "Ollama endpoint unavailable. Verify host/version and retry."
+    if "out of memory" in lower or "oom" in lower or "not enough memory" in lower:
+        return "out_of_memory", "Ollama ran out of memory. Try a smaller model or close other apps."
+    if "internal server error" in lower or "http 500" in lower:
+        return "server_error", "Ollama internal error. Check ollama logs for details."
     clean = raw.replace("\n", " ").strip()
     if len(clean) > 180:
         clean = f"{clean[:177].rstrip()}..."
@@ -937,11 +944,11 @@ def compute_tutor_control_state(
 
 def build_ai_tutor_seed_prompt(
     topic: str,
-    module_title: str = "selected module",
+    module_title: str = "your ACCA studies",
     chapter: str | None = None,
 ) -> str:
     topic_val = str(topic or "").strip()
-    module_val = str(module_title or "selected module").strip() or "selected module"
+    module_val = str(module_title or "your ACCA studies").strip() or "your ACCA studies"
     chapter_val = str(chapter or "").strip()
     scope = f" for {module_val}"
     if chapter_val:
@@ -1663,7 +1670,7 @@ class AITutorDialogController:
         for label, template in quick_prompt_templates:
             btn = Gtk.Button(label=label)
             btn.add_css_class("flat")
-            btn.set_tooltip_text(template.replace("{topic}", "current topic").replace("{module}", "module"))
+            btn.set_tooltip_text(template.replace("{topic}", "an ACCA topic").replace("{module}", "your module"))
             quick_prompts_box.append(btn)
             quick_prompt_buttons.append((btn, template))
         quick_prompts_scroller = Gtk.ScrolledWindow()
@@ -1708,7 +1715,7 @@ class AITutorDialogController:
         prompt_buf.set_text(
             build_ai_tutor_seed_prompt(
                 topic=eff_topic,
-                module_title=str(getattr(app, "module_title", "") or "").strip() or "selected module",
+                module_title=str(getattr(app, "module_title", "") or "").strip() or "your ACCA studies",
                 chapter=eff_topic or None,
             )
         )
@@ -2394,15 +2401,34 @@ class AITutorDialogController:
             _update_prompt_meta()
             _set_running(False)
 
+        _generic_quick_prompt_fallback: dict[str, str] = {
+            "Explain '{topic}' for {module} in exam-focused terms.":
+                "Explain an ACCA topic in exam-focused terms to help me understand it better.",
+            "Write a 5-question drill on '{topic}' with short answers.":
+                "Give me a 5-question practice drill with short answers on an ACCA topic.",
+            "List the must-know formulas for '{topic}' and when to use each.":
+                "List the must-know formulas for an ACCA topic and when to use each.",
+            "Give common exam pitfalls for '{topic}' and how to avoid them.":
+                "Give common exam pitfalls for an ACCA topic and how to avoid them.",
+        }
+
         def _insert_quick_prompt(template: str) -> None:
             if bool(run_state.get("active", False)):
                 return
-            topic = _app_effective_tutor_topic(app) or "the current topic"
-            module = str(getattr(app, "module_title", "") or "").strip() or "selected module"
-            try:
-                resolved = str(template or "").format(topic=topic, module=module)
-            except Exception:
-                resolved = str(template or "")
+            topic = _app_effective_tutor_topic(app)
+            module = str(getattr(app, "module_title", "") or "").strip()
+            if not topic:
+                resolved = _generic_quick_prompt_fallback.get(
+                    str(template or ""),
+                    "Help me with an ACCA topic."
+                )
+            else:
+                try:
+                    resolved = str(template or "").format(
+                        topic=topic, module=module or "your studies"
+                    )
+                except Exception:
+                    resolved = str(template or "")
             prompt_buf.set_text(resolved.strip())
             _update_prompt_meta()
             _set_running(False)

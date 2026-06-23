@@ -123,34 +123,10 @@ def _size_bucket(param_b: float | None) -> str:
 
 
 def _estimate_param_b_from_name(model_name: str) -> float | None:
-    raw = str(model_name or "").strip().lower()
-    if not raw:
-        return None
-    m = re.search(r"(?<![a-z0-9])(\d+(?:\.\d+)?)\s*(?:b|bn)(?![a-z0-9])", raw)
-    if m:
-        try:
-            v = float(m.group(1))
-            return v if v > 0 else None
-        except ValueError:
-            pass
-    # Common Ollama tags without explicit "b"
-    if "0.5b" in raw or re.search(r"[-:]0\.5b", raw):
-        return 0.5
-    if "1.5b" in raw or "1b" in raw:
-        if "3.2-1b" in raw or "1.1b" in raw:
-            return 1.0
-        return 1.5
-    if "3b" in raw and "13b" not in raw and "33b" not in raw:
-        return 3.0
-    if "7b" in raw or "8b" in raw:
-        return 7.5
-    if "12b" in raw or "13b" in raw:
-        return 13.0
-    if "34b" in raw or "32b" in raw:
-        return 34.0
-    if "70b" in raw or "72b" in raw:
-        return 70.0
-    return None
+    from .model_ranker import estimate_param_b as _epb
+
+    v = _epb(model_name)
+    return v if v > 0 else None
 
 
 def _arch_hint(name: str) -> str:

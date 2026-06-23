@@ -20,9 +20,6 @@ _ENV_KEYS = [
     "MOONSHOT_API_KEY",
     "KIMI_API_KEY",
     "MISTRAL_API_KEY",
-    "BRAVE_SEARCH_API_KEY",
-    "BRAVE_API_KEY",
-    "BRAVE_SUBSCRIPTION_TOKEN",
 ]
 
 
@@ -92,17 +89,6 @@ def test_discover_llm_auth_ignores_unrelated_cloud_keys_for_local_endpoints(monk
         search_paths=[tmp_path],
     )
     assert auth is None
-
-
-def test_discover_llm_auth_uses_brave_subscription_token_header(monkeypatch, tmp_path):
-    _clear_env(monkeypatch, BRAVE_SEARCH_API_KEY="brave-token")
-    auth = discover_llm_auth_headers(
-        "https://api.search.brave.com/res/v1/chat/completions",
-        search_paths=[tmp_path],
-    )
-    assert auth is not None
-    assert auth.provider == "brave_search"
-    assert auth.headers["X-Subscription-Token"] == "brave-token"
 
 
 def test_discover_llm_auth_can_disable_generic_fallback_for_unknown_hosts(monkeypatch, tmp_path):

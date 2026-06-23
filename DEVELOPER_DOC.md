@@ -293,8 +293,7 @@ Purpose drives model routing (see `studyplan/ai/model_routing.py`), telemetry, a
 2. **Managed llama.cpp server** (if `LLAMA_CPP_MANAGED_SERVER=1`) — starts/stops `llama-server` automatically
 3. **Ollama** (auto-discovered at `http://127.0.0.1:11434`)
 4. **Direct GGUF** via llama.cpp Python runtime
-5. **Brave Search AI** (if `BRAVE_SEARCH_AI_ENABLED=1`)
-6. **Deterministic fallback** (`studyplan/ai/recovery.py`) — returns a structured error response; never raises
+5. **Deterministic fallback** (`studyplan/ai/recovery.py`) — returns a structured error response; never raises
 
 ---
 

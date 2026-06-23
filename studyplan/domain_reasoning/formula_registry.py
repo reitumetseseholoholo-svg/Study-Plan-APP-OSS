@@ -22,6 +22,7 @@ This one line auto-generates:
 from __future__ import annotations
 
 import ast
+import itertools
 import math
 import re
 from dataclasses import dataclass, field
@@ -78,6 +79,72 @@ def get_registry_formulas() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Registry validation
+# ---------------------------------------------------------------------------
+
+class RegistryValidationError(Exception):
+    """Raised when the formula registry has structural errors."""
+
+
+def validate_registry() -> list[str]:
+    """Check the registry for structural issues.
+
+    Returns a list of warning/error messages (empty = clean).
+    """
+    messages: list[str] = []
+    concept_ids = set(_registry.keys())
+
+    for cid, decl in _registry.items():
+        for dep in decl.dependencies:
+            if dep not in concept_ids and dep not in BUILTIN_CONCEPT_IDS:
+                messages.append(f"{cid}: dependency '{dep}' not found in registry or builtins")
+        if cid.startswith("fm."):
+            fname = cid[3:]
+            if fname != decl.formula_name:
+                messages.append(f"{cid}: formula_name mismatch ({decl.formula_name})")
+
+    # Circular dependency check
+    _visited: set[str] = set()
+    _in_progress: set[str] = set()
+
+    def _visit(node: str, path: list[str]) -> None:
+        if node in _in_progress:
+            cycle = " → ".join(path + [node])
+            messages.append(f"Circular dependency: {cycle}")
+            return
+        if node in _visited or node not in concept_ids:
+            return
+        _in_progress.add(node)
+        decl = _registry.get(node)
+        if decl:
+            for dep in decl.dependencies:
+                _visit(dep, path + [node])
+        _in_progress.discard(node)
+        _visited.add(node)
+
+    for cid in _registry:
+        _visit(cid, [])
+
+    return messages
+
+
+BUILTIN_CONCEPT_IDS: set[str] = set()
+
+
+def _init_builtin_ids() -> None:
+    """Populate BUILTIN_CONCEPT_IDS from concepts module."""
+    global BUILTIN_CONCEPT_IDS
+    try:
+        from studyplan.domain_reasoning.concepts import BUILTIN_CONCEPTS as _bc
+        BUILTIN_CONCEPT_IDS = set(_bc.keys())
+    except ImportError:
+        BUILTIN_CONCEPT_IDS = set()
+
+
+_init_builtin_ids()
+
+
+# ---------------------------------------------------------------------------
 # Expression solver (variable substitution via eval with restricted env)
 # ---------------------------------------------------------------------------
 
@@ -92,15 +159,12 @@ def _substitute_and_eval(expr: str, env: dict[str, float]) -> float:
         "sum": sum, "len": len, "min": min, "max": max,
     }
 
-    # Build locals from env; fail if any name is unresolvable
     locals_dict: dict[str, float] = {}
-    # Pre-parse to find all names that aren't built-in
     try:
         tree = ast.parse(expr.strip(), mode="eval")
     except SyntaxError:
         raise ValueError(f"Invalid expression: {expr}")
 
-    # Collect required names
     collector = _NameCollector()
     collector.visit(tree)
 
@@ -108,11 +172,10 @@ def _substitute_and_eval(expr: str, env: dict[str, float]) -> float:
         if name in env:
             locals_dict[name] = float(env[name])
         elif name in safe_builtins:
-            pass  # built-in, no need to add to locals
+            pass
         else:
             raise NameError(f"Variable '{name}' not provided in env")
 
-    # Use the module-level safe_expression_evaluate with env
     from studyplan.numerical_solver import safe_expression_evaluate
     result = safe_expression_evaluate(expr, env=locals_dict)
     if result is None:
@@ -128,7 +191,6 @@ class _NameCollector(ast.NodeVisitor):
         self.names.add(node.id)
 
     def visit_Call(self, node: ast.Call) -> None:
-        # Don't traverse function name as a variable
         if isinstance(node.func, ast.Name):
             for arg in node.args:
                 self.visit(arg)
@@ -142,9 +204,14 @@ def _make_expression_solver(
     expr: str,
     param_names: tuple[str, ...],
 ) -> Callable[..., float]:
-    """Return a function that substitutes params into *expr* and evaluates."""
+    """Return a function that substitutes params into *expr* and evaluates.
+
+    All keyword arguments are forwarded to the expression environment,
+    enabling intermediate values from prior chain steps to be available.
+    """
     def solver(**kwargs: Any) -> float:
         env: dict[str, float] = {}
+        # Required params — if any are missing, return nan
         for name in param_names:
             val = kwargs.get(name)
             if val is None:
@@ -153,6 +220,10 @@ def _make_expression_solver(
                 env[name] = float(val)
             else:
                 return float("nan")
+        # Forward all kwargs (includes intermediate chain values)
+        for k, v in kwargs.items():
+            if k not in env and isinstance(v, (int, float)):
+                env[k] = float(v)
         try:
             result = _substitute_and_eval(expr, env)
             if result is None:
@@ -165,34 +236,83 @@ def _make_expression_solver(
 
 
 # ---------------------------------------------------------------------------
-# Auto-candidate generation
+# Auto-candidate generation — permutation-aware
 # ---------------------------------------------------------------------------
 
 def _make_candidate_fn(
     param_names: tuple[str, ...],
     param_kinds: tuple[ParamKind, ...],
+    solver_fn: Callable[..., float] | None = None,
 ) -> Callable[..., list[dict[str, Any]]]:
-    """Heuristic candidate extractor for simple scalar formulas."""
-    percent_params = [
-        name for name, kind in zip(param_names, param_kinds) if kind == "percent"
+    """Permutation-aware candidate extractor.
+
+    Tries every assignment of extracted numbers to parameter names and
+    picks the assignment(s) that produce the most plausible solver output.
+    """
+    value_param_indices = [
+        i for i, kind in enumerate(param_kinds) if kind == "value"
     ]
-    value_params = [
-        name for name, kind in zip(param_names, param_kinds) if kind == "value"
+    percent_param_indices = [
+        i for i, kind in enumerate(param_kinds) if kind == "percent"
     ]
+
+    def _plausible_score(val: float) -> float:
+        if math.isnan(val) or math.isinf(val):
+            return -1.0
+        if val <= 0:
+            return 0.1
+        if val < 1e-6:
+            return 0.2
+        if val > 1e12:
+            return 0.3
+        return 1.0
 
     def candidate_fn(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
         values = [n["value"] for n in nums if not n["is_percent"]]
         pcts = [n["value"] for n in nums if n["is_percent"]]
-        if len(values) < len(value_params) or len(pcts) < len(percent_params):
+
+        if len(values) < len(value_param_indices) or len(pcts) < len(percent_param_indices):
             return []
-        sorted_vals = sorted(values, reverse=True)
-        sorted_pcts = sorted(pcts, reverse=True)
-        params: dict[str, Any] = {}
-        for i, name in enumerate(value_params):
-            params[name] = sorted_vals[i] if i < len(sorted_vals) else sorted_vals[-1]
-        for i, name in enumerate(percent_params):
-            params[name] = sorted_pcts[i] if i < len(sorted_pcts) else sorted_pcts[-1]
-        return [dict(params)]
+
+        scored: list[tuple[float, dict[str, Any]]] = []
+
+        # Try all permutations of values → value params
+        val_perms = list(itertools.permutations(values, len(value_param_indices)))
+
+        # Try all permutations of percents → percent params
+        pct_perms = list(itertools.permutations(pcts, len(percent_param_indices))) if percent_param_indices else [()]
+
+        for vp in val_perms:
+            for pp in pct_perms:
+                candidate: dict[str, Any] = {}
+                for idx, name in enumerate(param_names):
+                    if idx in value_param_indices:
+                        vi = value_param_indices.index(idx)
+                        candidate[name] = float(vp[vi]) if vi < len(vp) else float(values[-1])
+                    elif idx in percent_param_indices:
+                        pi = percent_param_indices.index(idx)
+                        candidate[name] = float(pp[pi]) if pi < len(pp) else float(pcts[-1])
+                    else:
+                        candidate[name] = 0.0
+
+                if solver_fn is not None:
+                    try:
+                        result = solver_fn(**candidate)
+                        score = _plausible_score(result)
+                    except Exception:
+                        score = -1.0
+                else:
+                    score = 0.5
+
+                scored.append((score, dict(candidate)))
+
+        if not scored:
+            return []
+
+        # Sort by plausibility score descending, return top 3
+        scored.sort(key=lambda x: -x[0])
+        best_score = scored[0][0]
+        return [c for s, c in scored[:3] if s >= max(0.0, best_score - 0.5)]
 
     return candidate_fn
 
@@ -280,6 +400,146 @@ class ExpressionTemplate:
             step_val = step.get("value")
             step_id = step.get("step_id", "")
             if step_id and step_val is not None:
+                try:
+                    diff = abs(float(step_val) - float(truth_result))
+                    if diff > max(0.01, abs(float(truth_result)) * 0.005):
+                        tags.append(f"{step_id}_mismatch")
+                except (ValueError, TypeError):
+                    tags.append(f"{step_id}_parse_error")
+        return tags
+
+
+# ---------------------------------------------------------------------------
+# Chain template — multi-step formula declarations
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ChainStep:
+    """One step in a multi-step formula chain."""
+    slot: str
+    expression: str
+    param_names: tuple[str, ...]
+    param_kinds: tuple[ParamKind, ...] = ()
+    description: str = ""
+
+
+class ChainTemplate:
+    """Multi-step ConceptTemplate that executes expressions sequentially.
+
+    Each step produces an output that can be consumed by subsequent steps
+    via its slot name.  The final step's output is the chain result.
+    """
+
+    concept_id: str
+    template_version: str
+
+    def __init__(
+        self,
+        concept_id: str,
+        steps: list[ChainStep],
+        version: str = "1.0.0",
+    ) -> None:
+        self.concept_id = concept_id
+        self.template_version = version
+        self._steps = steps
+        self._solvers: list[Callable[..., float]] = []
+        for step in steps:
+            solver = _make_expression_solver(step.expression, step.param_names)
+            self._solvers.append(solver)
+
+    def solve(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        ctx: dict[str, Any] = dict(inputs)
+        step_results: list[dict[str, Any]] = []
+        final_result: float | None = None
+
+        for i, (step, solver) in enumerate(zip(self._steps, self._solvers)):
+            step_inputs: dict[str, Any] = {}
+            # Step-specific params
+            for pname in step.param_names:
+                val = ctx.get(pname)
+                if val is not None:
+                    step_inputs[pname] = val
+                else:
+                    step_inputs[pname] = 0.0
+            # Include intermediate values from prior steps
+            for k, v in ctx.items():
+                if k not in step_inputs:
+                    step_inputs[k] = v
+
+            try:
+                result = solver(**step_inputs)
+            except Exception:
+                result = float("nan")
+
+            # Build display expression
+            display = step.expression
+            for k, v in step_inputs.items():
+                if isinstance(v, (int, float)):
+                    display = display.replace(k, f"{v}")
+
+            step_results.append({
+                "step_id": step.slot,
+                "description": step.description or f"Step {i+1}: {step.slot}",
+                "value": result,
+                "formula": display,
+            })
+
+            if math.isnan(result):
+                break
+
+            ctx[step.slot] = result
+            final_result = result
+
+        is_nan = final_result is None or math.isnan(final_result)
+        result_dict: dict[str, Any] = {
+            "concept_id": self.concept_id,
+            "result": final_result,
+            "inputs": dict(inputs),
+            "is_nan": is_nan,
+            "steps": step_results,
+        }
+        return result_dict
+
+    def evaluate_steps(
+        self,
+        learner_steps: list[dict[str, Any]],
+        truth: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if not learner_steps or not truth:
+            return []
+        truth_result = truth.get("result")
+        results: list[dict[str, Any]] = []
+        for step in learner_steps:
+            step_val = step.get("value")
+            step_id = step.get("step_id", "")
+            if step_val is not None and truth_result is not None:
+                match = abs(float(step_val) - float(truth_result)) < max(0.01, abs(float(truth_result)) * 0.005)
+            else:
+                match = False
+            results.append({
+                "step_id": step_id,
+                "expected": truth_result,
+                "actual": step_val,
+                "match": match,
+            })
+        return results
+
+    def classify_errors(
+        self,
+        learner_steps: list[dict[str, Any]],
+        truth: dict[str, Any],
+    ) -> list[str]:
+        tags: list[str] = []
+        if not learner_steps or not truth:
+            return tags
+        truth_result = truth.get("result")
+        if truth_result is None or (isinstance(truth_result, float) and math.isnan(truth_result)):
+            return tags
+        chain_steps = {s.slot for s in self._steps}
+        for step in learner_steps:
+            step_val = step.get("value")
+            step_id = step.get("step_id", "")
+            if step_id in chain_steps and step_val is not None:
                 try:
                     diff = abs(float(step_val) - float(truth_result))
                     if diff > max(0.01, abs(float(truth_result)) * 0.005):
@@ -391,7 +651,7 @@ def declare_formula(
     if custom_candidate_fn:
         candidate_fn = custom_candidate_fn
     else:
-        candidate_fn = _make_candidate_fn(pnames, pkinds)
+        candidate_fn = _make_candidate_fn(pnames, pkinds, solver_fn)
 
     # -- Detection --
     compiled_patterns: list[re.Pattern] = []
@@ -422,6 +682,133 @@ def declare_formula(
         expression=expression,
         param_names=pnames,
         param_kinds=pkinds,
+        label=lbl,
+        output_slot=slot,
+        priority=priority,
+        diagnostic_tags=tags,
+        dependencies=deps,
+        centrality=centrality,
+        chapter_refs=chaps,
+        structure_types=stypes,
+    )
+    _registry[concept_id] = decl
+    return decl
+
+
+def declare_formula_chain(
+    concept_id: str,
+    *,
+    steps: list[dict[str, Any]],
+    patterns: list[str] | None = None,
+    label: str = "",
+    output_slot: str | None = None,
+    diagnostic_tags: list[str] | tuple[str, ...] | None = None,
+    dependencies: list[str] | tuple[str, ...] | None = None,
+    centrality: float = 0.5,
+    chapter_refs: list[str] | tuple[str, ...] | None = None,
+    structure_types: list[str] | tuple[str, ...] | None = None,
+) -> FormulaDecl:
+    """Declare a multi-step formula chain.
+
+    Each step is a dict with keys:
+      - ``slot`` (required): output slot name for this step
+      - ``expression`` (required): math expression with variable names
+      - ``param_names`` (optional, default []): param names for this step
+      - ``param_kinds`` (optional, default all "value"): param kinds
+      - ``description`` (optional): step description
+
+    Steps are executed in order.  Each step's output is available by its
+    ``slot`` name to all subsequent steps.  The chain's final result is
+    the last step's value.
+
+    Example::
+
+        declare_formula_chain("fm.cost_of_equity_and_wacc",
+            steps=[
+                dict(slot="cost_equity", expression="risk_free + beta * (market_return - risk_free)",
+                     param_names=["risk_free", "beta", "market_return"]),
+                dict(slot="wacc", expression="cost_equity * equity_weight + cost_debt * (1 - tax) * debt_weight",
+                     param_names=["cost_debt", "tax", "equity_weight", "debt_weight"]),
+            ],
+            patterns=[r"\\bWACC\\b", r"\\bcost of capital\\b"],
+            label="Cost of equity → WACC chain",
+            output_slot="wacc",
+        )
+    """
+    global _last_priority
+    _last_priority += 1
+    priority = _last_priority
+
+    formula_name = concept_id.replace("fm.", "", 1) if concept_id.startswith("fm.") else concept_id
+
+    if not steps:
+        raise ValueError("At least one step is required for a formula chain")
+
+    # Build ChainStep objects + collect unique named params with kinds
+    chain_steps: list[ChainStep] = []
+    all_param_names: list[str] = []
+    all_param_kinds: list[str] = []
+    seen_params: set[str] = set()
+    for s in steps:
+        slot = s.get("slot", "")
+        expr = s.get("expression", "")
+        if not slot:
+            raise ValueError("Each chain step must have a non-empty 'slot'")
+        if not expr:
+            raise ValueError("Each chain step must have a non-empty 'expression'")
+        pnames = tuple(s.get("param_names", []))
+        pkinds = tuple(s.get("param_kinds", ["value"] * len(pnames)))
+        desc = s.get("description", "")
+        chain_steps.append(ChainStep(
+            slot=slot, expression=expr,
+            param_names=pnames, param_kinds=pkinds,
+            description=desc,
+        ))
+        for i, p in enumerate(pnames):
+            if p not in seen_params:
+                seen_params.add(p)
+                all_param_names.append(p)
+                all_param_kinds.append(pkinds[i] if i < len(pkinds) else "value")
+
+    pnames_tuple = tuple(all_param_names)
+    pkinds_tuple = tuple(all_param_kinds)
+
+    # Solver: chain solver that runs all steps
+    template = ChainTemplate(concept_id, chain_steps)
+
+    # Chain solver delegates to ChainTemplate.solve
+    def _chain_solver(**kwargs: Any) -> float:
+        result = template.solve(kwargs)
+        val = result.get("result")
+        if val is None or (isinstance(val, float) and math.isnan(val)):
+            return float("nan")
+        return float(val)
+
+    # Candidate: permutation-aware using last-step inputs
+    candidate_fn = _make_candidate_fn(pnames_tuple, pkinds_tuple, _chain_solver)
+
+    # Detection
+    compiled_patterns: list[re.Pattern] = []
+    if patterns:
+        compiled_patterns = [re.compile(p, re.IGNORECASE) for p in patterns]
+
+    slot = output_slot or formula_name
+    lbl = label or concept_id
+    tags = tuple(diagnostic_tags or ())
+    deps = tuple(dependencies or ())
+    chaps = tuple(chapter_refs or ())
+    stypes = tuple(structure_types or ())
+
+    decl = FormulaDecl(
+        concept_id=concept_id,
+        formula_name=formula_name,
+        solver_fn=_chain_solver,
+        candidate_fn=candidate_fn,
+        compiled_patterns=compiled_patterns,
+        template=template,
+        expression=None,
+        param_names=pnames_tuple,
+        param_kinds=pkinds_tuple,
         label=lbl,
         output_slot=slot,
         priority=priority,
@@ -531,7 +918,7 @@ def build_structure_type_concepts(
 
 
 # ---------------------------------------------------------------------------
-# Demo / new formula registrations via the DSL
+# Formula registrations via the DSL
 # ---------------------------------------------------------------------------
 
 declare_formula("fm.dividend_growth_rate",
@@ -585,3 +972,96 @@ declare_formula("fm.asset_turnover",
     chapter_refs=["business_finance"],
     structure_types=["working_capital_cycle"],
 )
+
+# --- Multi-step chains ---
+
+declare_formula_chain("fm.cost_equity_capm_to_wacc",
+    steps=[
+        dict(
+            slot="cost_equity",
+            expression="risk_free + beta * (market_return - risk_free)",
+            param_names=["risk_free", "beta", "market_return"],
+            param_kinds=["percent", "value", "percent"],
+            description="Cost of equity (CAPM)",
+        ),
+        dict(
+            slot="wacc",
+            expression="cost_equity * eq_weight + cost_debt * (1 - tax) * debt_weight",
+            param_names=["cost_debt", "tax", "eq_weight", "debt_weight"],
+            param_kinds=["percent", "percent", "percent", "percent"],
+            description="Weighted average cost of capital",
+        ),
+    ],
+    patterns=[r"\bWACC\b", r"\bweighted average cost\b", r"\bcost of capital\b"],
+    label="Cost of equity (CAPM) → WACC",
+    output_slot="wacc",
+    diagnostic_tags=["capm_error", "weighting_error", "tax_error"],
+    centrality=0.85,
+    chapter_refs=["cost_of_capital"],
+    structure_types=["wacc_optimization"],
+)
+
+declare_formula_chain("fm.cost_equity_dvm_to_wacc",
+    steps=[
+        dict(
+            slot="cost_equity",
+            expression="dividend * (1 + growth) / market_price + growth",
+            param_names=["dividend", "growth", "market_price"],
+            param_kinds=["value", "percent", "value"],
+            description="Cost of equity (DVM)",
+        ),
+        dict(
+            slot="wacc",
+            expression="cost_equity * eq_weight + cost_debt * (1 - tax) * debt_weight",
+            param_names=["cost_debt", "tax", "eq_weight", "debt_weight"],
+            param_kinds=["percent", "percent", "percent", "percent"],
+            description="Weighted average cost of capital",
+        ),
+    ],
+    patterns=[r"\bWACC\b", r"\bdividend.*growth.*model.*wacc\b"],
+    label="Cost of equity (DVM) → WACC",
+    output_slot="wacc",
+    diagnostic_tags=["dvm_error", "weighting_error", "tax_error"],
+    centrality=0.85,
+    chapter_refs=["cost_of_capital"],
+    structure_types=["wacc_optimization"],
+)
+
+declare_formula_chain("fm.ungear_regear",
+    steps=[
+        dict(
+            slot="asset_beta",
+            expression="equity_beta / (1 + (1 - tax) * debt_equity)",
+            param_names=["equity_beta", "tax", "debt_equity"],
+            param_kinds=["value", "percent", "percent"],
+            description="Ungear equity beta to asset beta",
+        ),
+        dict(
+            slot="new_equity_beta",
+            expression="asset_beta * (1 + (1 - tax) * new_debt_new_equity)",
+            param_names=["tax", "new_debt_new_equity"],
+            param_kinds=["percent", "percent"],
+            description="Regear to new equity beta",
+        ),
+    ],
+    patterns=[r"\bungear\b", r"\bregear\b", r"\basset beta\b.*\bnew equity\b"],
+    label="Ungear and regear equity beta",
+    output_slot="new_equity_beta",
+    diagnostic_tags=["ungear_error", "regear_error", "tax_error"],
+    centrality=0.7,
+    chapter_refs=["business_finance"],
+    structure_types=["gearing_financial_risk"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+# Run registry validation at module load time.
+_validation_messages = validate_registry()
+if _validation_messages:
+    import logging
+    _log = logging.getLogger(__name__)
+    for msg in _validation_messages:
+        _log.warning("Formula registry: %s", msg)

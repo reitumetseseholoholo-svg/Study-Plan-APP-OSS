@@ -63,6 +63,7 @@ import io
 import ipaddress
 import json
 import logging
+import cairo
 import math
 import os
 import random
@@ -117,7 +118,9 @@ from studyplan.ai.llm_output_sanitize import (
     ollama_think_request_value_for_section_c_judgment,
     sanitize_visible_local_llm_answer,
 )
+from studyplan.ai.circuit_breaker import CircuitBreaker as _CircuitBreaker
 from studyplan.ai.llm_telemetry import PURPOSE_TUTOR_EMBEDDED, normalize_purpose
+from studyplan.ai.model_ranker import pick_best as _model_ranker_pick_best
 from studyplan.ai.model_infer_tuning import (
     ModelRuntimeTuning,
     resolve_model_runtime_tuning,
@@ -2129,6 +2132,24 @@ class AICapableTutorPracticeService:
         )
 
 
+def _try_accessible_name(widget: Any, name: str) -> None:
+    """Set accessible name if the method is available in this GTK build."""
+    if hasattr(widget, "set_accessible_name"):
+        try:
+            widget.set_accessible_name(name)
+        except Exception:
+            pass
+
+
+def _try_accessible_description(widget: Any, desc: str) -> None:
+    """Set accessible description if the method is available in this GTK build."""
+    if hasattr(widget, "set_accessible_description"):
+        try:
+            widget.set_accessible_description(desc)
+        except Exception:
+            pass
+
+
 class StudyPlanGUI(Gtk.ApplicationWindow):
     def __init__(self, app, exam_date=None):
         super().__init__(application=app)
@@ -2327,6 +2348,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._ollama_active_requests = 0
         self._ollama_request_context = threading.local()
         self._llm_model_health: dict[str, dict[str, Any]] = {}
+        self._cloud_circuit_breaker = _CircuitBreaker(threshold=3, cooldown_seconds=30.0)
         self._configure_ollama_runtime_limits()
         self._llama_runtime: LlamaRuntime | None = None
         self._llama_runtime_init_attempted = False
@@ -3981,8 +4003,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return "Gateway"
         if be in {"llama_cpp_cloud", "cloud"}:
             return "Cloud"
-        if be == "brave_search":
-            return "Brave Search"
         if be in {"llama.cpp", "llama", "llama_cpp"}:
             return "llama.cpp"
         if be == "ollama":
@@ -4031,6 +4051,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         return False
 
     def _select_ollama_cloud_model(self, *, purpose: str = "general") -> tuple[str, str | None]:
+        if not self._remote_llm_backends_allowed():
+            return "", "Cloud model selection disabled: no internet connectivity."
         models, list_err = self._get_ollama_models_cached(force_refresh=False)
         cloud_models = [name for name in list(models or []) if self._ollama_model_is_cloud(name)]
         if not cloud_models:
@@ -4573,7 +4595,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             (
                 "Apply",
                 "apply",
-                "Apply '{topic}' for {module} with steps and a short example.",
+                "Walk me through '{topic}' for {module} with clear steps and a short example.",
             ),
             (
                 "Exam technique",
@@ -4600,7 +4622,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         for label, action_type, template in quick_prompt_templates:
             btn = Gtk.Button(label=label)
             btn.add_css_class("flat")
-            btn.set_tooltip_text(template.replace("{topic}", "current topic").replace("{module}", "module"))
+            btn.set_tooltip_text(template.replace("{topic}", "an ACCA topic").replace("{module}", "your module"))
             quick_prompts_box.append(btn)
             quick_prompt_buttons.append((btn, template, action_type))
         self._tutor_fr_quick_buttons: list[Gtk.Button] = []
@@ -4619,7 +4641,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         for label, template in fr_quick_templates:
             btn = Gtk.Button(label=label)
             btn.add_css_class("flat")
-            btn.set_tooltip_text(template.replace("{topic}", "current topic").replace("{module}", "module"))
+            btn.set_tooltip_text(template.replace("{topic}", "an ACCA topic").replace("{module}", "your module"))
             btn.set_visible(bool(self._is_fr_financial_reporting_module()))
             quick_prompts_box.append(btn)
             quick_prompt_buttons.append((btn, template, None))
@@ -7964,28 +7986,70 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             _update_prompt_meta()
             _set_running(False)
 
+        _generic_quick_prompt_fallback: dict[str, str] = {
+            "Explain '{topic}' for {module} in exam-focused terms.":
+                "Explain an ACCA topic in exam-focused terms to help me understand it better.",
+            "Walk me through '{topic}' for {module} with clear steps and a short example.":
+                "Walk me through an ACCA concept with clear steps and a short example.",
+            "Give exam technique for '{topic}' in {module} with timing and structure.":
+                "Give me exam technique advice with timing and structure tips.",
+            "Write a 5-question drill on '{topic}' with short answers.":
+                "Give me a 5-question practice drill with short answers on an ACCA topic.",
+            "List the must-know formulas for '{topic}' and when to use each.":
+                "List the must-know formulas for an ACCA topic and when to use each.",
+            "Give common exam pitfalls for '{topic}' and how to avoid them.":
+                "Give common exam pitfalls and how to avoid them.",
+            "How do I format the statement of cash flows under IAS 7 for '{topic}' in {module}? "
+            "Cover operating, investing, and financing and typical exam presentation pitfalls.":
+                "Help me understand the statement of cash flows under IAS 7 with exam-focused guidance.",
+            "What are the minimum line items and presentation requirements for the statement of financial position "
+            "under IAS 1 for '{topic}' in {module}? Keep it exam-focused.":
+                "Help me understand the statement of financial position requirements under IAS 1 with exam-focused guidance.",
+        }
+
         def _insert_quick_prompt(template: str, action_type: str | None = None) -> None:
             turn = run_state.turn()
             if bool(turn.active):
                 return
-            topic = str(self._effective_tutor_topic() or "").strip() or "the current topic"
-            module = str(getattr(self, "module_title", "") or "").strip() or "selected module"
+            topic = str(self._effective_tutor_topic() or "").strip()
+            module = str(getattr(self, "module_title", "") or "").strip()
             resolved: str
-            if action_type:
-                module_id = str(getattr(self, "module_id", "") or "").strip()
-                matrix_prompt = get_prompt_for_tutor_action(module_id, topic, action_type)
-                if matrix_prompt:
-                    resolved = matrix_prompt
+            if not topic:
+                if action_type:
+                    module_id = str(getattr(self, "module_id", "") or "").strip()
+                    matrix_prompt = get_prompt_for_tutor_action(module_id, topic, action_type)
+                    if matrix_prompt:
+                        resolved = matrix_prompt
+                    else:
+                        resolved = _generic_quick_prompt_fallback.get(
+                            str(template or ""),
+                            "Help me with an ACCA topic."
+                        )
+                else:
+                    resolved = _generic_quick_prompt_fallback.get(
+                        str(template or ""),
+                        "Help me with an ACCA topic."
+                    )
+            else:
+                if action_type:
+                    module_id = str(getattr(self, "module_id", "") or "").strip()
+                    matrix_prompt = get_prompt_for_tutor_action(module_id, topic, action_type)
+                    if matrix_prompt:
+                        resolved = matrix_prompt
+                    else:
+                        try:
+                            resolved = str(template or "").format(
+                                topic=topic, module=module or "your studies"
+                            )
+                        except Exception:
+                            resolved = str(template or "")
                 else:
                     try:
-                        resolved = str(template or "").format(topic=topic, module=module)
+                        resolved = str(template or "").format(
+                            topic=topic, module=module or "your studies"
+                        )
                     except Exception:
                         resolved = str(template or "")
-            else:
-                try:
-                    resolved = str(template or "").format(topic=topic, module=module)
-                except Exception:
-                    resolved = str(template or "")
             prompt_buf.set_text(resolved.strip())
             _update_prompt_meta()
             _set_running(False)
@@ -14247,19 +14311,47 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         dialog.present()
 
     def on_open_preferences(self, _action, _param):
-        # Always show the modal preferences dialog so it is visible regardless of layout or tab state.
-        # The Settings workspace tab remains available from the workbench; "Open Full Preferences" there uses _open_preferences_dialog_force.
         dialog = self._new_dialog(title="Preferences", transient_for=self, modal=True)
         try:
-            dialog.set_default_size(520, 560)
+            dialog.set_default_size(660, 620)
         except Exception:
             pass
         dialog.add_buttons("_Close", Gtk.ResponseType.CLOSE)
-        content = dialog.get_content_area()
-        content.set_spacing(8)
+        dialog_accessible_desc = (
+            "Application preferences with tabbed sections. "
+            "Navigate between sections using the tab bar. "
+            "Changes apply when you close the dialog."
+        )
+        _try_accessible_name(dialog, "Preferences")
+        _try_accessible_description(dialog, dialog_accessible_desc)
+
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        dialog.get_content_area().append(main_box)
+
+        stack = Gtk.Stack()
+        stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        stack.set_accessible_role(Gtk.AccessibleRole.TAB_PANEL)
+
+        switcher = Gtk.StackSwitcher()
+        switcher.set_stack(stack)
+        _try_accessible_name(switcher, "Preference sections")
+        main_box.append(switcher)
+        main_box.append(stack)
+
+        def _make_page(title: str, short_name: str) -> Gtk.Box:
+            scrolled = Gtk.ScrolledWindow()
+            scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            _try_accessible_name(scrolled, f"{title} preferences")
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            box.set_margin_start(12)
+            box.set_margin_end(12)
+            box.set_margin_top(8)
+            box.set_margin_bottom(8)
+            scrolled.set_child(box)
+            stack.add_titled(scrolled, short_name, title)
+            return box
 
         def _configure_numeric_row(row: Gtk.Box, label: Gtk.Label, spin: Gtk.SpinButton) -> None:
-            # Keep numeric preference rows visually aligned: fixed label lane + compact control lane.
             row.set_spacing(10)
             row.set_hexpand(True)
             row.set_halign(Gtk.Align.FILL)
@@ -14285,58 +14377,76 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             entry.set_halign(Gtk.Align.END)
             entry.set_size_request(260, -1)
 
+        gen_box = _make_page("General", "general")
+        local_box = _make_page("Local AI", "local-ai")
+        cloud_box = _make_page("Cloud AI", "cloud-ai")
+        cockpit_box = _make_page("Cockpit", "cockpit")
+        pomo_box = _make_page("Pomodoro", "pomodoro")
+
+        # ========== GENERAL PAGE ==========
         general_title = Gtk.Label(label="General")
         general_title.set_halign(Gtk.Align.START)
         general_title.add_css_class("section-title")
-        content.append(general_title)
+        gen_box.append(general_title)
         general_note = Gtk.Label(
             label="Core behavior and appearance. Changes apply immediately when you close this dialog."
         )
         general_note.set_halign(Gtk.Align.START)
         general_note.set_wrap(True)
         general_note.add_css_class("muted")
-        content.append(general_note)
+        gen_box.append(general_note)
 
         allow_lower = Gtk.CheckButton(label="Apply scores even if lower (overwrite competence)")
         allow_lower.set_active(bool(self.allow_lower_scores))
+        _try_accessible_name(allow_lower, "Allow lower scores")
         show_menu = Gtk.CheckButton(label="Show menu bar (Ctrl+M)")
         show_menu.set_active(bool(self.menu_bar_visible))
+        _try_accessible_name(show_menu, "Show menu bar")
         notifications = Gtk.CheckButton(label="Enable desktop notifications")
         notifications.set_active(bool(self.notifications_enabled))
+        _try_accessible_name(notifications, "Enable desktop notifications")
         system_theme = Gtk.CheckButton(label="Use system theme (nwg-look)")
         system_theme.set_active(bool(self.use_system_theme))
+        _try_accessible_name(system_theme, "Use system theme")
         coach_only = Gtk.CheckButton(label="Coach-only view (hide plan list)")
         coach_only.set_active(bool(self.coach_only_view))
-        sticky_pick = Gtk.CheckButton(label="Sticky coach pick (keep today’s focus on restart)")
+        _try_accessible_name(coach_only, "Coach-only view")
+        sticky_pick = Gtk.CheckButton(label="Sticky coach pick (keep today's focus on restart)")
         sticky_pick.set_active(bool(self.sticky_coach_pick))
+        _try_accessible_name(sticky_pick, "Sticky coach pick")
         adaptive_quiz = Gtk.CheckButton(label="Adaptive quiz prioritization (use recent miss-risk)")
         adaptive_quiz.set_active(bool(self.adaptive_quiz_prioritization))
+        _try_accessible_name(adaptive_quiz, "Adaptive quiz prioritization")
         semantic_toggle = Gtk.CheckButton(label="Tutor PDF embeddings for RAG (semantic search)")
         semantic_toggle.set_tooltip_text(
             "Uses embedding similarity together with keyword matching to pick excerpts from tutor PDFs. "
             "Does not change which Ollama model is selected for chat."
         )
         semantic_toggle.set_active(bool(self.semantic_enabled))
+        _try_accessible_name(semantic_toggle, "Semantic search")
+        _try_accessible_description(semantic_toggle, "Uses embedding similarity with keyword matching for RAG")
         show_perf = Gtk.CheckButton(label="Show performance stats (dashboard render time)")
         show_perf.set_active(bool(self.show_perf_stats))
+        _try_accessible_name(show_perf, "Show performance stats")
         recall_release = Gtk.CheckButton(label="Recall counts for coach release (2 focus + recall)")
         recall_release.set_active(bool(self.recall_counts_for_release))
+        _try_accessible_name(recall_release, "Recall counts for coach release")
 
-        content.append(allow_lower)
-        content.append(show_menu)
-        content.append(notifications)
-        content.append(system_theme)
-        content.append(coach_only)
-        content.append(sticky_pick)
-        content.append(adaptive_quiz)
-        content.append(semantic_toggle)
-        content.append(show_perf)
-        content.append(recall_release)
+        gen_box.append(allow_lower)
+        gen_box.append(show_menu)
+        gen_box.append(notifications)
+        gen_box.append(system_theme)
+        gen_box.append(coach_only)
+        gen_box.append(sticky_pick)
+        gen_box.append(adaptive_quiz)
+        gen_box.append(semantic_toggle)
+        gen_box.append(show_perf)
+        gen_box.append(recall_release)
 
         ui_title = Gtk.Label(label="UI Modernization")
         ui_title.set_halign(Gtk.Align.START)
         ui_title.add_css_class("section-title")
-        content.append(ui_title)
+        gen_box.append(ui_title)
         modern_locked = bool(UI_MODERN_HARD_LOCK)
         ui_note = Gtk.Label(
             label=(
@@ -14348,7 +14458,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         ui_note.set_halign(Gtk.Align.START)
         ui_note.set_wrap(True)
         ui_note.add_css_class("muted")
-        content.append(ui_note)
+        gen_box.append(ui_note)
         ui_modern_enabled = Gtk.CheckButton(label="Enable modern UI polish")
         ui_modern_enabled.set_active(
             bool(
@@ -14358,6 +14468,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             )
         )
+        _try_accessible_name(ui_modern_enabled, "Enable modern UI polish")
         ui_reduce_motion = Gtk.CheckButton(label="Reduce motion/transitions")
         ui_reduce_motion.set_active(
             bool(
@@ -14367,9 +14478,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             )
         )
+        _try_accessible_name(ui_reduce_motion, "Reduce motion")
         ui_high_contrast = Gtk.CheckButton(label="High contrast")
         ui_high_contrast.set_active(bool(getattr(self, "ui_high_contrast", False)))
         ui_high_contrast.set_tooltip_text("Increase contrast for text and borders.")
+        _try_accessible_name(ui_high_contrast, "High contrast")
         ui_legacy_fallback = Gtk.CheckButton(label="Allow emergency fallback to legacy UI")
         ui_legacy_fallback.set_active(
             bool(
@@ -14383,6 +14496,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             )
         )
+        _try_accessible_name(ui_legacy_fallback, "Legacy fallback")
         ui_sidebar_visible = Gtk.CheckButton(label="Show left sidebar")
         ui_sidebar_visible.set_active(
             bool(
@@ -14392,6 +14506,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 )
             )
         )
+        _try_accessible_name(ui_sidebar_visible, "Show left sidebar")
         if modern_locked:
             ui_modern_enabled.set_active(True)
             ui_modern_enabled.set_sensitive(False)
@@ -14405,6 +14520,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         ui_density_model = Gtk.StringList.new(["progressive"])
         ui_density_dropdown = Gtk.DropDown.new(ui_density_model, None)
         ui_density_dropdown.set_selected(0)
+        _try_accessible_name(ui_density_dropdown, "UI density policy")
         ui_density_row.set_spacing(10)
         ui_density_row.set_hexpand(True)
         ui_density_label.set_xalign(0.0)
@@ -14419,6 +14535,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         ui_fallback_now_btn.set_sensitive(
             bool(ui_legacy_fallback.get_active()) and bool(ui_modern_enabled.get_active())
         )
+        _try_accessible_name(ui_fallback_now_btn, "Fallback to legacy now")
         if modern_locked:
             ui_fallback_now_btn.set_sensitive(False)
             ui_fallback_now_btn.set_tooltip_text("Legacy fallback is disabled in this build.")
@@ -14426,37 +14543,36 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         ui_state_info.set_halign(Gtk.Align.START)
         ui_state_info.set_wrap(True)
         ui_state_info.add_css_class("muted")
-        content.append(ui_modern_enabled)
-        content.append(ui_reduce_motion)
-        content.append(ui_high_contrast)
-        content.append(ui_legacy_fallback)
-        content.append(ui_sidebar_visible)
-        content.append(ui_density_row)
-        content.append(ui_fallback_now_btn)
-        content.append(ui_state_info)
+        gen_box.append(ui_modern_enabled)
+        gen_box.append(ui_reduce_motion)
+        gen_box.append(ui_high_contrast)
+        gen_box.append(ui_legacy_fallback)
+        gen_box.append(ui_sidebar_visible)
+        gen_box.append(ui_density_row)
+        gen_box.append(ui_fallback_now_btn)
+        gen_box.append(ui_state_info)
 
-        ai_tutor_heading = Gtk.Label(label="AI Tutor")
-        ai_tutor_heading.set_halign(Gtk.Align.START)
-        ai_tutor_heading.add_css_class("section-title")
-        content.append(ai_tutor_heading)
+        # ========== LOCAL AI PAGE ==========
         llm_title = Gtk.Label(label="Local AI (Ollama)")
         llm_title.set_halign(Gtk.Align.START)
         llm_title.add_css_class("section-title")
-        content.append(llm_title)
+        local_box.append(llm_title)
         llm_note = Gtk.Label(label="Use your local Ollama models as an in-app study tutor.")
         llm_note.set_halign(Gtk.Align.START)
         llm_note.set_wrap(True)
         llm_note.add_css_class("muted")
-        content.append(llm_note)
+        local_box.append(llm_note)
 
         llm_enabled = Gtk.CheckButton(label="Enable local AI tutor")
         llm_enabled.set_active(bool(self.local_llm_enabled))
+        _try_accessible_name(llm_enabled, "Enable local AI tutor")
         llm_host_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         llm_host_label = Gtk.Label(label="Ollama host")
         llm_host_label.set_halign(Gtk.Align.START)
         llm_host_entry = Gtk.Entry()
         llm_host_entry.set_text(str(self.local_llm_host or DEFAULT_OLLAMA_HOST))
         llm_host_entry.set_placeholder_text("http://127.0.0.1:11434")
+        _try_accessible_name(llm_host_entry, "Ollama host")
         _configure_text_row(llm_host_row, llm_host_label, llm_host_entry)
         llm_host_row.append(llm_host_label)
         llm_host_row.append(llm_host_entry)
@@ -14467,11 +14583,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         llm_model_entry = Gtk.Entry()
         llm_model_entry.set_text(str(self.local_llm_model or ""))
         llm_model_entry.set_placeholder_text("e.g. gpt4all-llama-3-2-3b-instruct-q4-0:latest")
+        _try_accessible_name(llm_model_entry, "Default Ollama model")
         _configure_text_row(llm_model_row, llm_model_label, llm_model_entry)
         llm_model_row.append(llm_model_label)
         llm_model_row.append(llm_model_entry)
         llm_auto_select = Gtk.CheckButton(label="Auto-select best model (quality/performance)")
         llm_auto_select.set_active(bool(getattr(self, "local_llm_auto_select", DEFAULT_OLLAMA_AUTO_SELECT)))
+        _try_accessible_name(llm_auto_select, "Auto-select model")
 
         llm_gguf_hint = Gtk.Label(
             label="Managed llama-server (llama.cpp): choose a discovered GGUF to load first, or Automatic for RAM-aware ranking. "
@@ -14487,7 +14605,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         llm_gguf_dropdown = Gtk.DropDown.new(Gtk.StringList.new([LLM_MANAGED_GGUF_AUTO_LABEL]), None)
         llm_gguf_dropdown.set_hexpand(True)
         llm_gguf_dropdown.set_tooltip_text("Scans GPT4All, Ollama blobs, and extra GGUF dirs. Refresh rescans disk.")
+        _try_accessible_name(llm_gguf_dropdown, "Preferred GGUF")
         llm_gguf_refresh = Gtk.Button(label="Refresh list")
+        _try_accessible_name(llm_gguf_refresh, "Refresh GGUF list")
         llm_gguf_row.append(llm_gguf_label)
         llm_gguf_row.append(llm_gguf_dropdown)
         llm_gguf_row.append(llm_gguf_refresh)
@@ -14504,6 +14624,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         llm_timeout_spin = Gtk.SpinButton.new_with_range(10, 600, 5)
         llm_timeout_spin.set_value(float(self.local_llm_timeout_seconds))
         llm_timeout_spin.set_numeric(True)
+        _try_accessible_name(llm_timeout_spin, "Request timeout seconds")
         _configure_numeric_row(llm_timeout_row, llm_timeout_label, llm_timeout_spin)
         llm_timeout_row.append(llm_timeout_label)
         llm_timeout_row.append(llm_timeout_spin)
@@ -14525,6 +14646,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             "0 = automatic from available RAM (recommended). 1–4 = fixed cap. "
             "Serializes or limits parallel Ollama HTTP calls so cgroup memory limits are less likely to trip."
         )
+        _try_accessible_name(llm_concurrency_spin, "Max concurrent requests")
         _configure_numeric_row(llm_concurrency_row, llm_concurrency_label, llm_concurrency_spin)
         llm_concurrency_row.append(llm_concurrency_label)
         llm_concurrency_row.append(llm_concurrency_spin)
@@ -14549,33 +14671,33 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         llm_queue_spin.set_tooltip_text(
             "0 = automatic from RAM pressure. Max time to wait for a free Ollama slot before failing the call."
         )
+        _try_accessible_name(llm_queue_spin, "Queue wait seconds")
         _configure_numeric_row(llm_queue_row, llm_queue_label, llm_queue_spin)
         llm_queue_row.append(llm_queue_label)
         llm_queue_row.append(llm_queue_spin)
 
-        content.append(llm_enabled)
-        content.append(llm_host_row)
-        content.append(llm_model_row)
-        content.append(llm_auto_select)
-        content.append(llm_gguf_hint)
-        content.append(llm_gguf_row)
-        content.append(llm_timeout_row)
-        content.append(llm_concurrency_row)
-        content.append(llm_queue_row)
+        local_box.append(llm_enabled)
+        local_box.append(llm_host_row)
+        local_box.append(llm_model_row)
+        local_box.append(llm_auto_select)
+        local_box.append(llm_gguf_hint)
+        local_box.append(llm_gguf_row)
+        local_box.append(llm_timeout_row)
+        local_box.append(llm_concurrency_row)
+        local_box.append(llm_queue_row)
 
-        # SRS algorithm status (informational).
         _algo_name = str(os.environ.get("STUDYPLAN_SRS_ALGORITHM", "") or "").strip().lower()
         _srs_display = "SM-2 (legacy, set via env)" if _algo_name in ("sm2", "legacy") else "FSRS-4.5 (default)"
         srs_status_label = Gtk.Label(label=f"Active SRS algorithm: {_srs_display}")
         srs_status_label.set_halign(Gtk.Align.START)
         srs_status_label.add_css_class("muted")
-        content.append(srs_status_label)
+        local_box.append(srs_status_label)
 
-        # Cloud AI / OpenRouter section.
+        # ========== CLOUD AI PAGE ==========
         cloud_ai_title = Gtk.Label(label="Cloud AI (OpenRouter / LiteLLM)")
         cloud_ai_title.set_halign(Gtk.Align.START)
         cloud_ai_title.add_css_class("section-title")
-        content.append(cloud_ai_title)
+        cloud_box.append(cloud_ai_title)
         cloud_ai_note = Gtk.Label(
             label="Route the AI tutor through an OpenAI-compatible cloud gateway (OpenRouter, LiteLLM, etc.)."
             " Set OPENROUTER_API_KEY or paste a key below."
@@ -14583,11 +14705,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cloud_ai_note.set_halign(Gtk.Align.START)
         cloud_ai_note.set_wrap(True)
         cloud_ai_note.add_css_class("muted")
-        content.append(cloud_ai_note)
+        cloud_box.append(cloud_ai_note)
 
         cloud_ai_enabled_check = Gtk.CheckButton(label="Enable Cloud AI gateway")
         cloud_ai_enabled_check.set_active(bool(getattr(self, "cloud_ai_enabled", False)))
-        content.append(cloud_ai_enabled_check)
+        _try_accessible_name(cloud_ai_enabled_check, "Enable Cloud AI gateway")
+        cloud_box.append(cloud_ai_enabled_check)
 
         cloud_endpoint_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         cloud_endpoint_label = Gtk.Label(label="Endpoint URL")
@@ -14597,9 +14720,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cloud_endpoint_entry.set_hexpand(True)
         cloud_endpoint_entry.set_text(str(getattr(self, "cloud_ai_endpoint", "") or ""))
         cloud_endpoint_entry.set_placeholder_text("https://openrouter.ai/api/v1/chat/completions")
+        _try_accessible_name(cloud_endpoint_entry, "Cloud endpoint URL")
         cloud_endpoint_row.append(cloud_endpoint_label)
         cloud_endpoint_row.append(cloud_endpoint_entry)
-        content.append(cloud_endpoint_row)
+        cloud_box.append(cloud_endpoint_row)
 
         cloud_model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         cloud_model_label = Gtk.Label(label="Model ID")
@@ -14609,9 +14733,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cloud_model_entry.set_hexpand(True)
         cloud_model_entry.set_text(str(getattr(self, "cloud_ai_model", "") or ""))
         cloud_model_entry.set_placeholder_text("e.g. openrouter/google/gemini-2.5-flash")
+        _try_accessible_name(cloud_model_entry, "Cloud model ID")
         cloud_model_row.append(cloud_model_label)
         cloud_model_row.append(cloud_model_entry)
-        content.append(cloud_model_row)
+        cloud_box.append(cloud_model_row)
 
         cloud_fallback_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         cloud_fallback_label = Gtk.Label(label="Fallback models")
@@ -14621,9 +14746,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cloud_fallback_entry.set_hexpand(True)
         cloud_fallback_entry.set_text(str(getattr(self, "cloud_ai_fallback_models", "") or ""))
         cloud_fallback_entry.set_placeholder_text("e.g. openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet")
+        _try_accessible_name(cloud_fallback_entry, "Cloud fallback models")
         cloud_fallback_row.append(cloud_fallback_label)
         cloud_fallback_row.append(cloud_fallback_entry)
-        content.append(cloud_fallback_row)
+        cloud_box.append(cloud_fallback_row)
 
         cloud_key_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         cloud_key_label = Gtk.Label(label="API key")
@@ -14633,40 +14759,48 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cloud_key_entry.set_hexpand(True)
         cloud_key_entry.set_show_peek_icon(True)
         cloud_key_entry.set_text(str(getattr(self, "cloud_ai_api_key", "") or ""))
+        _try_accessible_name(cloud_key_entry, "Cloud API key")
         cloud_key_hint = Gtk.Label(label="Stored in preferences. Also reads OPENROUTER_API_KEY env var automatically.")
         cloud_key_hint.set_halign(Gtk.Align.START)
         cloud_key_hint.set_wrap(True)
         cloud_key_hint.add_css_class("muted")
         cloud_key_row.append(cloud_key_label)
         cloud_key_row.append(cloud_key_entry)
-        content.append(cloud_key_row)
-        content.append(cloud_key_hint)
+        cloud_box.append(cloud_key_row)
+        cloud_box.append(cloud_key_hint)
 
+        # ========== COCKPIT PAGE ==========
         cockpit_title = Gtk.Label(label="Tutor Cockpit")
         cockpit_title.set_halign(Gtk.Align.START)
         cockpit_title.add_css_class("section-title")
-        content.append(cockpit_title)
+        cockpit_box.append(cockpit_title)
         cockpit_note = Gtk.Label(
             label="Autopilot runs on a timer from the main window. Use autonomy mode to control how boldly it acts; pause stops all autopilot actions app-wide."
         )
         cockpit_note.set_halign(Gtk.Align.START)
         cockpit_note.set_wrap(True)
         cockpit_note.add_css_class("muted")
-        content.append(cockpit_note)
+        cockpit_box.append(cockpit_note)
 
         cockpit_enabled = Gtk.CheckButton(label="Enable Tutor autopilot")
         cockpit_enabled.set_active(bool(getattr(self, "ai_tutor_autopilot_enabled", True)))
+        _try_accessible_name(cockpit_enabled, "Enable tutor autopilot")
         cockpit_paused = Gtk.CheckButton(label="Pause tutor autopilot (app-wide)")
         cockpit_paused.set_active(bool(getattr(self, "ai_tutor_autopilot_paused", False)))
+        _try_accessible_name(cockpit_paused, "Pause tutor autopilot")
         cockpit_nudges = Gtk.CheckButton(label="Enable Sensei nudges")
         cockpit_nudges.set_active(bool(getattr(self, "ai_tutor_nudges_enabled", True)))
+        _try_accessible_name(cockpit_nudges, "Enable nudges")
         cockpit_gap_generation = Gtk.CheckButton(label="Enable AI gap-question generation")
         cockpit_gap_generation.set_active(bool(getattr(self, "ai_tutor_gap_generation_enabled", True)))
+        _try_accessible_name(cockpit_gap_generation, "Enable gap generation")
         cockpit_gap_autosave = Gtk.CheckButton(label="Auto-save generated questions")
         cockpit_gap_autosave.set_active(bool(getattr(self, "ai_tutor_gap_autosave_enabled", True)))
+        _try_accessible_name(cockpit_gap_autosave, "Auto-save generated questions")
         cockpit_gap_strict = Gtk.CheckButton(label="Strict validation gate (required for auto-save)")
         cockpit_gap_strict.set_active(bool(getattr(self, "ai_tutor_gap_autosave_strict_gate", True)))
         cockpit_gap_strict.set_sensitive(False)
+        _try_accessible_name(cockpit_gap_strict, "Strict validation gate")
 
         def _sync_gap_gate_controls(*_args) -> None:
             autosave_on = bool(cockpit_gap_autosave.get_active())
@@ -14682,14 +14816,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         _sync_gap_gate_controls()
         cockpit_gap_autosave.connect("toggled", _sync_gap_gate_controls)
-        content.append(cockpit_enabled)
-        content.append(cockpit_paused)
+        cockpit_box.append(cockpit_enabled)
+        cockpit_box.append(cockpit_paused)
 
         autonomy_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         autonomy_label = Gtk.Label(label="Tutor autonomy mode")
         autonomy_label.set_halign(Gtk.Align.START)
         autonomy_model = Gtk.StringList.new(["suggest", "assist", "cockpit"])
         autonomy_dropdown = Gtk.DropDown.new(autonomy_model, None)
+        _try_accessible_name(autonomy_dropdown, "Tutor autonomy mode")
         selected_mode = self._coerce_ai_tutor_autonomy_mode(
             getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE)
         )
@@ -14704,14 +14839,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         autonomy_dropdown.set_size_request(150, -1)
         autonomy_row.append(autonomy_label)
         autonomy_row.append(autonomy_dropdown)
-        content.append(autonomy_row)
-        content.append(cockpit_nudges)
+        cockpit_box.append(autonomy_row)
+        cockpit_box.append(cockpit_nudges)
 
         nudge_policy_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         nudge_policy_label = Gtk.Label(label="Nudge intensity")
         nudge_policy_label.set_halign(Gtk.Align.START)
         nudge_policy_model = Gtk.StringList.new(["minimal", "moderate", "aggressive"])
         nudge_policy_dropdown = Gtk.DropDown.new(nudge_policy_model, None)
+        _try_accessible_name(nudge_policy_dropdown, "Nudge intensity")
         selected_nudge = self._coerce_ai_tutor_nudge_policy(
             getattr(self, "ai_tutor_nudge_policy", AI_TUTOR_DEFAULT_NUDGE_POLICY)
         )
@@ -14726,7 +14862,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         nudge_policy_dropdown.set_size_request(150, -1)
         nudge_policy_row.append(nudge_policy_label)
         nudge_policy_row.append(nudge_policy_dropdown)
-        content.append(nudge_policy_row)
+        cockpit_box.append(nudge_policy_row)
 
         autopilot_tick_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         autopilot_tick_label = Gtk.Label(label="Autopilot tick (sec)")
@@ -14748,23 +14884,24 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
         )
         autopilot_tick_spin.set_numeric(True)
+        _try_accessible_name(autopilot_tick_spin, "Autopilot tick seconds")
         _configure_numeric_row(autopilot_tick_row, autopilot_tick_label, autopilot_tick_spin)
         autopilot_tick_row.append(autopilot_tick_label)
         autopilot_tick_row.append(autopilot_tick_spin)
-        content.append(autopilot_tick_row)
-        content.append(cockpit_gap_generation)
-        content.append(cockpit_gap_autosave)
-        content.append(cockpit_gap_strict)
+        cockpit_box.append(autopilot_tick_row)
+        cockpit_box.append(cockpit_gap_generation)
+        cockpit_box.append(cockpit_gap_autosave)
+        cockpit_box.append(cockpit_gap_strict)
 
         rag_title = Gtk.Label(label="Tutor RAG")
         rag_title.set_halign(Gtk.Align.START)
         rag_title.add_css_class("section-title")
-        content.append(rag_title)
+        cockpit_box.append(rag_title)
         rag_note = Gtk.Label(label="Add syllabus/reference PDFs for Tutor retrieval. One path per line.")
         rag_note.set_halign(Gtk.Align.START)
         rag_note.set_wrap(True)
         rag_note.add_css_class("muted")
-        content.append(rag_note)
+        cockpit_box.append(rag_note)
         rag_max_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         rag_max_label = Gtk.Label(label="Max active RAG PDFs")
         rag_max_label.set_halign(Gtk.Align.START)
@@ -14782,25 +14919,27 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             )
         )
         rag_max_spin.set_numeric(True)
+        _try_accessible_name(rag_max_spin, "Max RAG PDFs")
         _configure_numeric_row(rag_max_row, rag_max_label, rag_max_spin)
         rag_max_row.append(rag_max_label)
         rag_max_row.append(rag_max_spin)
-        content.append(rag_max_row)
+        cockpit_box.append(rag_max_row)
 
         rag_paths_label = Gtk.Label(label="RAG PDF paths")
         rag_paths_label.set_halign(Gtk.Align.START)
         rag_paths_label.add_css_class("muted")
-        content.append(rag_paths_label)
+        cockpit_box.append(rag_paths_label)
         rag_paths_scroller = Gtk.ScrolledWindow()
         rag_paths_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         rag_paths_scroller.set_min_content_height(92)
         rag_paths_view = Gtk.TextView()
         rag_paths_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         rag_paths_view.set_monospace(True)
+        _try_accessible_name(rag_paths_view, "RAG PDF paths")
         rag_paths_buf = rag_paths_view.get_buffer()
         rag_paths_buf.set_text(str(getattr(self, "ai_tutor_rag_pdfs", "") or ""))
         rag_paths_scroller.set_child(rag_paths_view)
-        content.append(rag_paths_scroller)
+        cockpit_box.append(rag_paths_scroller)
         rag_empty_hint = Gtk.Label(
             label="No PDFs added. Add syllabus or study guide PDFs for better tutor and reconfig context."
         )
@@ -14808,36 +14947,41 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         rag_empty_hint.set_wrap(True)
         rag_empty_hint.add_css_class("muted")
         rag_empty_hint.set_visible(not bool(str(getattr(self, "ai_tutor_rag_pdfs", "") or "").strip()))
-        content.append(rag_empty_hint)
+        cockpit_box.append(rag_empty_hint)
         auto_reconfig_rag_check = Gtk.CheckButton(
             label="Auto-reconfigure module from RAG when syllabus is stale (runs in background; applies only if confidence is high)"
         )
         auto_reconfig_rag_check.set_active(bool(getattr(self, "auto_reconfigure_from_rag", False)))
-        # auto_reconfig_rag_check.set_wrap(True)
-        content.append(auto_reconfig_rag_check)
+        _try_accessible_name(auto_reconfig_rag_check, "Auto-reconfigure from RAG")
+        cockpit_box.append(auto_reconfig_rag_check)
 
+        # ========== POMODORO PAGE ==========
         pomodoro_title = Gtk.Label(label="Pomodoro")
         pomodoro_title.set_halign(Gtk.Align.START)
         pomodoro_title.add_css_class("section-title")
-        content.append(pomodoro_title)
+        pomo_box.append(pomodoro_title)
         pomodoro_note = Gtk.Label(label="Timers, breaks, and completion feedback.")
         pomodoro_note.set_halign(Gtk.Align.START)
         pomodoro_note.set_wrap(True)
         pomodoro_note.add_css_class("muted")
-        content.append(pomodoro_note)
+        pomo_box.append(pomodoro_note)
 
         pomodoro_banner = Gtk.CheckButton(label="Pomodoro banner on completion")
         pomodoro_banner.set_active(bool(self.pomodoro_banner_enabled))
+        _try_accessible_name(pomodoro_banner, "Pomodoro banner")
         pomodoro_title_flash = Gtk.CheckButton(label="Flash window title on completion")
         pomodoro_title_flash.set_active(bool(self.pomodoro_title_flash_enabled))
+        _try_accessible_name(pomodoro_title_flash, "Flash window title")
         pomodoro_sound = Gtk.CheckButton(label="Play sound on completion/break over")
         pomodoro_sound.set_active(bool(self.pomodoro_sound_enabled))
+        _try_accessible_name(pomodoro_sound, "Play sound")
         short_break_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         short_break_label = Gtk.Label(label="Short break (min)")
         short_break_label.set_halign(Gtk.Align.START)
         short_break_spin = Gtk.SpinButton.new_with_range(1, 20, 1)
         short_break_spin.set_value(int(self.short_break_minutes))
         short_break_spin.set_numeric(True)
+        _try_accessible_name(short_break_spin, "Short break minutes")
         _configure_numeric_row(short_break_row, short_break_label, short_break_spin)
         short_break_row.append(short_break_label)
         short_break_row.append(short_break_spin)
@@ -14847,6 +14991,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         long_break_spin = Gtk.SpinButton.new_with_range(5, 30, 1)
         long_break_spin.set_value(int(self.long_break_minutes))
         long_break_spin.set_numeric(True)
+        _try_accessible_name(long_break_spin, "Long break minutes")
         _configure_numeric_row(long_break_row, long_break_label, long_break_spin)
         long_break_row.append(long_break_label)
         long_break_row.append(long_break_spin)
@@ -14856,6 +15001,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         long_every_spin = Gtk.SpinButton.new_with_range(2, 6, 1)
         long_every_spin.set_value(int(self.long_break_every))
         long_every_spin.set_numeric(True)
+        _try_accessible_name(long_every_spin, "Long break interval")
         _configure_numeric_row(long_every_row, long_every_label, long_every_spin)
         long_every_row.append(long_every_label)
         long_every_row.append(long_every_spin)
@@ -14865,19 +15011,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         skip_spin = Gtk.SpinButton.new_with_range(0, 3, 1)
         skip_spin.set_value(int(self.max_break_skips))
         skip_spin.set_numeric(True)
+        _try_accessible_name(skip_spin, "Max break skips")
         _configure_numeric_row(skip_row, skip_label, skip_spin)
         skip_row.append(skip_label)
         skip_row.append(skip_spin)
 
-        content.append(pomodoro_banner)
-        content.append(pomodoro_title_flash)
-        content.append(pomodoro_sound)
-        content.append(short_break_row)
-        content.append(long_break_row)
-        content.append(long_every_row)
-        content.append(skip_row)
+        pomo_box.append(pomodoro_banner)
+        pomo_box.append(pomodoro_title_flash)
+        pomo_box.append(pomodoro_sound)
+        pomo_box.append(short_break_row)
+        pomo_box.append(long_break_row)
+        pomo_box.append(long_every_row)
+        pomo_box.append(skip_row)
         reset_pomodoro_btn = Gtk.Button(label="Reset Pomodoro Defaults")
-        content.append(reset_pomodoro_btn)
+        _try_accessible_name(reset_pomodoro_btn, "Reset Pomodoro defaults")
+        pomo_box.append(reset_pomodoro_btn)
 
         if _IS_WINDOWS:
             _focus_section_label = "Focus Tracking"
@@ -14888,7 +15036,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         focus_title = Gtk.Label(label=_focus_section_label)
         focus_title.set_halign(Gtk.Align.START)
         focus_title.add_css_class("section-title")
-        content.append(focus_title)
+        pomo_box.append(focus_title)
         _focus_note_primary_text = (
             "Focus tracking is not yet supported on Windows."
             if _IS_WINDOWS
@@ -14898,10 +15046,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         focus_note_primary.set_halign(Gtk.Align.START)
         focus_note_primary.set_wrap(True)
         focus_note_primary.add_css_class("muted")
-        content.append(focus_note_primary)
+        pomo_box.append(focus_note_primary)
 
         focus_tracking = Gtk.CheckButton(label="Enable focus tracking (Hyprland active window)")
         focus_tracking.set_active(bool(self.focus_tracking_enabled))
+        _try_accessible_name(focus_tracking, "Enable focus tracking")
         if not self._focus_tracking_available:
             focus_tracking.set_sensitive(False)
         focus_note = None
@@ -14912,6 +15061,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             focus_note.add_css_class("muted")
         focus_autopause = Gtk.CheckButton(label="Auto-pause Pomodoro when leaving allowed apps")
         focus_autopause.set_active(bool(self.focus_auto_pause_enabled))
+        _try_accessible_name(focus_autopause, "Auto-pause Pomodoro")
         if not self._focus_tracking_available:
             focus_autopause.set_sensitive(False)
         focus_autopause.set_tooltip_text(
@@ -14923,6 +15073,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         idle_spin = Gtk.SpinButton.new_with_range(30, 600, 10)
         idle_spin.set_value(int(self.focus_idle_threshold))
         idle_spin.set_numeric(True)
+        _try_accessible_name(idle_spin, "Idle threshold seconds")
         _configure_numeric_row(idle_row, idle_label, idle_spin)
         if not self._focus_tracking_available:
             idle_spin.set_sensitive(False)
@@ -14930,6 +15081,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         idle_row.append(idle_spin)
         add_active_class_btn = Gtk.Button(label="Add Active Window Class to Allowlist")
         add_active_class_btn.set_sensitive(bool(self._focus_tracking_available))
+        _try_accessible_name(add_active_class_btn, "Add active window to allowlist")
         allowlist_note = Gtk.Label(label="Allowlist size: %d" % len(self.focus_allowlist))
         allowlist_note.set_halign(Gtk.Align.START)
         allowlist_note.add_css_class("muted")
@@ -14950,25 +15102,32 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             hypridle_note.set_selectable(True)
             hypridle_note.add_css_class("muted")
 
-        content.append(focus_tracking)
-        content.append(focus_autopause)
-        content.append(idle_row)
-        content.append(add_active_class_btn)
-        content.append(allowlist_note)
+        pomo_box.append(focus_tracking)
+        pomo_box.append(focus_autopause)
+        pomo_box.append(idle_row)
+        pomo_box.append(add_active_class_btn)
+        pomo_box.append(allowlist_note)
         reset_focus_btn = Gtk.Button(label="Reset Focus Defaults")
-        content.append(reset_focus_btn)
+        _try_accessible_name(reset_focus_btn, "Reset focus defaults")
+        pomo_box.append(reset_focus_btn)
         if focus_note is not None:
-            content.append(focus_note)
+            pomo_box.append(focus_note)
         if hypridle_note is not None:
-            content.append(hypridle_note)
+            pomo_box.append(hypridle_note)
         diagnostics = Gtk.Expander()
         diagnostics.set_label("Diagnostics")
+        _try_accessible_name(diagnostics, "Diagnostics")
         diagnostics_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         test_banner_btn = Gtk.Button(label="Test Pomodoro Banner")
+        _try_accessible_name(test_banner_btn, "Test banner")
         test_flash_btn = Gtk.Button(label="Test Title Flash")
+        _try_accessible_name(test_flash_btn, "Test title flash")
         test_sound_btn = Gtk.Button(label="Test Sound")
+        _try_accessible_name(test_sound_btn, "Test sound")
         test_idle_btn = Gtk.Button(label="Test Idle Detection")
+        _try_accessible_name(test_idle_btn, "Test idle detection")
         test_idle_hook_btn = Gtk.Button(label="Test Hypridle Hook")
+        _try_accessible_name(test_idle_hook_btn, "Test Hypridle hook")
         diagnostics_box.append(test_banner_btn)
         diagnostics_box.append(test_flash_btn)
         diagnostics_box.append(test_sound_btn)
@@ -14976,7 +15135,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         diagnostics_box.append(test_idle_hook_btn)
         diagnostics.set_child(diagnostics_box)
         diagnostics.set_expanded(False)
-        content.append(diagnostics)
+        pomo_box.append(diagnostics)
 
         def _test_banner(_btn):
             self._show_pomodoro_banner("Test banner — Pomodoro complete.")
@@ -18959,17 +19118,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if resolved_endpoint is not None:
             _add(self._probe_target_from_endpoint(str(getattr(resolved_endpoint, "endpoint", "") or "")))
 
-        try:
-            from studyplan.config import Config as _Cfg
-
-            brave_enabled = bool(getattr(_Cfg, "BRAVE_SEARCH_AI_ENABLED", False))
-            brave_endpoint = str(getattr(_Cfg, "BRAVE_SEARCH_AI_ENDPOINT", "") or "").strip()
-        except Exception:
-            brave_enabled = False
-            brave_endpoint = ""
-        if brave_enabled and brave_endpoint:
-            _add(self._probe_target_from_endpoint(brave_endpoint))
-
         for fallback_host, fallback_port in (("1.1.1.1", 443), ("8.8.8.8", 53)):
             _add((fallback_host, fallback_port))
         return targets
@@ -19361,64 +19509,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             pass
 
     def _estimate_local_llm_model_size_b(self, model_name: str) -> float | None:
-        raw = str(model_name or "").strip().lower()
-        if not raw:
-            return None
-        match = re.search(r"(?<![a-z0-9])(\d+(?:\.\d+)?)\s*(?:b|bn)(?![a-z0-9])", raw)
-        if not match:
-            return None
-        try:
-            value = float(match.group(1))
-        except Exception:
-            return None
-        if value <= 0.0:
-            return None
-        return float(value)
+        from studyplan.ai.llama_runtime import _estimate_param_b_from_name
+        val = _estimate_param_b_from_name(model_name)
+        return val if val > 0 else None
 
     def _get_ollama_ram_budget_bytes(self) -> int:
         """Return RAM budget for Ollama model selection (bytes). 0 = no filter."""
-        try:
-            env_mb = os.environ.get(OLLAMA_RAM_BUDGET_MB_ENV, "").strip()
-            if env_mb:
-                mb = int(env_mb)
-                if mb > 0:
-                    return mb * 1024 * 1024
-        except (ValueError, TypeError):
-            pass
-        try:
-            with open("/proc/meminfo", "r") as f:
-                for line in f:
-                    if line.startswith("MemAvailable:"):
-                        parts = line.split()
-                        available_kb = int(parts[1])
-                        # Use ~75% of available to leave headroom for OS and app
-                        return int(available_kb * 1024 * 0.75)
-        except (OSError, ValueError, IndexError):
-            pass
-        return 0
+        from studyplan.ai.llama_runtime import _get_ollama_ram_budget_bytes as _budget
+        return _budget()
 
-    def _estimate_local_llm_model_ram_bytes(self, model_name: str) -> int:
-        """Estimate RAM (bytes) needed to load this Ollama model. 0 = unknown (not filtered)."""
-        size_b = self._estimate_local_llm_model_size_b(model_name)
-        if size_b is None or size_b <= 0:
-            return 0
-        name = str(model_name or "").strip().lower()
-        # Bytes per param: q2 ~0.3, q3 ~0.4, q4 ~0.55, q5 ~0.75, q8/f16 ~1.0
-        if "q2" in name or "q2_k" in name:
-            bpp = 0.35
-        elif "q3" in name or "q3_k" in name:
-            bpp = 0.45
-        elif "q4" in name or "q4_0" in name or "q4_k" in name:
-            bpp = 0.58
-        elif "q5" in name or "q5_k" in name:
-            bpp = 0.75
-        elif "q6" in name or "q8" in name or "f16" in name or "fp16" in name:
-            bpp = 1.0
-        else:
-            bpp = 0.58
-        model_bytes = int(size_b * 1e9 * bpp)
-        overhead = 550_000_000  # ~550MB for runtime + KV cache
-        return model_bytes + overhead
+    def _estimate_local_llm_model_ram_bytes(self, model_name: str, num_ctx: int = 4096) -> int:
+        """Estimate RAM (bytes) needed to load this Ollama model. 0 = unknown."""
+        from studyplan.ai.llama_runtime import _estimate_model_ram_bytes
+        return _estimate_model_ram_bytes(model_name, num_ctx=max(512, int(num_ctx)))
 
     def _resolve_local_llm_default_for_purpose(
         self,
@@ -20045,6 +20148,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if preferred and preferred in candidate_models:
                     purpose_default = preferred
                     break
+        if not purpose_default and not auto_select and candidate_models:
+            try:
+                ranked = _model_ranker_pick_best(candidate_models, str(purpose or "general"))
+                if ranked:
+                    purpose_default = ranked
+            except Exception:
+                pass
         reason_codes: list[str] = []
         selected = ""
         if auto_select:
@@ -20997,7 +21107,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             should_stop_ollama = backend_name not in {
                 "gateway",
                 "llama_cpp_cloud",
-                "brave_search",
                 "cloud",
             }
             if model_name and should_stop_ollama:
@@ -21094,6 +21203,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             cooldown_fn = getattr(self, "_cloud_endpoint_on_cooldown", None)
             if callable(cooldown_fn) and cooldown_fn(resolved):
                 return False
+            cb = getattr(self, "_cloud_circuit_breaker", None)
+            if isinstance(cb, _CircuitBreaker) and not cb.allow("cloud_endpoint"):
+                return False
             endpoint = str(resolved.endpoint or "").strip()
             if not endpoint:
                 return False
@@ -21169,141 +21281,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         state.pop(self._cloud_endpoint_key(resolved), None)
 
-    def _brave_search_ai_is_candidate(self) -> bool:
-        """Return True when Brave Search AI is enabled and configured."""
-        try:
-            if not self._remote_llm_backends_allowed():
-                return False
-            from studyplan.config import Config as _Cfg
-
-            if not bool(getattr(_Cfg, "BRAVE_SEARCH_AI_ENABLED", False)):
-                return False
-            endpoint = str(getattr(_Cfg, "BRAVE_SEARCH_AI_ENDPOINT", "") or "").strip()
-            if not endpoint:
-                return False
-            parsed = urllib.parse.urlparse(endpoint)
-            scheme = str(getattr(parsed, "scheme", "") or "").strip().lower()
-            hostname = str(getattr(parsed, "hostname", "") or "").strip().lower()
-            if scheme not in {"http", "https"} or not hostname:
-                return False
-            if bool(self._is_local_or_private_host(hostname)):
-                return False
-            # Only attempt if we can discover auth headers (avoids noisy failed calls).
-            try:
-                auth = discover_llm_auth_headers(
-                    endpoint,
-                    search_paths=[
-                        str(getattr(_Cfg, "CONFIG_HOME", "") or ""),
-                        os.getcwd(),
-                    ],
-                    allow_generic_fallback=False,
-                )
-            except Exception:
-                auth = None
-            return auth is not None and bool(auth.headers)
-        except Exception:
-            return False
-
-    def _generate_via_brave_search_ai(
-        self,
-        prompt_text: str,
-        *,
-        inference_purpose: str = "tutor",
-        cancel_check: Callable[[], bool] | None = None,
-    ) -> tuple[str, str | None]:
-        """Non-streaming OpenAI-compatible request to Brave Search AI endpoint."""
-        try:
-            from studyplan.config import Config as _Cfg
-
-            endpoint = str(getattr(_Cfg, "BRAVE_SEARCH_AI_ENDPOINT", "") or "").strip()
-            if not endpoint:
-                return "", "brave_endpoint_missing"
-            model = str(getattr(_Cfg, "BRAVE_SEARCH_AI_MODEL", "") or "brave").strip() or "brave"
-            timeout_s = float(getattr(_Cfg, "BRAVE_SEARCH_AI_TIMEOUT_SECONDS", 12.0) or 12.0)
-            timeout_s = max(1.0, min(60.0, timeout_s))
-
-            if cancel_check and cancel_check():
-                return "", "cancelled"
-
-            headers: dict[str, str] = {"Content-Type": "application/json"}
-            try:
-                resolved_auth = discover_llm_auth_headers(
-                    endpoint,
-                    search_paths=[
-                        str(getattr(_Cfg, "CONFIG_HOME", "") or ""),
-                        os.getcwd(),
-                    ],
-                    allow_generic_fallback=False,
-                )
-            except Exception:
-                resolved_auth = None
-            if resolved_auth is not None:
-                headers.update(resolved_auth.headers)
-            if not any(k.lower() == "x-subscription-token" for k in headers):
-                # Without auth this will just fail; treat as "not configured" to keep UI quiet.
-                return "", "brave_auth_missing"
-
-            temp = float(getattr(_Cfg, "LLAMA_CPP_TEMPERATURE", 0.2) or 0.2)
-            top_p = float(getattr(_Cfg, "LLAMA_CPP_TOP_P", 0.95) or 0.95)
-            ctx_window = int(getattr(_Cfg, "LLAMA_CPP_CONTEXT_WINDOW", 8192) or 8192)
-            approx_prompt_tokens = max(1, len(prompt_text or "") // 4)
-            max_completion_tokens = max(96, min(1024, int(ctx_window) - approx_prompt_tokens))
-
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt_text}],
-                "temperature": float(temp),
-                "top_p": float(top_p),
-                "max_tokens": int(max_completion_tokens),
-                "stream": False,
-            }
-            body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-            req = urllib.request.Request(
-                endpoint,
-                data=body,
-                headers=headers,
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                    status = int(getattr(resp, "status", 200) or 200)
-                    raw = resp.read().decode("utf-8", "replace")
-            except urllib.error.HTTPError as exc:
-                status = int(getattr(exc, "code", 500) or 500)
-                try:
-                    raw = (exc.read() or b"").decode("utf-8", "replace")
-                except Exception:
-                    raw = ""
-                if status in {401, 403}:
-                    return "", "brave_auth_failed"
-                return "", "brave_http_error"
-            except Exception:
-                return "", "brave_unreachable"
-
-            try:
-                decoded = json.loads(raw) if str(raw or "").strip() else {}
-            except Exception:
-                return "", "brave_invalid_json"
-            if not isinstance(decoded, dict):
-                return "", "brave_invalid_json"
-            choices = decoded.get("choices")
-            if isinstance(choices, list) and choices:
-                first = choices[0]
-                if isinstance(first, dict):
-                    msg = first.get("message")
-                    if isinstance(msg, dict):
-                        content = msg.get("content")
-                        if isinstance(content, str) and content.strip():
-                            return content.strip(), None
-                    text = first.get("text")
-                    if isinstance(text, str) and text.strip():
-                        return text.strip(), None
-            if status >= 400:
-                return "", "brave_error"
-            return "", "brave_empty_output"
-        except Exception:
-            return "", "brave_error"
-
     def _generate_via_cloud_llama_cpp_endpoint(
         self,
         prompt_text: str,
@@ -21320,6 +21297,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             endpoint = str(resolved_endpoint.endpoint if resolved_endpoint is not None else "").strip()
             if not endpoint:
                 return "", "cloud_endpoint_missing"
+            cb = getattr(self, "_cloud_circuit_breaker", None)
+            if isinstance(cb, _CircuitBreaker) and not cb.allow("cloud_endpoint"):
+                return "", "cloud_circuit_open"
             cooldown_fn = getattr(self, "_cloud_endpoint_on_cooldown", None)
             if resolved_endpoint is not None and callable(cooldown_fn):
                 if cooldown_fn(resolved_endpoint):
@@ -21405,12 +21385,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     err_code = "cloud_auth_failed" if status in {401, 403} else "cloud_http_error"
                     mark_failure_fn = getattr(self, "_mark_cloud_endpoint_failure", None)
                     if resolved_endpoint is not None and callable(mark_failure_fn):
-                        mark_failure_fn(resolved_endpoint, err_code)
+                        mark_failure_fn(resolved_endpoint)
+                    cb = getattr(self, "_cloud_circuit_breaker", None)
+                    if isinstance(cb, _CircuitBreaker):
+                        cb.record_failure("cloud_endpoint")
                     return "", err_code
                 except Exception:
                     mark_failure_fn = getattr(self, "_mark_cloud_endpoint_failure", None)
                     if resolved_endpoint is not None and callable(mark_failure_fn):
                         mark_failure_fn(resolved_endpoint, "cloud_unreachable")
+                    cb = getattr(self, "_cloud_circuit_breaker", None)
+                    if isinstance(cb, _CircuitBreaker):
+                        cb.record_failure("cloud_endpoint")
                     return "", "cloud_unreachable"
 
                 try:
@@ -21426,6 +21412,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     # If the provider says "model missing", try next candidate.
                     if code in {"model_missing", "model_not_found", "not_found"}:
                         continue
+                    cb = getattr(self, "_cloud_circuit_breaker", None)
+                    if isinstance(cb, _CircuitBreaker):
+                        cb.record_failure("cloud_endpoint")
                     return "", "cloud_model_error"
 
                 # OpenAI-compatible: choices[0].message.content
@@ -21449,6 +21438,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                     clear_failure_fn = getattr(self, "_clear_cloud_endpoint_failure", None)
                                     if resolved_endpoint is not None and callable(clear_failure_fn):
                                         clear_failure_fn(resolved_endpoint)
+                                    cb = getattr(self, "_cloud_circuit_breaker", None)
+                                    if isinstance(cb, _CircuitBreaker):
+                                        cb.record_success("cloud_endpoint")
                                     return content.strip(), None
                             text = first.get("text")
                             if isinstance(text, str) and text.strip():
@@ -21463,11 +21455,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                 clear_failure_fn = getattr(self, "_clear_cloud_endpoint_failure", None)
                                 if resolved_endpoint is not None and callable(clear_failure_fn):
                                     clear_failure_fn(resolved_endpoint)
+                                cb = getattr(self, "_cloud_circuit_breaker", None)
+                                if isinstance(cb, _CircuitBreaker):
+                                    cb.record_success("cloud_endpoint")
                                 return text.strip(), None
                 return "", "cloud_empty_output"
 
             return "", "cloud_model_missing"
-        except Exception:
+        except Exception as _exc:
+            try:
+                self._log_message("cloud_endpoint_unexpected_error", f"{type(_exc).__name__}: {_exc}")
+            except Exception:
+                pass
             return "", "cloud_error"
 
     @staticmethod
@@ -21549,23 +21548,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             slot_released_with_options = True
 
         self._clear_llm_inference_attribution()
-        brave_candidate = getattr(self, "_brave_search_ai_is_candidate", None)
-        if callable(brave_candidate) and bool(brave_candidate()):
-            brave_text, brave_err = self._generate_via_brave_search_ai(
-                prompt_text,
-                inference_purpose=str(inference_purpose or "tutor"),
-                cancel_check=cancel_check,
-            )
-            if brave_err is None and str(brave_text or "").strip():
-                try:
-                    from studyplan.config import Config as _Cfg
-
-                    used_model = str(getattr(_Cfg, "BRAVE_SEARCH_AI_MODEL", "") or "brave").strip() or "brave"
-                except Exception:
-                    used_model = "brave"
-                self._note_llm_inference_attribution("brave_search", used_model)
-                _release_ollama_runtime_slot_if_held()
-                return brave_text, None
         if self._cloud_endpoint_is_candidate():
             model_candidates = StudyPlanGUI._resolve_cloud_candidate_models(
                 self,
@@ -21622,6 +21604,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     pass
             _release_ollama_runtime_slot_if_held()
             return "", f"model cooldown active ({cooldown_remaining}s)"
+        tuning: ModelRuntimeTuning | None = None
+        if apply_runtime_tuning:
+            try:
+                tuning = self._runtime_tuning_for_model(model_name, str(inference_purpose or "tutor"))
+            except Exception:
+                tuning = None
         ram_budget_reader = getattr(self, "_get_ollama_ram_budget_bytes", None)
         estimate_reader = getattr(self, "_estimate_local_llm_model_ram_bytes", None)
         ram_budget = 0
@@ -21631,8 +21619,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 ram_budget = 0
         if ram_budget > 0 and callable(estimate_reader):
+            ctx_for_est = int(tuning.num_ctx) if tuning is not None else 4096
             try:
-                estimated_ram = int(cast(Any, estimate_reader)(model_name))
+                estimated_ram = int(cast(Any, estimate_reader)(model_name, ctx_for_est))
             except Exception:
                 estimated_ram = 0
             if estimated_ram > 0 and estimated_ram > ram_budget:
@@ -21649,12 +21638,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cache_hash = getattr(self, "_ai_cache_sha1", None)
         cache_get_response = getattr(self, "_ai_cache_get_response", None)
         cache_put_response = getattr(self, "_ai_cache_put_response", None)
-        tuning: ModelRuntimeTuning | None = None
-        if apply_runtime_tuning:
-            try:
-                tuning = self._runtime_tuning_for_model(model_name, str(inference_purpose or "tutor"))
-            except Exception:
-                tuning = None
         if tuning is not None:
             ctx_value = max(512, min(8192, min(int(num_ctx), int(tuning.num_ctx))))
             temp_value = max(0.0, min(1.0, float(tuning.temperature)))
@@ -22098,6 +22081,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _syllabus_ai_llm_generate(self, prompt: str, max_tokens: int = 4096) -> str:
         """Cloud-only call for syllabus AI parsing and RAG reconfiguration."""
+        if not self._remote_llm_backends_allowed():
+            err = "Cloud LLM backends disabled: no internet connectivity."
+            try:
+                self._log_message("reconfig_cloud_model_unavailable", err)
+            except Exception:
+                pass
+            return ""
         if self._cloud_endpoint_is_candidate():
             model_candidates = self._resolve_cloud_candidate_models(
                 model="",
@@ -22112,10 +22102,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 return cloud_text
             if cloud_text:
                 return cloud_text
+            if cloud_err:
+                try:
+                    self._log_message("reconfig_cloud_endpoint_error", str(cloud_err))
+                except Exception:
+                    pass
         model, model_err = self._select_ollama_cloud_model(purpose="gap_generation")
         if model:
-            fallback, _ = self._ollama_generate_text(model, prompt, inference_purpose="gap_generation")
-            return fallback or ""
+            fallback, fallback_err = self._ollama_generate_text(model, prompt, inference_purpose="gap_generation")
+            if fallback:
+                return fallback
+            if fallback_err:
+                try:
+                    self._log_message("reconfig_cloud_model_generation_error", str(fallback_err))
+                except Exception:
+                    pass
         if str(model_err or "").strip():
             try:
                 self._log_message("reconfig_cloud_model_unavailable", str(model_err))
@@ -22172,24 +22173,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             slot_released = True
 
         self._clear_llm_inference_attribution()
-        brave_candidate = getattr(self, "_brave_search_ai_is_candidate", None)
-        if callable(brave_candidate) and bool(brave_candidate()):
-            brave_text, brave_err = self._generate_via_brave_search_ai(
-                prompt_text,
-                inference_purpose=str(inference_purpose or "tutor"),
-                cancel_check=cancel_check,
-            )
-            if brave_err is None and str(brave_text or "").strip():
-                try:
-                    from studyplan.config import Config as _Cfg
-
-                    used_model = str(getattr(_Cfg, "BRAVE_SEARCH_AI_MODEL", "") or "brave").strip() or "brave"
-                except Exception:
-                    used_model = "brave"
-                self._note_llm_inference_attribution("brave_search", used_model)
-                self._emit_text_as_chunks(brave_text, on_chunk)
-                _release_runtime_slot_once()
-                return brave_text, None
         if self._cloud_endpoint_is_candidate():
             model_candidates = StudyPlanGUI._resolve_cloud_candidate_models(
                 self,
@@ -22244,6 +22227,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     pass
             _release_runtime_slot_once()
             return "", f"model cooldown active ({cooldown_remaining}s)"
+        stream_tuning_tmp: Any = None
+        try:
+            stream_tuning_tmp = self._runtime_tuning_for_model(model_name, str(inference_purpose or "tutor"))
+        except Exception:
+            stream_tuning_tmp = None
         ram_budget_reader = getattr(self, "_get_ollama_ram_budget_bytes", None)
         estimate_reader = getattr(self, "_estimate_local_llm_model_ram_bytes", None)
         ram_budget = 0
@@ -22253,8 +22241,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             except Exception:
                 ram_budget = 0
         if ram_budget > 0 and callable(estimate_reader):
+            ctx_for_est = int(getattr(stream_tuning_tmp, "num_ctx", 4096) or 4096)
             try:
-                estimated_ram = int(cast(Any, estimate_reader)(model_name))
+                estimated_ram = int(cast(Any, estimate_reader)(model_name, ctx_for_est))
             except Exception:
                 estimated_ram = 0
             if estimated_ram > 0 and estimated_ram > ram_budget:
@@ -22266,12 +22255,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         pass
                 _release_runtime_slot_once()
                 return "", "Selected local model exceeds the configured RAM budget."
+        stream_tuning = stream_tuning_tmp
         host = self._normalize_ollama_host()
         url = f"{host}/api/generate"
-        try:
-            stream_tuning = self._runtime_tuning_for_model(model_name, str(inference_purpose or "tutor"))
-        except Exception:
-            stream_tuning = None
         ctx_stream = int(DEFAULT_OLLAMA_CONTEXT)
         temp_stream = 0.2
         top_stream: float | None = None
@@ -50009,6 +49995,41 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
+    @staticmethod
+    def _rounded_top_bar_rect(ctx: Any, x: float, y: float, w: float, h: float, r: float = 4.0) -> None:
+        if h <= 0 or w <= 0:
+            return
+        r = min(float(r), w / 2.0, h)
+        ctx.move_to(x, y + h)
+        ctx.line_to(x, y + r)
+        ctx.arc(x + r, y + r, r, math.pi, 3.0 * math.pi / 2.0)
+        ctx.line_to(x + w - r, y)
+        ctx.arc(x + w - r, y + r, r, 3.0 * math.pi / 2.0, 0.0)
+        ctx.line_to(x + w, y + h)
+        ctx.close_path()
+
+    @classmethod
+    def _chart_gradient_fill_under_line(
+        cls, ctx: Any, points: list[tuple[float, float]], bottom: float, hex_color: str, top_alpha: float = 0.15
+    ) -> None:
+        if len(points) < 2:
+            return
+        r, g, b = cls._chart_rgb(hex_color)
+        y_top = min(p[1] for p in points)
+        gradient = cairo.LinearGradient(0.0, y_top, 0.0, bottom)
+        gradient.add_color_stop_rgba(0.0, r, g, b, max(0.0, min(1.0, float(top_alpha))))
+        gradient.add_color_stop_rgba(1.0, r, g, b, 0.0)
+        try:
+            ctx.set_source(gradient)
+        except Exception:
+            ctx.set_source_rgba(r, g, b, 0.08)
+        ctx.move_to(points[0][0], bottom)
+        for px, py in points:
+            ctx.line_to(px, py)
+        ctx.line_to(points[-1][0], bottom)
+        ctx.close_path()
+        ctx.fill()
+
     @classmethod
     def _build_gtk_chart_widget(
         self,  # pyright: ignore[reportSelfClsParameterName]
@@ -50079,10 +50100,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     x = left + idx * slot + (slot - bar_w) / 2.0
                     y = bottom - ((bottom - top) * v / 100.0)
                     self._chart_set_color(ctx, color, 0.85)
-                    ctx.rectangle(x, y, bar_w, bottom - y)
+                    self._rounded_top_bar_rect(ctx, x, y, bar_w, bottom - y, r=5.0)
                     ctx.fill()
                     self._chart_set_color(ctx, color, 1.0)
-                    ctx.rectangle(x, y, bar_w, max(2.0, bottom - y))
+                    self._rounded_top_bar_rect(ctx, x, y, bar_w, max(2.0, bottom - y), r=5.0)
                     ctx.set_line_width(0.5)
                     ctx.stroke()
                     self._chart_set_color(ctx, text)
@@ -50105,7 +50126,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     return
                 gap = 0.04
                 ctx.set_line_width(line_w)
-                ctx.set_line_cap(2)
+                ctx.set_line_cap(0)
+                r_bg, g_bg, b_bg = self._chart_rgb(str(style.get("grid", "#42526f")))
+                ctx.set_line_width(1.5)
+                ctx.set_source_rgba(r_bg, g_bg, b_bg, 0.25)
+                ctx.arc(cx, cy, radius + line_w / 2.0 + 1.5, 0, 2.0 * math.pi)
+                ctx.stroke()
+                ctx.set_line_width(line_w)
+                ctx.set_line_cap(0)
                 start = -math.pi / 2.0
                 for idx, value in enumerate(values):
                     frac = value / total
@@ -50123,10 +50151,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         self._chart_set_color(ctx, text)
                         self._chart_text(ctx, f"{frac * 100:.0f}%", pct_x - 10, pct_y + 4, size=9, weight=1)
                     start += seg_angle
+                ctx.set_source_rgba(r_bg, g_bg, b_bg, 0.15)
+                ctx.arc(cx, cy, radius - line_w / 2.0 - 1.5, 0, 2.0 * math.pi)
+                ctx.fill()
                 self._chart_set_color(ctx, text)
-                self._chart_text(ctx, str(chart_spec.get("center", int(total))), cx - 16, cy - 3, size=15, weight=1)
+                self._chart_text(ctx, str(chart_spec.get("center", int(total))), cx - 20, cy - 5, size=18, weight=1)
                 self._chart_set_color(ctx, muted)
-                self._chart_text(ctx, str(chart_spec.get("subcenter", "cards")), cx - 16, cy + 16, size=9)
+                self._chart_text(ctx, str(chart_spec.get("subcenter", "cards")), cx - 18, cy + 16, size=10)
                 note = str(chart_spec.get("note", "") or "")
                 if note:
                     self._chart_set_color(ctx, str(style.get("accent_c", "#f6c453")))
@@ -50135,11 +50166,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 x = 20.0
                 for idx, label in enumerate(labels[:3]):
                     self._chart_set_color(ctx, colors[idx % len(colors)] if colors else text)
-                    ctx.arc(x + 5, legend_y - 5, 5, 0, 2.0 * math.pi)
+                    ctx.arc(x + 6, legend_y - 6, 6, 0, 2.0 * math.pi)
                     ctx.fill()
+                    self._chart_set_color(ctx, text)
+                    ctx.set_line_width(1.0)
+                    ctx.arc(x + 6, legend_y - 6, 6, 0, 2.0 * math.pi)
+                    ctx.set_source_rgba(r_bg, g_bg, b_bg, 0.3)
+                    ctx.stroke()
                     self._chart_set_color(ctx, muted)
-                    self._chart_text(ctx, label[:20], x + 14, legend_y, size=8)
-                    x += min(128.0, max(78.0, len(label) * 5.6))
+                    self._chart_text(ctx, label[:22], x + 16, legend_y, size=8)
+                    x += min(132.0, max(82.0, len(label) * 5.8))
 
             elif kind == "line":
                 series = list(chart_spec.get("series", []) or [])
@@ -50161,13 +50197,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         y = bottom - ((bottom - top) * max(0.0, min(ymax, val)) / ymax)
                         points.append((x, y))
                     if len(points) >= 2:
-                        self._chart_set_color(ctx, color, 0.10)
-                        ctx.move_to(points[0][0], bottom)
-                        for px, py in points:
-                            ctx.line_to(px, py)
-                        ctx.line_to(points[-1][0], bottom)
-                        ctx.close_path()
-                        ctx.fill()
+                        self._chart_gradient_fill_under_line(ctx, points, bottom, color, top_alpha=0.14)
                         self._chart_set_color(ctx, color)
                         ctx.set_line_width(2.0 if sidx == 0 else 1.5)
                         ctx.move_to(points[0][0], points[0][1])
@@ -50208,17 +50238,44 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         x = start_x + sidx * bar_w
                         y = bottom - ((bottom - top) * v / 100.0)
                         self._chart_set_color(ctx, color, 0.85)
-                        ctx.rectangle(x, y, max(1.0, bar_w - 1.0), bottom - y)
+                        self._rounded_top_bar_rect(ctx, x, y, max(1.0, bar_w - 1.0), bottom - y, r=3.0)
                         ctx.fill()
                         if v >= 8:
                             self._chart_set_color(ctx, text)
                             self._chart_text(ctx, f"{v:.0f}", x + bar_w / 2.0 - 6, max(top + 6, y - 5), size=7)
-                    label_text = str(row.get("label", ""))[:14]
-                    self._chart_set_color(ctx, muted)
-                    self._chart_text(ctx, label_text, right - 116, top + 14 + (sidx * 14), size=8)
-                    self._chart_set_color(ctx, str(row.get("color", text)), 0.7)
-                    ctx.rectangle(right - 120, top + 11 + (sidx * 14), 6, 6)
+                # --- Series legend with background box ---
+                if series:
+                    legend_swatch = 8
+                    legend_entry_h = 16
+                    legend_pad = 5
+                    legend_count = len(series)
+                    legend_x0 = right - 128
+                    legend_y0 = top + 9
+                    legend_w = 120
+                    legend_h = legend_count * legend_entry_h + legend_pad * 2
+                    legend_bg = str(style.get("legend_bg", "#202633"))
+                    self._chart_set_color(ctx, legend_bg, 0.93)
+                    ctx.rectangle(legend_x0, legend_y0, legend_w, legend_h)
                     ctx.fill()
+                    self._chart_set_color(ctx, grid, 0.35)
+                    ctx.set_line_width(0.5)
+                    ctx.rectangle(legend_x0, legend_y0, legend_w, legend_h)
+                    ctx.stroke()
+                    for sidx, row in enumerate(series):
+                        color = str(row.get("color", text))
+                        label_text = str(row.get("label", ""))[:14]
+                        swatch_x = legend_x0 + legend_pad
+                        swatch_y = legend_y0 + legend_pad + (sidx * legend_entry_h)
+                        self._chart_set_color(ctx, color, 0.85)
+                        ctx.rectangle(swatch_x, swatch_y, legend_swatch, legend_swatch)
+                        ctx.fill()
+                        self._chart_set_color(ctx, muted)
+                        self._chart_text(
+                            ctx, label_text,
+                            swatch_x + legend_swatch + 4,
+                            swatch_y + 1,
+                            size=8,
+                        )
                 self._chart_set_color(ctx, muted)
                 for idx, label in enumerate(labels):
                     x = left + idx * group_w + 2
