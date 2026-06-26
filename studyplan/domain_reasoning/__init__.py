@@ -39,6 +39,26 @@ from studyplan.domain_reasoning.reasoning_engine import (
     reason_question,
 )
 
+from studyplan.domain_reasoning.formula_registry import (
+    declare_concept,
+    declare_formula,
+    declare_formula_chain,
+)
+
+from studyplan.domain_reasoning.concept_types import (
+    RuleChainTemplate,
+    RuleChainStep,
+    Rule,
+    RuleChainConfig,
+    LookupTemplate,
+    LookupRule,
+    LookupConfig,
+    ClassificationTemplate,
+    ClassificationNode,
+    Branch,
+    ClassificationConfig,
+)
+
 __all__ = [
     "ConceptMetadata",
     "ConceptTemplate",
@@ -58,4 +78,18 @@ __all__ = [
     "reason_question",
     "merge_concept_results",
     "format_error_summary",
+    "declare_concept",
+    "declare_formula",
+    "declare_formula_chain",
+    "RuleChainTemplate",
+    "RuleChainStep",
+    "Rule",
+    "RuleChainConfig",
+    "LookupTemplate",
+    "LookupRule",
+    "LookupConfig",
+    "ClassificationTemplate",
+    "ClassificationNode",
+    "Branch",
+    "ClassificationConfig",
 ]

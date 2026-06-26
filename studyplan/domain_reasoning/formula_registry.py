@@ -35,26 +35,48 @@ from typing import Any, Callable
 
 ParamKind = str  # "value" | "percent" | "list"
 
+# Concept type literals
+CONCEPT_TYPE_EXPRESSION = "expression"
+CONCEPT_TYPE_RULE_CHAIN = "rule_chain"
+CONCEPT_TYPE_LOOKUP = "lookup"
+CONCEPT_TYPE_CLASSIFICATION = "classification"
+
+_CONCEPT_TYPES = frozenset({
+    CONCEPT_TYPE_EXPRESSION,
+    CONCEPT_TYPE_RULE_CHAIN,
+    CONCEPT_TYPE_LOOKUP,
+    CONCEPT_TYPE_CLASSIFICATION,
+})
+
 
 @dataclass
 class FormulaDecl:
-    """Complete declaration for one formula concept.
+    """Complete declaration for one domain concept.
 
     All fields except ``concept_id`` can be auto-generated; the module-level
-    ``declare_formula()`` helper fills them in.
+    ``declare_formula()`` / ``declare_concept()`` helpers fill them in.
+
+    ``concept_type`` distinguishes expression-based formulas from rule
+    chains, lookups, and classification trees.  Fields beyond the common
+    ones are type-specific.
     """
     concept_id: str
-    formula_name: str                    # e.g. "mirr" (concept_id without "fm.")
-    solver_fn: Callable[..., float]      # callable that takes named params → float
-    candidate_fn: Callable[..., list[dict[str, Any]]]  # nums → param-candidate list
-    compiled_patterns: list[re.Pattern]  # detection regexes (compiled)
-    template: Any                         # single-step or custom ConceptTemplate
-    expression: str | None               # None if a hand-written solver was provided
-    param_names: tuple[str, ...]
-    param_kinds: tuple[ParamKind, ...]
-    label: str
-    output_slot: str
-    priority: int
+    concept_type: str = CONCEPT_TYPE_EXPRESSION
+
+    # -- Expression-specific fields --
+    formula_name: str = ""               # e.g. "mirr" (concept_id without "fm.")
+    solver_fn: Callable[..., float] | None = None
+    candidate_fn: Callable[..., list[dict[str, Any]]] | None = None
+    compiled_patterns: list[re.Pattern] | None = None
+    template: Any = None                 # ConceptTemplate instance
+    expression: str | None = None        # None if hand-written solver
+    param_names: tuple[str, ...] = ()
+    param_kinds: tuple[ParamKind, ...] = ()
+
+    # -- Common metadata --
+    label: str = ""
+    output_slot: str = ""
+    priority: int = 0
     diagnostic_tags: tuple[str, ...] = ()
     dependencies: tuple[str, ...] = ()
     centrality: float = 0.5
@@ -557,6 +579,121 @@ class ChainTemplate:
 _last_priority: int = 1000
 
 
+def declare_concept(
+    concept_id: str,
+    *,
+    concept_type: str = CONCEPT_TYPE_EXPRESSION,
+    # -- Expression fields (type="expression") --
+    expression: str | None = None,
+    solver_fn: Callable[..., float] | None = None,
+    # -- Rule chain / Lookup / Classification config (type !="expression") --
+    concept_config: Any = None,
+    # -- Shared fields --
+    patterns: list[str] | None = None,
+    param_names: list[str] | tuple[str, ...] | None = None,
+    param_kinds: list[ParamKind] | tuple[ParamKind, ...] | None = None,
+    label: str = "",
+    output_slot: str | None = None,
+    diagnostic_tags: list[str] | tuple[str, ...] | None = None,
+    dependencies: list[str] | tuple[str, ...] | None = None,
+    centrality: float = 0.5,
+    chapter_refs: list[str] | tuple[str, ...] | None = None,
+    structure_types: list[str] | tuple[str, ...] | None = None,
+    custom_candidate_fn: Callable[..., list[dict[str, Any]]] | None = None,
+    multi_step_template: Any | None = None,
+) -> FormulaDecl:
+    """Declare a domain concept.
+
+    This is the unified entry point for all concept types.  It dispatches
+    to the appropriate type-specific builder based on ``concept_type``.
+
+    ``concept_type`` must be one of ``"expression"``, ``"rule_chain"``,
+    ``"lookup"``, or ``"classification"``.
+
+    For ``type="expression"``, the parameters ``expression``, ``solver_fn``,
+    ``param_names``, ``param_kinds`` have the same meaning as in the
+    existing ``declare_formula()``.
+
+    For other types, ``concept_config`` carries the type-specific
+    configuration dataclass (``RuleChainConfig``, ``LookupConfig``,
+    ``ClassificationConfig``).
+
+    Returns the registered ``FormulaDecl``.
+    """
+    if concept_type not in _CONCEPT_TYPES:
+        raise ValueError(f"Unknown concept_type '{concept_type}'. "
+                         f"Must be one of: {', '.join(sorted(_CONCEPT_TYPES))}")
+
+    if concept_type == CONCEPT_TYPE_EXPRESSION:
+        return _declare_expression_concept(
+            concept_id=concept_id,
+            expression=expression,
+            solver_fn=solver_fn,
+            patterns=patterns,
+            param_names=param_names,
+            param_kinds=param_kinds,
+            label=label,
+            output_slot=output_slot,
+            diagnostic_tags=diagnostic_tags,
+            dependencies=dependencies,
+            centrality=centrality,
+            chapter_refs=chapter_refs,
+            structure_types=structure_types,
+            custom_candidate_fn=custom_candidate_fn,
+            multi_step_template=multi_step_template,
+        )
+
+    if concept_type == CONCEPT_TYPE_RULE_CHAIN:
+        return _declare_rule_chain_concept(
+            concept_id=concept_id,
+            config=concept_config,
+            patterns=patterns,
+            label=label,
+            output_slot=output_slot,
+            diagnostic_tags=diagnostic_tags,
+            dependencies=dependencies,
+            centrality=centrality,
+            chapter_refs=chapter_refs,
+            structure_types=structure_types,
+        )
+
+    if concept_type == CONCEPT_TYPE_LOOKUP:
+        return _declare_lookup_concept(
+            concept_id=concept_id,
+            config=concept_config,
+            patterns=patterns,
+            label=label,
+            output_slot=output_slot,
+            diagnostic_tags=diagnostic_tags,
+            dependencies=dependencies,
+            centrality=centrality,
+            chapter_refs=chapter_refs,
+            structure_types=structure_types,
+        )
+
+    if concept_type == CONCEPT_TYPE_CLASSIFICATION:
+        return _declare_classification_concept(
+            concept_id=concept_id,
+            config=concept_config,
+            patterns=patterns,
+            label=label,
+            output_slot=output_slot,
+            diagnostic_tags=diagnostic_tags,
+            dependencies=dependencies,
+            centrality=centrality,
+            chapter_refs=chapter_refs,
+            structure_types=structure_types,
+        )
+
+    # Should not be reached
+    raise ValueError(f"Unhandled concept type: {concept_type}")
+
+
+# ---------------------------------------------------------------------------
+# declare_formula — backward-compatible alias
+# ---------------------------------------------------------------------------
+
+
 def declare_formula(
     concept_id: str,
     *,
@@ -575,52 +712,55 @@ def declare_formula(
     custom_candidate_fn: Callable[..., list[dict[str, Any]]] | None = None,
     multi_step_template: Any | None = None,
 ) -> FormulaDecl:
-    """Declare a formula concept.
+    """Declare an expression-based formula concept.
 
-    Auto-generates solver, candidate extractor, detection patterns, and
-    template — no other wiring needed.  Existing hand-written solvers can be
-    passed via ``solver_fn`` to wrap them in the same infrastructure.
-
-    Parameters
-    ----------
-    concept_id : str
-        Unique identifier (e.g. ``"fm.pe_ratio"``).
-    expression : str, optional
-        Math expression with variable names.  Mutually exclusive with
-        ``solver_fn``.  Example: ``"market_price / eps"``.
-    solver_fn : callable, optional
-        Existing hand-written solver function.  Mutually exclusive with
-        ``expression``.
-    patterns : list[str], optional
-        Regex patterns for question-text detection.  If omitted, no detection
-        (concept is only reachable via explicit template_ref).
-    param_names : list[str], optional
-        Parameter names in order (used for candidate generation).  Required
-        when ``expression`` or ``custom_candidate_fn`` is provided.  When
-        ``solver_fn`` is used and no ``custom_candidate_fn``, defaults to
-        ``inspect.signature(solver_fn).parameters``.
-    param_kinds : list[ParamKind], optional
-        ``"value"`` or ``"percent"`` per param.  Defaults to all ``"value"``.
-    label : str
-        Human-readable name.  Defaults to concept_id.
-    output_slot : str, optional
-        Slot name for dependency resolution.  Defaults to formula name (e.g.
-        ``"pe_ratio"`` for ``"fm.pe_ratio"``).
-    diagnostic_tags : list[str], optional
-        Error classification tags.
-    dependencies : list[str], optional
-        Concept IDs this depends on.
-    centrality : float
-        Syllabus centrality 0-1.
-    chapter_refs : list[str], optional
-        Syllabus chapter references.
-    structure_types : list[str], optional
-        Structure type groups to appear in.
-    custom_candidate_fn : callable, optional
-        Override auto-generated candidate function.
-    multi_step_template : Any, optional
-        Override auto-generated single-step template with a hand-written one.
+    Backward-compatible alias for ``declare_concept(type="expression")``.
+    See ``declare_concept()`` for full documentation.
     """
+    return declare_concept(
+        concept_id,
+        concept_type=CONCEPT_TYPE_EXPRESSION,
+        expression=expression,
+        solver_fn=solver_fn,
+        patterns=patterns,
+        param_names=param_names,
+        param_kinds=param_kinds,
+        label=label,
+        output_slot=output_slot,
+        diagnostic_tags=diagnostic_tags,
+        dependencies=dependencies,
+        centrality=centrality,
+        chapter_refs=chapter_refs,
+        structure_types=structure_types,
+        custom_candidate_fn=custom_candidate_fn,
+        multi_step_template=multi_step_template,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Internal: type-specific declaration builders
+# ---------------------------------------------------------------------------
+
+
+def _declare_expression_concept(
+    concept_id: str,
+    *,
+    expression: str | None = None,
+    solver_fn: Callable[..., float] | None = None,
+    patterns: list[str] | None = None,
+    param_names: list[str] | tuple[str, ...] | None = None,
+    param_kinds: list[ParamKind] | tuple[ParamKind, ...] | None = None,
+    label: str = "",
+    output_slot: str | None = None,
+    diagnostic_tags: list[str] | tuple[str, ...] | None = None,
+    dependencies: list[str] | tuple[str, ...] | None = None,
+    centrality: float = 0.5,
+    chapter_refs: list[str] | tuple[str, ...] | None = None,
+    structure_types: list[str] | tuple[str, ...] | None = None,
+    custom_candidate_fn: Callable[..., list[dict[str, Any]]] | None = None,
+    multi_step_template: Any | None = None,
+) -> FormulaDecl:
+    """Build and register an expression-type concept."""
     global _last_priority
     _last_priority += 1
     priority = _last_priority
@@ -662,7 +802,8 @@ def declare_formula(
     if multi_step_template:
         template = multi_step_template
     else:
-        template = ExpressionTemplate(concept_id, solver_fn, expression)
+        from studyplan.domain_reasoning.concept_types.expression_concept import make_expression_template
+        template = make_expression_template(concept_id, expression, pnames)
 
     # -- Metadata defaults --
     slot = output_slot or formula_name
@@ -674,6 +815,7 @@ def declare_formula(
 
     decl = FormulaDecl(
         concept_id=concept_id,
+        concept_type=CONCEPT_TYPE_EXPRESSION,
         formula_name=formula_name,
         solver_fn=solver_fn,
         candidate_fn=candidate_fn,
@@ -683,6 +825,177 @@ def declare_formula(
         param_names=pnames,
         param_kinds=pkinds,
         label=lbl,
+        output_slot=slot,
+        priority=priority,
+        diagnostic_tags=tags,
+        dependencies=deps,
+        centrality=centrality,
+        chapter_refs=chaps,
+        structure_types=stypes,
+    )
+    _registry[concept_id] = decl
+    return decl
+
+
+def _declare_rule_chain_concept(
+    concept_id: str,
+    *,
+    config: Any,
+    patterns: list[str] | None = None,
+    label: str = "",
+    output_slot: str | None = None,
+    diagnostic_tags: list[str] | tuple[str, ...] | None = None,
+    dependencies: list[str] | tuple[str, ...] | None = None,
+    centrality: float = 0.5,
+    chapter_refs: list[str] | tuple[str, ...] | None = None,
+    structure_types: list[str] | tuple[str, ...] | None = None,
+) -> FormulaDecl:
+    """Build and register a rule-chain concept."""
+    global _last_priority
+    _last_priority += 1
+    priority = _last_priority
+
+    label = label or concept_id
+
+    from studyplan.domain_reasoning.concept_types.rule_concept import (
+        make_rule_template,
+        _make_rule_chain_candidate_fn,
+    )
+
+    template = make_rule_template(concept_id, config)
+    candidate_fn = _make_rule_chain_candidate_fn(config.steps, template)
+
+    compiled_patterns: list[re.Pattern] = []
+    if patterns:
+        compiled_patterns = [re.compile(p, re.IGNORECASE) for p in patterns]
+
+    slot = output_slot or config.output_slot
+    tags = tuple(diagnostic_tags or ())
+    deps = tuple(dependencies or ())
+    chaps = tuple(chapter_refs or ())
+    stypes = tuple(structure_types or ())
+
+    decl = FormulaDecl(
+        concept_id=concept_id,
+        concept_type=CONCEPT_TYPE_RULE_CHAIN,
+        formula_name=concept_id.split(".", 1)[-1] if "." in concept_id else concept_id,
+        template=template,
+        compiled_patterns=compiled_patterns,
+        label=label,
+        output_slot=slot,
+        priority=priority,
+        diagnostic_tags=tags,
+        dependencies=deps,
+        centrality=centrality,
+        chapter_refs=chaps,
+        structure_types=stypes,
+    )
+    _registry[concept_id] = decl
+    return decl
+
+
+def _declare_lookup_concept(
+    concept_id: str,
+    *,
+    config: Any,
+    patterns: list[str] | None = None,
+    label: str = "",
+    output_slot: str | None = None,
+    diagnostic_tags: list[str] | tuple[str, ...] | None = None,
+    dependencies: list[str] | tuple[str, ...] | None = None,
+    centrality: float = 0.5,
+    chapter_refs: list[str] | tuple[str, ...] | None = None,
+    structure_types: list[str] | tuple[str, ...] | None = None,
+) -> FormulaDecl:
+    """Build and register a lookup concept."""
+    global _last_priority
+    _last_priority += 1
+    priority = _last_priority
+
+    label = label or concept_id
+
+    from studyplan.domain_reasoning.concept_types.lookup_concept import (
+        make_lookup_template,
+        _make_lookup_candidate_fn,
+    )
+
+    template = make_lookup_template(concept_id, config)
+    candidate_fn = _make_lookup_candidate_fn(config)
+
+    compiled_patterns: list[re.Pattern] = []
+    if patterns:
+        compiled_patterns = [re.compile(p, re.IGNORECASE) for p in patterns]
+
+    slot = output_slot or config.output_slot
+    tags = tuple(diagnostic_tags or ())
+    deps = tuple(dependencies or ())
+    chaps = tuple(chapter_refs or ())
+    stypes = tuple(structure_types or ())
+
+    decl = FormulaDecl(
+        concept_id=concept_id,
+        concept_type=CONCEPT_TYPE_LOOKUP,
+        formula_name=concept_id.split(".", 1)[-1] if "." in concept_id else concept_id,
+        template=template,
+        compiled_patterns=compiled_patterns,
+        label=label,
+        output_slot=slot,
+        priority=priority,
+        diagnostic_tags=tags,
+        dependencies=deps,
+        centrality=centrality,
+        chapter_refs=chaps,
+        structure_types=stypes,
+    )
+    _registry[concept_id] = decl
+    return decl
+
+
+def _declare_classification_concept(
+    concept_id: str,
+    *,
+    config: Any,
+    patterns: list[str] | None = None,
+    label: str = "",
+    output_slot: str | None = None,
+    diagnostic_tags: list[str] | tuple[str, ...] | None = None,
+    dependencies: list[str] | tuple[str, ...] | None = None,
+    centrality: float = 0.5,
+    chapter_refs: list[str] | tuple[str, ...] | None = None,
+    structure_types: list[str] | tuple[str, ...] | None = None,
+) -> FormulaDecl:
+    """Build and register a classification concept."""
+    global _last_priority
+    _last_priority += 1
+    priority = _last_priority
+
+    label = label or concept_id
+
+    from studyplan.domain_reasoning.concept_types.classification_concept import (
+        make_classification_template,
+        _make_classification_candidate_fn,
+    )
+
+    template = make_classification_template(concept_id, config)
+    candidate_fn = _make_classification_candidate_fn(config)
+
+    compiled_patterns: list[re.Pattern] = []
+    if patterns:
+        compiled_patterns = [re.compile(p, re.IGNORECASE) for p in patterns]
+
+    slot = output_slot or config.output_slot
+    tags = tuple(diagnostic_tags or ())
+    deps = tuple(dependencies or ())
+    chaps = tuple(chapter_refs or ())
+    stypes = tuple(structure_types or ())
+
+    decl = FormulaDecl(
+        concept_id=concept_id,
+        concept_type=CONCEPT_TYPE_CLASSIFICATION,
+        formula_name=concept_id.split(".", 1)[-1] if "." in concept_id else concept_id,
+        template=template,
+        compiled_patterns=compiled_patterns,
+        label=label,
         output_slot=slot,
         priority=priority,
         diagnostic_tags=tags,
@@ -801,6 +1114,7 @@ def declare_formula_chain(
 
     decl = FormulaDecl(
         concept_id=concept_id,
+        concept_type=CONCEPT_TYPE_EXPRESSION,
         formula_name=formula_name,
         solver_fn=_chain_solver,
         candidate_fn=candidate_fn,
@@ -827,10 +1141,12 @@ def declare_formula_chain(
 # ---------------------------------------------------------------------------
 
 def build_solver_dict(base: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return ``formula_name → solver_fn`` for all registered formulas."""
+    """Return ``formula_name → solver_fn`` for all expression-type formulas."""
     result = dict(base or {})
     for cid, decl in _registry.items():
-        if decl.formula_name not in result:
+        if decl.concept_type != CONCEPT_TYPE_EXPRESSION:
+            continue
+        if decl.formula_name not in result and decl.solver_fn is not None:
             result[decl.formula_name] = decl.solver_fn
     return result
 
@@ -839,7 +1155,7 @@ def build_candidate_dict(base: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return ``formula_name → candidate_fn`` for all registered formulas."""
     result = dict(base or {})
     for cid, decl in _registry.items():
-        if decl.formula_name not in result:
+        if decl.formula_name not in result and decl.candidate_fn is not None:
             result[decl.formula_name] = decl.candidate_fn
     return result
 

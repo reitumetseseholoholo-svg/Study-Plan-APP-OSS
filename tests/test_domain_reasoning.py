@@ -2,6 +2,8 @@
 
 import math
 
+import pytest
+
 from studyplan.domain_reasoning import (
     ConceptMetadata, ConceptTemplate, FormulaTemplate,
     StepEvaluation, ConceptEvaluation, QuestionDiagnostic,
@@ -710,3 +712,724 @@ class TestDeclareFormulaAPIDetails:
     def test_declare_chain_requires_slot_expression(self):
         with pytest.raises(Exception):
             declare_formula_chain("fm.bad_chain", steps=[{}])
+
+
+# ===================================================================
+# Rule chain concept tests
+# ===================================================================
+
+class TestRuleChainTemplate:
+    """Tests for the ``RuleChainTemplate`` class.
+
+    Covers solve(), evaluate_steps(), classify_errors(), and edge
+    cases including NaN, missing inputs, large values, and complex
+    boolean conditions.
+    """
+
+    def make_income_tax_template(self):
+        """Helper: build a realistic income tax rule chain."""
+        from studyplan.domain_reasoning.concept_types.rule_concept import (
+            RuleChainTemplate, RuleChainStep, Rule,
+        )
+        return RuleChainTemplate("tx.test_income_tax", steps=[
+            RuleChainStep(
+                slot="taxable_income",
+                rules=[
+                    Rule(condition="gross_income <= 12570", value=0),
+                    Rule(condition="gross_income > 12570", value="gross_income - 12570"),
+                ],
+                description="Compute taxable income",
+                param_names=("gross_income",),
+            ),
+            RuleChainStep(
+                slot="tax_liability",
+                rules=[
+                    Rule(condition="taxable_income <= 50270", value="taxable_income * 0.20"),
+                    Rule(condition=True, value="50270 * 0.20 + (taxable_income - 50270) * 0.40"),
+                ],
+                description="Compute tax liability",
+            ),
+        ])
+
+    def make_allowance_taper_template(self):
+        """Helper: personal allowance taper with multiple bands."""
+        from studyplan.domain_reasoning.concept_types.rule_concept import (
+            RuleChainTemplate, RuleChainStep, Rule,
+        )
+        return RuleChainTemplate("tx.test_allowance_taper", steps=[
+            RuleChainStep(
+                slot="adjusted_income",
+                rules=[
+                    Rule(condition=True, value="net_income"),
+                ],
+                param_names=("net_income",),
+            ),
+            RuleChainStep(
+                slot="personal_allowance",
+                rules=[
+                    Rule(condition="adjusted_income <= 100000", value=12570),
+                    Rule(
+                        condition="adjusted_income > 100000 and adjusted_income <= 125140",
+                        value="12570 - (adjusted_income - 100000) / 2",
+                    ),
+                    Rule(condition="adjusted_income > 125140", value=0),
+                ],
+            ),
+        ])
+
+    # ------------------------------------------------------------------
+    # solve()
+    # ------------------------------------------------------------------
+
+    def test_basic_rate_tax(self):
+        t = self.make_income_tax_template()
+        r = t.solve({"gross_income": 50000})
+        assert not r["is_nan"]
+        assert abs(r["result"] - 7486.0) < 0.01
+        assert len(r["steps"]) == 2
+
+    def test_tax_below_allowance(self):
+        t = self.make_income_tax_template()
+        r = t.solve({"gross_income": 10000})
+        assert r["result"] == 0.0
+        assert len(r["steps"]) == 2
+
+    def test_higher_rate_tax(self):
+        t = self.make_income_tax_template()
+        r = t.solve({"gross_income": 150000})
+        expected = 50270 * 0.20 + (150000 - 12570 - 50270) * 0.40
+        assert abs(r["result"] - expected) < 0.01
+
+    def test_tax_at_band_boundary(self):
+        t = self.make_income_tax_template()
+        r = t.solve({"gross_income": 12570})
+        assert r["result"] == 0.0
+
+    def test_tax_just_above_basic_band(self):
+        t = self.make_income_tax_template()
+        r = t.solve({"gross_income": 12570 + 50270 + 1})
+        expected = 50270 * 0.20 + 1 * 0.40
+        assert abs(r["result"] - expected) < 0.01
+
+    def test_step_outputs_flow_to_downstream(self):
+        t = self.make_income_tax_template()
+        r = t.solve({"gross_income": 50000})
+        steps = r["steps"]
+        assert steps[0]["step_id"] == "taxable_income"
+        assert abs(steps[0]["value"] - 37430) < 0.01
+        assert steps[1]["step_id"] == "tax_liability"
+        assert abs(steps[1]["value"] - 7486) < 0.01
+
+    def test_matched_condition_tracked(self):
+        t = self.make_income_tax_template()
+        r = t.solve({"gross_income": 50000})
+        assert "gross_income > 12570" in r["steps"][0].get("matched_condition", "")
+
+    def test_personal_allowance_taper(self):
+        t = self.make_allowance_taper_template()
+        r = t.solve({"net_income": 110000})
+        expected = 12570 - (110000 - 100000) / 2
+        assert abs(r["result"] - expected) < 0.01
+
+    def test_allowance_fully_phased_out(self):
+        t = self.make_allowance_taper_template()
+        r = t.solve({"net_income": 130000})
+        assert r["result"] == 0.0
+
+    def test_allowance_full_at_below_100k(self):
+        t = self.make_allowance_taper_template()
+        r = t.solve({"net_income": 90000})
+        assert r["result"] == 12570
+
+    # ------------------------------------------------------------------
+    # solve() edge cases
+    # ------------------------------------------------------------------
+
+    def test_missing_input_returns_default(self):
+        from studyplan.domain_reasoning.concept_types.rule_concept import (
+            RuleChainTemplate, RuleChainStep, Rule,
+        )
+        t = RuleChainTemplate("tx.test_missing", steps=[
+            RuleChainStep(
+                slot="result",
+                rules=[Rule(condition="x > 0", value="x * 2")],
+                param_names=("x",),
+            ),
+        ])
+        r = t.solve({"y": 10})
+        # No rule matches (x missing, condition can't evaluate), defaults to 0.0
+        assert r["result"] == 0.0
+
+    def test_zero_division_is_caught(self):
+        from studyplan.domain_reasoning.concept_types.rule_concept import (
+            RuleChainTemplate, RuleChainStep, Rule,
+        )
+        t = RuleChainTemplate("tx.test_div_zero", steps=[
+            RuleChainStep(
+                slot="result",
+                rules=[
+                    Rule(condition="x > 0", value="1 / x"),
+                    Rule(condition=True, value=999),
+                ],
+                param_names=("x",),
+            ),
+        ])
+        r = t.solve({"x": 0})
+        assert r["result"] == 999  # falls to catch-all
+
+    def test_no_catch_all_rule_defaults_to_zero(self):
+        from studyplan.domain_reasoning.concept_types.rule_concept import (
+            RuleChainTemplate, RuleChainStep, Rule,
+        )
+        t = RuleChainTemplate("tx.test_no_default", steps=[
+            RuleChainStep(
+                slot="result",
+                rules=[Rule(condition="x > 100", value=1)],
+                param_names=("x",),
+            ),
+        ])
+        r = t.solve({"x": 50})
+        assert r["result"] == 0.0
+
+    def test_non_numeric_inputs_get_default(self):
+        t = self.make_income_tax_template()
+        r = t.solve({"gross_income": "not_a_number"})
+        # Non-numeric inputs are filtered out; rules default to 0.0
+        assert r["result"] == 0.0
+
+    # ------------------------------------------------------------------
+    # evaluate_steps()
+    # ------------------------------------------------------------------
+
+    def test_evaluate_steps_all_correct(self):
+        t = self.make_income_tax_template()
+        truth = t.solve({"gross_income": 50000})
+        learner = [
+            {"step_id": "taxable_income", "value": 37430},
+            {"step_id": "tax_liability", "value": 7486},
+        ]
+        ev = t.evaluate_steps(learner, truth)
+        assert all(e["match"] for e in ev)
+        assert len(ev) == 2
+
+    def test_evaluate_steps_partial_match(self):
+        t = self.make_income_tax_template()
+        truth = t.solve({"gross_income": 50000})
+        learner = [
+            {"step_id": "taxable_income", "value": 37430},
+            {"step_id": "tax_liability", "value": 10000},
+        ]
+        ev = t.evaluate_steps(learner, truth)
+        assert ev[0]["match"]
+        assert not ev[1]["match"]
+
+    def test_evaluate_steps_empty_learner_returns_empty(self):
+        t = self.make_income_tax_template()
+        truth = t.solve({"gross_income": 50000})
+        assert t.evaluate_steps([], truth) == []
+        assert t.evaluate_steps(None, truth) == []
+
+    def test_evaluate_steps_empty_truth_returns_empty(self):
+        t = self.make_income_tax_template()
+        learner = [{"step_id": "a", "value": 1}]
+        assert t.evaluate_steps(learner, {}) == []
+        assert t.evaluate_steps(learner, None) == []
+
+    # ------------------------------------------------------------------
+    # classify_errors()
+    # ------------------------------------------------------------------
+
+    def test_classify_errors_on_wrong_answer(self):
+        t = self.make_income_tax_template()
+        truth = t.solve({"gross_income": 50000})
+        learner = [
+            {"step_id": "taxable_income", "value": 50000},
+            {"step_id": "tax_liability", "value": 10000},
+        ]
+        tags = t.classify_errors(learner, truth)
+        assert len(tags) > 0
+        assert any("mismatch" in tag for tag in tags)
+
+    def test_classify_errors_on_correct_answer(self):
+        t = self.make_income_tax_template()
+        truth = t.solve({"gross_income": 50000})
+        learner = [
+            {"step_id": "taxable_income", "value": 37430},
+            {"step_id": "tax_liability", "value": 7486},
+        ]
+        tags = t.classify_errors(learner, truth)
+        assert len(tags) == 0
+
+    def test_classify_errors_empty_inputs(self):
+        t = self.make_income_tax_template()
+        assert t.classify_errors([], None) == []
+        assert t.classify_errors(None, {}) == []
+
+    def test_classify_errors_on_missing_step_value(self):
+        t = self.make_income_tax_template()
+        truth = t.solve({"gross_income": 50000})
+        learner = [{"step_id": "taxable_income", "value": None}]
+        tags = t.classify_errors(learner, truth)
+        assert any("missing" in tag for tag in tags)
+
+
+class TestRuleChainEvaluator:
+    """Tests for the rule chain expression evaluator used internally."""
+
+    def test_comparison_operators(self):
+        from studyplan.domain_reasoning.concept_types.rule_concept import _eval_rule_expression
+        env = {"x": 10.0, "y": 20.0}
+        assert _eval_rule_expression("x <= y", env) == 1.0
+        assert _eval_rule_expression("x >= y", env) == 0.0
+        assert _eval_rule_expression("x < y", env) == 1.0
+        assert _eval_rule_expression("x > y", env) == 0.0
+        assert _eval_rule_expression("x == y", env) == 0.0
+        assert _eval_rule_expression("x != y", env) == 1.0
+
+    def test_boolean_operators(self):
+        from studyplan.domain_reasoning.concept_types.rule_concept import _eval_rule_expression
+        env = {"a": 1.0, "b": 0.0}
+        assert _eval_rule_expression("a and b", env) == 0.0
+        assert _eval_rule_expression("a or b", env) == 1.0
+        assert _eval_rule_expression("not b", env) == 1.0
+
+    def test_compound_boolean(self):
+        from studyplan.domain_reasoning.concept_types.rule_concept import _eval_rule_expression
+        env = {"x": 5.0}
+        assert _eval_rule_expression("x > 0 and x <= 10", env) == 1.0
+        assert _eval_rule_expression("x > 10 or x < 0", env) == 0.0
+
+    def test_arithmetic_expressions(self):
+        from studyplan.domain_reasoning.concept_types.rule_concept import _eval_rule_expression
+        env = {"a": 10.0, "b": 3.0}
+        assert _eval_rule_expression("a + b", env) == 13.0
+        assert _eval_rule_expression("a - b", env) == 7.0
+        assert _eval_rule_expression("a * b", env) == 30.0
+        assert _eval_rule_expression("a / b", env) == pytest.approx(3.333, rel=1e-3)
+        assert _eval_rule_expression("a ** 2", env) == 100.0
+
+    def test_max_min_functions(self):
+        from studyplan.domain_reasoning.concept_types.rule_concept import _eval_rule_expression
+        env = {"a": 10.0, "b": 20.0}
+        assert _eval_rule_expression("max(a, b)", env) == 20.0
+        assert _eval_rule_expression("min(a, b)", env) == 10.0
+        assert _eval_rule_expression("abs(a - b)", env) == 10.0
+
+    def test_unsafe_call_rejected(self):
+        from studyplan.domain_reasoning.concept_types.rule_concept import _eval_rule_expression
+        import pytest
+        with pytest.raises((ValueError, NameError)):
+            _eval_rule_expression("__import__('os')", {})
+
+    def test_undefined_variable(self):
+        from studyplan.domain_reasoning.concept_types.rule_concept import _eval_rule_expression
+        import pytest
+        with pytest.raises(NameError):
+            _eval_rule_expression("undefined_var > 10", {})
+
+    def test_invalid_syntax(self):
+        from studyplan.domain_reasoning.concept_types.rule_concept import _eval_rule_expression
+        import pytest
+        with pytest.raises(ValueError):
+            _eval_rule_expression("x @@@ y", {})
+
+    def test_ternary_expression(self):
+        from studyplan.domain_reasoning.concept_types.rule_concept import _eval_rule_expression
+        env = {"x": 5.0}
+        assert _eval_rule_expression("1 if x > 0 else 0", env) == 1.0
+        assert _eval_rule_expression("1 if x < 0 else 0", env) == 0.0
+
+
+# ===================================================================
+# Lookup concept tests
+# ===================================================================
+
+class TestLookupTemplate:
+    """Tests for the ``LookupTemplate`` class."""
+
+    def make_vat_template(self):
+        from studyplan.domain_reasoning.concept_types.lookup_concept import (
+            LookupTemplate, LookupConfig, LookupRule,
+        )
+        return LookupTemplate("tx.test_vat", LookupConfig(
+            table={"standard": 0.20, "reduced": 0.05, "zero": 0.0, "exempt": None},
+            rules=[
+                LookupRule(condition="goods_type == 1", output_key="standard"),
+                LookupRule(condition="goods_type == 2", output_key="reduced"),
+                LookupRule(condition="goods_type == 3", output_key="zero"),
+            ],
+            default_key="standard",
+            output_slot="vat_result",
+        ))
+
+    def test_direct_match(self):
+        t = self.make_vat_template()
+        r = t.solve({"goods_type": 1.0})
+        assert r["result"] == 0.20
+        assert r.get("lookup_key") == "standard"
+
+    def test_another_match(self):
+        t = self.make_vat_template()
+        r = t.solve({"goods_type": 2.0})
+        assert r["result"] == 0.05
+        assert r.get("lookup_key") == "reduced"
+
+    def test_default_key_when_no_rule_matches(self):
+        t = self.make_vat_template()
+        r = t.solve({"goods_type": 99.0})
+        assert r["result"] == 0.20
+        assert r.get("lookup_key") == "standard"
+
+    def test_none_value_in_table(self):
+        t = self.make_vat_template()
+        # goods_type=3 matches the "zero" rule → table lookup is 0.0
+        r = t.solve({"goods_type": 3.0})
+        assert r["result"] == 0.0
+        assert not r["is_nan"]
+
+    def test_key_not_in_table(self):
+        from studyplan.domain_reasoning.concept_types.lookup_concept import (
+            LookupTemplate, LookupConfig, LookupRule,
+        )
+        t = LookupTemplate("tx.test_bad_key", LookupConfig(
+            table={"a": 1.0},
+            rules=[LookupRule(condition="x == 1", output_key="nonexistent")],
+            default_key="also_missing",
+        ))
+        r = t.solve({"x": 1.0})
+        assert r["is_nan"]
+
+    def test_evaluate_steps(self):
+        t = self.make_vat_template()
+        truth = t.solve({"goods_type": 1.0})
+        learner = [{"step_id": "vat_result", "value": 0.20}]
+        ev = t.evaluate_steps(learner, truth)
+        assert ev[0]["match"]
+
+    def test_evaluate_steps_mismatch(self):
+        t = self.make_vat_template()
+        truth = t.solve({"goods_type": 1.0})
+        learner = [{"step_id": "vat_result", "value": 0.05}]
+        ev = t.evaluate_steps(learner, truth)
+        assert not ev[0]["match"]
+
+    def test_classify_errors_match(self):
+        t = self.make_vat_template()
+        truth = t.solve({"goods_type": 1.0})
+        learner = [{"step_id": "vat_result", "value": 0.20}]
+        assert t.classify_errors(learner, truth) == []
+
+    def test_classify_errors_mismatch(self):
+        t = self.make_vat_template()
+        truth = t.solve({"goods_type": 1.0})
+        learner = [{"step_id": "vat_result", "value": 0.05}]
+        tags = t.classify_errors(learner, truth)
+        assert len(tags) > 0
+
+    def test_match_by_second_rule_when_first_fails(self):
+        from studyplan.domain_reasoning.concept_types.lookup_concept import (
+            LookupTemplate, LookupConfig, LookupRule,
+        )
+        t = LookupTemplate("tx.test_fallback", LookupConfig(
+            table={"a": 10, "b": 20},
+            rules=[
+                LookupRule(condition="x > 100", output_key="a"),
+                LookupRule(condition="x > 0", output_key="b"),
+            ],
+            default_key="a",
+        ))
+        r = t.solve({"x": 50})
+        assert r["result"] == 20
+        assert r.get("lookup_key") == "b"
+
+
+# ===================================================================
+# Classification concept tests
+# ===================================================================
+
+class TestClassificationTemplate:
+    """Tests for the ``ClassificationTemplate`` class."""
+
+    def make_entity_template(self):
+        from studyplan.domain_reasoning.concept_types.classification_concept import (
+            ClassificationTemplate, ClassificationConfig,
+            ClassificationNode, Branch,
+        )
+        return ClassificationTemplate("tx.test_entity", ClassificationConfig(
+            tree=ClassificationNode(
+                question="Is the entity incorporated?",
+                branches=[
+                    Branch(condition="incorp == 1", result="limited_company"),
+                    Branch(condition=True, children=[
+                        Branch(condition="partnership == 1", result="partnership"),
+                        Branch(condition=True, result="sole_trader"),
+                    ]),
+                ],
+            ),
+            output_slot="entity_result",
+        ))
+
+    def test_incorporated(self):
+        t = self.make_entity_template()
+        r = t.solve({"incorp": 1.0})
+        assert r["result"] == "limited_company"
+        assert not r["is_nan"]
+
+    def test_partnership(self):
+        t = self.make_entity_template()
+        r = t.solve({"incorp": 0.0, "partnership": 1.0})
+        assert r["result"] == "partnership"
+
+    def test_sole_trader(self):
+        t = self.make_entity_template()
+        r = t.solve({"incorp": 0.0, "partnership": 0.0})
+        assert r["result"] == "sole_trader"
+
+    def test_classification_path(self):
+        t = self.make_entity_template()
+        r = t.solve({"incorp": 0.0, "partnership": 1.0})
+        path = r.get("classification_path", [])
+        assert len(path) == 1
+        assert "incorporated" in path[0].lower()
+
+    def test_result_is_not_nan(self):
+        t = self.make_entity_template()
+        r = t.solve({"incorp": 1.0})
+        assert not r["is_nan"]
+
+    def test_empty_inputs(self):
+        t = self.make_entity_template()
+        r = t.solve({})
+        assert r["result"] == "sole_trader"  # falls to sole_trader
+
+    def test_evaluate_steps_correct(self):
+        t = self.make_entity_template()
+        truth = t.solve({"incorp": 1.0})
+        learner = [{"step_id": "entity_result", "value": "limited_company"}]
+        ev = t.evaluate_steps(learner, truth)
+        assert ev[0]["match"]
+
+    def test_evaluate_steps_wrong(self):
+        t = self.make_entity_template()
+        truth = t.solve({"incorp": 1.0})
+        learner = [{"step_id": "entity_result", "value": "partnership"}]
+        ev = t.evaluate_steps(learner, truth)
+        assert not ev[0]["match"]
+
+    def test_classify_errors_correct(self):
+        t = self.make_entity_template()
+        truth = t.solve({"incorp": 1.0})
+        learner = [{"step_id": "entity_result", "value": "limited_company"}]
+        assert t.classify_errors(learner, truth) == []
+
+    def test_classify_errors_wrong(self):
+        t = self.make_entity_template()
+        truth = t.solve({"incorp": 1.0})
+        learner = [{"step_id": "entity_result", "value": "sole_trader"}]
+        tags = t.classify_errors(learner, truth)
+        assert len(tags) > 0
+
+    def test_decision_tree_trace_contains_questions(self):
+        t = self.make_entity_template()
+        r = t.solve({"incorp": 1.0})
+        steps = r["steps"]
+        assert len(steps) >= 2  # decision node + result
+        assert steps[0]["step_id"] == "decision"
+        assert steps[-1]["step_id"] == "entity_result"
+
+
+class TestClassificationDeepTree:
+    """More complex tree shapes."""
+
+    def test_three_level_tree(self):
+        from studyplan.domain_reasoning.concept_types.classification_concept import (
+            ClassificationTemplate, ClassificationConfig,
+            ClassificationNode, Branch,
+        )
+        t = ClassificationTemplate("tx.test_deep", ClassificationConfig(
+            tree=ClassificationNode(
+                question="Level 1: A or B?",
+                branches=[
+                    Branch(condition="l1 == 1", children=[
+                        Branch(condition="l2 == 1", result="A1"),
+                        Branch(condition=True, result="A2"),
+                    ]),
+                    Branch(condition=True, children=[
+                        Branch(condition="l2 == 1", result="B1"),
+                        Branch(condition=True, children=[
+                            Branch(condition="l3 == 1", result="B2a"),
+                            Branch(condition=True, result="B2b"),
+                        ]),
+                    ]),
+                ],
+            ),
+        ))
+        assert t.solve({"l1": 1.0, "l2": 1.0})["result"] == "A1"
+        assert t.solve({"l1": 1.0, "l2": 0.0})["result"] == "A2"
+        assert t.solve({"l1": 0.0, "l2": 1.0})["result"] == "B1"
+        assert t.solve({"l1": 0.0, "l2": 0.0, "l3": 1.0})["result"] == "B2a"
+        assert t.solve({"l1": 0.0, "l2": 0.0, "l3": 0.0})["result"] == "B2b"
+
+
+class TestClassificationEmptyLeaves:
+    """Edge cases: empty or missing leaf nodes."""
+
+    def test_node_with_no_branches_returns_none(self):
+        from studyplan.domain_reasoning.concept_types.classification_concept import (
+            ClassificationTemplate, ClassificationConfig,
+            ClassificationNode,
+        )
+        t = ClassificationTemplate("tx.test_empty", ClassificationConfig(
+            tree=ClassificationNode(question="No branches?", branches=[]),
+        ))
+        r = t.solve({"x": 1.0})
+        assert r["is_nan"]
+
+
+# ===================================================================
+# declare_concept() API tests
+# ===================================================================
+
+class TestDeclareConceptAPI:
+    """Tests for the unified ``declare_concept()`` entry point."""
+
+    def test_expression_type_works(self):
+        from studyplan.domain_reasoning.formula_registry import declare_concept, get_registry
+        d = declare_concept("test.dc_expr",
+            concept_type="expression",
+            expression="a * b",
+            param_names=["a", "b"],
+            param_kinds=["value", "value"],
+            label="Multiply",
+            output_slot="product",
+        )
+        assert d.concept_type == "expression"
+        assert d.template is not None
+        assert "test.dc_expr" in get_registry()
+
+    def test_rule_chain_type_works(self):
+        from studyplan.domain_reasoning.formula_registry import declare_concept, get_registry
+        from studyplan.domain_reasoning.concept_types.rule_concept import (
+            RuleChainConfig, RuleChainStep, Rule,
+        )
+        d = declare_concept("test.dc_rule",
+            concept_type="rule_chain",
+            concept_config=RuleChainConfig(
+                steps=[RuleChainStep(
+                    slot="out",
+                    rules=[Rule(condition="x > 0", value="x * 2")],
+                    param_names=("x",),
+                )],
+                output_slot="out",
+            ),
+            label="Rule test",
+        )
+        assert d.concept_type == "rule_chain"
+        r = d.template.solve({"x": 5.0})
+        assert r["result"] == 10.0
+
+    def test_lookup_type_works(self):
+        from studyplan.domain_reasoning.formula_registry import declare_concept, get_registry
+        from studyplan.domain_reasoning.concept_types.lookup_concept import (
+            LookupConfig, LookupRule,
+        )
+        d = declare_concept("test.dc_lookup",
+            concept_type="lookup",
+            concept_config=LookupConfig(
+                table={"a": 1, "b": 2},
+                rules=[LookupRule(condition="x == 1", output_key="a")],
+                default_key="b",
+            ),
+            label="Lookup test",
+        )
+        assert d.concept_type == "lookup"
+        r = d.template.solve({"x": 1.0})
+        assert r["result"] == 1
+
+    def test_classification_type_works(self):
+        from studyplan.domain_reasoning.formula_registry import declare_concept, get_registry
+        from studyplan.domain_reasoning.concept_types.classification_concept import (
+            ClassificationConfig, ClassificationNode, Branch,
+        )
+        d = declare_concept("test.dc_class",
+            concept_type="classification",
+            concept_config=ClassificationConfig(
+                tree=ClassificationNode(
+                    question="Q?",
+                    branches=[Branch(condition="x == 1", result="yes"),
+                              Branch(condition=True, result="no")],
+                ),
+            ),
+            label="Class test",
+        )
+        assert d.concept_type == "classification"
+        r = d.template.solve({"x": 1.0})
+        assert r["result"] == "yes"
+
+    def test_invalid_type_raises(self):
+        from studyplan.domain_reasoning.formula_registry import declare_concept
+        import pytest
+        with pytest.raises(ValueError, match="Unknown concept_type"):
+            declare_concept("test.bad",
+                concept_type="nonexistent",
+                concept_config=None,
+            )
+
+    def test_expression_defaults_to_expression_type(self):
+        from studyplan.domain_reasoning.formula_registry import declare_concept, get_registry
+        d = declare_concept("test.dc_default",
+            expression="x + 1",
+            param_names=["x"],
+        )
+        assert d.concept_type == "expression"
+
+
+class TestDeclareConceptConvenience:
+    """Tests that declare_formula() and declare_formula_chain() still work."""
+
+    def test_declare_formula_backward_compat(self):
+        from studyplan.domain_reasoning.formula_registry import declare_formula, get_registry
+        d = declare_formula("test.dc_back",
+            expression="x * 2",
+            param_names=["x"],
+            param_kinds=["value"],
+            output_slot="backward",
+        )
+        assert d.concept_type == "expression"
+        r = d.template.solve({"x": 5.0})
+        assert r["result"] == 10.0
+
+    def test_declare_formula_chain_backward_compat(self):
+        from studyplan.domain_reasoning.formula_registry import (
+            declare_formula_chain, get_registry,
+        )
+        d = declare_formula_chain("test.dc_chain_back",
+            steps=[dict(slot="s1", expression="x + y",
+                        param_names=["x", "y"])],
+            output_slot="s1",
+        )
+        assert d.concept_type == "expression"
+        r = d.template.solve({"x": 1.0, "y": 2.0})
+        assert r["result"] == 3.0
+
+    def test_patterns_registered_correctly(self):
+        from studyplan.domain_reasoning.formula_registry import (
+            declare_concept, get_registry,
+        )
+        from studyplan.domain_reasoning.concept_types.rule_concept import (
+            RuleChainConfig, RuleChainStep, Rule,
+        )
+        d = declare_concept("test.dc_pattern",
+            concept_type="rule_chain",
+            concept_config=RuleChainConfig(
+                steps=[RuleChainStep(
+                    slot="o",
+                    rules=[Rule(condition="x > 0", value=1)],
+                )],
+                output_slot="o",
+            ),
+            patterns=[r"\btest pattern\b"],
+            label="Pattern test",
+        )
+        assert len(d.compiled_patterns) == 1
+        assert d.compiled_patterns[0].search("this is a test pattern!")

@@ -95,6 +95,35 @@ When any command (smoke test, compile check, etc.) fails:
 - `_ellipsize_labels(container, max_chars=N)` walks all direct labels — safe to call on dashboard with `max_chars=200`. Avoid calling on study room wrapping labels (redundant).
 - No CSS hyphenation; word-wrap via `Pango.WrapMode.WORD_CHAR`.
 
+### GTK4 nuances & common pitfalls
+
+This app targets **GTK4** (PyGObject / `python3-gi`). GTK3 APIs will fail at runtime. Key differences:
+
+| GTK3 pattern (WRONG) | GTK4 pattern (RIGHT) | Why |
+|---|---|---|
+| `.set_keep_above(True)` | **Removed.** Use compositor (Hyprland) window rules instead. | GTK4 dropped `GtkWindow.set_keep_above()` |
+| `.set_accessible_name("...")` | **Not available** on `Gtk.Button` / most widgets before GTK 4.10. Use `.set_tooltip_text()` or wrap in `try/except AttributeError`. | GTK4 accessiblity uses `Gtk.Accessible` interface |
+| `dialog.run()` (modal) | `dialog.present()` + `dialog.connect("response", handler)` | `run()` blocks the main loop; removed in GTK4 |
+| `.set_wrap(True)` on `Gtk.CheckButton` | `try: btn.set_wrap(True); except AttributeError: pass` | Only available in GTK ≥ 4.10 |
+| `.set_height_request(N)` | `.set_size_request(-1, N)` | `set_height_request()` doesn't exist in GTK4 |
+| `.set_width_request(N)` | `.set_size_request(N, -1)` | Same as above |
+| `.set_pulse_step(0.1)` | **Removed.** Omit or wrap in try/except. | GTK4 progress bar removed pulse_step |
+| `Gtk.Alignment` | **Removed.** Use `.set_halign()` / `.set_valign()` on the widget itself. | Alignment is a property, not a container |
+| `Gtk.Table` | Use `Gtk.Grid` with `.attach()` | Table was removed in GTK4 |
+| `Gtk.EventBox` | **Removed.** Add `Gtk.GestureClick` directly to the widget. | EventBox was a GTK3 workaround |
+| `Gtk.ComboBoxText` | Prefer `Gtk.DropDown` | ComboBoxText is deprecated |
+| `Gtk.ListStore` + `Gtk.TreeView` | Prefer `Gtk.ColumnView` + `Gtk.NoSelection`/`Gtk.SingleSelection` | TreeView is legacy (still works but no new features) |
+| `.modify_bg()`, `.modify_fg()` | **Removed.** Use CSS classes + `Gtk.CssProvider`. | All styling is CSS-only in GTK4 |
+| `Gtk.Box(homogeneous, spacing)` positional args | Use keyword: `Gtk.Box(orientation=..., spacing=N)` | Positional args deprecated |
+| `.set_resize_mode()` / `.set_fixed_height_mode()` | **Removed.** No replacement needed. | These were GTK3 internal hints |
+| `Gtk.HBox` / `Gtk.VBox` | Use `Gtk.Box(orientation=HORIZONTAL / VERTICAL)` | HBox/VBox removed in GTK4 |
+| `Gtk.Arrow` | **Removed.** Use Unicode arrows or CSS. | No replacement |
+| `Gtk.Menu` / `Gtk.MenuBar` (old API) | Use `Gtk.PopoverMenu` + `Gtk.MenuButton`. The app's menu bar uses the legacy `Gtk.MenuBar` path (still works but frozen). | New code should use popovers |
+| `widget.get_allocation().width` | Use `widget.get_width()` / `widget.get_allocated_width()` | `get_allocation()` not available |
+| `Gtk.Window.set_wmclass()` | **Removed.** No replacement. | WM class detection is compositor-level |
+
+**Defensive pattern**: When in doubt about a GTK3-ism, wrap in `try/except AttributeError: pass` and leave a comment. The app supports PyGObject 3.46+ (GTK 4.6–4.14), so some 4.10+ APIs may be unavailable.
+
 ### Block duration & timer routing
 
 - Block minutes: read from `next_block.get("minutes", 25)` — schedule is authoritative, not hardcoded.
