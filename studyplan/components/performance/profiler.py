@@ -118,9 +118,23 @@ class PerformanceProfiler:
             return {"status": "disabled", "message": "Performance profiling is disabled"}
         
         with self._lock:
+            total_ops = 0
+            successful_ops = 0
+            failed_ops = 0
+            for mlist in self._metrics.values():
+                for m in mlist:
+                    total_ops += 1
+                    if m.success:
+                        successful_ops += 1
+                    else:
+                        failed_ops += 1
+
             report = {
                 "status": "active",
                 "timestamp": time.time(),
+                "total_operations": total_ops,
+                "successful_operations": successful_ops,
+                "failed_operations": failed_ops,
                 "operations": {},
                 "alerts": list(self._alerts),
                 "recommendations": []

@@ -1,6 +1,6 @@
-# Study Assistant
+# Study Workbench
 
-A focused, AI-powered study coach built for professional exam preparation. It combines Pomodoro discipline, FSRS-4.5 spaced-repetition quizzes, a data-driven coaching engine, and a local/cloud AI tutor with an autonomous AI Cockpit that can run your session for you. It adapts to whichever module you load.
+A self-contained desktop study environment for professional exam preparation — combining an adaptive coach, AI tutor, spaced repetition, focus timer, and semi-autonomous autopilot into a single GTK4 application. Module-agnostic: load any professional syllabus and the entire system adapts to it.
 
 ## Documentation map
 
@@ -36,8 +36,10 @@ STUDYPLAN_MODULE_TITLE="Your Module" python studyplan_app.py
 | `STUDYPLAN_LLM_GATEWAY_API_KEY` | — | API key for the cloud gateway (also settable as `OPENROUTER_API_KEY`). |
 | `STUDYPLAN_LLM_GATEWAY_MODEL` | — | Primary model ID for the cloud gateway, e.g. `openrouter/google/gemini-2.5-flash`. |
 | `STUDYPLAN_LLM_GATEWAY_MODEL_FALLBACKS` | — | Comma-separated fallback model IDs. |
+| `STUDYPLAN_CLOUD_CONNECTIVITY_POLICY` | `auto` | Connectivity mode: `auto` (probe), `force_online`, `force_offline`. Can also be set via Preferences → Cloud AI. |
 | `STUDYPLAN_MODULE_TITLE` | — | Override the active module title at startup. |
 | `STUDYPLAN_SMOKE_MODE` | `0` | Set to `1` to run the dialog smoke test (headless CI). |
+| `STUDYPLAN_CONFIG_HOME` | `~/.config/studyplan` | Override the config directory (useful for isolated smoke/soak runs). |
 
 ## Requirements
 
@@ -60,8 +62,8 @@ pytest
 pytest tests/ studyplan/testing/
 ```
 
-- **Default (no GTK):** **~1,328 test items** run. GTK-free tests live in `tests/` (minus `tests/test_studyplan_app_ollama.py`) and `studyplan/testing/`. The GTK-dependent `tests/test_studyplan_app_ollama.py` (~322 test functions, parametrized to ~348 items) requires `studyplan_app` and thus PyGObject/GTK4.
-- **Full suite:** install the optional extra and system GTK4 so the ollama app tests run: `pip install -e ".[test-full]"` (or `poetry install -E test-full`). Requires system libraries (e.g. Debian/Ubuntu: `apt install python3-gi gir1.2-gtk-4.0`). Then `pytest` runs **~1,676 test items** (1675 passed + 1 skipped).
+- **Default (no GTK):** **~1,448 test items** run. GTK-free tests live in `tests/` (minus `tests/test_studyplan_app_ollama.py`) and `studyplan/testing/`. The GTK-dependent `tests/test_studyplan_app_ollama.py` (~322 test functions, parametrized to ~348 items) requires `studyplan_app` and thus PyGObject/GTK4.
+- **Full suite:** install the optional extra and system GTK4 so the ollama app tests run: `pip install -e ".[test-full]"` (or `poetry install -E test-full`). Requires system libraries (e.g. Debian/Ubuntu: `apt install python3-gi gir1.2-gtk-4.0`). Then `pytest` runs **~1,796 test items** (1,795 passed + 1 skipped).
 - **Domain reasoning engine** (80 tests): `tests/test_reasoning_engine.py` (76) + `tests/test_domain_reasoning.py` (63) + `tests/test_numerical_solver.py` (81) = 220 test functions covering solver correctness, multi-path fallback, gap analysis, and weighted confidence.
 
 ### Protected no-regression flows
@@ -86,8 +88,13 @@ The primary desktop no-regression gate is `.github/workflows/linux-ci.yml`:
 
 ## Terminology
 
-- **Coach**: what to do next and mission (Coach Pick, Coach Next, Briefing, daily plan).
-- **Tutor**: in-app AI (Ollama) for explanations and practice (AI Tutor chat, Section C, practice loop). UI uses “Coach” for planning and “Tutor” for chat/practice.
+- **Workbench**: the main UI paradigm — a tabbed desktop with Dashboard, Tutor, Coach, Insights, and Settings pages. Everything lives in the workbench shell.
+- **Dashboard**: the home page showing coach briefing, charts, study snapshot, AI Cockpit status, reviews, and data health.
+- **Coach**: heuristic/AI engine that picks the next topic, sets the daily plan, and generates a readiness briefing. Runs continuously.
+- **Tutor**: interactive AI chat for explanations, practice, and Section C constructed-response problems. Uses local Ollama or cloud gateway.
+- **AI Cockpit / Autopilot**: semi-autonomous agent that can execute study actions (focus, quiz, drill, review) on a timer. Three modes: `cockpit` (full autonomy), `assist` (safe actions only), `suggest` (propose only).
+- **SRS (Spaced Repetition)**: FSRS-4.5 by default, SM-2 opt-in. Drives review scheduling, card stability, and difficulty tracking.
+- **Module**: a JSON-based config that defines chapters, syllabus outcomes, question bank, and domain adapter. The app is module-agnostic — switch modules to switch exam subjects.
 
 ## Core features
 
@@ -335,9 +342,10 @@ Strict smoke KPI thresholds:
 
 ## Files
 
-- `studyplan_app.py` — GTK4 app UI (~53,500 lines; StudyPlanGUI/StudyApp)
-- `studyplan_engine.py` — engine + data model (~14,400 lines; SRS, coach, ML, persistence)
-- `studyplan_ai_tutor.py` — AI tutor session management, RAG, prompt assembly
+- `studyplan_app.py` — GTK4 main window, all UI (~54,700 lines; StudyPlanGUI/StudyApp). Workbench shell, dashboard, quiz flow, Pomodoro, AI Cockpit, preferences.
+- `studyplan_engine.py` — data model, SRS (FSRS-4.5/SM-2), daily plan, coach urgency scoring, ML inference, syllabus parsing, semantic routing, persistence (~20,000 lines).
+- `studyplan_ai_tutor.py` — AI tutor session management, RAG retrieval, prompt assembly, streaming, response sanitization (~10,000 lines).
+- `studyplan/logging_config.py` — Enhanced logging: rotating file+JSON handlers, `CaptureAndLog` context manager, `log_on_error` decorator
 - `studyplan/` — pure-Python library: config, FSRS, contracts, coach FSM, cognitive state, AI routing
 - `studyplan/domain_reasoning/` — GTK-free domain reasoning engine: deterministic concept solver, multi-path fallback, gap analysis, weighted confidence
 - `modules/*.json` — built-in module configs (ACCA F6, F7, F8, F9) and question banks

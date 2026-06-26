@@ -2388,6 +2388,9 @@ def test_refresh_workbench_header_compact_layout_compacts_without_stacking_in_ve
         def set_label(self, value):
             self.label = str(value)
 
+        def get_label(self):
+            return self.label
+
     class _FakeRow:
         def __init__(self):
             self.orientation = None
@@ -3831,6 +3834,10 @@ def test_section_c_bank_upsert_and_reload_roundtrip(tmp_path, monkeypatch):
     dummy._save_section_c_question_bank = types.MethodType(StudyPlanGUI._save_section_c_question_bank, dummy)
     dummy._upsert_section_c_question = types.MethodType(StudyPlanGUI._upsert_section_c_question, dummy)
     dummy._get_section_c_questions = types.MethodType(StudyPlanGUI._get_section_c_questions, dummy)
+    dummy._get_section_c_questions_for_chapter = types.MethodType(
+        StudyPlanGUI._get_section_c_questions_for_chapter, dummy
+    )
+    dummy._section_c_question_bank_raw = {}
 
     def _atomic_write(path, text, mode=0o600):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -4268,6 +4275,8 @@ def test_on_quiz_confirm_uses_resolved_live_index_for_scoring():
     )
     dummy = types.SimpleNamespace(
         engine=engine,
+        _save_debounce_id=None,
+        _debounced_save=lambda: engine.save_data(),
         current_topic="Topic A",
         quiz_session={
             "indices": [0],
@@ -4771,6 +4780,12 @@ def test_open_section_c_practice_dialog_wires_generate_case_button(monkeypatch):
         def set_wrap_mode(self, _mode: object) -> None:
             return None
 
+        def set_vexpand(self, _expand: bool) -> None:
+            return None
+
+        def set_hexpand(self, _expand: bool) -> None:
+            return None
+
     class _Label(_Widget):
         def __init__(self, label: str = "", **_kwargs: object) -> None:
             super().__init__()
@@ -4781,6 +4796,12 @@ def test_open_section_c_practice_dialog_wires_generate_case_button(monkeypatch):
 
         def get_label(self) -> str:
             return self.label
+
+        def set_ellipsize(self, _mode: object) -> None:
+            return None
+
+        def set_max_width_chars(self, _n: int) -> None:
+            return None
 
     class _Button(_Widget):
         def __init__(self, label: str = "", **_kwargs: object) -> None:
@@ -4798,6 +4819,9 @@ def test_open_section_c_practice_dialog_wires_generate_case_button(monkeypatch):
 
         def set_label(self, text: str) -> None:
             self.label = str(text)
+
+        def get_label(self) -> str:
+            return self.label
 
     class _Box(_Widget):
         def __init__(self, **_kwargs: object) -> None:
@@ -4889,6 +4913,63 @@ def test_open_section_c_practice_dialog_wires_generate_case_button(monkeypatch):
         def stop(self) -> None:
             return None
 
+    class _Paned(_Widget):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__()
+            self._start_child = None
+            self._end_child = None
+
+        def set_start_child(self, child: object) -> None:
+            self._start_child = child
+
+        def set_end_child(self, child: object) -> None:
+            self._end_child = child
+
+        def set_resize_start_child(self, _val: bool) -> None:
+            return None
+
+        def set_resize_end_child(self, _val: bool) -> None:
+            return None
+
+        def set_shrink_start_child(self, _val: bool) -> None:
+            return None
+
+        def set_shrink_end_child(self, _val: bool) -> None:
+            return None
+
+        def set_position(self, _pos: int) -> None:
+            return None
+
+    class _Expander(_Widget):
+        def __init__(self, label: str = "", **kwargs: object) -> None:
+            super().__init__()
+            self._expanded = False
+            self._child = None
+            self._label = str(label)
+
+        def set_expanded(self, val: bool) -> None:
+            self._expanded = bool(val)
+
+        def get_expanded(self) -> bool:
+            return bool(self._expanded)
+
+        def set_child(self, child: object) -> None:
+            self._child = child
+
+        def get_child(self) -> object:
+            return self._child
+
+        def connect(self, signal: str, callback: object) -> int:
+            return 0
+
+    class _Image(_Widget):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__()
+
+        @staticmethod
+        def new_from_icon_name(*_args: object) -> "_Image":
+            return _Image()
+
     class _Dialog:
         def __init__(self) -> None:
             self.content = _Box()
@@ -4926,6 +5007,9 @@ def test_open_section_c_practice_dialog_wires_generate_case_button(monkeypatch):
         TextView=_TextView,
         ScrolledWindow=_ScrolledWindow,
         Spinner=_Spinner,
+        Paned=_Paned,
+        Expander=_Expander,
+        Image=_Image,
         Orientation=types.SimpleNamespace(HORIZONTAL=0, VERTICAL=1),
         Align=types.SimpleNamespace(START=0, END=1),
         WrapMode=types.SimpleNamespace(WORD_CHAR=0),
@@ -5083,6 +5167,7 @@ def test_build_dialog_smoke_steps_covers_critical_ui_dialogs():
         on_train_ml_models=lambda *_args: None,
         on_first_run_tour=lambda *_args: None,
         on_take_quiz=lambda *_args: None,
+        _smoke_check_log=lambda: None,
     )
     steps = StudyPlanGUI._build_dialog_smoke_steps(dummy)
     labels = [label for label, _func in steps]
@@ -6827,7 +6912,7 @@ def test_start_stop_core_housekeeping_timers_registers_and_cleans_sources(monkey
 
     StudyPlanGUI._start_core_housekeeping_timers(dummy)
 
-    assert [row[0] for row in timer_calls] == [60000, 4000, 2000, 7200000]
+    assert [row[0] for row in timer_calls] == [60000, 4000, 5000, 7200000]
     assert registered == [101, 102, 103, 104]
     assert int(dummy._auto_train_timer_id) == 101
     assert int(dummy._semantic_warmup_timer_id) == 102
@@ -6877,7 +6962,7 @@ def test_start_core_housekeeping_timers_skips_semantic_and_auto_train_in_smoke_m
 
     StudyPlanGUI._start_core_housekeeping_timers(dummy)
 
-    assert [row[0] for row in timer_calls] == [2000, 7200000]
+    assert [row[0] for row in timer_calls] == [5000, 7200000]
     assert registered == [201, 202]
     assert int(dummy._auto_train_timer_id) == 0
     assert int(dummy._semantic_warmup_timer_id) == 0

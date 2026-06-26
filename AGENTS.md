@@ -2,7 +2,7 @@
 
 ## Cursor Cloud specific instructions
 
-This is a Python GTK4 desktop application (Study Assistant) — a single-process desktop app, not a web service. No external databases or Docker containers are required.
+This is a Python GTK4 desktop application (Study Workbench) — a single-process desktop app, not a web service. No external databases or Docker containers are required. It is module-agnostic (load any professional syllabus) and combines SRS, coach, AI tutor, Pomodoro, and semi-autonomous autopilot into a tabbed workbench UI.
 
 ### Services overview
 
@@ -22,13 +22,163 @@ Standard commands are documented in `README.md` (Tests section) and `DEVELOPER_D
 - **Compile check**: `python -m py_compile studyplan_app.py studyplan_engine.py`
 - **Type check**: `pyright studyplan_app.py studyplan_ai_tutor.py studyplan_engine.py studyplan tests`
 - **GTK4 lint** (used by linux-ci): `python tools/gtk4_lint.py`
-- **Smoke test** (strict): `xvfb-run -a timeout 120s python studyplan_app.py --dialog-smoke-strict`
+- **Smoke test** (strict): `xvfb-run -a timeout 300s python studyplan_app.py --dialog-smoke-strict`
 - **Run the app** (headless): `xvfb-run -a python studyplan_app.py`
+
+### Troubleshooting: commands fail silently
+
+When any command (smoke test, compile check, etc.) fails:
+1. **Always check `cat ~/.config/studyplan/app.log | tail -60` first** — most startup crashes (AttributeError, import failures, GTK errors) are logged here with full traceback.
+2. **Check `cat ~/.config/studyplan/smoke_last.json | python -m json.tool`** — smoke test failures include startup_error reason, step info, and KPI thresholds.
+3. **Delete stale lock file** before re-running: `rm -f ~/.config/studyplan/app_instance.lock`
+4. **Clear stale bytecache** if source edits don't take effect: `find . -type d -name "__pycache__" -exec rm -rf {} +`
+5. **Check exit code**: `timeout` returns 124 if the command exceeded its budget (increase timeout).
+6. **Check stderr** with `2>&1` — some errors (GTK assertions, GLib warnings) only appear on stderr.
 
 ### Non-obvious caveats
 
 - **`python` must be available**: The system may only have `python3`; create a symlink with `sudo ln -sf /usr/bin/python3 /usr/bin/python` if needed.
+- **Smoke test is slow (~3.5 min)**: On this hardware the smoke test takes ~210s. Use `timeout 300s` or the `--smoke-fast` flag if available.
 - **ruff config issue**: The `pyproject.toml` `[tool.ruff]` section includes `W503` in the `ignore` list, which is not a valid ruff rule. This causes `ruff check` to fail. The `linux-ci.yml` workflow uses `python tools/gtk4_lint.py` instead of ruff.
 - **Lock file**: The app enforces single-instance via `~/.config/studyplan/app_instance.lock`. If a prior run was killed ungracefully, remove this file before re-running: `rm -f ~/.config/studyplan/app_instance.lock`.
 - **`~/.local/bin` on PATH**: pip installs dev tools to `~/.local/bin`; ensure it's on PATH (`export PATH="$HOME/.local/bin:$PATH"`).
 - **Pre-existing test failure**: `test_semantic_tfidf_assets_reused_on_repeated_queries` fails consistently — this is a pre-existing issue, not caused by environment setup.
+
+## Architecture & Key Conventions
+
+### File roles
+
+| File | Role | Key size |
+|------|------|----------|
+| `studyplan_app.py` | Main GTK UI (~54.5k lines) — all windows, panels, dialogs, dashboard, charts | ~54.5k lines |
+| `studyplan_engine.py` | Data layer — SRS, pomodoro, quiz logic, schedule, mastery | ~20k lines |
+| `studyplan_ai_tutor.py` | AI tutor — recall, evaluation, domain reasoning | ~10k lines |
+| `studyplan/domain_reasoning/` | Step matcher, evaluator, reasoning engine for Section C | ~1k lines |
+| `studyplan/ai/llama_runtime.py` | LLM orchestrator — tries Ollama → managed llama-server → cloud API | ~600 lines |
+| `studyplan/ai/llama_server.py` | llama-server subprocess lifecycle manager | ~500 lines |
+| `studyplan/ai/circuit_breaker.py` | Per-backend failure tracking with auto-reset | ~100 lines |
+| `studyplan/ai/model_selector.py` | Task-aware model ranking and filtering | ~300 lines |
+| `tools/gtk4_lint.py` | Custom lint for GTK4 patterns | — |
+
+### Dashboard rendering (`_render_dashboard` at line ~52120)
+
+- Clears and rebuilds all dashboard children **every refresh** (triggered by timer or manual refresh).
+- `chart_style` dict is defined at line ~52160 with color palette (`fig_bg`, `ax_bg`, `text`, `muted`, `grid`, `accent_a`/`b`/`c`/`d`, `legend_bg`). Two variants: dark and system-theme-aware dark.
+- Chart **caching** via `_cached_*_sig` + `_cached_*_widget` pairs prevents Cairo redraw when data unchanged. Signature is a tuple (typically the data values). If sig matches and cached widget exists, re-append the cached widget; otherwise build, cache, append.
+- **Performance helper**: `_chart_rgb_cache` dict (class-level) avoids redundant hex→RGB parsing (~80-120 saves per refresh).
+- **Local variable caching**: Engine references (`_eng`, `_chapters`, `_competence`, etc.) are cached as locals at the top of `_render_dashboard` to save ~50 attribute lookups per refresh.
+- Dashboard order: Coach briefing → Confidence Drift bar → Progress Over Time line → Per-Topic Snapshot grouped_bar → Separator → Study Snapshot stats → Weekly Summary → Plan View → Mastery Snapshot → Weak vs Strong → Reviews & Pace → Reviews Due Today → Leech Alerts → Study Hub → Data Health → Activity chart (on-demand button).
+
+### Chart system (`_build_gtk_chart_widget` at line ~50380)
+
+- **All Cairo-based** (no matplotlib). Uses `Gtk.DrawingArea` with `set_draw_func(_draw)`.
+- Canvas gets `set_size_request(min_width, height)` + `set_hexpand(True)` — charts fill container width.
+- Chart kinds: `"bar"`, `"line"`, `"grouped_bar"`, `"hbar"` (horizontal bar).
+- `"hbar"` kind (line ~50565): Takes `items: [{"label": str, "value": float, "color": str}]`. Draws horizontal bars proportional to `value/max_val`. Label on left (14px), bar from `bar_x` (86px), value text at bar end.
+- `content_height` is fixed (180-260px), width is flexible via hexpand.
+- Helper methods: `_chart_set_color(ctx, hex_str)`, `_chart_text(ctx, text, x, y, size, weight)`, `_rounded_top_bar_rect(ctx, x, y, w, h, r)`, `_chart_rgb(hex_str) -> (r,g,b)`.
+
+### On-demand chart pattern (for new charts)
+
+- Add cache vars in `__init__`: `self._cached_activity_chart_sig` and `self._cached_activity_chart_widget`.
+- In `_render_dashboard`, at the very end (before `_finalize_perf()`):
+  1. If cached chart exists → append it directly.
+  2. Otherwise → show a `Gtk.Button(label="Show ...")` with `add_css_class("flat")`.
+  3. On click: compute a data signature → if cached, use cached widget; else call `_build_*_chart(chart_style)` → store in cache → replace button with chart.
+- Wrap the entire section in `try/except Exception: pass`.
+
+### UI text conventions
+
+- **Default pattern**: `wrap=False`, `ellipsize=END`, + tooltip via `_sync_single_line_label_tooltip()`.
+- **Wrapping labels**: `wrap=True`, `ellipsize=NONE`, `allow-wrap` CSS class, `max_width_chars` only when container forces a limit. Never use `max_width_chars` for single-line labels.
+- **Coach briefing labels**: labeled with `"allow-wrap"` or `"single-line-lock"` CSS classes. `_enforce_coach_label_wrap()` sets max_width_chars=180 for wrapping labels.
+- `_ellipsize_labels(container, max_chars=N)` walks all direct labels — safe to call on dashboard with `max_chars=200`. Avoid calling on study room wrapping labels (redundant).
+- No CSS hyphenation; word-wrap via `Pango.WrapMode.WORD_CHAR`.
+
+### Block duration & timer routing
+
+- Block minutes: read from `next_block.get("minutes", 25)` — schedule is authoritative, not hardcoded.
+- Quiz block → `start_quiz_session(topic, kind="quiz")` → `_start_quiz_block_timer()` (countdown with 2min/1min notifications, nudges but does NOT auto-submit).
+- Review block → `start_quiz_session(topic, kind="review")` + countdown.
+- Recall block → block's minutes → `_prompt_recall_checkin()` → mini-quiz (3 questions).
+- Timer tick (`_quiz_block_timer_tick` at line ~44490) handles the 2min/1min/expiry notifications.
+
+### Engine deferred loading (`studyplan_engine.py` line ~3550)
+
+- `__init__` accepts `defer_data_load=True` → skips `load_data()`, model loading, `load_questions()`, `save_data()`.
+- Engine initializes with empty defaults (<50ms fast path). Public API works with defaults.
+- `_do_deferred_data_load()` called via `GLib.idle_add` from `_run_initial_refresh()`.
+- `_ensure_deferred_data_loaded()` used as guard before data-dependent operations.
+
+### Data model (key dicts accessed from `self.engine` or `self`)
+
+| Dict | Source | Structure |
+|------|--------|-----------|
+| `action_time_log` | `self` (app) | `{kind: {"seconds": float, "sessions": int}}` — kinds: pomodoro_focus, pomodoro_recall, quiz, drill, review |
+| `progress_log` | `self.engine` | `[{date, overall_mastery, total_minutes}, ...]` |
+| `srs_data` | `self.engine` | `{chapter: [{box, last_review, interval, ease}, ...]}` |
+| `pomodoro_log` | `self.engine` | `{"total_minutes": int, "by_chapter": {...}}` |
+| `competence` | `self.engine` | `{chapter: score (0-100)}` |
+| `quiz_results` | `self.engine` | `{chapter: score (0-100)}` |
+| `question_stats` | `self.engine` | `{chapter: {question_id: correct/total, ...}}` |
+| `study_hub_stats` | `self.engine` | `{"total_questions": int, "questions_taken": int, ...}` |
+
+### Important method locations
+
+| Method | Line | Purpose |
+|--------|------|---------|
+| `_render_dashboard` | ~52120 | Main dashboard rebuild |
+| `_build_gtk_chart_widget` | ~50380 | Cairo chart factory |
+| `_build_mastery_bar` | ~50640 | Segmented mastery bar |
+| `_build_activity_time_chart` | ~50605 | On-demand activity hbar |
+| `_compute_activity_chart_sig` | ~50635 | Activity chart cache sig |
+| `_on_pomodoro_start` | ~43940 | Block routing logic |
+| `_start_quiz_block_timer` | ~44490 | Quiz countdown timer |
+| `_run_initial_refresh` | ~2610 | Deferred data load trigger |
+| `_enforce_coach_label_wrap` | ~51050 | Coach label width limit |
+| `_ellipsize_labels` | ~40470 | Global ellipsize pass |
+| `_chart_set_color` | ~50380 | Cairo color setter |
+| `_chart_text` | ~50385 | Cairo text renderer |
+| `_refresh_workbench_shell_status` | ~3956 | Status bar (page • topic • model • autopilot • connectivity) |
+| `_compute_workbench_model_readiness` | ~4123 | Model readiness states (disabled → ready + cloud health) |
+| `_compute_workbench_app_health` | ~4240 | App health states (sync • offline • circuit • ready) |
+| `_has_internet_connectivity` | ~19215 | TCP-based connectivity probe (cache 30s/5s) |
+| `_cloud_connectivity_policy_mode` | ~19213 | Resolves policy: instance attr → env var → auto |
+
+### Status bar / Workbench shell
+
+Three labels refresh every 2s via `_start_workbench_status_timer()`:
+
+| Label | States | Includes |
+|-------|--------|----------|
+| `workbench_status_label` | Page • Topic • Model • AP • RAGemb • SB • **Net on/off** | Connectivity indicator |
+| `workbench_model_label` | disabled • unavailable • recovering • not_loaded • syncing • **ready** (+ cloud health) | Model source + circuit breaker state |
+| `workbench_health_label` | sync_issue • model_unavailable • recovery_mode • **offline** • circuit_open • **ready** | Internet status + circuit breaker |
+
+### LLM Pipeline (fallback chain)
+
+`LlamaRuntime.ensure_ready()` (studyplan/ai/llama_runtime.py) tries in order:
+1. **Cloud API** gateway (if enabled + circuit closed + online)
+2. **Managed llama-server** (auto-started from ranked GGUF models)
+3. **Ollama** (auto-discovered at localhost:11434)
+
+Each backend has independent failure tracking. The cloud endpoint uses a `CircuitBreaker` (threshold=3, cooldown=30s). When tripped, requests skip directly to managed llama-server.
+
+Connectivity is probed via `_has_internet_connectivity()` (TCP to 1.1.1.1:443, 8.8.8.8:53, plus cloud endpoint host). Cache: 30s online, 5s offline. Policy can be overridden via Preferences (auto/online/offline) or env var `STUDYPLAN_CLOUD_CONNECTIVITY_POLICY`.
+
+### Testing
+
+- Unit tests in `tests/`: `test_step_matcher.py` (35), `test_domain_reasoning.py` (88).
+- 1796 tests total (1 skipped pre-existing).
+- Smoke test: `xvfb-run -a timeout 120s python studyplan_app.py --dialog-smoke-strict`
+- No flaky async tests — everything runs in the main thread.
+
+### GTK patterns to follow
+
+- Cards: `Gtk.Box(orientation=VERTICAL, spacing=4)` + `add_css_class("card")` + `add_css_class("card-tight")` + optionally `"chart-card"` / `"insight-card"`.
+- Expanders: `_wrap_expander_card(title_text, child_widget, expanded=False)` — wraps content in a collapsible card.
+- Separator: `Gtk.Separator(orientation=HORIZONTAL)` + `add_css_class("rule")`.
+- Section titles: `self._ui.section_title("text")` — returns a styled `Gtk.Label`.
+- Tooltips on single-line labels: `self._sync_single_line_label_tooltip(label, full_text)`.
+- Buttons: `Gtk.Button(label="...")` + `add_css_class("flat")` + `set_halign(START)`. On-demand buttons should show at the bottom of the dashboard.
+- All GTK operations happen in the main thread. No thread safety concerns.

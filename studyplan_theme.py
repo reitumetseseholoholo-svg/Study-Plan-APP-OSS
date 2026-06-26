@@ -65,6 +65,7 @@ window.sidebar-collapsed .panel-right {
     box-shadow: 0 1px 0 alpha(@theme_fg_color, 0.10), 0 5px 16px alpha(@theme_fg_color, 0.16);
     margin-top: 6px;
     margin-bottom: 6px;
+    transition: border-color 200ms ease, box-shadow 200ms ease, background 200ms ease;
 }
 .card-tight {
     padding: 7px;
@@ -93,19 +94,19 @@ window.sidebar-collapsed .panel-right {
     box-shadow: 0 0 0 1px alpha(@theme_selected_bg_color, 0.48), 0 7px 20px alpha(@theme_selected_bg_color, 0.28);
 }
 .title {
-    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
+    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", "Symbols Nerd Font", sans-serif;
     font-weight: 760;
     font-size: 22px;
     letter-spacing: 0.2px;
 }
 .action-timer {
-    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
+    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", "Symbols Nerd Font", sans-serif;
     font-weight: 780;
     font-size: 19px;
     letter-spacing: 0.35px;
 }
 .section-title {
-    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
+    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", "Symbols Nerd Font", sans-serif;
     font-weight: 820;
     font-size: 12px;
     letter-spacing: 0.55px;
@@ -121,6 +122,7 @@ window.sidebar-collapsed .panel-right {
     padding: 4px 10px;
     margin-top: 3px;
     margin-bottom: 6px;
+    -gtk-line-limit: 1;
 }
 label.section-title {
     color: alpha(@theme_fg_color, 1.0);
@@ -208,6 +210,7 @@ label.coach-title {
     font-weight: 760;
     color: alpha(@theme_fg_color, 1.0);
     letter-spacing: 0.15px;
+    -gtk-line-limit: 1;
 }
 label.plan-title {
     color: alpha(@theme_fg_color, 1.0);
@@ -335,6 +338,7 @@ window.tile .coach-title {
     padding: 4px 10px;
     margin-top: 3px;
     margin-bottom: 6px;
+    -gtk-line-limit: 1;
 }
 label.today-focus-chip {
     font-size: 11px;
@@ -798,6 +802,7 @@ window.pomodoro-active .badges-card {
     font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.15px;
+    -gtk-line-limit: 1;
 }
 /* workspace tab buttons - VS Code tab style */
 .workspace-tabs button {
@@ -929,6 +934,25 @@ window.app-dialog-window .dialog-content {
     padding: 8px 10px;
     margin-top: 4px;
     margin-bottom: 2px;
+}
+/* Paned handle in Section C dialog */
+paned > separator {
+    min-height: 4px;
+    min-width: 4px;
+    background: alpha(@theme_fg_color, 0.06);
+    border: none;
+    margin: 2px 0;
+}
+paned > separator:hover {
+    background: alpha(@theme_selected_bg_color, 0.25);
+}
+/* concept bar - domain reasoning detection strip */
+.concept-bar {
+    background: alpha(@theme_selected_bg_color, 0.06);
+    border-left: 3px solid alpha(@theme_selected_bg_color, 0.5);
+    border-radius: 6px;
+    padding: 5px 10px;
+    margin-top: 4px;
 }
 /* status line - single-line status indicators */
 .status-line {
@@ -1134,7 +1158,7 @@ COACH_THEME_CSS = """
 window {
     background: coach_bg;
     color: coach_text;
-    font-family: "IBM Plex Sans", "JetBrains Mono NL", "Noto Sans", sans-serif;
+    font-family: "IBM Plex Sans", "JetBrains Mono NL", "Noto Sans", "Symbols Nerd Font", sans-serif;
 }
 .panel {
     background: coach_panel;
@@ -2051,6 +2075,23 @@ window.app-dialog-window .dialog-content {
     margin-top: 4px;
     margin-bottom: 2px;
 }
+paned > separator {
+    min-height: 4px;
+    min-width: 4px;
+    background: rgba(139, 175, 255, 0.08);
+    border: none;
+    margin: 2px 0;
+}
+paned > separator:hover {
+    background: rgba(139, 175, 255, 0.28);
+}
+.concept-bar {
+    background: rgba(139, 175, 255, 0.06);
+    border-left: 3px solid rgba(139, 175, 255, 0.5);
+    border-radius: 6px;
+    padding: 5px 10px;
+    margin-top: 4px;
+}
 .status-line {
     font-size: 12px;
     font-weight: 500;
@@ -2663,6 +2704,266 @@ window.study-window.compact .card {{
 window.study-window.compact .section-title {{
     font-size: 11px;
 }}
+
+/* ── Hyprland / compositor-friendly glass surface ── */
+window.study-window {{
+    background: alpha({color["bg"]}, 0.82);
+    -gtk-backdrop-filter: blur(6px);
+}}
+window.study-window .panel,
+window.study-window .card {{
+    -gtk-backdrop-filter: blur(12px);
+}}
+
+/* ── Thin rounded scrollbars ── */
+window.study-window scrollbar {{
+    -gtk-fixed-height: 8px;
+    -gtk-fixed-width: 8px;
+}}
+window.study-window scrollbar slider {{
+    min-height: 8px;
+    min-width: 8px;
+    border-radius: 4px;
+    background: alpha({color["text"]}, 0.20);
+    border: none;
+    transition: background 150ms ease;
+}}
+window.study-window scrollbar slider:hover {{
+    background: alpha({color["text"]}, 0.35);
+}}
+window.study-window scrollbar slider:active {{
+    background: alpha({color["accent"]}, 0.50);
+}}
+window.study-window scrollbar trough {{
+    background: transparent;
+    border: none;
+}}
+
+/* ── Global buttons ── */
+window.study-window button {{
+    border-radius: 8px;
+    min-height: 30px;
+    padding: 4px 14px;
+    transition: all 150ms ease;
+    border: 1px solid alpha({color["text"]}, 0.12);
+    background: alpha({color["text"]}, 0.04);
+}}
+window.study-window button:hover {{
+    background: alpha({color["text"]}, 0.10);
+    border-color: alpha({color["text"]}, 0.22);
+}}
+window.study-window button:active {{
+    background: alpha({color["accent"]}, 0.16);
+    border-color: alpha({color["accent"]}, 0.36);
+}}
+window.study-window button:checked {{
+    background: linear-gradient(180deg, alpha({color["accent"]}, 0.24), alpha({color["accent"]}, 0.14));
+    border-color: alpha({color["accent"]}, 0.52);
+    color: {color["text"]};
+}}
+window.study-window button.suggested-action {{
+    background: linear-gradient(180deg, alpha({color["accent"]}, 1.0), alpha({color["accent"]}, 0.92));
+    border-color: alpha({color["accent"]}, 0.8);
+    color: {color["bg"]};
+    font-weight: 660;
+    box-shadow: 0 1px 0 alpha({color["text"]}, 0.18),
+                0 3px 10px alpha({color["accent"]}, 0.38);
+}}
+window.study-window button.suggested-action:hover {{
+    box-shadow: 0 1px 0 alpha({color["text"]}, 0.22),
+                0 5px 16px alpha({color["accent"]}, 0.46);
+}}
+window.study-window button.flat {{
+    background: transparent;
+    border-color: transparent;
+}}
+window.study-window button.flat:hover {{
+    background: alpha({color["text"]}, 0.08);
+    border-color: transparent;
+}}
+
+/* ── Entries (text fields) ── */
+window.study-window entry {{
+    border-radius: 8px;
+    border: 1px solid alpha({color["text"]}, 0.14);
+    background: alpha({color["text"]}, 0.03);
+    min-height: 30px;
+    padding: 4px 10px;
+    caret-color: {color["accent"]};
+    transition: border-color 150ms ease, box-shadow 150ms ease;
+}}
+window.study-window entry:focus {{
+    border-color: alpha({color["accent"]}, 0.60);
+    box-shadow: 0 0 0 2px alpha({color["accent"]}, 0.18);
+    background: alpha({color["text"]}, 0.06);
+}}
+window.study-window entry:disabled {{
+    opacity: 0.45;
+}}
+
+/* ── Combo boxes ── */
+window.study-window combox {{
+    border-radius: 8px;
+    min-height: 30px;
+}}
+window.study-window combox button {{
+    border-radius: 8px;
+    min-height: 30px;
+}}
+window.study-window combox arrow {{
+    -gtk-icon-size: 10px;
+}}
+window.study-window combox dropdown {{
+    border-radius: 10px;
+    border: 1px solid alpha({color["text"]}, 0.14);
+    background: alpha({color["bg"]}, 0.96);
+    -gtk-backdrop-filter: blur(12px);
+    padding: 4px;
+}}
+window.study-window combox dropdown button {{
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    padding: 6px 10px;
+    transition: background 100ms ease;
+}}
+window.study-window combox dropdown button:hover {{
+    background: alpha({color["accent"]}, 0.14);
+}}
+
+/* ── Spin buttons ── */
+window.study-window spinbutton {{
+    border-radius: 8px;
+    border: 1px solid alpha({color["text"]}, 0.14);
+}}
+window.study-window spinbutton button {{
+    min-height: 24px;
+    min-width: 24px;
+    padding: 2px;
+    border-radius: 6px;
+}}
+
+/* ── Check / Radio buttons ── */
+window.study-window checkbutton, window.study-window radiobutton {{
+    transition: all 120ms ease;
+}}
+window.study-window checkbutton check {{
+    border-radius: 4px;
+    min-width: 16px;
+    min-height: 16px;
+    border: 2px solid alpha({color["text"]}, 0.30);
+    background: transparent;
+    transition: all 120ms ease;
+}}
+window.study-window checkbutton check:checked {{
+    background: {color["accent"]};
+    border-color: {color["accent"]};
+    -gtk-icon-source: -gtk-scaled(url("resource:///org/gtk/libgtk/icons/16x16/legacy/object-select-symbolic.symbolic.png"));
+}}
+window.study-window checkbutton check:hover {{
+    border-color: alpha({color["accent"]}, 0.60);
+}}
+window.study-window radiobutton radio {{
+    border-radius: 50%;
+    min-width: 16px;
+    min-height: 16px;
+    border: 2px solid alpha({color["text"]}, 0.30);
+    background: transparent;
+    transition: all 120ms ease;
+}}
+window.study-window radiobutton radio:checked {{
+    background: {color["accent"]};
+    border-color: {color["accent"]};
+    box-shadow: inset 0 0 0 3px alpha({color["bg"]}, 0.85);
+}}
+window.study-window radiobutton radio:hover {{
+    border-color: alpha({color["accent"]}, 0.60);
+}}
+
+/* ── Selection highlight ── */
+window.study-window selection {{
+    background-color: alpha({color["accent"]}, 0.34);
+    color: {color["text"]};
+}}
+
+/* ── Separators / rules ── */
+window.study-window separator.rule {{
+    margin-top: 4px;
+    margin-bottom: 4px;
+    background: alpha({color["text"]}, 0.08);
+    min-height: 1px;
+}}
+
+/* ── Notifications / toasts ── */
+window.study-window .toast,
+window.study-window .banner-shell {{
+    border-radius: 10px;
+    background: alpha({color["bg"]}, 0.92);
+    border: 1px solid alpha({color["text"]}, 0.12);
+    -gtk-backdrop-filter: blur(14px);
+    padding: 8px 14px;
+    margin: 4px;
+}}
+
+/* ── Tooltips ── */
+window.study-window tooltip {{
+    border-radius: 8px;
+    border: 1px solid alpha({color["text"]}, 0.12);
+    background: alpha({color["bg"]}, 0.94);
+    -gtk-backdrop-filter: blur(10px);
+    padding: 6px 10px;
+}}
+
+/* ── ScrolledWindow ── */
+window.study-window scrolledwindow {{
+    border-radius: 8px;
+}}
+window.study-window scrolledwindow.frame {{
+    border: 1px solid alpha({color["text"]}, 0.08);
+    border-radius: 8px;
+}}
+
+/* ── Progress bar ── */
+window.study-window progressbar {{
+    border-radius: 4px;
+    min-height: 6px;
+}}
+window.study-window progressbar trough {{
+    border-radius: 4px;
+    background: alpha({color["text"]}, 0.08);
+    min-height: 6px;
+}}
+window.study-window progressbar progress {{
+    border-radius: 4px;
+    background: linear-gradient(90deg, alpha({color["accent"]}, 0.8), {color["accent"]});
+    min-height: 6px;
+}}
+
+/* ── Level bar ── */
+window.study-window levelbar {{
+    border-radius: 4px;
+}}
+window.study-window levelbar trough {{
+    border-radius: 4px;
+    background: alpha({color["text"]}, 0.08);
+}}
+window.study-window levelbar block {{
+    border-radius: 3px;
+}}
+
+/* ── Window handle / resize grip ── */
+window.study-window .titlebar,
+window.study-window windowhandle {{
+    background: transparent;
+    border: none;
+}}
+
+/* ── Nerd Font / icon font support ── */
+window.study-window .nerd-font,
+window.study-window .workbench-text {{
+    font-family: "Iosevka Aile", "JetBrains Mono NL", "Noto Sans Mono", "Symbols Nerd Font Mono", monospace;
+}}
+
 {motion_css}
 """
 

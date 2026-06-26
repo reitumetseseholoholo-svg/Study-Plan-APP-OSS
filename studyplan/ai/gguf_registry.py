@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,15 +65,17 @@ class GgufRegistry:
     config: GgufRegistryConfig = field(default_factory=GgufRegistryConfig)
     _catalog: list[GgufModel] = field(default_factory=list, init=False, repr=False)
     _catalog_ts: float = field(default=0.0, init=False, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def catalog(self, *, force_refresh: bool = False) -> list[GgufModel]:
-        now = time.monotonic()
-        ttl = max(5.0, min(3600.0, self.config.ttl_seconds))
-        if self._catalog and not force_refresh and (now - self._catalog_ts) <= ttl:
+        with self._lock:
+            now = time.monotonic()
+            ttl = max(5.0, min(3600.0, self.config.ttl_seconds))
+            if self._catalog and not force_refresh and (now - self._catalog_ts) <= ttl:
+                return list(self._catalog)
+            self._catalog = self._scan_all()
+            self._catalog_ts = now
             return list(self._catalog)
-        self._catalog = self._scan_all()
-        self._catalog_ts = now
-        return list(self._catalog)
 
     def find_by_name(self, name: str) -> GgufModel | None:
         lower = name.strip().lower()

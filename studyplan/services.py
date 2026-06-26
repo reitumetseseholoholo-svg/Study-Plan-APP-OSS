@@ -800,8 +800,10 @@ class LlamaCppTutorService:
                 try:
                     status = rt.ensure_ready(purpose)
                 except Exception:
+                    logger.warning("runtime.ensure_ready failed (TypeError fallback path)")
                     return
             except Exception:
+                logger.warning("runtime.ensure_ready failed")
                 return
             if status.healthy and status.endpoint:
                 self.endpoint = status.endpoint
@@ -3404,9 +3406,9 @@ class DeterministicTutorAssessmentService:
         concept_ids = tuple(str(c) for c in (getattr(item, "concept_ids", ()) or ()))
         if self.domain_reasoner is not None:
             if template_ref or concept_ids:
-                return self._assess_domain_item(item, answer_text)
+                return self._assess_domain_item(item, answer_text, learner_workings=answer_text)
             if item_type == "calculation_step":
-                return self._assess_domain_item(item, answer_text)
+                return self._assess_domain_item(item, answer_text, learner_workings=answer_text)
 
         if item_type == "mcq":
             return self._assess_mcq(item, answer_text)
@@ -3559,6 +3561,7 @@ class DeterministicTutorAssessmentService:
         self,
         item: TutorPracticeItem,
         answer_text: str,
+        learner_workings: str | None = None,
     ) -> TutorAssessmentResult:
         """Evaluate a domain-reasoning item via the deterministic solver engine.
 
@@ -3598,6 +3601,7 @@ class DeterministicTutorAssessmentService:
                     template_ref=template_ref,
                     template_inputs=template_inputs,
                     learner_answer=answer_text,
+                    learner_workings=learner_workings,
                 )
             except Exception:
                 trace = {}

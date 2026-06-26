@@ -1,6 +1,8 @@
-# Developer Documentation — Study Assistant
+# Developer Documentation — Study Workbench
 
 This document covers the application architecture, key subsystems, internal design decisions, and operational guides for developers.
+
+**Study Workbench** (formerly "Study Assistant") is a self-contained desktop study environment for professional exam preparation. It is module-agnostic — you load any professional syllabus (ACCA, etc.) and the entire system adapts: SRS, coach, tutor, autopilot, analytics.
 
 ## Table of Contents
 
@@ -10,7 +12,8 @@ This document covers the application architecture, key subsystems, internal desi
 4. [Coach and Recommendation Engine](#coach-and-recommendation-engine)
 5. [AI Cockpit (Autopilot)](#ai-cockpit-autopilot)
 6. [AI Tutor and RAG Pipeline](#ai-tutor-and-rag-pipeline)
-7. [Prompt Engineering Design (3Es + Fail-Safe)](#prompt-engineering-design-3es--fail-safe)
+7. [LLM Pipeline Architecture](#llm-pipeline-architecture)
+8. [Prompt Engineering Design (3Es + Fail-Safe)](#prompt-engineering-design-3es--fail-safe)
 8. [Bayesian Cognitive Runtime](#bayesian-cognitive-runtime)
 9. [Socratic FSM](#socratic-fsm)
 10. [Semantic Routing and Outcome Linking](#semantic-routing-and-outcome-linking)
@@ -29,7 +32,7 @@ This document covers the application architecture, key subsystems, internal desi
 
 ## Architecture Overview
 
-Study Assistant is a **single-process GTK4 desktop application**. There is no backend server, no external database, and no network dependency at runtime (local LLM and all data files are local).
+Study Workbench is a **single-process GTK4 desktop application**. There is no backend server, no external database, and no network dependency at runtime (local LLM and all data files are local). Think of it as a local-first, AI-integrated study OS for your desktop.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -79,6 +82,17 @@ Study Assistant is a **single-process GTK4 desktop application**. There is no ba
 | `studyplan/domain_reasoning/evaluator.py` | Step-by-step learner answer comparison and error classification against deterministic truth. |
 | `studyplan/domain_reasoning/diagnostics.py` | Structured error pattern emission from solver comparison results. |
 | `studyplan/domain_reasoning/domains/acca_fm/` | FM domain solvers: `npv.py` (NPV), `wacc.py` (WACC), `capm.py` (CAPM), `irr.py` (IRR), `payback.py`, `arr.py`, `ccc.py` (Cash Cycle), `eoq.py` (EOQ), `gearing.py`. |
+| `studyplan/ai/llama_runtime.py` | `LlamaRuntime` — LLM orchestrator: tries Ollama → managed llama-server → cloud API |
+| `studyplan/ai/llama_server.py` | `LlamaServerManager` — manages `llama-server` subprocess lifecycle |
+| `studyplan/ai/circuit_breaker.py` | `CircuitBreaker` — per-backend failure tracking with auto-reset |
+| `studyplan/ai/model_selector.py` | `ModelSelector` — task-aware model ranking and filtering |
+| `studyplan/ai/gguf_registry.py` | `GgufRegistry` — scans for `.gguf` model files on disk |
+| `studyplan/ai/llm_auth.py` | API key resolution for cloud LLM providers |
+| `studyplan/ai/recovery.py` | Deterministic fallback response; never raises |
+| `studyplan/ai/tutor_llm_purpose.py` | LLM request purpose classification |
+| `studyplan/ai/model_routing.py` | Per-purpose model routing configuration |
+| `studyplan/ai/prompt_design.py` | Prompt template management (3Es design) |
+| `studyplan/ai/tutor_prompt_layers.py` | Base tutor identity and coach identity lines |
 
 ### Key design invariants
 
@@ -287,13 +301,64 @@ When `sentence-transformers` is available, retrieval uses semantic similarity wi
 
 Purpose drives model routing (see `studyplan/ai/model_routing.py`), telemetry, and context budget policy.
 
-### LLM backend priority
+### LLM Pipeline Architecture
 
-1. **LLM Gateway** (if `LLM_GATEWAY_ENABLED=1`) — OpenAI-compatible endpoint (OpenRouter, OpenAI, Anthropic, Gemini, etc.)
-2. **Managed llama.cpp server** (if `LLAMA_CPP_MANAGED_SERVER=1`) — starts/stops `llama-server` automatically
-3. **Ollama** (auto-discovered at `http://127.0.0.1:11434`)
-4. **Direct GGUF** via llama.cpp Python runtime
-5. **Deterministic fallback** (`studyplan/ai/recovery.py`) — returns a structured error response; never raises
+The app supports **6 LLM backends** routed through a layered fallback chain managed by `LlamaRuntime` (`studyplan/ai/llama_runtime.py`).
+
+#### Backend priority & fallback chain
+
+The runtime tries backends in this order:
+
+1. **Cloud API gateway** (if enabled) — OpenAI-compatible endpoint (OpenRouter, OpenAI, Anthropic, Gemini, etc.)
+2. **Managed llama-server** — auto-starts/stops `llama-server` subprocess with GGUF models from disk
+3. **Ollama** — auto-discovered at `http://127.0.0.1:11434`
+
+If all three fail, an error is returned to the caller. Individual backend recovery steps:
+
+| Backend | Circuit breaker | Cooldown | Probe |
+|---------|----------------|----------|-------|
+| Cloud endpoint | `_cloud_circuit_breaker` (3 failures) | 30s | TCP + HTTP call |
+| Managed llama-server | None (re-created on next request) | — | `/health` endpoint (2s timeout) |
+| Ollama | `_llm_model_health` per-model cooldown | 30-60s | `ollama list` (3s timeout) |
+
+#### Backend files
+
+| File | Role |
+|------|------|
+| `studyplan/ai/llama_runtime.py` | `LlamaRuntime` — orchestrator: tries Ollama first, falls back to managed llama-server, then cloud API |
+| `studyplan/ai/llama_server.py` | `LlamaServerManager` — manages `llama-server` subprocess lifecycle, health checks, idle shutdown |
+| `studyplan/ai/model_selector.py` | `ModelSelector` — ranks/filters models for task (context window, speed, etc.) |
+| `studyplan/ai/model_ranker.py` | `ModelRanker` — cross-backend latency/quality ranking |
+| `studyplan/ai/circuit_breaker.py` | `CircuitBreaker` — per-backend failure tracking with auto-reset |
+| `studyplan/ai/gguf_registry.py` | `GgufRegistry` — scans standard directories for `.gguf` files |
+| `studyplan/ai/llm_auth.py` | LLM auth — API key resolution for cloud providers |
+| `studyplan/ai/recovery.py` | Deterministic structured-error fallback; never raises |
+| `studyplan/ai/tutor_llm_purpose.py` | Request purpose classification (tutor, coach, autopilot, ...) |
+| `studyplan/ai/model_routing.py` | Per-purpose model routing configuration |
+| `studyplan/ai/prompt_design.py` | Prompt template management (3Es design) |
+| `studyplan/ai/tutor_prompt_layers.py` | Base tutor identity, coach identity lines |
+
+#### Connectivity detection
+
+`_has_internet_connectivity()` (studyplan_app.py ~19215) probes reachability via TCP:
+- Targets: `1.1.1.1:443`, `8.8.8.8:53`, plus the cloud endpoint's host
+- Per-probe timeout: 1.5s
+- Cache: 30s when online, **5s when offline** (reduced from 10s for faster re-detection)
+
+`_cloud_connectivity_policy_mode()` resolves the effective mode:
+- Instance attribute `cloud_connectivity_policy` (from Preferences) if set to `online` or `offline`
+- Falls back to env var `STUDYPLAN_CLOUD_CONNECTIVITY_POLICY` (`auto`, `force_online`, `force_offline`)
+- Defaults to `auto` (probe-based)
+
+`_cloud_model_routing_mode()` returns `"online"` or `"offline"` by combining policy + probe result. `_remote_llm_backends_allowed()` gates all cloud API calls on this.
+
+#### Cloud circuit breaker
+
+`_cloud_circuit_breaker` (`CircuitBreaker`, threshold=3, cooldown=30s) in studyplan_app.py ~2371 protects `cloud_endpoint`. When the circuit is open, cloud API calls are skipped entirely and the managed llama-server is used instead. The breaker resets automatically after 30s.
+
+#### Model routing per purpose
+
+Each LLM request is classified into a purpose (`tutor`, `coach`, `deep_reason`, `autopilot`, `gap_generation`, `section_c_generation`, `section_c_evaluation`, `section_c_judgment`, `section_c_loop_diff`, `general`). The routing config in `studyplan/ai/model_routing.py` maps purpose → preferred model candidates. The router tries candidates in order, skipping any that are on cooldown or have open circuit breakers.
 
 ---
 
@@ -627,6 +692,22 @@ The learner profile store tracks concept error patterns across assessments via `
 ### Action registry
 
 All menu actions are declared in `studyplan/app/action_registry.py` as `ActionBinding` dataclasses. The registry maps action names to handler method names and is installed via `_install_action_bindings()`. This makes the action surface testable without a live GTK window.
+
+### Status bar / Workbench shell
+
+Three labels in the bottom bar (part of `_build_workbench_shell()`) display live status:
+
+| Label | Method | Content |
+|-------|--------|---------|
+| `workbench_status_label` | `_refresh_workbench_shell_status` | Page • Topic • Model • Autopilot mode • RAG embeddings • Sidebar state • **Connectivity** (Net on/off) |
+| `workbench_model_label` | `_refresh_workbench_model_readiness_line` → `_compute_workbench_model_readiness` | Model source + ready state + **cloud health** (circuit open/ready) |
+| `workbench_health_label` | `_refresh_workbench_app_health_line` → `_compute_workbench_app_health` | Sync status, model availability, **offline**, **circuit breaker** state |
+
+States emitted by `_compute_workbench_model_readiness()`: `disabled`, `unavailable`, `recovering`, `not_loaded`, `syncing`, `ready`. When cloud gateway is enabled, appends `" \| Cloud: ready"` or `" \| Cloud: circuit open (Xs)"`.
+
+States emitted by `_compute_workbench_app_health()`: `sync_issue`, `model_unavailable`, `recovery_mode`, `offline`, `offline_with_circuit`, `circuit_open`, `ready`.
+
+All three labels refresh on a 2-second `GLib.timeout_add` timer via `_start_workbench_status_timer()`.
 
 ### GTK4 lint
 

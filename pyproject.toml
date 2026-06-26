@@ -64,3 +64,4 @@ reportPrivateImportUsage = false
 testpaths = ["tests", "studyplan/testing"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
+

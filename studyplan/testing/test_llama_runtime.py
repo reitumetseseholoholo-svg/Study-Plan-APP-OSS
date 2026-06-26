@@ -137,9 +137,33 @@ class TestRuntimeStatus:
 
 
 class TestLlamaCppPrecedence:
-    """Verify llama.cpp (llama-server) is tried before Ollama fallback."""
+    """Verify Ollama is preferred over managed llama-server."""
 
-    def test_ensure_ready_returns_llama_server_when_server_succeeds(self):
+    def test_ensure_ready_returns_ollama_when_available(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_fake_gguf(os.path.join(tmpdir, "tiny-1b-q4.gguf"))
+            cfg = GgufRegistryConfig(
+                gpt4all_dir=tmpdir,
+                ollama_manifests_dir="/nonexistent",
+                ollama_blobs_dir="/nonexistent",
+            )
+            fake_server = MagicMock(spec=LlamaServerManager)
+
+            rt = LlamaRuntime(
+                registry=GgufRegistry(config=cfg),
+                selector=ModelSelector(),
+                server=fake_server,
+                ollama_fallback_enabled=True,
+                ollama_host="http://127.0.0.1:11434",
+            )
+            status = rt.ensure_ready(Purpose.GENERAL)
+            assert status.healthy
+            # Ollama is preferred — should be used before managed server
+            assert status.backend == "ollama", f"Expected ollama, got {status.backend}"
+            # Managed server was never touched
+            fake_server.ensure_running.assert_not_called()
+
+    def test_ensure_ready_uses_llama_server_when_ollama_disabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             _write_fake_gguf(os.path.join(tmpdir, "tiny-1b-q4.gguf"))
             cfg = GgufRegistryConfig(
@@ -160,17 +184,16 @@ class TestLlamaCppPrecedence:
                 registry=GgufRegistry(config=cfg),
                 selector=ModelSelector(),
                 server=fake_server,
-                ollama_fallback_enabled=True,
-                ollama_host="http://127.0.0.1:11434",
+                ollama_fallback_enabled=False,
+                ollama_host="",
             )
             status = rt.ensure_ready(Purpose.GENERAL)
             assert status.healthy
             assert status.backend == "llama_server"
             assert status.endpoint == "http://127.0.0.1:8090"
-            # When server is already running the right model, ensure_running is not called
             assert fake_server.ensure_running.call_count <= 1
 
-    def test_ensure_ready_falls_back_to_ollama_only_after_llama_server_fails(self):
+    def test_ensure_ready_managed_server_only_when_ollama_unavailable(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             _write_fake_gguf(os.path.join(tmpdir, "tiny-1b-q4.gguf"))
             cfg = GgufRegistryConfig(

@@ -132,7 +132,7 @@ def _estimate_param_b_from_name(model_name: str) -> float | None:
 def _arch_hint(name: str) -> str:
     n = str(name or "").lower()
     for token in ("phi", "gemma", "qwen", "mistral", "llama", "deepseek", "tinyllama", "orca"):
-        if token in n:
+        if re.search(r"(?:^|[\W_])" + re.escape(token) + r"(?:$|[\W_])", n):
             return token
     return ""
 

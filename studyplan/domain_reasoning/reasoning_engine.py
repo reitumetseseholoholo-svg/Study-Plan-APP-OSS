@@ -688,6 +688,7 @@ def reason_question(
     explanation: str | None = None,
     template_ref: str | None = None,
     template_inputs: dict[str, Any] | None = None,
+    learner_workings: str | None = None,
 ) -> ReasoningTrace:
     """Reason about a question and compile a solution plan.
 
@@ -767,6 +768,7 @@ def reason_question(
         template_inputs=template_inputs,
         explanation=explanation,
         learner_answer=learner_answer,
+        learner_workings=learner_workings,
     )
     result.diagnostic = diag
 

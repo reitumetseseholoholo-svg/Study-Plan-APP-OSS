@@ -214,17 +214,21 @@ class LlamaRuntime:
     ) -> RuntimeStatus:
         """Make sure an inference backend is ready for the given purpose.
 
-        Tries llama-server first, falls back to Ollama if configured.
-
-        When ``preferred_gguf_name`` is set (registry model name), that GGUF is
-        tried before automatic ranking. Unknown names or models over the RAM
-        budget are ignored with a log line.
+        Tries Ollama first (faster, no cold start), falls back to managed
+        llama-server if configured.
         """
+        if self.ollama_fallback_enabled:
+            ollama_status = self._try_ollama_fallback(purpose)
+            if ollama_status.healthy:
+                return ollama_status
+            # When online, strict cloud-only: don't fall back to GGUF if no cloud model
+            if _online_mode():
+                return ollama_status
+
         catalog = self.registry.catalog()
         if not catalog:
             log.warning("No GGUF models found in any scanned directory")
-            if self.ollama_fallback_enabled:
-                return self._try_ollama_fallback(purpose)
+            # Ollama already tried above — no further fallback to attempt
             return RuntimeStatus(
                 backend="none",
                 model_name="",
@@ -236,8 +240,6 @@ class LlamaRuntime:
                 error="No GGUF models found",
             )
         if not bool(getattr(self.server, "binary_available", True)):
-            if self.ollama_fallback_enabled:
-                return self._try_ollama_fallback(purpose)
             return RuntimeStatus(
                 backend="none",
                 model_name="",
@@ -264,8 +266,6 @@ class LlamaRuntime:
         ranked_models = [r.model for r in self.selector.rank(catalog, purpose)]
         if not ranked_models:
             log.warning("Model selector returned no candidate for purpose=%s", purpose)
-            if self.ollama_fallback_enabled:
-                return self._try_ollama_fallback(purpose)
             return RuntimeStatus(
                 backend="none",
                 model_name="",
@@ -289,8 +289,6 @@ class LlamaRuntime:
 
         if not attempts:
             log.warning("No unique model candidates after deduplication")
-            if self.ollama_fallback_enabled:
-                return self._try_ollama_fallback(purpose)
             return RuntimeStatus(
                 backend="none",
                 model_name="",
@@ -413,18 +411,42 @@ class LlamaRuntime:
         models = _ollama_list_models(host)
         if not models:
             return RuntimeStatus(
-                backend="ollama",
+                backend="none",
                 model_name="",
                 model_path="",
-                endpoint=f"{host}/api/generate",
-                healthy=True,
+                endpoint="",
+                healthy=False,
                 startup_latency_ms=0,
                 catalog_size=0,
                 error="Ollama reachable but no models found",
             )
 
-        # When offline, exclude cloud-tagged Ollama models (e.g. ``:cloud``).
-        if not _online_mode():
+        online = _online_mode()
+
+        if online:
+            # Strict cloud-only: when online, use ONLY cloud-tagged Ollama models
+            cloud_tagged = _filter_cloud_tagged_models(models)
+            if not cloud_tagged:
+                log.info(
+                    "Online mode: no cloud-tagged Ollama model found "
+                    "(tag models with :cloud or -cloud, e.g. qwen3.5:cloud)"
+                )
+                return RuntimeStatus(
+                    backend="none",
+                    model_name="",
+                    model_path="",
+                    endpoint="",
+                    healthy=False,
+                    startup_latency_ms=0,
+                    catalog_size=0,
+                    error=(
+                        "Online mode: no cloud-tagged Ollama model available. "
+                        "Tag a model with :cloud suffix (e.g. 'ollama pull qwen3.5:cloud')."
+                    ),
+                )
+            models = cloud_tagged
+        else:
+            # Offline: exclude cloud-tagged models (existing behavior)
             cloud_tagged = _filter_cloud_tagged_models(models)
             if cloud_tagged:
                 log.info(

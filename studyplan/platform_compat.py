@@ -143,14 +143,14 @@ def extra_allowed_import_roots() -> list[str]:
 def is_focus_tracking_available() -> bool:
     """Return True if focus-tracking tools are available on this platform.
 
-    Currently only supported on Linux (Hyprland via ``hyprctl``).
+    Supported on Linux via ``hyprctl`` (Hyprland) or ``loginctl`` (systemd).
     Returns False on Windows and macOS.
     """
     if IS_WINDOWS or IS_MACOS:
         return False
     import shutil
 
-    return bool(shutil.which("hyprctl"))
+    return bool(shutil.which("hyprctl")) or bool(shutil.which("loginctl"))
 
 
 def is_tiling_wm_session() -> bool:

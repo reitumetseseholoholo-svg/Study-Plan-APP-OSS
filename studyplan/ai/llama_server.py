@@ -77,6 +77,7 @@ class LlamaServerManager:
     _stderr_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _binary_available: bool | None = field(default=None, init=False, repr=False)
     _binary_missing_logged: bool = field(default=False, init=False, repr=False)
+    _stop_event: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
 
     @property
     def endpoint(self) -> str:
@@ -241,6 +242,7 @@ class LlamaServerManager:
 
         if ok:
             self._last_activity_mono = time.monotonic()
+            self._stop_event.clear()
             self._ensure_idle_watcher_started_unlocked()
             self._ensure_memory_guard_started_unlocked()
             log.info(
@@ -285,8 +287,9 @@ class LlamaServerManager:
         thread.start()
 
     def _memory_guard_loop(self) -> None:
-        while True:
-            time.sleep(2.0)
+        while not self._stop_event.is_set():
+            if self._stop_event.wait(timeout=2.0):
+                break
             to_finalize: subprocess.Popen[bytes] | None = None
             avail_mb = 0.0
             with self._lock:
@@ -317,8 +320,9 @@ class LlamaServerManager:
     def _idle_watcher_loop(self) -> None:
         poll = float(self.config.idle_poll_interval_seconds or 10.0)
         poll = max(1.0, min(120.0, poll))
-        while True:
-            time.sleep(poll)
+        while not self._stop_event.is_set():
+            if self._stop_event.wait(timeout=poll):
+                break
             lim = float(self.config.idle_shutdown_seconds or 0.0)
             if lim <= 0:
                 continue
@@ -347,16 +351,24 @@ class LlamaServerManager:
         self._process = None
         self._current_model_path = ""
         self._current_model_name = ""
+        self._stop_event.set()
+        self._join_background_threads()
 
         if proc.poll() is not None:
             return
 
         self._finalize_subprocess(proc)
 
+    def _join_background_threads(self) -> None:
+        for attr in ("_memory_guard_thread", "_idle_watcher_thread"):
+            t = getattr(self, attr, None)
+            if t is not None and t.is_alive():
+                t.join(timeout=3.0)
+
     def _finalize_subprocess(self, proc: subprocess.Popen[bytes]) -> None:
         log.info("Stopping llama-server (pid=%d)", proc.pid)
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.send_signal(signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass
 
@@ -365,7 +377,7 @@ class LlamaServerManager:
         except subprocess.TimeoutExpired:
             log.warning("llama-server did not exit gracefully, sending SIGKILL")
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                proc.send_signal(signal.SIGKILL)
             except (OSError, ProcessLookupError):
                 pass
             try:

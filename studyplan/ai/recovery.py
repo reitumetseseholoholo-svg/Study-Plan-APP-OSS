@@ -16,7 +16,7 @@ def classify_failure_kind(error_code: str, message: str) -> str:
         return "timeout"
     if "json parse failed" in lower or "guardrail validation failed" in lower or "valid json" in lower:
         return "invalid_output"
-    if "context" in lower and ("overflow" in lower or "length" in lower or "token" in lower):
+    if ("context overflow" in lower or "context_length" in lower or "max_context" in lower):
         return "context_overflow"
     if "stall" in lower:
         return "stream_stall"

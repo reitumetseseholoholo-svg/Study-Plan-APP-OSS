@@ -134,6 +134,12 @@ class FSRSScheduler:
             raise ValueError(f"FSRS requires exactly 17 weights; got {len(w)}")
         self.w = w
         self.desired_retention = max(0.70, min(0.99, desired_retention))
+        # Precompute frequently-used constants to avoid repeated math.exp/pow calls.
+        self._exp_w8 = math.exp(w[8])
+        self._w11 = w[11]
+        self._w12 = w[12]
+        dr = self.desired_retention
+        self._interval_const = (math.pow(dr, 1.0 / -1.0) - 1.0) * 9.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -173,6 +179,8 @@ class FSRSScheduler:
         else:
             elapsed = 0
 
+        retrievability = self._retrievability(card.stability, elapsed)
+
         if card.is_new():
             new_stability = self._initial_stability(rating)
             new_difficulty = self._initial_difficulty(rating)
@@ -180,13 +188,12 @@ class FSRSScheduler:
             new_lapses = 0 if rating >= 3 else 1
         elif rating == 1:
             # Lapse: card forgotten
-            new_stability = self._stability_after_lapse(card.stability)
+            new_stability = self._stability_after_lapse(card.stability, card.difficulty, retrievability)
             new_difficulty = self._next_difficulty(card.difficulty, rating)
             new_reps = 0
             new_lapses = card.lapses + 1
         else:
             # Recalled (hard / good / easy)
-            retrievability = self._retrievability(card.stability, elapsed)
             new_stability = self._stability_after_recall(
                 card.stability, card.difficulty, retrievability, rating
             )
@@ -244,20 +251,21 @@ class FSRSScheduler:
     def _next_difficulty(self, d: float, rating: int) -> float:
         # Mean-reversion formula from FSRS 4.5
         target = self.w[4] - math.exp(self.w[5] * (rating - 1)) + 1
-        raw = d + (target - d) * self.w[6]
+        coeff = self.w[7] if rating == 1 else self.w[6]
+        raw = d + (target - d) * coeff
         return max(1.0, min(10.0, raw))
 
     def _stability_after_recall(
         self, s: float, d: float, r: float, rating: int
     ) -> float:
         # S'_r = S * (e^(w_8) * (11 - d) * S^(-w_9) * (e^(w_10*(1-r)) - 1) * hard/easy + 1)
-        w8, w9, w10 = self.w[8], self.w[9], self.w[10]
+        w9, w10 = self.w[9], self.w[10]
         hard_penalty = self.w[15] if rating == 2 else 1.0
         easy_bonus = self.w[16] if rating == 4 else 1.0
         raw = (
             s
             * (
-                math.exp(w8)
+                self._exp_w8
                 * (11.0 - d)
                 * math.pow(s, -w9)
                 * (math.exp(w10 * (1.0 - r)) - 1.0)
@@ -268,23 +276,22 @@ class FSRSScheduler:
         )
         return max(0.1, raw)
 
-    def _stability_after_lapse(self, s: float) -> float:
-        # Simplified lapse formula: S'_f = w_11 * S^(-w_12)
-        # (difficulty and retrievability terms from the full FSRS-4.5 spec are omitted
-        # in this implementation; only stability decay is modelled.)
-        return max(0.1, self.w[11] * math.pow(s, -self.w[12]))
+    def _stability_after_lapse(self, s: float, d: float, r: float) -> float:
+        # S'_f = w_11 * S^(-w_12) * (D-1)^(-w_13) * (1-R)^(w_14)
+        result = (
+            self._w11
+            * math.pow(s, -self._w12)
+            * math.pow(max(0.01, d - 1.0), -self.w[13])
+            * math.pow(max(0.01, 1.0 - r), self.w[14])
+        )
+        return max(0.1, result)
 
     def _next_interval(self, stability: float) -> int:
         """Convert stability to a review interval in days."""
-        # I = S * ln(R_desired) / ln(0.9)  (for FSRS desired-retention scheduling)
-        # Equivalent: I = 9 * S * (R^(-1/(-1)) - 1)  simplifies to:
-        # I = S * (R_desired^(-1) - 1) * 9
-        desired = self.desired_retention
-        if desired <= 0 or desired >= 1:
-            desired = DEFAULT_DESIRED_RETENTION
-        raw = stability * (math.pow(desired, 1.0 / -1.0) - 1.0) * 9.0
-        # Apply small fuzz to avoid clumping.
-        fuzz = 1.0 + (hash(round(stability, 2)) % 7 - 3) * _FUZZ_FACTOR
+        # I = S * (R_desired^(-1) - 1) * 9  (precomputed as _interval_const)
+        raw = stability * self._interval_const
+        # Apply small fuzz to avoid clumping (deterministic — based on stability value, not object address).
+        fuzz = 1.0 + (int(round(stability, 2) * 100) % 7 - 3) * _FUZZ_FACTOR
         interval = max(1, round(raw * fuzz))
         return interval
 

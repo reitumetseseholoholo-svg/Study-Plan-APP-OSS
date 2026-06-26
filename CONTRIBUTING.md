@@ -1,4 +1,4 @@
-# Contributing to Study Assistant
+# Contributing to Study Workbench
 
 Thank you for your interest in contributing! This document covers the development workflow, code style, and PR process.
 

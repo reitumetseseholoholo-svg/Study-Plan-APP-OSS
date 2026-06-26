@@ -70,6 +70,13 @@ class PracticeLoopSessionState:
     current_hint_level: int = 0  # 0-4 for progressive hints
 
 
+class _NullQGenService:
+    """Placeholder for unused question generation — returns empty list."""
+    @staticmethod
+    def generate_questions(*, topic: str = "", source_text: str | None = None, count: int = 5) -> list[str]:
+        return []
+
+
 class PracticeLoopController:
     """Orchestrates practice loop flow: build → attempt → assess → update."""
 
@@ -82,9 +89,7 @@ class PracticeLoopController:
         self.perf_monitor = perf_monitor or PerformanceMonitor(enabled=False)
         self.practice_svc: TutorPracticeService = DeterministicTutorPracticeService()
         self.assess_svc: TutorAssessmentService = assess_svc or DeterministicTutorAssessmentService()
-        # question generation service (can be real or dummy)
-        from .question_generator import get_qgen_service
-        self.qgen_svc = qgen_svc or get_qgen_service()
+        self.qgen_svc = qgen_svc or _NullQGenService()  # question generation not yet wired into the UI
 
     @staticmethod
     def _expected_answer_text(item: TutorPracticeItem) -> str:
@@ -418,7 +423,7 @@ class PracticeLoopController:
         }.get(outcome)
         if outcome_event is None:
             logger.warning(
-                "practice assessment outcome unmapped",
+                "practice assessment outcome unmapped — transitioning to ERROR",
                 extra={
                     "session": self._coerce_str(getattr(loop_state.session_state, "session_id", "")),
                     "outcome": self._coerce_str(getattr(result, "outcome", "")).lower(),
@@ -428,7 +433,14 @@ class PracticeLoopController:
             )
             loop_state.current_item = item
             loop_state.current_result = result
-            return current_state
+            error_state = self._transition_practice_fsm(
+                loop_state,
+                PracticeLoopEvent.TIMEOUT,
+                item=item,
+                result=result,
+                source=source,
+            )
+            return error_state or current_state
         transitioned = self._transition_practice_fsm(
             loop_state,
             outcome_event,

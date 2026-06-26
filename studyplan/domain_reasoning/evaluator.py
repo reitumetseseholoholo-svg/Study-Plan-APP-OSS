@@ -19,6 +19,11 @@ from studyplan.domain_reasoning.concepts import (
     BUILTIN_CONCEPTS,
     detect_concepts,
 )
+from studyplan.domain_reasoning.step_matcher import (
+    parse_learner_workings,
+    match_learner_steps,
+    compute_step_error_tags,
+)
 from studyplan.domain_reasoning.templates import TEMPLATE_REGISTRY
 from studyplan.domain_reasoning.diagnostics import (
     ConceptEvaluation,
@@ -37,6 +42,7 @@ def evaluate_question(
     template_inputs: dict[str, Any] | None = None,
     explanation: str | None = None,
     learner_answer: str | None = None,
+    learner_workings: str | None = None,
 ) -> QuestionDiagnostic:
     """Run the full deterministic evaluation pipeline on a question.
 
@@ -62,6 +68,7 @@ def evaluate_question(
             template_ref, template_inputs,
             parsed_correct, learner_answer,
             is_primary=True,
+            learner_workings=learner_workings,
         )
         if ev is not None:
             evaluations.append(ev)
@@ -79,6 +86,7 @@ def evaluate_question(
             cid, inputs,
             parsed_correct, learner_answer,
             is_primary=False,
+            learner_workings=learner_workings,
         )
         if ev is not None:
             evaluations.append(ev)
@@ -125,6 +133,7 @@ def _evaluate_single_concept(
     correct_value: float | None,
     learner_answer: str | None,
     is_primary: bool = False,
+    learner_workings: str | None = None,
 ) -> ConceptEvaluation | None:
     template = TEMPLATE_REGISTRY.get(concept_id)
     if template is None:
@@ -139,13 +148,20 @@ def _evaluate_single_concept(
     result = truth.get("result")
     truth_steps = truth.get("steps", [])
 
-    # Build step evaluations
+    # Parse learner workings and match against truth steps
+    parsed_learner = parse_learner_workings(learner_workings or "")
+    step_matches = match_learner_steps(truth_steps, parsed_learner)
+
+    # Build step evaluations populated with actual values from matching
     step_evals: list[StepEvaluation] = []
-    for s in truth_steps or []:
+    for i, s in enumerate(truth_steps or []):
+        match_info = step_matches[i] if i < len(step_matches) else {}
         step_evals.append(StepEvaluation(
             step_id=s.get("step_id", ""),
             description=s.get("description", ""),
             expected=float(s.get("value", 0)) if s.get("value") is not None else None,
+            actual=match_info.get("actual"),
+            match=bool(match_info.get("match", False)),
         ))
 
     # Error classification
@@ -153,6 +169,10 @@ def _evaluate_single_concept(
     if correct_value is not None and result is not None:
         if not _value_matches(result, correct_value):
             error_tags.append("final_answer_mismatch")
+
+    # Step-level error tags from matching
+    step_error_tags = compute_step_error_tags(step_matches)
+    error_tags.extend(step_error_tags)
 
     # Classify via template if learner answer available
     if learner_answer is not None:

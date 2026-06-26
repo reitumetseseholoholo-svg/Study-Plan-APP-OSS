@@ -9,6 +9,7 @@ Modules:
     caching: High-performance caching service for cognitive state and computations
     optimization: Middleware to optimize expensive operations
     profiler: Real-time performance monitoring and alerting
+    cpu_monitor: Lightweight CPU diagnostic (Linux) — samples thread stacks
 """
 
 from .caching import PerformanceCacheService, create_performance_cache_service
@@ -18,6 +19,6 @@ from .profiler import PerformanceProfiler
 __all__ = [
     'PerformanceCacheService',
     'create_performance_cache_service',
-    'PerformanceMiddleware', 
-    'PerformanceProfiler'
+    'PerformanceMiddleware',
+    'PerformanceProfiler',
 ]

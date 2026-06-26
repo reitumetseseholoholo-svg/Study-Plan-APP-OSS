@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 from typing import Callable, Dict, Any, List, Union, Set, Tuple, cast
+from collections import OrderedDict
 from studyplan.config import Config as StudyPlanConfig
 from studyplan.cognitive_state import CognitiveState
 from studyplan.mastery_kernel import MasteryKernel
@@ -46,6 +47,7 @@ from studyplan.syllabus_fr import (
 )
 from studyplan.syllabus_f7 import get_f7_syllabus_structure
 from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
+from studyplan.performance_integration import profile_operation
 
 logger = logging.getLogger(__name__)
 
@@ -1524,6 +1526,7 @@ class StudyPlanEngine:
             with open(path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
         except Exception:
+            logger.warning("Failed to load syllabus import cache from %s", path, exc_info=True)
             return
         if not isinstance(payload, dict):
             return
@@ -1620,6 +1623,7 @@ class StudyPlanEngine:
                 json.dump(payload, f, indent=2, ensure_ascii=True)
             os.replace(tmp, path)
         except Exception:
+            logger.warning("Failed to save syllabus import cache to %s", path, exc_info=True)
             return
 
     def get_syllabus_import_cache_stats(self) -> Dict[str, Any]:
@@ -3543,7 +3547,7 @@ class StudyPlanEngine:
         return rows_out
 
 
-    def __init__(self, exam_date=None, default_exam_date_to_today: bool = True, module_id: str | None = None, module_title: str | None = None):
+    def __init__(self, exam_date=None, default_exam_date_to_today: bool = True, module_id: str | None = None, module_title: str | None = None, defer_data_load: bool = False):
 
         """
         Initialises the StudyPlanEngine object.
@@ -3650,6 +3654,7 @@ class StudyPlanEngine:
         self.availability: Dict[str, int | None] = {"weekday": None, "weekend": None}
         # Save/backup status
         self.last_saved_at: str | None = None
+        self._last_cog_persist_time: float = float("-inf")
         self.last_backup_ok: bool | None = None
         self.last_backup_error: str | None = None
         self.last_load_recovered: bool = False
@@ -3714,12 +3719,12 @@ class StudyPlanEngine:
         self._semantic_reranker: Any | None = None
         self._semantic_reranker_state: str = "unloaded"
         self._semantic_reranker_block_reason: str | None = None
-        self._semantic_match_cache: Dict[str, Dict[str, Any]] = {}
-        self._semantic_match_cache_order: List[str] = []
+        self._semantic_match_cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         self._semantic_chapter_match_assets: Dict[str, Dict[str, Any]] = {}
         self._semantic_chapter_assets_lock = threading.Lock()
         self._semantic_failure_streak: int = 0
         self._semantic_circuit_until_ts: float = 0.0
+        self._ml_risk_cache: dict[str, float | None] = {}
         self._semantic_circuit_reason: str = ""
         self._semantic_warmup_stats: Dict[str, Any] = {
             "last_warmup_at": "",
@@ -3785,83 +3790,25 @@ class StudyPlanEngine:
             "notes": [],
         }
 
-        # Load data from JSON file
-        self._initial_load_in_progress = True
-        self._load_failed = False
-        self._load_error: str | None = None
-        try:
-            self.load_data()
-        except Exception as e:
-            self._load_failed = True
-            self._load_error = str(e) or type(e).__name__
-            print(f"Unexpected error loading data: {e}")
-        self.cognitive_state = self._load_or_build_cognitive_state()
-        self._cognitive_state_lock = bind_cognitive_state_lock(self.cognitive_state, threading.RLock())
-        self.working_memory_service = WorkingMemoryService(self.cognitive_state, state_lock=self._cognitive_state_lock)
-        self.mastery_kernel = MasteryKernel(self, self.cognitive_state, state_lock=self._cognitive_state_lock)
+        # Reentrant lock for save/load data path
+        self._data_lock = threading.RLock()
 
-        self._load_recall_model()
-        self._load_recall_model_sklearn()
-        self._load_difficulty_model()
-        self._load_interval_model()
-
-        # Populate missing chapters safely
-        missing_chapters = set(self.CHAPTERS) - set(self.srs_data.keys())
-        for chapter in missing_chapters:
-            self.srs_data[chapter] = []
-
-        # Check for None values (avoid checking vars that can be None intentionally)
-        none_allowed = {
-            "exam_date",
-            "last_saved_at",
-            "last_backup_ok",
-            "last_backup_error",
-            "completed_chapters_date",
-            "daily_plan_cache_date",
-            "recall_model_json",
-            "_semantic_model",
-            "_semantic_block_reason",
-            "_semantic_reranker",
-            "_semantic_reranker_block_reason",
-            "recall_model_sklearn",
-            "recall_model_sklearn_meta",
-            "recall_model_sklearn_block_reason",
-            "difficulty_model",
-            "interval_model",
-            "_last_loaded_module_config_path",  # None when no module config file found (e.g. installed app, new module)
-            "_cached_total_question_count",  # None until get_total_question_count() is called
-            # Cache fields intentionally start as None until first calculation.
-            "_outcome_coverage_counts_cache",
-            "_outcome_coverage_counts_sig",
-            "_load_error",  # Set when load_data() fails; None when load succeeded
-        }  # Add any vars that can be None
-        for key, value in self.__dict__.items():
-            if value is None and key not in none_allowed:
-                raise ValueError(f"Unexpected None value: {key}")
-
-        # Migrate pomodoro log (call only once; remove duplicate call)
-        self.migrate_pomodoro_log()
-
-        # Ensure study_days is a set (preserve loaded values)
-        if not isinstance(self.study_days, set):
-            self.study_days = set(self.study_days or [])
-
-        # Load questions (syncs SRS as part of load)
-        try:
-            self.load_questions()
-        finally:
-            self._initial_load_in_progress = False
-        self._migrate_question_stats_to_qid()
-        self._load_syllabus_import_cache_disk()
-
-        # Save data (do this after all inits/loads).
-        # Startup must not crash if the configured data directory is not writable
-        # (tests/sandboxes/restricted environments). Runtime writes remain available
-        # once permissions are corrected.
-        try:
-            self.save_data()
-        except Exception as exc:
-            print(f"Initial save skipped: {exc}")
+        if defer_data_load:
+            # Fast path: defer all disk I/O to _do_deferred_data_load().
+            # The engine has valid defaults (empty competence, empty SRS, etc.)
+            # set above, so it functions immediately for UI display purposes.
+            self._deferred_data_load_requested = True
+            self._deferred_load_done = False
+            self._deferred_load_error: str | None = None
+            self.cognitive_state = self._load_or_build_cognitive_state()
+            self._cognitive_state_lock = bind_cognitive_state_lock(self.cognitive_state, threading.RLock())
+            self.working_memory_service = WorkingMemoryService(self.cognitive_state, state_lock=self._cognitive_state_lock)
+            self.mastery_kernel = MasteryKernel(self, self.cognitive_state, state_lock=self._cognitive_state_lock)
+        else:
+            self._deferred_data_load_requested = False
+            self._deferred_load_done = True
+            self._deferred_load_error = None
+            self._load_sync()
 
         # Quick test that all required methods exist (call it here)
         self.test_methods()
@@ -4016,6 +3963,83 @@ class StudyPlanEngine:
 
     def shutdown_runtime(self, wait_for_workers: bool = True) -> None:
         self.__class__._cleanup_joblib_loky_runtime(wait_for_workers=bool(wait_for_workers))
+
+    def _load_sync(self) -> None:
+        """Run all heavy I/O synchronously (used by normal __init__ path)."""
+        self._initial_load_in_progress = True
+        self._load_failed = False
+        self._load_error: str | None = None
+        try:
+            self.load_data()
+        except Exception as e:
+            self._load_failed = True
+            self._load_error = str(e) or type(e).__name__
+            print(f"Unexpected error loading data: {e}")
+        if not hasattr(self, "cognitive_state") or self.cognitive_state is None:
+            self.cognitive_state = self._load_or_build_cognitive_state()
+            self._cognitive_state_lock = bind_cognitive_state_lock(self.cognitive_state, threading.RLock())
+            self.working_memory_service = WorkingMemoryService(self.cognitive_state, state_lock=self._cognitive_state_lock)
+            self.mastery_kernel = MasteryKernel(self, self.cognitive_state, state_lock=self._cognitive_state_lock)
+        self._load_recall_model()
+        self._load_recall_model_sklearn()
+        self._load_difficulty_model()
+        self._load_interval_model()
+        # Populate missing chapters safely
+        missing_chapters = set(self.CHAPTERS) - set(self.srs_data.keys())
+        for chapter in missing_chapters:
+            self.srs_data[chapter] = []
+        # Check for None values
+        none_allowed = {
+            "exam_date", "last_saved_at", "last_backup_ok", "last_backup_error",
+            "completed_chapters_date", "daily_plan_cache_date",
+            "recall_model_json", "_semantic_model", "_semantic_block_reason",
+            "_semantic_reranker", "_semantic_reranker_block_reason",
+            "recall_model_sklearn", "recall_model_sklearn_meta",
+            "recall_model_sklearn_block_reason", "difficulty_model", "interval_model",
+            "_last_loaded_module_config_path", "_cached_total_question_count",
+            "_outcome_coverage_counts_cache", "_outcome_coverage_counts_sig",
+            "_load_error", "_deferred_load_error", "_deferred_load_done",
+        }
+        for key, value in self.__dict__.items():
+            if value is None and key not in none_allowed:
+                raise ValueError(f"Unexpected None value: {key}")
+        self.migrate_pomodoro_log()
+        if not isinstance(self.study_days, set):
+            self.study_days = set(self.study_days or [])
+        try:
+            self.load_questions()
+        finally:
+            self._initial_load_in_progress = False
+        self._migrate_question_stats_to_qid()
+        self._load_syllabus_import_cache_disk()
+        try:
+            self.save_data(_skip_cog_persist=True)
+        except Exception as exc:
+            print(f"Initial save skipped: {exc}")
+
+    def _ensure_deferred_data_loaded(self) -> None:
+        """Ensure deferred data load has completed; triggers immediately if not.
+
+        Safe to call from any public method.  No-op when data is already loaded
+        or deferred loading was never requested.
+        """
+        if not getattr(self, "_deferred_data_load_requested", False):
+            return
+        if getattr(self, "_deferred_load_done", False):
+            return
+        self._do_deferred_data_load()
+
+    def _do_deferred_data_load(self) -> None:
+        """Run the deferred data I/O (called from idle callback after window paints)."""
+        if getattr(self, "_deferred_load_done", False):
+            return
+        self._deferred_load_done = True
+        self._deferred_load_error = None
+        try:
+            self._load_sync()
+        except Exception as e:
+            self._deferred_load_error = str(e) or type(e).__name__
+            self._load_error = self._deferred_load_error
 
     def _parse_date(self, value):
         """Parse a date from iso string/datetime/date; return date or None."""
@@ -5696,9 +5720,7 @@ class StudyPlanEngine:
             # Backward compatibility with older in-memory cache shapes.
             value = {"outcome_id": value, "method": "fallback", "score": 1.0}
         try:
-            if key in self._semantic_match_cache_order:
-                self._semantic_match_cache_order.remove(key)
-            self._semantic_match_cache_order.append(key)
+            self._semantic_match_cache.move_to_end(key)
         except Exception:
             return value
         return value if isinstance(value, dict) else None
@@ -5710,13 +5732,10 @@ class StudyPlanEngine:
                 "method": str(method or "fallback").strip().lower(),
                 "score": max(0.0, min(1.0, float(score))),
             }
-            if key in self._semantic_match_cache_order:
-                self._semantic_match_cache_order.remove(key)
-            self._semantic_match_cache_order.append(key)
+            self._semantic_match_cache.move_to_end(key)
             limit = int(self.SEMANTIC_CACHE_MAX)
-            while len(self._semantic_match_cache_order) > max(1, limit):
-                stale = self._semantic_match_cache_order.pop(0)
-                self._semantic_match_cache.pop(stale, None)
+            while len(self._semantic_match_cache) > max(1, limit):
+                self._semantic_match_cache.popitem(last=False)
         except Exception:
             return
 
@@ -5726,20 +5745,15 @@ class StudyPlanEngine:
             if chapter is None:
                 self._semantic_chapter_match_assets.clear()
                 self._semantic_match_cache.clear()
-                self._semantic_match_cache_order.clear()
                 return
             key = str(chapter or "").strip()
             if not key:
                 return
             self._semantic_chapter_match_assets.pop(key, None)
             prefix = f"{key}|"
-            stale = [k for k in list(self._semantic_match_cache.keys()) if k.startswith(prefix)]
+            stale = [k for k in self._semantic_match_cache if k.startswith(prefix)]
             for cache_key in stale:
                 self._semantic_match_cache.pop(cache_key, None)
-                try:
-                    self._semantic_match_cache_order.remove(cache_key)
-                except ValueError:
-                    pass
 
     def _semantic_build_chapter_assets(
         self,
@@ -6174,8 +6188,19 @@ class StudyPlanEngine:
                             built += 1
         return built
 
+    @profile_operation("warmup_semantic_model")
     def warmup_semantic_model(self, force: bool = False) -> Dict[str, Any]:
         started = time.perf_counter()
+        # Re-entrant guard: prevent concurrent warmup (model download / TF-IDF build).
+        if getattr(self, "_semantic_warmup_in_progress", False):
+            return self.get_semantic_status()
+        self._semantic_warmup_in_progress = True
+        try:
+            return self._warmup_semantic_model_impl(force, started)
+        finally:
+            self._semantic_warmup_in_progress = False
+
+    def _warmup_semantic_model_impl(self, force: bool, started: float) -> Dict[str, Any]:
         if bool(force):
             self._semantic_reset_runtime_state(clear_shared=True)
             self._semantic_invalidate_chapter_assets(None)
@@ -8649,8 +8674,8 @@ class StudyPlanEngine:
         cleaned = [str(x).strip() for x in outcome_ids if str(x).strip()]
         q["outcome_ids"] = cleaned
         # Persist manual tags even for built-in questions via question_stats (qid-based).
+        qid = self._question_qid(chapter, question_index) or str(question_index)
         try:
-            qid = self._question_qid(chapter, question_index) or str(question_index)
             stats_by_ch = self.question_stats.get(chapter)
             if not isinstance(stats_by_ch, dict):
                 stats_by_ch = {}
@@ -8663,7 +8688,7 @@ class StudyPlanEngine:
             entry["linked_outcome_source"] = "manual"
             entry["linked_outcome_at"] = datetime.datetime.now().isoformat(timespec="seconds")
         except Exception:
-            pass
+            logger.warning("link_question_outcome: stats update failed for qid=%s", qid, exc_info=True)
         self._invalidate_outcome_coverage_counts_cache()
         self.save_questions()
         self._semantic_invalidate_chapter_assets(chapter)
@@ -9114,6 +9139,7 @@ class StudyPlanEngine:
             entry["question_key"] = fingerprint
         return entry
 
+    @profile_operation("deduplicate_questions")
     def _deduplicate_questions(self, chapter, new_questions):
         """
         Remove questions that are too similar to existing ones.
@@ -9193,22 +9219,32 @@ class StudyPlanEngine:
         if not existing_vectors:
             return new_questions, stats
 
-        unique_questions: list[dict] = []
-        accepted_vectors: list[list[float]] = []
+        # Phase 1: collect all new question texts for batch encoding
+        pending: list[tuple[str, dict]] = []
         for q in new_questions:
             if not isinstance(q, dict):
                 continue
             q_text = self._normalize_question_text(q.get("question", ""))
-            if not q_text:
-                unique_questions.append(q)
-                continue
-            try:
-                raw_q = model.encode([q_text], normalize_embeddings=True)
-                q_vecs = list(raw_q or [])
-                q_vec = [float(v) for v in q_vecs[0]] if q_vecs else []
-            except Exception:
-                unique_questions.append(q)
-                continue
+            if q_text:
+                pending.append((q_text, q))
+
+        # Phase 2: batch-encode all question texts in a single model call
+        try:
+            all_raw = model.encode(
+                [p[0] for p in pending], normalize_embeddings=True
+            )
+            all_vecs = [
+                [float(v) for v in vec] if vec is not None else []
+                for vec in (list(all_raw or []) if all_raw is not None else [])
+            ]
+        except Exception:
+            all_vecs = []
+
+        # Phase 3: deduplicate using pre-computed vectors
+        unique_questions: list[dict] = []
+        accepted_vectors: list[list[float]] = []
+        for idx, (q_text, q) in enumerate(pending):
+            q_vec = all_vecs[idx] if idx < len(all_vecs) else []
             if not q_vec:
                 unique_questions.append(q)
                 continue
@@ -11166,6 +11202,7 @@ class StudyPlanEngine:
             return {"hard_ratio": 0.0, "sample": 0.0}
         return {"hard_ratio": max(0.0, min(1.0, hard / total)), "sample": float(total)}
 
+    @profile_operation("get_chapter_recall_risk")
     def get_chapter_recall_risk(self, chapter: str, max_samples: int = 40) -> float | None:
         """Return a 0-1 recall risk score (higher = weaker) for a chapter."""
         if chapter not in self.CHAPTERS:
@@ -12441,6 +12478,7 @@ class StudyPlanEngine:
             current = 0
         self.difficulty_counts[chapter][str(question_index)] = current + 1
 
+    @profile_operation("get_daily_plan")
     def get_daily_plan(self, num_topics=3, current_topic: str | None = None):
         """Auto schedule focus topics based on urgency, weights, and chapter flow."""
         today = datetime.date.today()
@@ -12540,16 +12578,19 @@ class StudyPlanEngine:
                     bonus += 12.0
             return bonus
 
-        ml_risk_cache: dict[str, float | None] = {}
+        if not hasattr(self, "_ml_risk_cache") or self._ml_risk_cache is None:
+            self._ml_risk_cache = {}
+        elif isinstance(self._ml_risk_cache, dict) and len(self._ml_risk_cache) > 200:
+            self._ml_risk_cache.clear()
 
         def _ml_risk(ch: str) -> float | None:
-            if ch in ml_risk_cache:
-                return ml_risk_cache[ch]
+            if ch in self._ml_risk_cache:
+                return self._ml_risk_cache[ch]
             try:
-                ml_risk_cache[ch] = self.get_chapter_recall_risk(ch)
+                self._ml_risk_cache[ch] = self.get_chapter_recall_risk(ch)
             except Exception:
-                ml_risk_cache[ch] = None
-            return ml_risk_cache[ch]
+                self._ml_risk_cache[ch] = None
+            return self._ml_risk_cache[ch]
 
         def _prereq_boost(ch: str) -> float:
             bonus = 0.0
@@ -13614,8 +13655,14 @@ class StudyPlanEngine:
         print(f"{note} (cause: {load_error})")
         return True
 
+    @profile_operation("load_data")
     def load_data(self):
         """Load user data from JSON file."""
+        with self._data_lock:
+            self._load_data_impl()
+
+    def _load_data_impl(self):
+        """Internal implementation of load_data, called under _data_lock."""
         # Reflect status of the current load attempt; recovery path overwrites these.
         self.last_load_recovered = False
         self.last_load_recovery_snapshot = ""
@@ -13677,7 +13724,7 @@ class StudyPlanEngine:
                 corrupt_path = f"{path}.corrupt.{int(time.time())}"
                 os.replace(path, corrupt_path)
             except Exception:
-                pass
+                logger.warning("Failed to rename corrupt cognitive state file %s", path, exc_info=True)
             state = self._build_legacy_cognitive_state()
             state.last_persist_ok = False
             state.last_persist_error = f"load_recovered:{exc}"
@@ -13753,10 +13800,17 @@ class StudyPlanEngine:
 
         self.save_data()
 
-    def save_data(self):
+    @profile_operation("save_data")
+    def save_data(self, _skip_cog_persist: bool = False):
         """
         Save user data to JSON file.
         """
+        self._ensure_deferred_data_loaded()
+        with self._data_lock:
+            return self._save_data_impl(_skip_cog_persist=_skip_cog_persist)
+
+    def _save_data_impl(self, _skip_cog_persist: bool = False):
+        """Internal implementation of save_data, called under _data_lock."""
         # Ensure canonical pomodoro structure before saving
         self._normalize_loaded_data()
         self.record_progress_snapshot()
@@ -13804,7 +13858,7 @@ class StudyPlanEngine:
                 os.makedirs(data_dir, mode=0o700, exist_ok=True)
                 self._secure_path_permissions(data_dir, 0o700)
             except Exception:
-                pass
+                logger.warning("save_data: failed to create/secure data dir %s", data_dir, exc_info=True)
 
         # Backup before overwriting (data and questions so recovery has both)
         self._backup_file(self.DATA_FILE)
@@ -13815,16 +13869,22 @@ class StudyPlanEngine:
 
         # Write migration/health log if needed
         self._append_health_log()
-        try:
-            self.persist_cognitive_state()
-        except Exception as exc:
-            try:
-                state = getattr(self, "cognitive_state", None)
-                if isinstance(state, CognitiveState):
-                    state.last_persist_ok = False
-                    state.last_persist_error = str(exc)
-            except Exception:
-                pass
+        # Throttle cognitive state persistence to at most once per 30s,
+        # unless _skip_cog_persist is set (e.g. during engine init).
+        if not _skip_cog_persist:
+            now = time.time()
+            if now - self._last_cog_persist_time >= 30.0:
+                self._last_cog_persist_time = now
+                try:
+                    self.persist_cognitive_state()
+                except Exception as exc:
+                    try:
+                        state = getattr(self, "cognitive_state", None)
+                        if isinstance(state, CognitiveState):
+                            state.last_persist_ok = False
+                            state.last_persist_error = str(exc)
+                    except Exception:
+                        logger.warning("save_data: failed to record cog-persist error", exc_info=True)
 
     def _backup_file(self, path: str) -> None:
         """Create/refresh a .bak backup of the data file."""
@@ -13867,7 +13927,7 @@ class StudyPlanEngine:
                 f.write(json.dumps(payload) + "\n")
             self._secure_path_permissions(path, 0o600)
         except Exception:
-            pass
+            logger.warning("Failed to write coach debug log", exc_info=True)
 
     def _write_rolling_backup(self, path: str, payload: bytes) -> None:
         """Write timestamped backup snapshots and keep only the most recent N."""
@@ -14069,6 +14129,7 @@ class StudyPlanEngine:
         explanation: str | None = None,
         template_ref: str | None = None,
         template_inputs: dict | None = None,
+        learner_workings: str | None = None,
     ) -> dict:
         """Run the reasoning engine and return a serialisable trace dict.
 
@@ -14088,6 +14149,7 @@ class StudyPlanEngine:
                 explanation=explanation,
                 template_ref=template_ref,
                 template_inputs=template_inputs,
+                learner_workings=learner_workings,
             )
             return trace.to_dict()
         except Exception:

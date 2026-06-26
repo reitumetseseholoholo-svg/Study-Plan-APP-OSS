@@ -157,6 +157,7 @@ PRACTICE_LOOP_TRANSITIONS = [
     StateTransition(PracticeLoopFsmState.ASSESSING, PracticeLoopEvent.ASSESSMENT_CORRECT, PracticeLoopFsmState.SCORED, action="update_posterior_alpha"),
     StateTransition(PracticeLoopFsmState.ASSESSING, PracticeLoopEvent.ASSESSMENT_INCORRECT, PracticeLoopFsmState.SCORED, action="update_posterior_beta"),
     StateTransition(PracticeLoopFsmState.ASSESSING, PracticeLoopEvent.ASSESSMENT_PARTIAL, PracticeLoopFsmState.SCORED, action="update_posterior_partial"),
+    StateTransition(PracticeLoopFsmState.ASSESSING, PracticeLoopEvent.TIMEOUT, PracticeLoopFsmState.ERROR),
     StateTransition(PracticeLoopFsmState.SCORED, PracticeLoopEvent.REFLECTION_REQUESTED, PracticeLoopFsmState.REFLECTING),
     StateTransition(PracticeLoopFsmState.SCORED, PracticeLoopEvent.TRANSFER_TEST_START, PracticeLoopFsmState.TRANSFER_TESTING),
     StateTransition(PracticeLoopFsmState.REFLECTING, PracticeLoopEvent.QUIZ_END, PracticeLoopFsmState.IDLE),

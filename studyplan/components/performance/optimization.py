@@ -150,14 +150,11 @@ class PerformanceMiddleware:
         if cache_type is None:
             self.cache.clear()
         elif cache_type == 'cognitive':
-            # Clear cognitive state cache (implementation would need to be added to cache service)
-            pass
+            self.cache.clear_prefix("cognitive_state:")
         elif cache_type == 'hint':
-            # Clear hint strategy cache (implementation would need to be added to cache service)
-            pass
+            self.cache.clear_prefix("hint_strategy:")
         elif cache_type == 'ui':
-            # Clear UI render cache (implementation would need to be added to cache service)
-            pass
+            self.cache.clear_prefix("ui_render:")
     
     def get_cache_stats(self) -> dict:
         """

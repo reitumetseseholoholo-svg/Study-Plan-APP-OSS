@@ -26,6 +26,7 @@ SMOKE_KPI_THRESHOLDS: dict[str, dict[str, Any]] = {
     "coach_only_toggle_integrity_rate": {"op": "==", "value": 1.0},
     "coach_next_burst_integrity_rate": {"op": "==", "value": 1.0},
     "ui_trigger_integrity_rate": {"op": "==", "value": 1.0},
+    "log_error_count": {"op": "==", "value": 0.0},
 }
 
 SOAK_REPORT_PATH = os.path.join(Config.CONFIG_HOME, "soak_last.json")

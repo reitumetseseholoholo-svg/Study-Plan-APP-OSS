@@ -84,8 +84,8 @@ class ModelSelector:
             return []
 
         candidates = list(models)
-        if self.ram_budget_bytes > 0:
-            overhead = 500_000_000  # ~500MB for llama-server runtime
+        overhead = 500_000_000  # ~500MB for llama-server runtime
+        if self.ram_budget_bytes > overhead:
             available = self.ram_budget_bytes - overhead
             fitting = [m for m in models if m.size_bytes <= available]
             if fitting:

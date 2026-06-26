@@ -973,6 +973,56 @@ declare_formula("fm.asset_turnover",
     structure_types=["working_capital_cycle"],
 )
 
+# --- Working capital efficiency ratios (common in Section C) ---
+
+declare_formula("fm.receivables_days",
+    expression="receivables / credit_sales * 365",
+    patterns=[
+        r"\breceivable.*day[s]?\b", r"\breceivable.*collection\b",
+        r"\bdebtor.*day[s]?\b", r"\breceivable.*period\b",
+    ],
+    param_names=["receivables", "credit_sales"],
+    param_kinds=["value", "value"],
+    label="Receivables collection period (days)",
+    output_slot="receivables_days",
+    diagnostic_tags=["receivables_error", "sales_error"],
+    centrality=0.55,
+    chapter_refs=["working_capital"],
+    structure_types=["working_capital_cycle"],
+)
+
+declare_formula("fm.payables_days",
+    expression="payables / credit_purchases * 365",
+    patterns=[
+        r"\bpayable.*day[s]?\b", r"\bpayable.*payment\b",
+        r"\bcreditor.*day[s]?\b", r"\bpayable.*period\b",
+    ],
+    param_names=["payables", "credit_purchases"],
+    param_kinds=["value", "value"],
+    label="Payables payment period (days)",
+    output_slot="payables_days",
+    diagnostic_tags=["payables_error", "purchases_error"],
+    centrality=0.55,
+    chapter_refs=["working_capital"],
+    structure_types=["working_capital_cycle"],
+)
+
+declare_formula("fm.inventory_days",
+    expression="inventory / cost_of_sales * 365",
+    patterns=[
+        r"\binventory.*day[s]?\b", r"\binventory.*holding\b",
+        r"\bstock.*day[s]?\b", r"\binventory.*period\b",
+    ],
+    param_names=["inventory", "cost_of_sales"],
+    param_kinds=["value", "value"],
+    label="Inventory holding period (days)",
+    output_slot="inventory_days",
+    diagnostic_tags=["inventory_error", "cost_error"],
+    centrality=0.55,
+    chapter_refs=["working_capital"],
+    structure_types=["working_capital_cycle"],
+)
+
 # --- Multi-step chains ---
 
 declare_formula_chain("fm.cost_equity_capm_to_wacc",

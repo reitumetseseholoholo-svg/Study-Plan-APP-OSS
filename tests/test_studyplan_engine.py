@@ -2852,7 +2852,6 @@ def test_semantic_cache_is_bounded(engine_no_io):
     eng.SEMANTIC_CACHE_MAX = 3
     for idx in range(6):
         eng._semantic_cache_set(f"k{idx}", f"v{idx}", "fallback", 1.0)
-    assert len(eng._semantic_match_cache_order) <= 3
     assert len(eng._semantic_match_cache) <= 3
 
 

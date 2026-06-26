@@ -74,9 +74,20 @@ class PerformanceCacheService:
         }
 
     def _estimate_rag_doc_payload(self, value: Any) -> tuple[int, int]:
-        """Return approximate (chunk_count, byte_count) for in-memory rag_doc payloads."""
+        """Return approximate (chunk_count, byte_count) for in-memory rag_doc payloads.
+
+        Handles two storage formats:
+        - Full payload: ``{"chunks": [{"text": ...}, ...], ...}``
+        - Meta reference: ``{"_rag_doc_ref": "disk", "chunk_count": N, ...}``
+        """
         if not isinstance(value, dict):
             return 0, 0
+        # Meta-reference entry – use the pre-computed chunk_count.
+        ref = value.get("_rag_doc_ref")
+        if ref == "disk":
+            cc = int(value.get("chunk_count", 0) or 0)
+            return max(0, cc), 0
+        # Full-payload entry – count chunks inline.
         rows = value.get("chunks", [])
         if not isinstance(rows, list) or not rows:
             return 0, 0

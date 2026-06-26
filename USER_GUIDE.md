@@ -1,6 +1,8 @@
-# User Guide — Study Assistant
+# User Guide — Study Workbench
 
-This guide walks you through using Study Assistant day-to-day: setting up your module, running study sessions, using the AI tutor, and getting the most out of the adaptive coaching features.
+This guide walks you through using Study Workbench day-to-day: setting up your module, running study sessions, using the AI tutor, and getting the most out of the adaptive coaching and autopilot features.
+
+> **Study Workbench** is a self-contained desktop study environment for professional exam preparation — combining an adaptive coach, AI tutor, spaced repetition, Pomodoro focus timer, and semi-autonomous autopilot into a single GTK4 application. Module-agnostic: load any professional syllabus and the whole system adapts to it.
 
 ## Table of Contents
 
@@ -35,7 +37,7 @@ python studyplan_app.py
 python studyplan_app.py 2026-12-01
 ```
 
-On first launch the app creates `~/.config/studyplan/` and initialises data files for the default module (`acca_f9` / Financial Management). A single-instance lock prevents two copies from running simultaneously.
+On first launch the app creates `~/.config/studyplan/` and initialises data files for the default module (`acca_f9` / Financial Management). A single-instance lock prevents two copies from running simultaneously. The app opens into the **Workbench** — a tabbed desktop with Dashboard, Tutor, Coach, Insights, and Settings pages.
 
 > **If the app won't start after a crash**, remove the stale lock:
 > ```bash
@@ -185,6 +187,28 @@ The full briefing shows:
 ## The AI Tutor (Ollama / Cloud)
 
 The AI tutor gives explanations, worked examples, and revision drills in a chat interface.
+
+### Understanding AI status indicators
+
+The bottom status bar shows live AI health:
+
+- **First label**: Shows the current page, topic, model, autopilot mode, and connectivity (`Net on` or `Net off`)
+- **Second label**: Model readiness — `disabled`, `unavailable`, `recovering`, `not loaded`, `syncing`, or `ready`. When cloud AI is enabled, also shows `Cloud: ready` or `Cloud: circuit open`
+- **Third label**: App health — `Ready`, `Offline`, `Sync issue`, `Recovery mode`, or `Cloud circuit open`
+
+If the cloud circuit breaker is open (after 3 consecutive failures), the app falls back to local AI silently. The status bar shows `Cloud: circuit open (Xs)` to inform you.
+
+### Connectivity policy
+
+In **Preferences → Cloud AI**, you can override how the app detects internet connectivity:
+
+| Setting | Behaviour |
+|---------|-----------|
+| **auto** (default) | Probes connectivity via TCP (1.1.1.1:443, 8.8.8.8:53). Cloud AI available when online. |
+| **online** | Forces cloud AI on — skips the probe. Use if you know you're online but the probe is blocked by a firewall. |
+| **offline** | Forces local-only mode — no cloud requests are attempted, regardless of actual connectivity. |
+
+This can also be set via the `STUDYPLAN_CLOUD_CONNECTIVITY_POLICY` environment variable with values `force_online` or `force_offline`. The Preferences setting takes precedence.
 
 ### Setting up a local model (Ollama)
 
@@ -489,8 +513,10 @@ The app creates automatic rolling backups (up to 20) every time data is saved. I
 | PDF import missing | Install `PyMuPDF`: `pip install pymupdf` |
 | Enhanced OCR not active | Install `pytesseract`, `Pillow`, `numpy`, `scikit-image` and the `tesseract` binary |
 | AI tutor can't find a model | Check Ollama is running: `ollama serve` |
+| Cloud AI not connecting | Check status bar for `Net off` or `Cloud: circuit open`. Try setting policy to `online` in Preferences → Cloud AI. |
 | Semantic map shows fallback | Install `sentence-transformers`: `pip install sentence-transformers` |
 | Focus tracking unavailable | Install `hyprctl` (Hyprland only) |
 | Notifications not showing | Enable in **Preferences → Notifications** |
 | Data file failed to load | Use **File → Recover from Snapshot…** |
 | Slow quiz after answer | Expected: lightweight per-question updates; full refresh only on quiz completion |
+| Diagnose crashes | Check `~/.config/studyplan/app.log` (text) and `app.jsonl` (structured JSON) for error traces |

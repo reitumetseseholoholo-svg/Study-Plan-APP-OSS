@@ -63,9 +63,14 @@ class UIBuilder:
         
         return lbl
 
-    def section_title(self, text: str) -> Gtk.Label:
-        """Create a section title label."""
-        return self.label(text, css_classes=["section-title"])
+    def section_title(self, text: str, *, max_width_chars: int = 120) -> Gtk.Label:
+        """Create a section title label with ellipsizing."""
+        return self.label(
+            text,
+            css_classes=["section-title"],
+            ellipsize=Pango.EllipsizeMode.END,
+            max_width_chars=max_width_chars,
+        )
 
     def muted_label(self, text: str = "", halign: Gtk.Align = Gtk.Align.START) -> Gtk.Label:
         """Create a muted/info label."""

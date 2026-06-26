@@ -161,7 +161,7 @@ _ARCH_BONUS: dict[str, float] = {
 def score_quality(model_name: str, purpose_tier: str, *,
                   param_b: float = 0.0,
                   quant: str = "",
-                  is_instruct: bool = False,
+                  is_instruct: bool | None = None,
                   arch: str = "") -> float:
     """Return a higher-is-better quality score for *model_name*.
 
@@ -346,7 +346,7 @@ def pick_best(models: list[str], purpose: str, *,
         scored.append((q + headroom, need or 0, name))
 
     if not scored:
-        return models[0]
+        return None
 
     scored.sort(key=lambda row: (-row[0], row[1], row[2]))
     return scored[0][2]
