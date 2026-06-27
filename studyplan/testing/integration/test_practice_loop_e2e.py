@@ -1,5 +1,3 @@
-import time
-
 from studyplan.services import DeterministicTutorPracticeService, DeterministicTutorAssessmentService
 from studyplan.contracts import (
     TutorSessionState,
@@ -45,7 +43,9 @@ def _assert_guidance_contract(guidance: dict):
 def test_practice_loop_simulation():
     session = TutorSessionState(session_id="s1", module="m", topic="T1")
     learner = TutorLearnerProfileSnapshot(learner_id="u1", module="m")
-    app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
+    app_snap = AppStateSnapshot(
+        module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0
+    )
 
     practice_service = DeterministicTutorPracticeService()
     assess_service = DeterministicTutorAssessmentService()
@@ -76,13 +76,17 @@ def test_practice_loop_lifecycle():
     """Full lifecycle: build items → submit → assess → FSM transition → state update."""
     perf = PerformanceMonitor(enabled=True)
     controller = PracticeLoopController(perf_monitor=perf)
-    
+
     cog_state = CognitiveState()
     session = TutorSessionState(session_id="s2", module="m", topic="T1", mode="guided_practice")
     learner = TutorLearnerProfileSnapshot(learner_id="u2", module="m")
-    app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
+    app_snap = AppStateSnapshot(
+        module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0
+    )
 
-    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    loop = PracticeLoopSessionState(
+        cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap
+    )
 
     # Step 1: Build items
     items = controller.build_practice_items(loop, max_items=2)
@@ -90,7 +94,9 @@ def test_practice_loop_lifecycle():
 
     # Step 2: Submit correct answer to first item
     item = items[0]
-    answer = item.meta.get("correct_option", "A") if item.item_type == "mcq" else " ".join(item.meta.get("keywords", []))
+    answer = (
+        item.meta.get("correct_option", "A") if item.item_type == "mcq" else " ".join(item.meta.get("keywords", []))
+    )
     submission = TutorAssessmentSubmission(item_id=item.item_id, answer_text=answer)
     result = controller.submit_attempt(loop, item, submission)
     assert result.outcome in {"correct", "partial"}
@@ -112,13 +118,17 @@ def test_practice_loop_error_recovery():
     """Test handling of incorrect attempts and recovery path."""
     perf = PerformanceMonitor(enabled=True)
     controller = PracticeLoopController(perf_monitor=perf)
-    
+
     cog_state = CognitiveState()
     session = TutorSessionState(session_id="s3", module="m", topic="T1")
     learner = TutorLearnerProfileSnapshot(learner_id="u3", module="m")
-    app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
+    app_snap = AppStateSnapshot(
+        module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0
+    )
 
-    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    loop = PracticeLoopSessionState(
+        cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap
+    )
 
     items = controller.build_practice_items(loop, max_items=2)
     item = items[0]
@@ -142,8 +152,12 @@ def test_practice_loop_runtime_fsm_tracks_present_submit_score_and_end():
     cog_state = CognitiveState()
     session = TutorSessionState(session_id="s-fsm-1", module="m", topic="T1", mode="guided_practice")
     learner = TutorLearnerProfileSnapshot(learner_id="u-fsm-1", module="m")
-    app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
-    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    app_snap = AppStateSnapshot(
+        module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0
+    )
+    loop = PracticeLoopSessionState(
+        cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap
+    )
 
     item = controller.build_practice_items(loop, max_items=1)[0]
     controller.present_practice_item(loop, item, restart=True, source="test_present")
@@ -153,7 +167,9 @@ def test_practice_loop_runtime_fsm_tracks_present_submit_score_and_end():
     controller.get_next_hint(loop, item, has_attempted=False)
     assert loop.practice_fsm_state == PracticeLoopFsmState.AWAITING_SUBMISSION.value
 
-    answer = item.meta.get("correct_option", "A") if item.item_type == "mcq" else " ".join(item.meta.get("keywords", []))
+    answer = (
+        item.meta.get("correct_option", "A") if item.item_type == "mcq" else " ".join(item.meta.get("keywords", []))
+    )
     result = controller.submit_attempt(loop, item, TutorAssessmentSubmission(item_id=item.item_id, answer_text=answer))
     assert result.outcome in {"correct", "partial"}
     assert loop.practice_fsm_state == PracticeLoopFsmState.SCORED.value
@@ -169,8 +185,12 @@ def test_practice_loop_runtime_fsm_tracks_transfer_variant_path():
     cog_state = CognitiveState()
     session = TutorSessionState(session_id="s-fsm-2", module="m", topic="T1", mode="guided_practice")
     learner = TutorLearnerProfileSnapshot(learner_id="u-fsm-2", module="m")
-    app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
-    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    app_snap = AppStateSnapshot(
+        module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0
+    )
+    loop = PracticeLoopSessionState(
+        cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap
+    )
 
     base_item = controller.build_practice_items(loop, max_items=1)[0]
     controller.present_practice_item(loop, base_item, restart=True, source="test_base_present")
@@ -209,12 +229,16 @@ def test_practice_loop_tutor_gating():
     """Verify tutor only proposes items when quiz is active."""
     session = TutorSessionState(session_id="s4", module="m", topic="T1")
     learner = TutorLearnerProfileSnapshot(learner_id="u4", module="m")
-    app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
+    app_snap = AppStateSnapshot(
+        module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0
+    )
 
     cog_state = CognitiveState()
     # Quiz NOT active
     cog_state.quiz_active = False
-    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    loop = PracticeLoopSessionState(
+        cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap
+    )
 
     controller = PracticeLoopController()
 
@@ -237,8 +261,12 @@ def test_practice_loop_recommends_transfer_after_strong_correct():
     cog_state = CognitiveState()
     session = TutorSessionState(session_id="s5", module="m", topic="T1")
     learner = TutorLearnerProfileSnapshot(learner_id="u5", module="m")
-    app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
-    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    app_snap = AppStateSnapshot(
+        module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0
+    )
+    loop = PracticeLoopSessionState(
+        cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap
+    )
 
     item = controller.build_practice_items(loop, max_items=1)[0]
     post = loop.cognitive_state.get_structure_posterior(item.topic)
@@ -273,8 +301,12 @@ def test_practice_loop_recommends_light_intervention_after_partial():
     cog_state = CognitiveState()
     session = TutorSessionState(session_id="s6p", module="m", topic="T1")
     learner = TutorLearnerProfileSnapshot(learner_id="u6p", module="m")
-    app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
-    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    app_snap = AppStateSnapshot(
+        module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0
+    )
+    loop = PracticeLoopSessionState(
+        cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap
+    )
 
     item = controller.build_practice_items(loop, max_items=1)[0]
     result = TutorAssessmentResult(
@@ -299,8 +331,12 @@ def test_practice_loop_recommends_remediation_after_incorrect():
     cog_state = CognitiveState()
     session = TutorSessionState(session_id="s6", module="m", topic="T1")
     learner = TutorLearnerProfileSnapshot(learner_id="u6", module="m")
-    app_snap = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
-    loop = PracticeLoopSessionState(cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap)
+    app_snap = AppStateSnapshot(
+        module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0
+    )
+    loop = PracticeLoopSessionState(
+        cognitive_state=cog_state, session_state=session, learner_profile=learner, app_snapshot=app_snap
+    )
 
     item = controller.build_practice_items(loop, max_items=1)[0]
     result = controller.submit_attempt(loop, item, TutorAssessmentSubmission(item_id=item.item_id, answer_text="wrong"))

@@ -22,10 +22,26 @@ class EoqTemplate(FormulaTemplate):
         numerator = 2 * d * o
         steps: list[dict[str, Any]] = [
             {"step_id": "two_d_o", "description": "2 × D × O", "value": numerator, "formula": f"2*{d}*{o}"},
-            {"step_id": "dividend", "description": "(2 × D × O) / H", "value": numerator / h, "formula": f"{numerator}/{h}"},
-            {"step_id": "eoq", "description": "EOQ = sqrt((2 × D × O) / H)", "value": result, "formula": f"sqrt({numerator}/{h})"},
+            {
+                "step_id": "dividend",
+                "description": "(2 × D × O) / H",
+                "value": numerator / h,
+                "formula": f"{numerator}/{h}",
+            },
+            {
+                "step_id": "eoq",
+                "description": "EOQ = sqrt((2 × D × O) / H)",
+                "value": result,
+                "formula": f"sqrt({numerator}/{h})",
+            },
         ]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

@@ -6,7 +6,6 @@ Toggle at startup via ``STUDYPLAN_PERF_TRACE=1``; output goes to stderr.
 
 import os
 import sys
-import time
 import threading
 import traceback
 from collections import Counter
@@ -134,7 +133,7 @@ def _collapse_python_stack(stack: str) -> str:
     """Keep the most instructive frame from a Python traceback."""
     if not stack:
         return "?"
-    lines = [l.strip() for l in stack.strip().splitlines() if l.strip()]
+    lines = [line.strip() for line in stack.strip().splitlines() if line.strip()]
     if not lines:
         return "?"
     # The last meaningful line is usually the innermost call.

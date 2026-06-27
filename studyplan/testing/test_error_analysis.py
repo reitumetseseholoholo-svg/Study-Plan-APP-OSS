@@ -1,5 +1,4 @@
 """Tests for studyplan.error_analysis module."""
-import pytest
 
 from studyplan.error_analysis import (
     ErrorAnalysis,
@@ -127,9 +126,7 @@ def _make_conceptual_error() -> ErrorAnalysis:
 
 
 def _make_procedural_error_with_misc(misc_id: str) -> ErrorAnalysis:
-    misc = Misconception(
-        id=misc_id, name="test", description="desc", correct_idea="idea"
-    )
+    misc = Misconception(id=misc_id, name="test", description="desc", correct_idea="idea")
     return ErrorAnalysis(category=ErrorCategory.PROCEDURAL, misconception=misc, confidence=0.8)
 
 

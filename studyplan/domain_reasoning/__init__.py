@@ -45,6 +45,20 @@ from studyplan.domain_reasoning.formula_registry import (
     declare_formula_chain,
 )
 
+from studyplan.domain_reasoning.auto_declare import (
+    ProposedFormula,
+    ValidationResult,
+    FormulaDiscoveryResult,
+    run_auto_discovery,
+    extract_computational_outcomes,
+    gather_questions_for_outcome,
+    build_llm_prompt,
+    parse_llm_response,
+    validate_proposal,
+    register_proposal,
+    _default_question_filter,
+)
+
 from studyplan.domain_reasoning.concept_types import (
     RuleChainTemplate,
     RuleChainStep,
@@ -81,6 +95,16 @@ __all__ = [
     "declare_concept",
     "declare_formula",
     "declare_formula_chain",
+    "ProposedFormula",
+    "ValidationResult",
+    "FormulaDiscoveryResult",
+    "run_auto_discovery",
+    "extract_computational_outcomes",
+    "gather_questions_for_outcome",
+    "build_llm_prompt",
+    "parse_llm_response",
+    "validate_proposal",
+    "register_proposal",
     "RuleChainTemplate",
     "RuleChainStep",
     "Rule",

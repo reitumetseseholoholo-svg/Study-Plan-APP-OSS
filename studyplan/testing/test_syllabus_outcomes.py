@@ -1,7 +1,7 @@
 """Tests for syllabus outcome completion (truncated detection and AI completion)."""
+
 from __future__ import annotations
 
-import pytest
 
 from studyplan.syllabus_outcomes import (
     complete_truncated_syllabus_outcomes,
@@ -27,7 +27,12 @@ def test_is_truncated_outcome_text_ends_mid_sentence() -> None:
 
 
 def test_is_truncated_outcome_text_long_no_period() -> None:
-    assert is_truncated_outcome_text("Explain the purpose of financial management and the role of the financial manager in the") is True
+    assert (
+        is_truncated_outcome_text(
+            "Explain the purpose of financial management and the role of the financial manager in the"
+        )
+        is True
+    )
     assert is_truncated_outcome_text("Explain the purpose of financial management.") is False
 
 
@@ -50,7 +55,10 @@ def test_complete_truncated_syllabus_outcomes_no_truncated() -> None:
     }
     out, n = complete_truncated_syllabus_outcomes(config, lambda p, m: "")
     assert n == 0
-    assert out["syllabus_structure"]["Ch1"]["learning_outcomes"][0]["text"] == "Explain the purpose of financial management."
+    assert (
+        out["syllabus_structure"]["Ch1"]["learning_outcomes"][0]["text"]
+        == "Explain the purpose of financial management."
+    )
 
 
 def test_complete_truncated_syllabus_outcomes_completes_one() -> None:
@@ -63,8 +71,10 @@ def test_complete_truncated_syllabus_outcomes_completes_one() -> None:
             },
         },
     }
+
     def mock_llm(prompt: str, max_tokens: int) -> str:
         return "Explain the purpose of financial management and the role of the financial manager."
+
     out, n = complete_truncated_syllabus_outcomes(config, mock_llm)
     assert n == 1
     assert "financial management" in out["syllabus_structure"]["Ch1"]["learning_outcomes"][0]["text"]

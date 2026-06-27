@@ -191,6 +191,7 @@ def analyze_outcome_count_regressions(
     {"chapter", "old", "new", "drop_ratio"} for chapters whose count dropped.
     Severe: drop_ratio >= severe_ratio (default 30%). Warn: >= warn_ratio (default 20%) but not severe.
     """
+
     def _ratio_from_env(key: str, default: float) -> float:
         raw = os.environ.get(key, "").strip()
         if not raw:
@@ -251,7 +252,9 @@ def reconfig_run_fingerprint(
         for p in chunk_paths
         if str(p).strip()
     )
-    raw = f"v{RECONFIG_CHECKPOINT_VERSION}|{ch}|{json.dumps(paths, ensure_ascii=True)}|{fast_mode}|{target_chapters_only}"
+    raw = (
+        f"v{RECONFIG_CHECKPOINT_VERSION}|{ch}|{json.dumps(paths, ensure_ascii=True)}|{fast_mode}|{target_chapters_only}"
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:48]
 
 
@@ -311,7 +314,7 @@ def compute_reconfig_confidence(
     chapter_set = set(chapter_list)
     total_outcomes = 0
     chapters_with_outcomes = 0
-    for ch, info in (structure or {}).items():
+    for _ch, info in (structure or {}).items():
         if not isinstance(info, dict):
             continue
         los = info.get("learning_outcomes")
@@ -422,7 +425,7 @@ def _all_chunk_texts(chunks_by_path: ChunksByPath, max_chars: int = 32000) -> st
     """Concatenate chunk texts from all paths, up to max_chars."""
     parts: list[str] = []
     total = 0
-    for path, chunks in chunks_by_path.items():
+    for _path, chunks in chunks_by_path.items():
         if total >= max_chars:
             break
         for c in chunks:
@@ -579,8 +582,20 @@ def _capability_from_chapter(chapter: str) -> str:
     if any(
         x in t
         for x in [
-            "ias ", "ifrs ", "impairment", "lease", "tax", "revenue", "instrument",
-            "ppe", "intangible", "inventor", "provision", "foreign", "government", "eps",
+            "ias ",
+            "ifrs ",
+            "impairment",
+            "lease",
+            "tax",
+            "revenue",
+            "instrument",
+            "ppe",
+            "intangible",
+            "inventor",
+            "provision",
+            "foreign",
+            "government",
+            "eps",
         ]
     ):
         return "B"
@@ -705,8 +720,13 @@ def reconfigure_from_rag(
         meta["reference_pdfs"] = [str(p).strip() for p in ref_pdfs if str(p).strip()]
     if llm_generate and not fast_mode:
         syllabus_meta_extracted = _extract_syllabus_meta(
-            full_text, syllabus_paths, chunks_by_path, llm_generate, meta,
-            max_context=5000, max_tokens=1024,
+            full_text,
+            syllabus_paths,
+            chunks_by_path,
+            llm_generate,
+            meta,
+            max_context=5000,
+            max_tokens=1024,
         )
         for k, v in syllabus_meta_extracted.items():
             if v is not None and (k not in meta or meta.get(k) in (None, "")):
@@ -743,7 +763,9 @@ def reconfigure_from_rag(
             _apply_importance_only(proposed)
             return proposed
 
-    existing_structure = (config.get("syllabus_structure") or {}) if isinstance(config.get("syllabus_structure"), dict) else {}
+    existing_structure = (
+        (config.get("syllabus_structure") or {}) if isinstance(config.get("syllabus_structure"), dict) else {}
+    )
     existing_by_chapter: dict[str, list[dict[str, Any]]] = {}
     for ch, info in existing_structure.items():
         if isinstance(info, dict) and isinstance(info.get("learning_outcomes"), list):
@@ -777,7 +799,9 @@ def reconfigure_from_rag(
         if raw_ch_to_cap is not None:
             chapter_to_capability = raw_ch_to_cap
         if isinstance(cap_map, dict) and cap_map:
-            proposed["capabilities"] = {str(k).strip().upper(): str(v).strip() for k, v in cap_map.items() if str(k).strip() and str(v).strip()}
+            proposed["capabilities"] = {
+                str(k).strip().upper(): str(v).strip() for k, v in cap_map.items() if str(k).strip() and str(v).strip()
+            }
         if isinstance(alias_map, dict) and alias_map:
             existing_aliases = proposed.get("aliases")
             if not isinstance(existing_aliases, dict):
@@ -969,9 +993,10 @@ def reconfigure_from_rag(
     # RAG subtopics: extract section/subtopic titles per chapter — skipped in fast_mode
     subtopics_by_chapter: dict[str, list[str]] = {}
     if not fast_mode and llm_generate:
-        subtopics_by_chapter = _extract_subtopics_by_chapter(
-            full_text, chapters_clean, llm_generate, max_context=5000, max_tokens=1024
-        ) or {}
+        subtopics_by_chapter = (
+            _extract_subtopics_by_chapter(full_text, chapters_clean, llm_generate, max_context=5000, max_tokens=1024)
+            or {}
+        )
 
     for ch in chapters_clean:
         if target_chapters_only and ch not in target_set:
@@ -1041,6 +1066,7 @@ def _extract_capabilities_and_aliases(
     context = full_text.strip()[:max_context]
     chapters_blob = "\n".join(f"- {ch}" for ch in chapters)
     from studyplan.ai.prompt_design import RECONFIG_CAPABILITIES_PROMPT_PREFIX
+
     prompt = (
         RECONFIG_CAPABILITIES_PROMPT_PREFIX
         + context
@@ -1049,6 +1075,7 @@ def _extract_capabilities_and_aliases(
     )
     try:
         from studyplan.ai.prompt_design import JSON_ONLY_NO_MARKDOWN
+
         prompt = prompt + "\n\n" + JSON_ONLY_NO_MARKDOWN
     except ImportError:
         prompt = prompt + "\n\nReturn only the JSON object. No markdown."
@@ -1115,6 +1142,7 @@ def _extract_subtopics_by_chapter(
     context = full_text.strip()[:max_context]
     chapters_blob = "\n".join(f"- {ch}" for ch in chapters)
     from studyplan.ai.prompt_design import RECONFIG_SUBTOPICS_PROMPT_PREFIX
+
     prompt = (
         RECONFIG_SUBTOPICS_PROMPT_PREFIX
         + context
@@ -1123,6 +1151,7 @@ def _extract_subtopics_by_chapter(
     )
     try:
         from studyplan.ai.prompt_design import JSON_ONLY_NO_MARKDOWN
+
         prompt = prompt + "\n\n" + JSON_ONLY_NO_MARKDOWN
     except ImportError:
         prompt = prompt + "\n\nReturn only the JSON object. No markdown."
@@ -1176,9 +1205,11 @@ def _extract_syllabus_meta(
         return out
     context = full_text.strip()[:max_context]
     from studyplan.ai.prompt_design import RECONFIG_SYLLABUS_META_PROMPT_PREFIX
+
     prompt = RECONFIG_SYLLABUS_META_PROMPT_PREFIX + context + "\n---"
     try:
         from studyplan.ai.prompt_design import JSON_ONLY_NO_MARKDOWN
+
         prompt = prompt + "\n\n" + JSON_ONLY_NO_MARKDOWN
     except ImportError:
         prompt = prompt + "\n\nReturn only the JSON object."
@@ -1290,12 +1321,13 @@ def _derive_chapters_from_rag_text(
         context = full_text.strip()[:max_context]
         prompt = (
             "You are parsing a syllabus or study guide. List the main section or chapter titles only, one per line.\n"
-            "Return a JSON object with a single key \"sections\" and value a list of strings (the titles in order).\n"
+            'Return a JSON object with a single key "sections" and value a list of strings (the titles in order).\n'
             "Use only the excerpt as evidence. Return only the JSON, no markdown.\n"
             "Excerpt:\n---\n" + context + "\n---"
         )
         try:
             from studyplan.ai.prompt_design import JSON_ONLY_NO_MARKDOWN
+
             prompt = prompt + "\n\n" + JSON_ONLY_NO_MARKDOWN
         except ImportError:
             pass

@@ -330,9 +330,7 @@ def summarize_for_logging() -> dict[str, Any]:
         "llama_ctx_hint": default_llama_server_ctx_size(),
         "llama_idle_shutdown_s_hint": default_llama_server_idle_shutdown_seconds(),
         "perf_cache_max_hint": default_performance_cache_max_size(),
-        "perf_cache_rag_doc_mode_hint": str(
-            default_performance_cache_rag_doc_store_mode()
-        ),
+        "perf_cache_rag_doc_mode_hint": str(default_performance_cache_rag_doc_store_mode()),
         "tutor_rag_sources_hint": default_ai_tutor_rag_max_sources(),
         "tutor_rag_ingest_max_chunks_hint": default_ai_tutor_rag_ingest_max_chunks(),
         "tutor_max_response_chars_hint": default_ai_tutor_max_response_chars(),

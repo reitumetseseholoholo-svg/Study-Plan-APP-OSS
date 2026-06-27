@@ -2,6 +2,7 @@
 """Simple GTK4 lint: flags common GTK3 APIs in .py files.
 Heuristic filters are included to avoid false positives with our wrappers.
 """
+
 from __future__ import annotations
 import re
 import sys

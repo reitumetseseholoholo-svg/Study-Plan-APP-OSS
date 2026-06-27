@@ -19,9 +19,20 @@ class PerpetuityNpvTemplate(FormulaTemplate):
         result = self._solver(cf, r)
 
         steps: list[dict[str, Any]] = [
-            {"step_id": "perpetuity_npv", "description": "PV = Annual CF / Discount rate", "value": result, "formula": f"{cf}/{r}"},
+            {
+                "step_id": "perpetuity_npv",
+                "description": "PV = Annual CF / Discount rate",
+                "value": result,
+                "formula": f"{cf}/{r}",
+            },
         ]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

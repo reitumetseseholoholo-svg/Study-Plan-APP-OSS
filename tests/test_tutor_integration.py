@@ -5,17 +5,16 @@ Comprehensive integration tests for tutor subsystems:
 - Autopilot-RAG interaction
 - Event scheduling and cleanup
 """
+
 from __future__ import annotations
 
-import time
-from unittest.mock import MagicMock, Mock, patch
-
-import pytest
+from unittest.mock import patch
 
 
 # ============================================================================
 # RAG Pipeline Tests
 # ============================================================================
+
 
 class TestRAGPipeline:
     """Test RAG document loading, chunking, retrieval."""
@@ -83,10 +82,10 @@ class TestRAGPipeline:
         # Simulate large document with many chunks
         chunks = [{"text": "x " * 500} for _ in range(10)]  # 5000 words total
         doc = {"chunks": chunks}
-        
+
         max_context_tokens = 2000
         rag_chunks = _apply_context_budget(doc["chunks"], max_context_tokens)
-        
+
         # Should have truncated to fit budget
         total_tokens = sum(len(c.get("text", "").split()) for c in rag_chunks)
         assert total_tokens <= max_context_tokens + 100  # small tolerance
@@ -102,17 +101,18 @@ class TestRAGPipeline:
 # Embeddings Generation & Caching Tests
 # ============================================================================
 
+
 class TestEmbeddingsPipeline:
     """Test embedding generation and cache invalidation."""
 
     def test_embeddings_cache_hit(self):
         """Same text should return cached embedding."""
         text = "This is a question about ACCA"
-        
+
         # First call
         emb1 = _get_embedding(text)
         assert emb1 is not None
-        
+
         # Second call should be cached
         emb2 = _get_embedding(text)
         assert emb1 == emb2
@@ -121,31 +121,31 @@ class TestEmbeddingsPipeline:
         """Different text should produce different embedding."""
         text1 = "Question A"
         text2 = "Question B"
-        
+
         emb1 = _get_embedding(text1)
         emb2 = _get_embedding(text2)
-        
+
         # Embeddings should differ
         assert emb1 != emb2
 
     def test_embeddings_cache_invalidation_on_document_change(self):
         """When document changes, embedding cache should be invalidated."""
         text = "Question about document X"
-        
+
         # Get initial embedding
-        emb1 = _get_embedding(text)
+        _get_embedding(text)
         assert not _embedding_cache_is_empty()
-        
+
         # Simulate document change
         _invalidate_embedding_cache()
-        
+
         # Cache should be cleared after invalidation
         assert _embedding_cache_is_empty()
 
     def test_embeddings_empty_text(self):
         """Empty text should not crash embedding pipeline."""
         text = ""
-        emb = _get_embedding(text)
+        _get_embedding(text)
         # Should handle gracefully (no crash)
         assert True
 
@@ -160,6 +160,7 @@ class TestEmbeddingsPipeline:
 # Autopilot-RAG Interaction Tests
 # ============================================================================
 
+
 class TestAutopilotRAGIntegration:
     """Test autopilot behavior under RAG operations."""
 
@@ -168,24 +169,24 @@ class TestAutopilotRAGIntegration:
         with patch("tests.test_tutor_integration._simulate_rag_retrieval") as mock_rag:
             # Simulate RAG timeout
             mock_rag.side_effect = TimeoutError("RAG query timeout")
-            
+
             try:
                 _autopilot_with_rag_context("topic", timeout_sec=2)
                 # Should handle timeout gracefully
             except TimeoutError:
                 pass
-            
+
             assert True  # Should reach here without hanging
 
     def test_autopilot_rag_concurrent_calls(self):
         """Multiple autopilot-RAG calls should not cause race conditions."""
         queries = ["What is X?", "Explain Y", "Define Z"]
         results = []
-        
+
         for q in queries:
             result = _autopilot_with_rag_context("topic", query=q)
             results.append(result)
-        
+
         assert len(results) == len(queries)
 
     def test_autopilot_rag_context_budget_shared(self):
@@ -193,31 +194,32 @@ class TestAutopilotRAGIntegration:
         # Enable context budget enforcement
         budget = 2000
         rag_chunks = [{"text": "chunk" * 100}] * 10  # many chunks
-        
+
         allocated = _allocate_rag_context(rag_chunks, budget)
         total_tokens = sum(len(c.get("text", "").split()) for c in allocated)
-        
+
         assert total_tokens <= budget + 100
 
     def test_autopilot_skip_reason_with_rag_timeout(self):
         """Autopilot skip reason should be recorded when RAG times out."""
+
         # Test that timeout exception is caught and skip_reason is set
         def rag_that_times_out(query, docs):
             raise TimeoutError("RAG query timeout")
-        
+
         skip_reason = None
         try:
             rag_that_times_out("test", [])
         except TimeoutError:
             skip_reason = "rag_timeout"
-        
+
         assert skip_reason == "rag_timeout"
 
     def test_autopilot_rag_empty_retrieval_result(self):
         """Autopilot should handle empty RAG retrieval gracefully."""
         with patch("tests.test_tutor_integration._simulate_rag_retrieval") as mock_rag:
             mock_rag.return_value = []
-            
+
             result = _autopilot_with_rag_context("topic")
             # Should not crash with empty result
             assert result is not None or result is None
@@ -226,6 +228,7 @@ class TestAutopilotRAGIntegration:
 # ============================================================================
 # Event Scheduling & Cleanup Tests
 # ============================================================================
+
 
 class TestEventScheduling:
     """Test GLib event scheduling, cleanup, and memory leaks."""
@@ -244,10 +247,10 @@ class TestEventScheduling:
     def test_event_scheduling_timer_cancellation(self):
         """Scheduled event should be cancellable without dangling references."""
         event_id = _schedule_event(interval_ms=5000)
-        
+
         # Cancel immediately
         _cancel_event(event_id)
-        
+
         # Verify no lingering effects
         assert not _is_event_active(event_id)
 
@@ -258,7 +261,7 @@ class TestEventScheduling:
             for i in range(5):
                 event_id = _schedule_event(interval_ms=1000 * (i + 1))
                 events.append(event_id)
-            
+
             # All should be active
             for eid in events:
                 assert _is_event_active(eid)
@@ -269,25 +272,25 @@ class TestEventScheduling:
     def test_event_scheduling_no_duplicate_timers(self):
         """Rescheduling should cancel previous timer, not create duplicate."""
         event_id_1 = _schedule_event(interval_ms=1000)
-        
+
         # Reschedule same event (would cancel old one in real implementation)
         _cancel_event(event_id_1)
         event_id_2 = _schedule_event(interval_ms=1000)
-        
+
         # Old timer should be cancelled
         assert not _is_event_active(event_id_1)
         assert _is_event_active(event_id_2)
-        
+
         _cancel_event(event_id_2)
 
     def test_question_generation_scheduling_no_leak(self):
         """Automatic question generation timer should clean up properly."""
         event_id = _schedule_question_generation(interval_ms=5000)
-        
+
         # Simulate several firing cycles
         for _ in range(3):
             _fire_question_generation_event(event_id)
-        
+
         # Cancel and verify no resource leak
         _cancel_event(event_id)
         assert not _is_event_active(event_id)
@@ -298,14 +301,14 @@ class TestEventScheduling:
         try:
             for i in range(3):
                 events.append(_schedule_event(interval_ms=1000 * (i + 1)))
-            
+
             # All active
             for eid in events:
                 assert _is_event_active(eid)
-            
+
             # Simulate dialog close
             _cancel_all_events(events)
-            
+
             # All should be cancelled
             for eid in events:
                 assert not _is_event_active(eid)
@@ -318,17 +321,18 @@ class TestEventScheduling:
         # First open
         event1 = _schedule_event(interval_ms=1000)
         _cancel_event(event1)
-        
+
         # Reopen
         event2 = _schedule_event(interval_ms=1000)
         assert _is_event_active(event2)
-        
+
         _cancel_event(event2)
 
 
 # ============================================================================
 # Dialog UI Integration Tests
 # ============================================================================
+
 
 class TestDialogUIIntegration:
     """Test dialog layout and integration with tutor systems."""
@@ -338,7 +342,7 @@ class TestDialogUIIntegration:
         # Simulated dialog layout
         dialog_height = 620
         required_space = _calculate_dialog_widget_space()
-        
+
         # Should fit within dialog
         assert required_space <= dialog_height
 
@@ -346,14 +350,14 @@ class TestDialogUIIntegration:
         """Response area should scroll when content exceeds available space."""
         response_box_height = 260  # min_height
         content_height = 500
-        
+
         can_scroll = _is_scrollable(response_box_height, content_height)
         assert can_scroll
 
     def test_dialog_controls_accessibility(self):
         """All controls (buttons, dropdowns) should be accessible and usable."""
         controls = ["model_dropdown", "refresh_btn", "send_btn", "close_btn"]
-        
+
         for control in controls:
             is_accessible = _is_control_accessible(control)
             assert is_accessible
@@ -362,6 +366,7 @@ class TestDialogUIIntegration:
 # ============================================================================
 # Helper Functions (Simulated Implementation)
 # ============================================================================
+
 
 def _build_chunks_for_rag(doc: dict) -> list[dict]:
     """Build chunks from RAG document, filtering invalid entries."""
@@ -397,11 +402,11 @@ def _get_embedding(text: str):
     """Get or generate embedding for text (cached)."""
     if not hasattr(_get_embedding, "cache"):
         _get_embedding.cache = {}
-    
+
     if text not in _get_embedding.cache:
         # Simulate embedding generation
         _get_embedding.cache[text] = f"embedding_{hash(text)}"
-    
+
     return _get_embedding.cache[text]
 
 

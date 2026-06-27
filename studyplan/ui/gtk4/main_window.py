@@ -4,8 +4,9 @@ import logging
 from pathlib import Path
 
 import gi
-gi.require_version('Gtk', '4.0')
-from gi.repository import Gtk, Gdk, GLib, GObject
+
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk
 
 from studyplan.config import Config
 from studyplan.contracts import TutorLearnerProfileSnapshot, TutorSessionState
@@ -30,9 +31,9 @@ from studyplan.performance_monitor import PerformanceMonitor
 @Gtk.Template(filename=str(Path(__file__).with_name("templates") / "main_window.ui"))
 class StudyPlanMainWindow(Gtk.ApplicationWindow):
     """Main application window with tabbed interface."""
-    
+
     __gtype_name__ = "StudyPlanMainWindow"
-    
+
     # Template widgets
     stack = Gtk.Template.Child()
     header_bar = Gtk.Template.Child()
@@ -97,46 +98,46 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
         self.confidence_button.connect("clicked", self._on_confidence_clicked)
         self.transfer_button.connect("clicked", self._on_transfer_clicked)
         self.profile_button.connect("clicked", self._on_profile_clicked)
-        
+
         # Window signals
         self.connect("close-request", self._on_close_request)
-        
+
     def _on_practice_clicked(self, button):
         """Switch to practice session view."""
         self.stack.set_visible_child(self.practice_session)
         self._update_active_button(self.practice_button)
         self.practice_session.start_session()
-        
+
     def _on_dashboard_clicked(self, button):
         """Switch to cognitive dashboard view."""
         self.stack.set_visible_child(self.cognitive_dashboard)
         self._update_active_button(self.dashboard_button)
         self.cognitive_dashboard.update_display()
-        
+
     def _on_hints_clicked(self, button):
         """Switch to hint system view."""
         self.stack.set_visible_child(self.hint_system)
         self._update_active_button(self.hints_button)
         self.hint_system.update_display()
-        
+
     def _on_confidence_clicked(self, button):
         """Switch to confidence calibrator view."""
         self.stack.set_visible_child(self.confidence_calibrator)
         self._update_active_button(self.confidence_button)
         self.confidence_calibrator.update_display()
-        
+
     def _on_transfer_clicked(self, button):
         """Switch to transfer analyzer view."""
         self.stack.set_visible_child(self.transfer_analyzer)
         self._update_active_button(self.transfer_button)
         self.transfer_analyzer.update_display()
-        
+
     def _on_profile_clicked(self, button):
         """Switch to user profile view."""
         self.stack.set_visible_child(self.user_profile)
         self._update_active_button(self.profile_button)
         self.user_profile.update_display()
-        
+
     def _on_close_request(self, window):
         """Handle window close request."""
         # Save state before closing
@@ -146,9 +147,12 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
     def _update_active_button(self, active_button):
         """Update which navigation button appears active."""
         buttons = [
-            self.practice_button, self.dashboard_button, 
-            self.hints_button, self.confidence_button,
-            self.transfer_button, self.profile_button,
+            self.practice_button,
+            self.dashboard_button,
+            self.hints_button,
+            self.confidence_button,
+            self.transfer_button,
+            self.profile_button,
         ]
         for button in buttons:
             if button == active_button:
@@ -159,9 +163,7 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
     def _update_ui_state(self):
         """Update UI based on current application state."""
         # Update header with current session info
-        session = self.session_controller.get_or_create_session(
-            session_id="main", module="ACCA", topic="General"
-        )
+        session = self.session_controller.get_or_create_session(session_id="main", module="ACCA", topic="General")
         self.header_bar.set_title_widget(Gtk.Label(label=f"Study Plan - {session.topic}"))
 
     def _restore_application_state(self):
@@ -207,9 +209,9 @@ class StudyPlanMainWindow(Gtk.ApplicationWindow):
                 GTK4WindowStateSnapshot(
                     cognitive_state=self.cognitive_state,
                     session_state=session if isinstance(session, TutorSessionState) else None,
-                    learner_profile=learner_profile if isinstance(
-                        learner_profile, TutorLearnerProfileSnapshot
-                    ) else None,
+                    learner_profile=learner_profile
+                    if isinstance(learner_profile, TutorLearnerProfileSnapshot)
+                    else None,
                     visible_page=visible_page,
                 ),
                 self._state_store_path,

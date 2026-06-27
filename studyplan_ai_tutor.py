@@ -75,9 +75,7 @@ AI_TUTOR_RAG_USAGE_HINT = (
 AI_TUTOR_NEXT_STEP_RULE = (
     "End with one concrete next step (topic + mode + duration); suggest topic-based practice or in-app drill."
 )
-AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE = (
-    "Never suggest a specific study-guide question or textbook page number."
-)
+AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE = "Never suggest a specific study-guide question or textbook page number."
 # When conversation length exceeds this, use adaptive recent_limit and a richer older summary.
 AI_TUTOR_LONG_HISTORY_THRESHOLD = 24
 AI_TUTOR_LONG_HISTORY_RECENT_LIMIT = 10
@@ -142,14 +140,17 @@ def infer_tutor_prompt_mode_hint(user_prompt: str) -> str:
         return "teach"
     if any(token in text for token in ("section c", "constructed response", "case question", "case-based")):
         return "section_c_coach"
-    if (
-        any(token in text for token in ("exam technique", "command verb", "marks", "time allocation", "examiner"))
-        and any(token in text for token in ("exam", "question", "answer", "approach", "technique", "section c"))
-    ):
+    if any(
+        token in text for token in ("exam technique", "command verb", "marks", "time allocation", "examiner")
+    ) and any(token in text for token in ("exam", "question", "answer", "approach", "technique", "section c")):
         return "exam_technique"
-    if any(token in text for token in ("quiz me", "test me", "drill me", "rapid fire", "retrieval", "practice questions")):
+    if any(
+        token in text for token in ("quiz me", "test me", "drill me", "rapid fire", "retrieval", "practice questions")
+    ):
         return "retrieval_drill"
-    if any(token in text for token in ("step by step", "guide me", "work through", "don't give", "dont give", "hint first")):
+    if any(
+        token in text for token in ("step by step", "guide me", "work through", "don't give", "dont give", "hint first")
+    ):
         return "guided_practice"
     if any(token in text for token in ("revision plan", "revise", "study plan", "what should i study", "what next")):
         return "revision_planner"
@@ -317,7 +318,7 @@ def build_targeted_rag_queries(user_prompt: str, max_targets: int = 4) -> list[s
     # Add relation-focused blends so retrieval catches cross-topic prompts.
     head = [str(t or "").strip() for t in targets[:4] if str(t or "").strip()]
     for i, left in enumerate(head):
-        for right in head[i + 1:]:
+        for right in head[i + 1 :]:
             blend = f"{left} {right} relationship".strip()
             key = blend.lower()
             if key in seen:
@@ -356,7 +357,9 @@ def build_tutor_rag_query_plan(
     ]
     primary_query = " ".join(part for part in query_parts if part).strip()
     if explicit_target_queries is not None:
-        target_queries = [str(item or "").strip() for item in list(explicit_target_queries or []) if str(item or "").strip()]
+        target_queries = [
+            str(item or "").strip() for item in list(explicit_target_queries or []) if str(item or "").strip()
+        ]
     else:
         target_queries = build_targeted_rag_queries(str(user_prompt or ""), max_targets=max_targets)
     query_variants: list[tuple[str, float]] = []
@@ -475,10 +478,7 @@ def classify_ollama_error(err: str, host: str = "") -> tuple[str, str]:
         return "host_unreachable", f"Cannot reach Ollama{suffix}. Start `ollama serve` and retry."
     if "timed out" in lower or "timeout" in lower:
         return "timeout", "Ollama request timed out. Try a shorter prompt or faster model."
-    if (
-        "model" in lower
-        and ("not found" in lower or "missing" in lower or "no such model" in lower)
-    ):
+    if "model" in lower and ("not found" in lower or "missing" in lower or "no such model" in lower):
         return "model_missing", "Selected model is missing. Pull it first with `ollama pull <model>`."
     if (
         "busy" in lower
@@ -553,7 +553,7 @@ def chunk_text_for_rag(
             step = max(80, chunk_cap - overlap_cap)
             start = 0
             while start < len(paragraph):
-                piece = paragraph[start:start + chunk_cap].strip()
+                piece = paragraph[start : start + chunk_cap].strip()
                 if piece:
                     chunks.append(piece)
                     if len(chunks) >= max_chunk_count:
@@ -1056,7 +1056,11 @@ def build_ai_tutor_context_prompt_details(
         mode_hint=str(mode_hint),
     )
     display_code = get_module_display_code(str(module_id or "").strip()) if module_id else ""
-    module_label = f"{display_code} — {module_title}" if display_code and (module_title or "").strip() else (module_title or "selected module")
+    module_label = (
+        f"{display_code} — {module_title}"
+        if display_code and (module_title or "").strip()
+        else (module_title or "selected module")
+    )
     lines = [
         "You are the in-app ACCA professional coach (first-class local ACCA tutor) for this learner. Speak in one coherent, syllabus-bound voice.",
         f"Module: {module_label}",
@@ -1072,14 +1076,18 @@ def build_ai_tutor_context_prompt_details(
         lines.append("")
     lines.extend(TUTOR_COACH_IDENTITY_LINES)
     if concise_mode:
-        lines.append("Concise mode: keep responses short (under 6–8 sentences) unless the user explicitly asks for more depth.")
+        lines.append(
+            "Concise mode: keep responses short (under 6–8 sentences) unless the user explicitly asks for more depth."
+        )
         lines.append("")
     if exam_technique_only:
-        lines.extend([
-            "Exam technique only: do not add micro-checks, practice questions, or retrieval drills. "
-            "Focus only on command verbs, mark allocation, time management, and what earns marks.",
-            "",
-        ])
+        lines.extend(
+            [
+                "Exam technique only: do not add micro-checks, practice questions, or retrieval drills. "
+                "Focus only on command verbs, mark allocation, time management, and what earns marks.",
+                "",
+            ]
+        )
     if syllabus_scope_instruction and syllabus_scope_instruction.strip():
         lines.append("Syllabus scope (strict — do not use non-examinable content):")
         lines.append(syllabus_scope_instruction.strip())
@@ -1092,28 +1100,32 @@ def build_ai_tutor_context_prompt_details(
     if not exam_technique_only and not concise_mode:
         lines.extend(TUTOR_STEP_BY_STEP_RESPONSE_CONTRACT)
     if exam_technique_only:
-        lines.extend([
-            "Response contract (exam technique only — no practice checks):",
-            "- Direct answer on exam technique: command verbs, mark allocation, time management",
-            "- What earns marks and common presentation mistakes",
-            f"- {AI_TUTOR_NEXT_STEP_RULE} {AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE}",
-            "",
-            *_build_tutor_mode_guidance("exam_technique"),
-            "",
-        ])
+        lines.extend(
+            [
+                "Response contract (exam technique only — no practice checks):",
+                "- Direct answer on exam technique: command verbs, mark allocation, time management",
+                "- What earns marks and common presentation mistakes",
+                f"- {AI_TUTOR_NEXT_STEP_RULE} {AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE}",
+                "",
+                *_build_tutor_mode_guidance("exam_technique"),
+                "",
+            ]
+        )
     else:
-        lines.extend([
-            "Default learning-loop response contract (practice-first unless the user opts out):",
-            "- Direct answer / teach the concept briefly",
-            "- Method or worked example (when calculations/procedures apply)",
-            "- Micro-check (1-3 practical checks or prompts)",
-            "- What to look for / common pitfall",
-            f"- {AI_TUTOR_NEXT_STEP_RULE} {AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE}",
-            "- When the learner answers a check, mark it as correct/partial/incorrect and correct the specific gap",
-            "",
-            *_build_tutor_mode_guidance(mode_hint),
-            "",
-        ])
+        lines.extend(
+            [
+                "Default learning-loop response contract (practice-first unless the user opts out):",
+                "- Direct answer / teach the concept briefly",
+                "- Method or worked example (when calculations/procedures apply)",
+                "- Micro-check (1-3 practical checks or prompts)",
+                "- What to look for / common pitfall",
+                f"- {AI_TUTOR_NEXT_STEP_RULE} {AI_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE}",
+                "- When the learner answers a check, mark it as correct/partial/incorrect and correct the specific gap",
+                "",
+                *_build_tutor_mode_guidance(mode_hint),
+                "",
+            ]
+        )
     if len(coverage_targets) >= 2:
         lines.append("Multi-concept coverage targets:")
         for idx, target in enumerate(coverage_targets, start=1):
@@ -1285,6 +1297,7 @@ def _latex_to_human_readable(text: str) -> str:
 
     # Subscripts: x_1 -> x₁ or x_1 (keep underscore for readability), x_{12} -> x_12
     t = re.sub(r"\_\{([^{}]*)\}", r"_\1", t)
+
     # Superscripts for powers: x^2 -> x², x^3 -> x³, x^{10} -> x^10 (keep caret for big numbers)
     def _sup(m: re.Match[str]) -> str:
         inner = m.group(1).strip()
@@ -1295,6 +1308,7 @@ def _latex_to_human_readable(text: str) -> str:
         if inner == "1":
             return "¹"
         return f"^{inner}"
+
     t = re.sub(r"\^\{([^{}]*)\}", _sup, t)
     t = re.sub(r"\^2\b", "²", t)
     t = re.sub(r"\^3\b", "³", t)
@@ -1302,10 +1316,20 @@ def _latex_to_human_readable(text: str) -> str:
 
     # Greek letters: \alpha -> alpha, \beta -> beta, etc.
     greek = {
-        r"\alpha": "alpha", r"\beta": "beta", r"\gamma": "gamma", r"\delta": "delta",
-        r"\epsilon": "epsilon", r"\theta": "theta", r"\lambda": "lambda", r"\mu": "mu",
-        r"\sigma": "sigma", r"\rho": "rho", r"\omega": "omega", r"\pi": "pi",
-        r"\infty": "infinity", r"\partial": "d",
+        r"\alpha": "alpha",
+        r"\beta": "beta",
+        r"\gamma": "gamma",
+        r"\delta": "delta",
+        r"\epsilon": "epsilon",
+        r"\theta": "theta",
+        r"\lambda": "lambda",
+        r"\mu": "mu",
+        r"\sigma": "sigma",
+        r"\rho": "rho",
+        r"\omega": "omega",
+        r"\pi": "pi",
+        r"\infty": "infinity",
+        r"\partial": "d",
     }
     for src, dst in greek.items():
         t = t.replace(src, dst)
@@ -1375,6 +1399,7 @@ def clean_ai_tutor_text(text: str) -> str:
     def _replace_inline_math(m: re.Match[str]) -> str:
         inner = _latex_to_human_readable(m.group(1) or "")
         return inner.strip()
+
     cleaned = re.sub(r"\$\$?([^$]+)\$\$?", _replace_inline_math, cleaned)
 
     # Remove remaining $ and normalize spacing around = + - for readability.
@@ -1422,6 +1447,7 @@ def clean_ai_tutor_text_for_rich_display(text: str) -> str:
     def _replace_inline_math(m: re.Match[str]) -> str:
         inner = _latex_to_human_readable(m.group(1) or "")
         return inner.strip()
+
     cleaned = re.sub(r"\$\$?([^$]+)\$\$?", _replace_inline_math, cleaned)
 
     # Remove remaining $ and normalise spacing around operators.
@@ -1516,7 +1542,9 @@ def normalize_ai_tutor_history_entry(item: Any, *, max_content: int = 8000) -> d
     return row
 
 
-def compact_ai_tutor_history_for_prefs(history: list[Any], *, tail: int, max_content: int = 8000) -> list[dict[str, str]]:
+def compact_ai_tutor_history_for_prefs(
+    history: list[Any], *, tail: int, max_content: int = 8000
+) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     n = max(1, min(64, int(tail)))
     for item in list(history or [])[-n:]:
@@ -1569,6 +1597,7 @@ class AITutorDialogController:
         GLib = self.GLib
         Gdk = self.Gdk
         from gi.repository import Pango  # type: ignore[reportAttributeAccessIssue,import-untyped]
+
         try:
             app._ai_tutor_dialog_open = True
         except Exception:
@@ -1586,9 +1615,7 @@ class AITutorDialogController:
         except Exception:
             pass
 
-        intro = Gtk.Label(
-            label="Use local Ollama models for topic explanations, drills, and revision support."
-        )
+        intro = Gtk.Label(label="Use local Ollama models for topic explanations, drills, and revision support.")
         intro.set_halign(Gtk.Align.START)
         intro.set_wrap(True)
         intro.add_css_class("muted")
@@ -1875,7 +1902,11 @@ class AITutorDialogController:
             app.save_preferences()
 
         def _turn_count() -> int:
-            return sum(1 for msg in history if isinstance(msg, dict) and str(msg.get("role", "")).strip().lower() == "assistant")
+            return sum(
+                1
+                for msg in history
+                if isinstance(msg, dict) and str(msg.get("role", "")).strip().lower() == "assistant"
+            )
 
         def _current_prompt_text(strip: bool = False) -> str:
             try:
@@ -2045,7 +2076,7 @@ class AITutorDialogController:
                 run_state["stream_label_inserted"] = True
                 prev_clean = ""
             if cleaned_full.startswith(prev_clean):
-                delta = cleaned_full[len(prev_clean):]
+                delta = cleaned_full[len(prev_clean) :]
                 if delta:
                     _append_response_text(delta)
             else:
@@ -2092,9 +2123,9 @@ class AITutorDialogController:
                     last_force = float(run_state.get("stream_watchdog_last_force_at", 0.0) or 0.0)
                     if (now_ts - last_force) >= 0.25:
                         run_state["stream_watchdog_last_force_at"] = now_ts
-                        run_state["stream_watchdog_forced_flushes"] = int(
-                            run_state.get("stream_watchdog_forced_flushes", 0) or 0
-                        ) + 1
+                        run_state["stream_watchdog_forced_flushes"] = (
+                            int(run_state.get("stream_watchdog_forced_flushes", 0) or 0) + 1
+                        )
                         run_state["stream_render_pending"] = False
                         run_state["stream_render_force"] = False
                         try:
@@ -2202,7 +2233,9 @@ class AITutorDialogController:
                 resolver = getattr(app, "_effective_ai_tutor_autonomy_mode", None)
                 if callable(resolver):
                     return str(resolver() or "assist")
-                return str(app._coerce_ai_tutor_autonomy_mode(getattr(app, "ai_tutor_autonomy_mode", "assist")) or "assist")
+                return str(
+                    app._coerce_ai_tutor_autonomy_mode(getattr(app, "ai_tutor_autonomy_mode", "assist")) or "assist"
+                )
             except Exception:
                 return str(getattr(app, "ai_tutor_autonomy_mode", "assist") or "assist").strip().lower() or "assist"
 
@@ -2402,14 +2435,10 @@ class AITutorDialogController:
             _set_running(False)
 
         _generic_quick_prompt_fallback: dict[str, str] = {
-            "Explain '{topic}' for {module} in exam-focused terms.":
-                "Explain an ACCA topic in exam-focused terms to help me understand it better.",
-            "Write a 5-question drill on '{topic}' with short answers.":
-                "Give me a 5-question practice drill with short answers on an ACCA topic.",
-            "List the must-know formulas for '{topic}' and when to use each.":
-                "List the must-know formulas for an ACCA topic and when to use each.",
-            "Give common exam pitfalls for '{topic}' and how to avoid them.":
-                "Give common exam pitfalls for an ACCA topic and how to avoid them.",
+            "Explain '{topic}' for {module} in exam-focused terms.": "Explain an ACCA topic in exam-focused terms to help me understand it better.",
+            "Write a 5-question drill on '{topic}' with short answers.": "Give me a 5-question practice drill with short answers on an ACCA topic.",
+            "List the must-know formulas for '{topic}' and when to use each.": "List the must-know formulas for an ACCA topic and when to use each.",
+            "Give common exam pitfalls for '{topic}' and how to avoid them.": "Give common exam pitfalls for an ACCA topic and how to avoid them.",
         }
 
         def _insert_quick_prompt(template: str) -> None:
@@ -2418,15 +2447,10 @@ class AITutorDialogController:
             topic = _app_effective_tutor_topic(app)
             module = str(getattr(app, "module_title", "") or "").strip()
             if not topic:
-                resolved = _generic_quick_prompt_fallback.get(
-                    str(template or ""),
-                    "Help me with an ACCA topic."
-                )
+                resolved = _generic_quick_prompt_fallback.get(str(template or ""), "Help me with an ACCA topic.")
             else:
                 try:
-                    resolved = str(template or "").format(
-                        topic=topic, module=module or "your studies"
-                    )
+                    resolved = str(template or "").format(topic=topic, module=module or "your studies")
                 except Exception:
                     resolved = str(template or "")
             prompt_buf.set_text(resolved.strip())
@@ -2624,7 +2648,9 @@ class AITutorDialogController:
                 for item in list(prompt_meta.get("coverage_targets", []) or [])
                 if str(item or "").strip()
             ]
-            coverage_target_count = int(prompt_meta.get("coverage_target_count", len(coverage_targets)) or len(coverage_targets))
+            coverage_target_count = int(
+                prompt_meta.get("coverage_target_count", len(coverage_targets)) or len(coverage_targets)
+            )
             rag_top_k = max(4, min(12, int(4 + max(0, coverage_target_count))))
             rag_char_budget_override = 1800
             latency_profile: dict[str, Any] = {
@@ -2659,15 +2685,26 @@ class AITutorDialogController:
                     try:
                         rag_char_budget_override = max(
                             800,
-                            min(3600, int(adaptive_limits.get("rag_char_budget", rag_char_budget_override) or rag_char_budget_override)),
+                            min(
+                                3600,
+                                int(
+                                    adaptive_limits.get("rag_char_budget", rag_char_budget_override)
+                                    or rag_char_budget_override
+                                ),
+                            ),
                         )
                     except Exception:
                         rag_char_budget_override = 1800
                     profile_candidate = adaptive_limits.get("profile", {})
                     if isinstance(profile_candidate, dict):
                         latency_profile = profile_candidate
-                    latency_load_level = str(adaptive_limits.get("load_level", "normal") or "normal").strip().lower() or "normal"
-                    latency_slo_status = str(adaptive_limits.get("slo_status", "insufficient") or "insufficient").strip().lower() or "insufficient"
+                    latency_load_level = (
+                        str(adaptive_limits.get("load_level", "normal") or "normal").strip().lower() or "normal"
+                    )
+                    latency_slo_status = (
+                        str(adaptive_limits.get("slo_status", "insufficient") or "insufficient").strip().lower()
+                        or "insufficient"
+                    )
                     latency_hardening_applied = bool(adaptive_limits.get("hardening_applied", False))
             context_block = ""
             context_chars = 0
@@ -2705,11 +2742,15 @@ class AITutorDialogController:
                                 max_tokens = 280
                     if isinstance(adaptive_limits, dict) and adaptive_limits:
                         try:
-                            max_chars = min(max_chars, int(adaptive_limits.get("context_max_chars", max_chars) or max_chars))
+                            max_chars = min(
+                                max_chars, int(adaptive_limits.get("context_max_chars", max_chars) or max_chars)
+                            )
                         except Exception:
                             pass
                         try:
-                            max_tokens = min(max_tokens, int(adaptive_limits.get("context_max_tokens", max_tokens) or max_tokens))
+                            max_tokens = min(
+                                max_tokens, int(adaptive_limits.get("context_max_tokens", max_tokens) or max_tokens)
+                            )
                         except Exception:
                             pass
                     max_chars = max(120, max_chars)
@@ -2843,15 +2884,11 @@ class AITutorDialogController:
                     learner_profile_brief = ""
             if learner_profile_brief:
                 planner_brief = (
-                    f"{planner_brief}\n{learner_profile_brief}".strip()
-                    if planner_brief
-                    else learner_profile_brief
+                    f"{planner_brief}\n{learner_profile_brief}".strip() if planner_brief else learner_profile_brief
                 )
             if cognitive_runtime_brief:
                 planner_brief = (
-                    f"{planner_brief}\n{cognitive_runtime_brief}".strip()
-                    if planner_brief
-                    else cognitive_runtime_brief
+                    f"{planner_brief}\n{cognitive_runtime_brief}".strip() if planner_brief else cognitive_runtime_brief
                 )
             rag_evidence_policy: dict[str, Any] = {}
             rag_evidence_policy_builder = getattr(app, "_evaluate_ai_tutor_rag_evidence_policy", None)
@@ -2872,11 +2909,7 @@ class AITutorDialogController:
                     rag_evidence_policy = {}
             rag_evidence_line = str(rag_evidence_policy.get("planner_brief_line", "") or "").strip()
             if rag_evidence_line:
-                planner_brief = (
-                    f"{planner_brief}\n{rag_evidence_line}".strip()
-                    if planner_brief
-                    else rag_evidence_line
-                )
+                planner_brief = f"{planner_brief}\n{rag_evidence_line}".strip() if planner_brief else rag_evidence_line
             rag_claim_recorder = getattr(app, "_record_cognitive_rag_claim_confidence", None)
             if callable(rag_claim_recorder):
                 try:
@@ -2893,8 +2926,7 @@ class AITutorDialogController:
             ctx_fp_full = ""
             learning_ctx_omitted = 0
             unchanged_fp = ""
-            dedup_raw = str(os.environ.get("STUDYPLAN_TUTOR_CONTEXT_DEDUP", "1") or "1").strip().lower()
-            dedup_on = dedup_raw not in {"0", "false", "no", "off"}
+            str(os.environ.get("STUDYPLAN_TUTOR_CONTEXT_DEDUP", "1") or "1").strip().lower()
             if context_block.strip():
                 ctx_fp_full = hashlib.sha256(context_block.encode("utf-8")).hexdigest()
                 run_state["learning_context_sha256"] = ctx_fp_full
@@ -3013,10 +3045,17 @@ class AITutorDialogController:
                     "prompt_contract_version": int(AI_TUTOR_PROMPT_CONTRACT_VERSION),
                     "learning_context_fp": str(run_state.get("telemetry_learning_context_fp") or "")[:64],
                     "learning_context_omitted": int(run_state.get("telemetry_learning_context_omitted", 0) or 0),
-                    "autopilot_mode": str(autopilot_stats.get("autopilot_mode", getattr(app, "ai_tutor_autonomy_mode", "assist")) or "assist"),
+                    "autopilot_mode": str(
+                        autopilot_stats.get("autopilot_mode", getattr(app, "ai_tutor_autonomy_mode", "assist"))
+                        or "assist"
+                    ),
                     "autopilot_decision_count": int(autopilot_stats.get("autopilot_decision_count", 0) or 0),
-                    "autopilot_action_executed_count": int(autopilot_stats.get("autopilot_action_executed_count", 0) or 0),
-                    "autopilot_action_blocked_count": int(autopilot_stats.get("autopilot_action_blocked_count", 0) or 0),
+                    "autopilot_action_executed_count": int(
+                        autopilot_stats.get("autopilot_action_executed_count", 0) or 0
+                    ),
+                    "autopilot_action_blocked_count": int(
+                        autopilot_stats.get("autopilot_action_blocked_count", 0) or 0
+                    ),
                     "autopilot_last_block_reason": str(autopilot_stats.get("autopilot_last_block_reason", "") or ""),
                     "nudge_info_count": int(autopilot_stats.get("nudge_info_count", 0) or 0),
                     "nudge_warning_count": int(autopilot_stats.get("nudge_warning_count", 0) or 0),
@@ -3030,7 +3069,9 @@ class AITutorDialogController:
                     "model_first_token_ms": int(max(0, first_token_ms)),
                     "latency_p50_ms": int(max(0.0, float(latency_profile.get("p50_latency_ms", 0.0) or 0.0))),
                     "latency_p90_ms": int(max(0.0, float(latency_profile.get("p90_latency_ms", 0.0) or 0.0))),
-                    "latency_spread_ratio": float(max(1.0, float(latency_profile.get("latency_spread_ratio", 1.0) or 1.0))),
+                    "latency_spread_ratio": float(
+                        max(1.0, float(latency_profile.get("latency_spread_ratio", 1.0) or 1.0))
+                    ),
                     "latency_load_level": str(latency_load_level or "normal"),
                     "latency_slo_status": str(latency_slo_status or "insufficient"),
                     "prompt_chars": int(prompt_chars),
@@ -3054,9 +3095,15 @@ class AITutorDialogController:
                     "embedding_cache_misses": int(embedding_cache_misses),
                     "prefilter_kept": int(prefilter_kept),
                     "prompt_cache_hit": int(getattr(app, "_ai_cache_debug_last", {}).get("prompt_cache_hit", 0) or 0),
-                    "response_cache_hit": int(getattr(app, "_ai_cache_debug_last", {}).get("response_cache_hit", 0) or 0),
-                    "token_est_cache_hit": int(getattr(app, "_ai_cache_debug_last", {}).get("token_est_cache_hit", 0) or 0),
-                    "model_stats_persisted": int(getattr(app, "_ai_cache_debug_last", {}).get("model_stats_persisted", 0) or 0),
+                    "response_cache_hit": int(
+                        getattr(app, "_ai_cache_debug_last", {}).get("response_cache_hit", 0) or 0
+                    ),
+                    "token_est_cache_hit": int(
+                        getattr(app, "_ai_cache_debug_last", {}).get("token_est_cache_hit", 0) or 0
+                    ),
+                    "model_stats_persisted": int(
+                        getattr(app, "_ai_cache_debug_last", {}).get("model_stats_persisted", 0) or 0
+                    ),
                     "coverage_target_count": int(max(0, coverage_state.get("target_count", 0) or 0)),
                     "coverage_hit_count": int(max(0, coverage_state.get("hit_count", 0) or 0)),
                     "gap_q_generated_count": int(autopilot_stats.get("gap_q_generated_count", 0) or 0),
@@ -3247,9 +3294,7 @@ class AITutorDialogController:
                             return False
                         if not bool(run_state.get("active", False)):
                             return False
-                        status_label.set_text(
-                            f"Model {failed_model} failed, retrying with {retry_model}..."
-                        )
+                        status_label.set_text(f"Model {failed_model} failed, retrying with {retry_model}...")
                         return False
 
                     GLib.idle_add(_notify_failover, candidate_name, next_model)
@@ -3299,7 +3344,9 @@ class AITutorDialogController:
                         action_plan = None
 
                     coverage_eval = assess_tutor_coverage(final_text, coverage_targets)
-                    coverage_state["target_count"] = int(coverage_eval.get("target_count", coverage_target_count) or coverage_target_count)
+                    coverage_state["target_count"] = int(
+                        coverage_eval.get("target_count", coverage_target_count) or coverage_target_count
+                    )
                     coverage_state["hit_count"] = int(coverage_eval.get("hit_count", 0) or 0)
                     if not err:
                         coverage_note = build_tutor_coverage_checklist_note(
@@ -3368,7 +3415,9 @@ class AITutorDialogController:
                                 pass
                             _persist_history()
                             if bool(guard_state.get("timeout_hit", False)):
-                                status_label.set_text(f"Turn timed out after {int(turn_timeout_seconds)}s ({credited_model}).")
+                                status_label.set_text(
+                                    f"Turn timed out after {int(turn_timeout_seconds)}s ({credited_model})."
+                                )
                             elif bool(guard_state.get("truncated", False)):
                                 status_label.set_text(
                                     f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars) • turns: {_turn_count()}"
@@ -3377,7 +3426,9 @@ class AITutorDialogController:
                                 status_label.set_text(f"Stopped ({credited_model}) • turns: {_turn_count()}")
                         else:
                             if bool(guard_state.get("timeout_hit", False)):
-                                status_label.set_text(f"Turn timed out after {int(turn_timeout_seconds)}s ({credited_model}).")
+                                status_label.set_text(
+                                    f"Turn timed out after {int(turn_timeout_seconds)}s ({credited_model})."
+                                )
                             elif bool(guard_state.get("truncated", False)):
                                 status_label.set_text(
                                     f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars)."
@@ -3396,7 +3447,11 @@ class AITutorDialogController:
                                     recovery_builder(
                                         err,
                                         model=str(model_name or ""),
-                                        attempted_models=[str(item or "") for item in list(model_candidates or []) if str(item or "").strip()],
+                                        attempted_models=[
+                                            str(item or "")
+                                            for item in list(model_candidates or [])
+                                            if str(item or "").strip()
+                                        ],
                                     )
                                 ).strip()
                             except Exception:

@@ -18,6 +18,7 @@ STUDYPLAN_MODULE_ID
 STUDYPLAN_CONFIG_HOME
     Override for the config home directory.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -86,10 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error during export: {exc}", file=sys.stderr)
         return 1
 
-    print(
-        f"Done: {result['rows_written']} cards exported across "
-        f"{len(result['chapters'])} chapter(s)."
-    )
+    print(f"Done: {result['rows_written']} cards exported across {len(result['chapters'])} chapter(s).")
     return 0
 
 

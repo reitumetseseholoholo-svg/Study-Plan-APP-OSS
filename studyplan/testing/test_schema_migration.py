@@ -1,5 +1,3 @@
-import pytest
-
 from studyplan.schema_migration import MigrationRegistry, ensure_schema_version
 
 

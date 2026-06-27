@@ -4,6 +4,7 @@ Named RAG retrieval presets for tutor turns (roadmap Phase 2).
 Presets tune char budget, neighbor expansion, score floor, top-k ceiling, per-source
 chunk caps, and hard char caps without duplicating env parsing in the app.
 """
+
 from __future__ import annotations
 
 from typing import Any

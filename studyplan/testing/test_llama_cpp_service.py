@@ -142,11 +142,13 @@ def test_llama_cpp_service_auto_discovers_ollama_models_prefers_fast_cpp(monkeyp
             return _DummyResponse(json.dumps(tags_payload), status=200)
         body = b""
         if hasattr(request, "data"):
-            body = bytes(getattr(request, "data") or b"")
+            body = bytes(request.data or b"")
         parsed = json.loads(body.decode("utf-8"))
         model_name = str(parsed.get("model", "") or "")
         if model_name == "gpt4all-llama-3-2-3b-instruct-q4-0:latest":
-            return _DummyResponse(json.dumps({"choices": [{"message": {"content": "Fast model selected."}}]}), status=200)
+            return _DummyResponse(
+                json.dumps({"choices": [{"message": {"content": "Fast model selected."}}]}), status=200
+            )
         return _DummyResponse(json.dumps({"choices": [{"message": {"content": "Other model."}}]}), status=200)
 
     monkeypatch.setattr(services_mod.urllib.request, "urlopen", fake_urlopen)
@@ -185,7 +187,7 @@ def test_llama_cpp_service_fails_over_to_gpt4all_discovered_model(monkeypatch):
             return _DummyResponse(json.dumps({"models": []}), status=200)
         body = b""
         if hasattr(request, "data"):
-            body = bytes(getattr(request, "data") or b"")
+            body = bytes(request.data or b"")
         parsed = json.loads(body.decode("utf-8"))
         model_name = str(parsed.get("model", "") or "")
         if model_name == first_model:
@@ -227,7 +229,7 @@ def test_llama_cpp_service_gateway_backend_skips_local_discovery(monkeypatch):
         calls["chat"] += 1
         body = b""
         if hasattr(request, "data"):
-            body = bytes(getattr(request, "data") or b"")
+            body = bytes(request.data or b"")
         parsed = json.loads(body.decode("utf-8"))
         assert str(parsed.get("model", "") or "") == "gateway-primary"
         return _DummyResponse(json.dumps({"choices": [{"message": {"content": "Gateway route."}}]}), status=200)
@@ -235,6 +237,7 @@ def test_llama_cpp_service_gateway_backend_skips_local_discovery(monkeypatch):
     monkeypatch.setattr(services_mod.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(services_mod.Config, "LLM_GATEWAY_MODEL", "gateway-primary", raising=False)
     monkeypatch.setattr(services_mod.Config, "LLM_GATEWAY_MODEL_FALLBACKS", "gateway-backup", raising=False)
+    monkeypatch.setattr("studyplan.config.remote_llm_backends_allowed", lambda: True)
     svc = LlamaCppTutorService(
         endpoint="http://localhost:8080/v1/chat/completions",
         model="local-should-not-be-discovered",

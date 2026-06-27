@@ -1,4 +1,5 @@
 """Tests for studyplan.ai.prompt_design (prompt library and Slice 4 versioning)."""
+
 from __future__ import annotations
 
 import os

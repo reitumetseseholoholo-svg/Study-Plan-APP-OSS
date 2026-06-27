@@ -17,6 +17,7 @@ Example::
       --responses-b /tmp/tutor_responses_candidate.json \\
       --report /tmp/shadow_compare.json
 """
+
 from __future__ import annotations
 
 import argparse

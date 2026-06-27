@@ -13,6 +13,7 @@ Chapter spec file format:
 
 If --in-place is set, the module JSON file is overwritten; otherwise the result is printed to stdout.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,7 +29,6 @@ if _REPO_ROOT not in sys.path:
 from studyplan.module_chapters import (
     apply_chapters_to_config,
     load_chapter_spec_from_path,
-    normalize_chapter_spec,
     validate_chapter_config,
 )
 

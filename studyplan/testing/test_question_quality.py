@@ -2,7 +2,6 @@
 
 import json
 import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -71,6 +70,7 @@ def test_bank_evaluator_on_file(tmp_path: Path):
 def test_bank_evaluator_real_files():
     """Run evaluator on the real JSON question banks and ensure no low‑quality items."""
     import glob
+
     files = glob.glob(os.path.join(os.path.dirname(__file__), "..", "..", "ai_questions_*.json"))
     if not files:
         pytest.skip("No ai_questions_*.json files found for evaluation (optional fixture)")
@@ -123,10 +123,22 @@ def test_get_poor_quality_indices_see_explanation():
 def test_get_poor_quality_indices_similar():
     """get_poor_quality_indices flags similar/duplicate questions."""
     items = [
-        {"question": "What is the main advantage of using NPV for investment appraisal?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "X"},
-        {"question": "What is the main advantage of using NPV for investment appraisal?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Y"},
+        {
+            "question": "What is the main advantage of using NPV for investment appraisal?",
+            "options": ["A", "B", "C", "D"],
+            "correct": "A",
+            "explanation": "X",
+        },
+        {
+            "question": "What is the main advantage of using NPV for investment appraisal?",
+            "options": ["A", "B", "C", "D"],
+            "correct": "A",
+            "explanation": "Y",
+        },
     ]
-    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_bare_letter_correct=False, similar_min_words=5)
+    poor = get_poor_quality_indices(
+        "ch", items, detect_see_explanation=False, detect_bare_letter_correct=False, similar_min_words=5
+    )
     assert len(poor) == 1
     assert poor[0][0] == 1 and poor[0][1] == "similar_question"
 
@@ -170,7 +182,9 @@ def test_get_poor_quality_indices_length_guessable():
             "explanation": "ok",
         },
     ]
-    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False, detect_bare_letter_correct=False)
+    poor = get_poor_quality_indices(
+        "ch", items, detect_see_explanation=False, detect_similar=False, detect_bare_letter_correct=False
+    )
     assert poor == [(1, "correct_option_much_longer_than_distractors")]
 
 
@@ -240,7 +254,14 @@ def test_get_poor_quality_indices_duplicate_options():
         {"question": "Q1?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": "Yes."},
         {"question": "Q2?", "options": ["Same", "Same", "Other", "Another"], "correct": "Other", "explanation": "No."},
     ]
-    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False, detect_bare_letter_correct=False, detect_length_guessable=False)
+    poor = get_poor_quality_indices(
+        "ch",
+        items,
+        detect_see_explanation=False,
+        detect_similar=False,
+        detect_bare_letter_correct=False,
+        detect_length_guessable=False,
+    )
     assert len(poor) == 1
     assert poor[0] == (1, "duplicate_options")
 
@@ -250,7 +271,14 @@ def test_get_poor_quality_indices_all_identical_options():
     items = [
         {"question": "Q1?", "options": ["Cash", "Cash", "Cash", "Cash"], "correct": "Cash", "explanation": "Yes."},
     ]
-    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False, detect_bare_letter_correct=False, detect_length_guessable=False)
+    poor = get_poor_quality_indices(
+        "ch",
+        items,
+        detect_see_explanation=False,
+        detect_similar=False,
+        detect_bare_letter_correct=False,
+        detect_length_guessable=False,
+    )
     assert len(poor) == 1
     assert poor[0] == (0, "duplicate_options")
 
@@ -266,7 +294,14 @@ def test_get_poor_quality_indices_placeholder_options():
             "explanation": "No.",
         },
     ]
-    poor = get_poor_quality_indices("ch", items, detect_see_explanation=False, detect_similar=False, detect_bare_letter_correct=False, detect_length_guessable=False)
+    poor = get_poor_quality_indices(
+        "ch",
+        items,
+        detect_see_explanation=False,
+        detect_similar=False,
+        detect_bare_letter_correct=False,
+        detect_length_guessable=False,
+    )
     assert len(poor) == 1
     assert poor[0] == (1, "placeholder_options")
 

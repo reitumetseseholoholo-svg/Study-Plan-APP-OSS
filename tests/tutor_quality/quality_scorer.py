@@ -35,8 +35,7 @@ def build_reference_response(case: dict[str, Any]) -> str:
     core = ", ".join(must) if must else "core points"
     if action_type == "explain":
         base = (
-            f"This means {core}. Because these concepts define the logic, "
-            f"therefore the explanation stays exam-focused."
+            f"This means {core}. Because these concepts define the logic, therefore the explanation stays exam-focused."
         )
     elif action_type == "apply":
         base = (

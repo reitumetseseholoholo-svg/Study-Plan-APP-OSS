@@ -11,6 +11,7 @@ Chapter spec format (any of):
 - List of dicts: [{"title": "Chapter 1: Title", "weight": 12}, {"title": "Chapter 2: Title"}, ...]
   (weight optional; if omitted, default_weight is used, typically 10)
 """
+
 from __future__ import annotations
 
 import json
@@ -116,9 +117,7 @@ def apply_chapters_to_config(
         title, questions, semantic_aliases, and other keys preserved from config.
     """
     out = dict(config)
-    chapters, importance_weights = normalize_chapter_spec(
-        chapter_spec, default_weight=default_weight
-    )
+    chapters, importance_weights = normalize_chapter_spec(chapter_spec, default_weight=default_weight)
     if not chapters:
         return out
 
@@ -163,7 +162,7 @@ def load_chapter_spec_from_path(path: str) -> list[dict[str, Any]] | list[str]:
         try:
             import yaml  # type: ignore[reportMissingModuleSource]
         except ImportError:
-            raise RuntimeError("YAML support requires PyYAML; install with: pip install pyyaml")
+            raise RuntimeError("YAML support requires PyYAML; install with: pip install pyyaml") from None
         try:
             data = yaml.safe_load(raw)
         except yaml.YAMLError as e:

@@ -1,8 +1,8 @@
 """Unit tests for studyplan/fsrs.py — FSRS-4.5 scheduler."""
+
 from __future__ import annotations
 
 import datetime
-import math
 
 import pytest
 
@@ -338,7 +338,13 @@ def _make_history(recall_rate: float, n: int = 20) -> list[dict]:
 
 def test_optimize_retention_returns_all_expected_keys():
     result = optimize_desired_retention_from_history(_make_history(0.85))
-    for key in ("suggested_retention", "current_avg_predicted_r", "actual_recall_rate", "sample_count", "loss_at_suggestion"):
+    for key in (
+        "suggested_retention",
+        "current_avg_predicted_r",
+        "actual_recall_rate",
+        "sample_count",
+        "loss_at_suggestion",
+    ):
         assert key in result, f"missing key: {key}"
 
 

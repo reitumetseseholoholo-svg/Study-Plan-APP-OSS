@@ -1,4 +1,5 @@
 """Unit tests for studyplan/confidence_tracking.py."""
+
 from __future__ import annotations
 
 import pytest
@@ -6,7 +7,6 @@ import pytest
 from studyplan.confidence_tracking import (
     ConfidenceCalibration,
     ConfidenceCalibrator,
-    ConfidenceRecord,
     ConfidenceThresholdPolicy,
 )
 

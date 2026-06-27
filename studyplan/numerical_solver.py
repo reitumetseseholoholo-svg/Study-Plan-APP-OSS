@@ -13,23 +13,42 @@ import re
 from typing import Any
 
 __all__ = [
-    "solve_npv", "solve_wacc", "solve_capm",
-    "solve_payback_period", "solve_discounted_payback",
-    "solve_cash_conversion_cycle", "solve_cost_of_debt",
-    "solve_irr", "solve_arr", "solve_eoq",
-    "solve_equivalent_annual_cost", "solve_profitability_index",
-    "solve_gearing", "solve_interest_cover", "solve_eps",
-    "solve_dividend_yield", "solve_dividend_cover",
-    "solve_cost_of_equity_dvm", "solve_asset_beta", "solve_equity_beta",
-    "solve_pe_ratio", "solve_roe", "solve_cost_of_preference",
-    "solve_terp", "solve_perpetuity_npv", "solve_roce",
-    "safe_expression_evaluate", "extract_expressions", "freeform_verify",
+    "solve_npv",
+    "solve_wacc",
+    "solve_capm",
+    "solve_payback_period",
+    "solve_discounted_payback",
+    "solve_cash_conversion_cycle",
+    "solve_cost_of_debt",
+    "solve_irr",
+    "solve_arr",
+    "solve_eoq",
+    "solve_equivalent_annual_cost",
+    "solve_profitability_index",
+    "solve_gearing",
+    "solve_interest_cover",
+    "solve_eps",
+    "solve_dividend_yield",
+    "solve_dividend_cover",
+    "solve_cost_of_equity_dvm",
+    "solve_asset_beta",
+    "solve_equity_beta",
+    "solve_pe_ratio",
+    "solve_roe",
+    "solve_cost_of_preference",
+    "solve_terp",
+    "solve_perpetuity_npv",
+    "solve_roce",
+    "safe_expression_evaluate",
+    "extract_expressions",
+    "freeform_verify",
     "verify_numerical_answer",
 ]
 
 # ---------------------------------------------------------------------------
 # Layer 1 — Pure formula solvers
 # ---------------------------------------------------------------------------
+
 
 def solve_npv(cashflows: list[float], rate: float, initial: float = 0.0) -> float:
     if rate <= -1 or not cashflows:
@@ -38,8 +57,7 @@ def solve_npv(cashflows: list[float], rate: float, initial: float = 0.0) -> floa
     return pv - initial
 
 
-def solve_wacc(equity: float, debt: float, cost_equity: float,
-               cost_debt: float, tax_rate: float = 0.0) -> float:
+def solve_wacc(equity: float, debt: float, cost_equity: float, cost_debt: float, tax_rate: float = 0.0) -> float:
     """Weighted average cost of capital.
 
     ``cost_debt`` is already after-tax (consistent with cost_of_debt output).
@@ -66,8 +84,7 @@ def solve_payback_period(initial: float, cashflows: list[float]) -> float:
     return float("nan")
 
 
-def solve_discounted_payback(initial: float, cashflows: list[float],
-                             rate: float) -> float:
+def solve_discounted_payback(initial: float, cashflows: list[float], rate: float) -> float:
     cumulative = 0.0
     for t, cf in enumerate(cashflows, 1):
         pv = cf / ((1.0 + rate) ** t)
@@ -86,24 +103,20 @@ def solve_cost_of_debt(interest_rate: float, tax_rate: float) -> float:
     return interest_rate * (1.0 - tax_rate)
 
 
-def solve_cost_of_equity_dvm(dividend: float, price: float,
-                             growth: float = 0.0) -> float:
+def solve_cost_of_equity_dvm(dividend: float, price: float, growth: float = 0.0) -> float:
     if price <= 0:
         return float("nan")
     return (dividend * (1.0 + growth)) / price + growth
 
 
-def solve_irr(cashflows: list[float], initial: float,
-              guess: float = 0.1) -> float:
+def solve_irr(cashflows: list[float], initial: float, guess: float = 0.1) -> float:
     """Internal Rate of Return via Newton-Raphson."""
     if not cashflows or initial <= 0:
         return float("nan")
     rate = guess
     for _ in range(200):
-        npv = -initial + sum(cf / ((1.0 + rate) ** t)
-                             for t, cf in enumerate(cashflows, 1))
-        dnpv = sum(-t * cf / ((1.0 + rate) ** (t + 1))
-                   for t, cf in enumerate(cashflows, 1))
+        npv = -initial + sum(cf / ((1.0 + rate) ** t) for t, cf in enumerate(cashflows, 1))
+        dnpv = sum(-t * cf / ((1.0 + rate) ** (t + 1)) for t, cf in enumerate(cashflows, 1))
         if abs(dnpv) < 1e-15:
             break
         rate_next = rate - npv / dnpv
@@ -115,8 +128,7 @@ def solve_irr(cashflows: list[float], initial: float,
     return float("nan")
 
 
-def solve_arr(average_profit: float, initial_investment: float,
-              residual_value: float = 0.0) -> float:
+def solve_arr(average_profit: float, initial_investment: float, residual_value: float = 0.0) -> float:
     """Accounting Rate of Return (ROCE)."""
     avg_investment = (initial_investment + residual_value) / 2.0
     if avg_investment <= 0:
@@ -124,16 +136,14 @@ def solve_arr(average_profit: float, initial_investment: float,
     return average_profit / avg_investment
 
 
-def solve_eoq(annual_demand: float, ordering_cost: float,
-              holding_cost_per_unit: float) -> float:
+def solve_eoq(annual_demand: float, ordering_cost: float, holding_cost_per_unit: float) -> float:
     """Economic Order Quantity."""
     if annual_demand <= 0 or ordering_cost <= 0 or holding_cost_per_unit <= 0:
         return float("nan")
     return math.sqrt(2.0 * annual_demand * ordering_cost / holding_cost_per_unit)
 
 
-def solve_equivalent_annual_cost(cost: float, discount_rate: float,
-                                 years: int) -> float:
+def solve_equivalent_annual_cost(cost: float, discount_rate: float, years: int) -> float:
     """EAC = cost / ((1 - (1+r)^-n) / r)."""
     if years <= 0 or discount_rate <= -1 or cost <= 0:
         return float("nan")
@@ -145,8 +155,7 @@ def solve_equivalent_annual_cost(cost: float, discount_rate: float,
     return cost / pvifa
 
 
-def solve_profitability_index(pv_future_cashflows: float,
-                              initial_investment: float) -> float:
+def solve_profitability_index(pv_future_cashflows: float, initial_investment: float) -> float:
     if initial_investment <= 0:
         return float("nan")
     return pv_future_cashflows / initial_investment
@@ -184,8 +193,9 @@ def solve_dividend_cover(eps: float, dividend_per_share: float) -> float:
     return eps / dividend_per_share
 
 
-def solve_asset_beta(equity_beta: float, market_value_debt: float,
-                     market_value_equity: float, tax_rate: float = 0.0) -> float:
+def solve_asset_beta(
+    equity_beta: float, market_value_debt: float, market_value_equity: float, tax_rate: float = 0.0
+) -> float:
     """Ungear equity beta to asset beta."""
     v = market_value_equity + market_value_debt * (1.0 - tax_rate)
     if v <= 0:
@@ -193,8 +203,9 @@ def solve_asset_beta(equity_beta: float, market_value_debt: float,
     return equity_beta * (market_value_equity / v)
 
 
-def solve_equity_beta(asset_beta: float, market_value_debt: float,
-                      market_value_equity: float, tax_rate: float = 0.0) -> float:
+def solve_equity_beta(
+    asset_beta: float, market_value_debt: float, market_value_equity: float, tax_rate: float = 0.0
+) -> float:
     """Regear asset beta to equity beta."""
     if market_value_equity <= 0:
         return float("nan")
@@ -216,16 +227,14 @@ def solve_roe(profit_after_tax: float, equity: float) -> float:
     return profit_after_tax / equity
 
 
-def solve_cost_of_preference(preference_dividend: float,
-                             market_price: float) -> float:
+def solve_cost_of_preference(preference_dividend: float, market_price: float) -> float:
     """Kp = Preference dividend / Market price."""
     if market_price <= 0:
         return float("nan")
     return preference_dividend / market_price
 
 
-def solve_terp(cum_rights_price: float, issue_price: float,
-               rights_ratio_n: float) -> float:
+def solve_terp(cum_rights_price: float, issue_price: float, rights_ratio_n: float) -> float:
     """Theoretical ex-rights price.
 
     TERP = (N * cum_rights_price + issue_price) / (N + 1)
@@ -295,16 +304,18 @@ def extract_numbers(text: str) -> list[dict[str, Any]]:
             value = -value
         if is_percent:
             value = value / 100.0
-        pre_context = raw[max(0, match.start() - 20):match.start()].lower()
+        pre_context = raw[max(0, match.start() - 20) : match.start()].lower()
         is_year_like = bool(_YEAR_WORDS.search(pre_context)) and value == int(value) and 0 < value < 30
-        results.append({
-            "value": value,
-            "raw": token,
-            "is_percent": is_percent,
-            "is_currency": is_currency,
-            "is_year_like": is_year_like,
-            "is_negative": value < 0,
-        })
+        results.append(
+            {
+                "value": value,
+                "raw": token,
+                "is_percent": is_percent,
+                "is_currency": is_currency,
+                "is_year_like": is_year_like,
+                "is_negative": value < 0,
+            }
+        )
     results = [r for r in results if not (r["is_year_like"] and not r["is_currency"])]
     return results
 
@@ -314,116 +325,336 @@ def extract_numbers(text: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 _FORMULA_SIGNATURES: list[tuple[str, list[re.Pattern], int]] = [
-    ("npv", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bNPV\b", r"\bnet present value\b",
-        r"\bdiscounted cash flow\b", r"\bDCF\b",
-        r"\bpresent value of future\b",
-    ]], 1),
-    ("wacc", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bWACC\b", r"\bweighted average cost\b",
-        r"\bcost of capital\b",
-    ]], 2),
-    ("capm", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bCAPM\b", r"\bcost of equity\b",
-        r"\brequired rate of return\b",
-        r"\bexpected return\b", r"\bequity cost\b",
-    ]], 3),
-    ("payback", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bpayback\b", r"\bpayback period\b",
-        r"\brecoup\b", r"\brecover.*investment\b",
-    ]], 4),
-    ("discounted_payback", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bdiscounted payback\b",
-    ]], 5),
-    ("ccc", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bcash conversion cycle\b",
-        r"\bworking capital cycle\b",
-        r"\bCCC\b", r"\bDIO\b", r"\bDSO\b", r"\bDPO\b",
-    ]], 6),
-    ("cost_of_debt", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bcost of debt\b", r"\bafter.?tax cost\b",
-        r"\bdebt cost\b",
-    ]], 7),
-    ("cost_of_equity_dvm", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bdividend (growth|valuation|model)\b",
-        r"\bdividend.*price\b", r"\bDVM\b",
-        r"\bGordon.*growth\b",
-    ]], 8),
-    ("irr", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bIRR\b", r"\binternal rate of return\b",
-        r"\byield\b", r"\bDCF yield\b",
-    ]], 9),
-    ("arr", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bARR\b", r"\baccounting rate of return\b",
-        r"\bROCE\b", r"\breturn on capital employed\b",
-        r"\baverage.*return\b",
-    ]], 10),
-    ("eoq", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bEOQ\b", r"\beconomic order quantity\b",
-        r"\boptimal order\b", r"\breorder quantity\b",
-    ]], 11),
-    ("equivalent_annual_cost", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bequivalent annual (cost|annuity)\b",
-        r"\bEAC\b", r"\bannual equivalent\b",
-        r"\bequivalent.*annuity\b",
-    ]], 12),
-    ("profitability_index", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bprofitability index\b", r"\bPI\b",
-        r"\bprofit.*index\b", r"\bbenefit.*cost\b",
-    ]], 13),
-    ("gearing", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bgearing\b", r"\bleverage\b",
-        r"\bdebt.*equity\b", r"\bD/E\b", r"\bcapital structure\b",
-    ]], 14),
-    ("interest_cover", [re.compile(p, re.IGNORECASE) for p in [
-        r"\binterest cover\b", r"\binterest coverage\b",
-        r"\btimes interest\b", r"\bcover.*interest\b",
-    ]], 15),
-    ("eps", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bEPS\b", r"\bearnings per share\b",
-        r"\bprofit.*share\b",
-    ]], 16),
-    ("dividend_yield", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bdividend yield\b",
-    ]], 17),
-    ("dividend_cover", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bdividend cover\b", r"\bdividend coverage\b",
-        r"\bcover.*dividend\b",
-    ]], 18),
-    ("asset_beta", [re.compile(p, re.IGNORECASE) for p in [
-        r"\basset beta\b", r"\bungear\b",
-        r"\bungeared\b",
-    ]], 19),
-    ("equity_beta", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bequity beta\b", r"\bregear\b",
-        r"\bungeared.*regear\b",
-    ]], 20),
-    ("pe_ratio", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bP/E\b", r"\bprice.*earnings\b", r"\bPE ratio\b",
-        r"\bprice.*multiple\b",
-    ]], 21),
-    ("roe", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bROE\b", r"\breturn on equity\b",
-        r"\breturn.*shareholder\b",
-    ]], 22),
-    ("cost_of_preference", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bcost of preference\b",
-        r"\bpreference.*dividend\b",
-        r"\bpreference.*price\b",
-        r"\bpref.*share\b",
-    ]], 23),
-    ("terp", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bTERP\b", r"\bex.?rights\b",
-        r"\btheoretical.*rights\b", r"\brights issue\b",
-        r"\bcum.?rights\b",
-    ]], 24),
-    ("perpetuity_npv", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bperpetuity\b", r"\bperpetual\b",
-        r"\binfinite.*cash\b", r"\bconstant.*cash\b",
-    ]], 25),
-    ("roce", [re.compile(p, re.IGNORECASE) for p in [
-        r"\bROCE\b", r"\breturn on capital employed\b",
-    ]], 26),
+    (
+        "npv",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bNPV\b",
+                r"\bnet present value\b",
+                r"\bdiscounted cash flow\b",
+                r"\bDCF\b",
+                r"\bpresent value of future\b",
+            ]
+        ],
+        1,
+    ),
+    (
+        "wacc",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bWACC\b",
+                r"\bweighted average cost\b",
+                r"\bcost of capital\b",
+            ]
+        ],
+        2,
+    ),
+    (
+        "capm",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bCAPM\b",
+                r"\bcost of equity\b",
+                r"\brequired rate of return\b",
+                r"\bexpected return\b",
+                r"\bequity cost\b",
+            ]
+        ],
+        3,
+    ),
+    (
+        "payback",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bpayback\b",
+                r"\bpayback period\b",
+                r"\brecoup\b",
+                r"\brecover.*investment\b",
+            ]
+        ],
+        4,
+    ),
+    (
+        "discounted_payback",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bdiscounted payback\b",
+            ]
+        ],
+        5,
+    ),
+    (
+        "ccc",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bcash conversion cycle\b",
+                r"\bworking capital cycle\b",
+                r"\bCCC\b",
+                r"\bDIO\b",
+                r"\bDSO\b",
+                r"\bDPO\b",
+            ]
+        ],
+        6,
+    ),
+    (
+        "cost_of_debt",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bcost of debt\b",
+                r"\bafter.?tax cost\b",
+                r"\bdebt cost\b",
+            ]
+        ],
+        7,
+    ),
+    (
+        "cost_of_equity_dvm",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bdividend (growth|valuation|model)\b",
+                r"\bdividend.*price\b",
+                r"\bDVM\b",
+                r"\bGordon.*growth\b",
+            ]
+        ],
+        8,
+    ),
+    (
+        "irr",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bIRR\b",
+                r"\binternal rate of return\b",
+                r"\byield\b",
+                r"\bDCF yield\b",
+            ]
+        ],
+        9,
+    ),
+    (
+        "arr",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bARR\b",
+                r"\baccounting rate of return\b",
+                r"\bROCE\b",
+                r"\breturn on capital employed\b",
+                r"\baverage.*return\b",
+            ]
+        ],
+        10,
+    ),
+    (
+        "eoq",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bEOQ\b",
+                r"\beconomic order quantity\b",
+                r"\boptimal order\b",
+                r"\breorder quantity\b",
+            ]
+        ],
+        11,
+    ),
+    (
+        "equivalent_annual_cost",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bequivalent annual (cost|annuity)\b",
+                r"\bEAC\b",
+                r"\bannual equivalent\b",
+                r"\bequivalent.*annuity\b",
+            ]
+        ],
+        12,
+    ),
+    (
+        "profitability_index",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bprofitability index\b",
+                r"\bPI\b",
+                r"\bprofit.*index\b",
+                r"\bbenefit.*cost\b",
+            ]
+        ],
+        13,
+    ),
+    (
+        "gearing",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bgearing\b",
+                r"\bleverage\b",
+                r"\bdebt.*equity\b",
+                r"\bD/E\b",
+                r"\bcapital structure\b",
+            ]
+        ],
+        14,
+    ),
+    (
+        "interest_cover",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\binterest cover\b",
+                r"\binterest coverage\b",
+                r"\btimes interest\b",
+                r"\bcover.*interest\b",
+            ]
+        ],
+        15,
+    ),
+    (
+        "eps",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bEPS\b",
+                r"\bearnings per share\b",
+                r"\bprofit.*share\b",
+            ]
+        ],
+        16,
+    ),
+    (
+        "dividend_yield",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bdividend yield\b",
+            ]
+        ],
+        17,
+    ),
+    (
+        "dividend_cover",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bdividend cover\b",
+                r"\bdividend coverage\b",
+                r"\bcover.*dividend\b",
+            ]
+        ],
+        18,
+    ),
+    (
+        "asset_beta",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\basset beta\b",
+                r"\bungear\b",
+                r"\bungeared\b",
+            ]
+        ],
+        19,
+    ),
+    (
+        "equity_beta",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bequity beta\b",
+                r"\bregear\b",
+                r"\bungeared.*regear\b",
+            ]
+        ],
+        20,
+    ),
+    (
+        "pe_ratio",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bP/E\b",
+                r"\bprice.*earnings\b",
+                r"\bPE ratio\b",
+                r"\bprice.*multiple\b",
+            ]
+        ],
+        21,
+    ),
+    (
+        "roe",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bROE\b",
+                r"\breturn on equity\b",
+                r"\breturn.*shareholder\b",
+            ]
+        ],
+        22,
+    ),
+    (
+        "cost_of_preference",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bcost of preference\b",
+                r"\bpreference.*dividend\b",
+                r"\bpreference.*price\b",
+                r"\bpref.*share\b",
+            ]
+        ],
+        23,
+    ),
+    (
+        "terp",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bTERP\b",
+                r"\bex.?rights\b",
+                r"\btheoretical.*rights\b",
+                r"\brights issue\b",
+                r"\bcum.?rights\b",
+            ]
+        ],
+        24,
+    ),
+    (
+        "perpetuity_npv",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bperpetuity\b",
+                r"\bperpetual\b",
+                r"\binfinite.*cash\b",
+                r"\bconstant.*cash\b",
+            ]
+        ],
+        25,
+    ),
+    (
+        "roce",
+        [
+            re.compile(p, re.IGNORECASE)
+            for p in [
+                r"\bROCE\b",
+                r"\breturn on capital employed\b",
+            ]
+        ],
+        26,
+    ),
 ]
 
 _FORMULA_PRIORITY = {name: prio for name, _, prio in _FORMULA_SIGNATURES}
@@ -444,6 +675,7 @@ def detect_formulas(question: str) -> list[str]:
 # Candidate parameter extraction per formula
 # ---------------------------------------------------------------------------
 
+
 def _candidates_npv(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     values = [n["value"] for n in nums]
@@ -456,11 +688,13 @@ def _candidates_npv(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if len(cash_candidates) >= 1:
                 candidates.append({"cashflows": list(cash_candidates), "rate": rate, "initial": 0.0})
             if len(cash_candidates) >= 2:
-                candidates.append({
-                    "cashflows": list(cash_candidates[:-1]),
-                    "rate": rate,
-                    "initial": cash_candidates[-1],
-                })
+                candidates.append(
+                    {
+                        "cashflows": list(cash_candidates[:-1]),
+                        "rate": rate,
+                        "initial": cash_candidates[-1],
+                    }
+                )
     if not pcts and len(values) >= 3:
         rate = values[-1]
         cashflows = values[:-1]
@@ -483,18 +717,26 @@ def _candidates_wacc(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     if abs(re_val - rd_val) < 0.001:
                         continue
                     # cost_debt extracted from text is pre-tax; solver expects after-tax
-                    candidates.append({
-                        "equity": eq, "debt": db,
-                        "cost_equity": re_val, "cost_debt": rd_val, "tax_rate": 0.0,
-                    })
+                    candidates.append(
+                        {
+                            "equity": eq,
+                            "debt": db,
+                            "cost_equity": re_val,
+                            "cost_debt": rd_val,
+                            "tax_rate": 0.0,
+                        }
+                    )
                     if len(pcts) >= 3:
                         tax = [p for p in pcts if p not in (re_val, rd_val)][0]
-                        candidates.append({
-                            "equity": eq, "debt": db,
-                            "cost_equity": re_val,
-                            "cost_debt": rd_val * (1.0 - tax),
-                            "tax_rate": tax,
-                        })
+                        candidates.append(
+                            {
+                                "equity": eq,
+                                "debt": db,
+                                "cost_equity": re_val,
+                                "cost_debt": rd_val * (1.0 - tax),
+                                "tax_rate": tax,
+                            }
+                        )
     return candidates
 
 
@@ -511,9 +753,13 @@ def _candidates_capm(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if mr_idx in (rf_idx, b_idx):
                     continue
                 if 0 < b <= 5:
-                    candidates.append({
-                        "risk_free": rf, "beta": b, "market_return": mr,
-                    })
+                    candidates.append(
+                        {
+                            "risk_free": rf,
+                            "beta": b,
+                            "market_return": mr,
+                        }
+                    )
     return candidates
 
 
@@ -574,19 +820,20 @@ def _candidates_arr(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
         profit = values[0]
         invest = max(values[1:]) if len(values) > 2 else values[1]
         residual = values[-1] if len(values) >= 3 and values[-1] < values[0] else 0.0
-        candidates.append({
-            "average_profit": profit,
-            "initial_investment": invest,
-            "residual_value": residual,
-        })
+        candidates.append(
+            {
+                "average_profit": profit,
+                "initial_investment": invest,
+                "residual_value": residual,
+            }
+        )
     return candidates
 
 
 def _candidates_eoq(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
     values = [n["value"] for n in nums if not n["is_percent"]]
     if len(values) >= 3:
-        return [{"annual_demand": values[0], "ordering_cost": values[1],
-                 "holding_cost_per_unit": values[2]}]
+        return [{"annual_demand": values[0], "ordering_cost": values[1], "holding_cost_per_unit": values[2]}]
     return []
 
 
@@ -632,11 +879,10 @@ def _candidates_eps(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _candidates_dividend_yield(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
     values = [n["value"] for n in nums if not n["is_percent"]]
-    pcts = [n["value"] for n in nums if n["is_percent"]]
+    [n["value"] for n in nums if n["is_percent"]]
     candidates: list[dict[str, Any]] = []
     if len(values) >= 2:
-        candidates.append({"dividend_per_share": min(values),
-                           "market_price": max(values)})
+        candidates.append({"dividend_per_share": min(values), "market_price": max(values)})
     return candidates
 
 
@@ -653,12 +899,14 @@ def _candidates_asset_beta(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     if len(values) >= 3:
         tax = pcts[0] if pcts else 0.0
-        candidates.append({
-            "equity_beta": values[0],
-            "market_value_debt": values[1],
-            "market_value_equity": values[2],
-            "tax_rate": tax,
-        })
+        candidates.append(
+            {
+                "equity_beta": values[0],
+                "market_value_debt": values[1],
+                "market_value_equity": values[2],
+                "tax_rate": tax,
+            }
+        )
     return candidates
 
 
@@ -668,12 +916,14 @@ def _candidates_equity_beta(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     if len(values) >= 3:
         tax = pcts[0] if pcts else 0.0
-        candidates.append({
-            "asset_beta": values[0],
-            "market_value_debt": values[1],
-            "market_value_equity": values[2],
-            "tax_rate": tax,
-        })
+        candidates.append(
+            {
+                "asset_beta": values[0],
+                "market_value_debt": values[1],
+                "market_value_equity": values[2],
+                "tax_rate": tax,
+            }
+        )
     return candidates
 
 
@@ -703,14 +953,17 @@ def _candidates_terp(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     if len(values) >= 3:
         n_candidates = sorted(values, reverse=True)
-        for n_val in [v for v in n_candidates if v == int(v)]:   # rights ratio is integer
+        for n_val in [v for v in n_candidates if v == int(v)]:  # rights ratio is integer
             remaining = [v for v in n_candidates if v != n_val]
             if len(remaining) >= 2:
                 cum, issue = remaining[0], remaining[1]
-                candidates.append({
-                    "cum_rights_price": cum, "issue_price": issue,
-                    "rights_ratio_n": n_val,
-                })
+                candidates.append(
+                    {
+                        "cum_rights_price": cum,
+                        "issue_price": issue,
+                        "rights_ratio_n": n_val,
+                    }
+                )
     return candidates
 
 
@@ -800,6 +1053,7 @@ def _solve_discounted_payback_wrapper(**kwargs: Any) -> float:
         kwargs.get("rate", 0.0),
     )
 
+
 _FORMULA_SOLVERS["discounted_payback"] = _solve_discounted_payback_wrapper
 
 
@@ -807,14 +1061,26 @@ _FORMULA_SOLVERS["discounted_payback"] = _solve_discounted_payback_wrapper
 # Layer 2.5 — Freeform expression extraction from explanation text
 # ---------------------------------------------------------------------------
 
+
 class _SafeEvalVisitor(ast.NodeVisitor):
     """AST visitor that only allows safe arithmetic nodes."""
+
     ALLOWED = {
-        ast.Expression, ast.Add, ast.Sub, ast.Mult, ast.Div,
-        ast.Pow, ast.Mod, ast.USub, ast.UAdd,
-        ast.BinOp, ast.UnaryOp,
+        ast.Expression,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Pow,
+        ast.Mod,
+        ast.USub,
+        ast.UAdd,
+        ast.BinOp,
+        ast.UnaryOp,
         ast.Constant,
-        ast.Call, ast.Name, ast.Load,
+        ast.Call,
+        ast.Name,
+        ast.Load,
     }
 
     def __init__(self) -> None:
@@ -871,8 +1137,11 @@ def safe_expression_evaluate(
     if not visitor._safe:
         return None
     locals_dict: dict[str, Any] = {
-        "sqrt": math.sqrt, "abs": abs,
-        "float": float, "int": int, "round": round,
+        "sqrt": math.sqrt,
+        "abs": abs,
+        "float": float,
+        "int": int,
+        "round": round,
     }
     if env:
         locals_dict.update(env)
@@ -908,6 +1177,7 @@ def extract_expressions(text: str) -> list[str]:
 # ---------------------------------------------------------------------------
 # Freeform verification (Tier 2)
 # ---------------------------------------------------------------------------
+
 
 def freeform_verify(
     explanation: str,
@@ -947,6 +1217,7 @@ def freeform_verify(
 # ---------------------------------------------------------------------------
 # Layer 3 — Answer verification
 # ---------------------------------------------------------------------------
+
 
 def _options_are_numeric(options: list[str]) -> list[float] | None:
     if len(options) != 4:
@@ -1152,6 +1423,7 @@ _FORMULA_PRIORITY = {name: prio for name, _, prio in _FORMULA_SIGNATURES}
 
 # Extend __all__ with any auto-generated solver names from the registry
 from studyplan.domain_reasoning.formula_registry import get_registry_formulas
+
 for fname in get_registry_formulas():
     solver_name = f"solve_{fname}"
     if solver_name not in __all__:

@@ -16,6 +16,7 @@ KNOWN_ASSESSMENT_OUTCOMES = {"correct", "partial", "incorrect"}
 
 class PracticeLoopEvent(str, Enum):
     """Explicit event enumeration for practice loop state machine."""
+
     QUIZ_START = "quiz_start"
     QUIZ_END = "quiz_end"
     ITEM_PRESENTED = "item_presented"
@@ -34,6 +35,7 @@ class PracticeLoopEvent(str, Enum):
 
 class PracticeLoopFsmState(str, Enum):
     """Explicit FSM states for the table-driven practice loop (see module docstring)."""
+
     IDLE = "idle"
     PRESENTING = "presenting"
     AWAITING_SUBMISSION = "awaiting_submission"
@@ -152,18 +154,48 @@ def recommend_action_policy(
 # Explicit transition table (deterministic, no hidden side-effects)
 PRACTICE_LOOP_TRANSITIONS = [
     StateTransition(PracticeLoopFsmState.IDLE, PracticeLoopEvent.QUIZ_START, PracticeLoopFsmState.PRESENTING),
-    StateTransition(PracticeLoopFsmState.PRESENTING, PracticeLoopEvent.ITEM_PRESENTED, PracticeLoopFsmState.AWAITING_SUBMISSION),
-    StateTransition(PracticeLoopFsmState.AWAITING_SUBMISSION, PracticeLoopEvent.SUBMISSION_RECEIVED, PracticeLoopFsmState.ASSESSING),
-    StateTransition(PracticeLoopFsmState.ASSESSING, PracticeLoopEvent.ASSESSMENT_CORRECT, PracticeLoopFsmState.SCORED, action="update_posterior_alpha"),
-    StateTransition(PracticeLoopFsmState.ASSESSING, PracticeLoopEvent.ASSESSMENT_INCORRECT, PracticeLoopFsmState.SCORED, action="update_posterior_beta"),
-    StateTransition(PracticeLoopFsmState.ASSESSING, PracticeLoopEvent.ASSESSMENT_PARTIAL, PracticeLoopFsmState.SCORED, action="update_posterior_partial"),
+    StateTransition(
+        PracticeLoopFsmState.PRESENTING, PracticeLoopEvent.ITEM_PRESENTED, PracticeLoopFsmState.AWAITING_SUBMISSION
+    ),
+    StateTransition(
+        PracticeLoopFsmState.AWAITING_SUBMISSION, PracticeLoopEvent.SUBMISSION_RECEIVED, PracticeLoopFsmState.ASSESSING
+    ),
+    StateTransition(
+        PracticeLoopFsmState.ASSESSING,
+        PracticeLoopEvent.ASSESSMENT_CORRECT,
+        PracticeLoopFsmState.SCORED,
+        action="update_posterior_alpha",
+    ),
+    StateTransition(
+        PracticeLoopFsmState.ASSESSING,
+        PracticeLoopEvent.ASSESSMENT_INCORRECT,
+        PracticeLoopFsmState.SCORED,
+        action="update_posterior_beta",
+    ),
+    StateTransition(
+        PracticeLoopFsmState.ASSESSING,
+        PracticeLoopEvent.ASSESSMENT_PARTIAL,
+        PracticeLoopFsmState.SCORED,
+        action="update_posterior_partial",
+    ),
     StateTransition(PracticeLoopFsmState.ASSESSING, PracticeLoopEvent.TIMEOUT, PracticeLoopFsmState.ERROR),
-    StateTransition(PracticeLoopFsmState.SCORED, PracticeLoopEvent.REFLECTION_REQUESTED, PracticeLoopFsmState.REFLECTING),
-    StateTransition(PracticeLoopFsmState.SCORED, PracticeLoopEvent.TRANSFER_TEST_START, PracticeLoopFsmState.TRANSFER_TESTING),
+    StateTransition(
+        PracticeLoopFsmState.SCORED, PracticeLoopEvent.REFLECTION_REQUESTED, PracticeLoopFsmState.REFLECTING
+    ),
+    StateTransition(
+        PracticeLoopFsmState.SCORED, PracticeLoopEvent.TRANSFER_TEST_START, PracticeLoopFsmState.TRANSFER_TESTING
+    ),
     StateTransition(PracticeLoopFsmState.REFLECTING, PracticeLoopEvent.QUIZ_END, PracticeLoopFsmState.IDLE),
-    StateTransition(PracticeLoopFsmState.TRANSFER_TESTING, PracticeLoopEvent.TRANSFER_TEST_RESULT, PracticeLoopFsmState.SCORED),
+    StateTransition(
+        PracticeLoopFsmState.TRANSFER_TESTING, PracticeLoopEvent.TRANSFER_TEST_RESULT, PracticeLoopFsmState.SCORED
+    ),
     StateTransition(PracticeLoopFsmState.SCORED, PracticeLoopEvent.TOPIC_MASTERED, PracticeLoopFsmState.MASTERED),
-    StateTransition(PracticeLoopFsmState.AWAITING_SUBMISSION, PracticeLoopEvent.HINT_REQUESTED, PracticeLoopFsmState.AWAITING_SUBMISSION, action="deliver_hint"),
+    StateTransition(
+        PracticeLoopFsmState.AWAITING_SUBMISSION,
+        PracticeLoopEvent.HINT_REQUESTED,
+        PracticeLoopFsmState.AWAITING_SUBMISSION,
+        action="deliver_hint",
+    ),
     StateTransition(PracticeLoopFsmState.AWAITING_SUBMISSION, PracticeLoopEvent.TIMEOUT, PracticeLoopFsmState.ERROR),
     StateTransition(PracticeLoopFsmState.ERROR, PracticeLoopEvent.QUIZ_START, PracticeLoopFsmState.PRESENTING),
 ]

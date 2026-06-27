@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Study plan engine: data model, SRS, scheduling, syllabus parsing, outcome resolution, and persistence."""
+
 import atexit
 import concurrent.futures
 import contextlib
+import warnings
 import copy
 import csv
 import datetime
 import difflib
 import hashlib
+import importlib
 import io
 import json
 import logging
@@ -25,6 +28,7 @@ from studyplan.config import Config as StudyPlanConfig
 from studyplan.cognitive_state import CognitiveState
 from studyplan.mastery_kernel import MasteryKernel
 from studyplan.persistence_layer import PersistenceLayer
+from studyplan.rs.srs_select import batch_score_srs, select_srs_from_scored
 from studyplan.numerical_solver import verify_numerical_answer
 from studyplan.domain_reasoning import detect_concepts as _domain_detect_concepts
 from studyplan.domain_reasoning import reason_question as _domain_reason_question
@@ -34,7 +38,7 @@ from studyplan.question_quality import (
     get_poor_quality_indices,
     option_looks_like_see_explanation,
 )
-from studyplan.state_locking import bind_cognitive_state_lock, snapshot_cognitive_state
+from studyplan.state_locking import bind_cognitive_state_lock
 from studyplan.working_memory_service import WorkingMemoryService
 from studyplan.syllabus_fr import (
     is_fr_syllabus_text,
@@ -48,11 +52,12 @@ from studyplan.syllabus_fr import (
 from studyplan.syllabus_f7 import get_f7_syllabus_structure
 from studyplan_file_safety import enforce_file_size_limit, secure_path_permissions
 from studyplan.performance_integration import profile_operation
+from studyplan.cython.cosine import cosine_similarity as _cosine_sim
 
 logger = logging.getLogger(__name__)
 
-class StudyPlanEngine:
 
+class StudyPlanEngine:
     VERSION = "1.0.0"
     QUESTION_ID_PREFIX = "q:"
     RECALL_FEATURE_COUNT = 5
@@ -137,7 +142,7 @@ class StudyPlanEngine:
         "AR/AP Management",
         "Risk Management",
         "Business Valuation",
-        "Ratio Analysis"
+        "Ratio Analysis",
     ]
     CHAPTER_NUMBER_MAP = {
         1: "FM Function",
@@ -174,9 +179,7 @@ class StudyPlanEngine:
         "Equity Finance": ["Debt Finance"],
         "Debt Finance": ["Cost of Capital"],
     }
-    DEFAULT_DATA_DIR = getattr(
-        StudyPlanConfig, "CONFIG_HOME", os.path.expanduser("~/.config/studyplan")
-    )
+    DEFAULT_DATA_DIR = getattr(StudyPlanConfig, "CONFIG_HOME", os.path.expanduser("~/.config/studyplan"))
     DEFAULT_DATA_FILE = os.path.join(DEFAULT_DATA_DIR, "data.json")
     DEFAULT_QUESTIONS_FILE = os.path.join(DEFAULT_DATA_DIR, "questions.json")
     MODULES_DIR = os.path.join(DEFAULT_DATA_DIR, "modules")
@@ -232,7 +235,6 @@ class StudyPlanEngine:
         if os.path.isdir(repo_modules):
             candidates.append(os.path.join(repo_modules, f"{safe_id}.json"))
         candidates.append(os.path.join(self.MODULES_DIR, f"{safe_id}.json"))
-        last_error = None
         for path in candidates:
             if not os.path.exists(path):
                 continue
@@ -240,19 +242,16 @@ class StudyPlanEngine:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict):
-                    setattr(self, "_last_loaded_module_config_path", path)
+                    self._last_loaded_module_config_path = path
                     return data
-                last_error = ValueError(f"Config is not a dict: {type(data).__name__}")
-            except json.JSONDecodeError as e:
-                last_error = e
+                ValueError(f"Config is not a dict: {type(data).__name__}")
+            except json.JSONDecodeError:
                 continue
-            except OSError as e:
-                last_error = e
+            except OSError:
                 continue
-            except Exception as e:
-                last_error = e
+            except Exception:
                 continue
-        setattr(self, "_last_loaded_module_config_path", None)
+        self._last_loaded_module_config_path = None
         return None
 
     def get_module_config_path_candidates(self, module_id: str | None) -> List[tuple[str, str]]:
@@ -315,11 +314,7 @@ class StudyPlanEngine:
         syllabus_structure_updated = False
         chapters = config.get("chapters")
         if isinstance(chapters, list) and chapters:
-            cleaned = [
-                s for ch in chapters
-                for s in [str(ch).strip()]
-                if s and s.lower() != "none"
-            ]
+            cleaned = [s for ch in chapters for s in [str(ch).strip()] if s and s.lower() != "none"]
             if cleaned:
                 self.CHAPTERS = cleaned
                 self.CHAPTER_NUMBER_MAP = {i + 1: ch for i, ch in enumerate(self.CHAPTERS)}
@@ -440,7 +435,11 @@ class StudyPlanEngine:
                                             existing_text = str(mo.get("text", "") or "").strip()
                                             # Only update text if the incoming is longer/better (not a truncation).
                                             if len(inc_text) >= len(existing_text):
-                                                merged_outcomes[mi] = {**mo, "text": inc_text, "level": incoming.get("level", mo.get("level", 2))}
+                                                merged_outcomes[mi] = {
+                                                    **mo,
+                                                    "text": inc_text,
+                                                    "level": incoming.get("level", mo.get("level", 2)),
+                                                }
                                             break
                                 continue
                             if inc_norm and inc_norm in prior_norm_texts:
@@ -471,9 +470,7 @@ class StudyPlanEngine:
             if (self.module_id or "").strip().lower() == "acca_f7":
                 self._enrich_fr_outcome_optional_metadata_in_place()
             # Reconcile outcome_stats to current outcome ids (syllabus ingest Phase 3).
-            self.outcome_stats = self._reconcile_outcome_stats_to_syllabus(
-                getattr(self, "outcome_stats", {}) or {}
-            )
+            self.outcome_stats = self._reconcile_outcome_stats_to_syllabus(getattr(self, "outcome_stats", {}) or {})
             # Invalidate concept graph so next use rebuilds from new syllabus_structure (syllabus ingest plan Phase 2).
             if isinstance(getattr(self, "concept_graph_meta", None), dict):
                 self.concept_graph_meta = dict(self.concept_graph_meta)
@@ -496,14 +493,15 @@ class StudyPlanEngine:
         concept_edges = config.get("concept_edges")
         outcome_concept_links = config.get("outcome_concept_links")
         if not syllabus_structure_updated and any(
-            x is not None
-            for x in (concept_graph_meta, concept_nodes, concept_edges, outcome_concept_links)
+            x is not None for x in (concept_graph_meta, concept_nodes, concept_edges, outcome_concept_links)
         ):
             cg_meta, cg_nodes, cg_edges, cg_links = self._coerce_concept_graph(
                 concept_graph_meta if isinstance(concept_graph_meta, dict) else getattr(self, "concept_graph_meta", {}),
                 concept_nodes if isinstance(concept_nodes, list) else getattr(self, "concept_nodes", []),
                 concept_edges if isinstance(concept_edges, list) else getattr(self, "concept_edges", []),
-                outcome_concept_links if isinstance(outcome_concept_links, list) else getattr(self, "outcome_concept_links", []),
+                outcome_concept_links
+                if isinstance(outcome_concept_links, list)
+                else getattr(self, "outcome_concept_links", []),
             )
             self.concept_graph_meta = cg_meta
             self.concept_nodes = cg_nodes
@@ -512,11 +510,17 @@ class StudyPlanEngine:
         outcome_cluster_meta = config.get("outcome_cluster_meta")
         outcome_clusters = config.get("outcome_clusters")
         outcome_cluster_edges = config.get("outcome_cluster_edges")
-        if not syllabus_structure_updated and any(x is not None for x in (outcome_cluster_meta, outcome_clusters, outcome_cluster_edges)):
+        if not syllabus_structure_updated and any(
+            x is not None for x in (outcome_cluster_meta, outcome_clusters, outcome_cluster_edges)
+        ):
             oc_meta, oc_clusters, oc_edges = self._coerce_outcome_cluster_graph(
-                outcome_cluster_meta if isinstance(outcome_cluster_meta, dict) else getattr(self, "outcome_cluster_meta", {}),
+                outcome_cluster_meta
+                if isinstance(outcome_cluster_meta, dict)
+                else getattr(self, "outcome_cluster_meta", {}),
                 outcome_clusters if isinstance(outcome_clusters, list) else getattr(self, "outcome_clusters", []),
-                outcome_cluster_edges if isinstance(outcome_cluster_edges, list) else getattr(self, "outcome_cluster_edges", []),
+                outcome_cluster_edges
+                if isinstance(outcome_cluster_edges, list)
+                else getattr(self, "outcome_cluster_edges", []),
             )
             self.outcome_cluster_meta = oc_meta
             self.outcome_clusters = oc_clusters
@@ -714,7 +718,6 @@ class StudyPlanEngine:
         outcomes_by_section: Dict[str, List[Dict[str, Any]]] = {}
         subtopics_by_section: Dict[str, List[str]] = {}
         current_id: str | None = None
-        current_title: str | None = None
         outcome_text: str | None = None
         outcome_level: int | None = None
         pending_bullet = False
@@ -727,13 +730,11 @@ class StudyPlanEngine:
                 return
             t = outcome_text.strip()
             if t:
-                outcomes_by_section.setdefault(current_id, []).append(
-                    {"text": t, "level": int(outcome_level or 2)}
-                )
+                outcomes_by_section.setdefault(current_id, []).append({"text": t, "level": int(outcome_level or 2)})
             outcome_text = None
             outcome_level = None
 
-        for i, line in enumerate(lines):
+        for _i, line in enumerate(lines):
             m = heading_re.match(line.strip())
             if m:
                 flush_outcome()
@@ -752,7 +753,6 @@ class StudyPlanEngine:
                     section_ids.append(sid)
                 section_titles[sid] = title
                 current_id = sid
-                current_title = title
                 pending_bullet = False
                 continue
 
@@ -1176,10 +1176,34 @@ class StudyPlanEngine:
 
         def _extract_terms(text: str) -> List[str]:
             stopwords = {
-                "the", "and", "for", "with", "from", "that", "this", "into", "using", "use", "used",
-                "study", "guide", "detailed", "section", "chapter", "part", "topic", "module",
-                "outcome", "learning", "skill", "skills", "ability", "abilities", "candidate",
-                "financial", "statement",
+                "the",
+                "and",
+                "for",
+                "with",
+                "from",
+                "that",
+                "this",
+                "into",
+                "using",
+                "use",
+                "used",
+                "study",
+                "guide",
+                "detailed",
+                "section",
+                "chapter",
+                "part",
+                "topic",
+                "module",
+                "outcome",
+                "learning",
+                "skill",
+                "skills",
+                "ability",
+                "abilities",
+                "candidate",
+                "financial",
+                "statement",
             }
             terms: List[str] = []
             seen: Set[str] = set()
@@ -1256,7 +1280,9 @@ class StudyPlanEngine:
 
             for line in lines:
                 is_heading = bool(
-                    re.match(r"^(?:[A-Z](?:\d+)?[\)\.\s-]+.+|\d+\.\s+.+|(?:Chapter|Part)\s+\d+.*)$", line, re.IGNORECASE)
+                    re.match(
+                        r"^(?:[A-Z](?:\d+)?[\)\.\s-]+.+|\d+\.\s+.+|(?:Chapter|Part)\s+\d+.*)$", line, re.IGNORECASE
+                    )
                 )
                 line_len = len(line) + 1
                 should_split = False
@@ -1291,9 +1317,7 @@ class StudyPlanEngine:
             for chapter in batch_chapters:
                 queries = _chapter_queries(chapter)
                 exact_phrases = [
-                    re.sub(r"[^a-z0-9\s]+", " ", item.lower()).strip()
-                    for item in queries
-                    if str(item or "").strip()
+                    re.sub(r"[^a-z0-9\s]+", " ", item.lower()).strip() for item in queries if str(item or "").strip()
                 ]
                 terms: List[str] = []
                 for query in queries:
@@ -1405,7 +1429,7 @@ class StudyPlanEngine:
         matched_chapters = 0
 
         for start in range(0, len(chapters_clean), batch_size):
-            batch = chapters_clean[start:start + batch_size]
+            batch = chapters_clean[start : start + batch_size]
             retrieval = _retrieve_context(all_chunks, batch)
             retrieval_batches += 1
             retrieval_chunks += int(retrieval.get("selected_chunks", 0) or 0)
@@ -1433,8 +1457,8 @@ class StudyPlanEngine:
                 prompt = (
                     "You are parsing retrieved syllabus excerpts. Extract every supported learning outcome. "
                     "For each: id, text, level (1/2/3), chapter (exact title from list).\n"
-                    "Schema:\n{\"outcomes\":[{\"id\":\"...\",\"text\":\"...\",\"level\":1 or 2 or 3,"
-                    "\"chapter\":\"<exact chapter title>\"}],\"warnings\":[]}\n"
+                    'Schema:\n{"outcomes":[{"id":"...","text":"...","level":1 or 2 or 3,'
+                    '"chapter":"<exact chapter title>"}],"warnings":[]}\n'
                     "Rules:\n- Return valid JSON only, no markdown.\n"
                     "- Use only the retrieved excerpts as evidence.\n"
                     "- Map outcomes only to one of the exact chapter strings provided.\n"
@@ -1474,13 +1498,32 @@ class StudyPlanEngine:
             t = (ch_title or "").lower()
             if "framework" in t or "concept" in t or "international" in t:
                 return "A"
-            if any(x in t for x in ["ias ", "ifrs ", "impairment", "lease", "tax", "revenue", "instrument", "ppe", "intangible", "inventor", "provision", "foreign", "government", "eps"]):
+            if any(
+                x in t
+                for x in [
+                    "ias ",
+                    "ifrs ",
+                    "impairment",
+                    "lease",
+                    "tax",
+                    "revenue",
+                    "instrument",
+                    "ppe",
+                    "intangible",
+                    "inventor",
+                    "provision",
+                    "foreign",
+                    "government",
+                    "eps",
+                ]
+            ):
                 return "B"
             if "analysis" in t or "interpretation" in t:
                 return "C"
             if "consolidat" in t or "cash flow" in t or "presentation" in t:
                 return "D"
             return "A"
+
         syllabus_structure: Dict[str, Dict[str, Any]] = {}
         for ch in chapters_clean:
             if not ch or ch not in by_chapter:
@@ -1509,7 +1552,7 @@ class StudyPlanEngine:
             "stats": {
                 "outcomes_found": total_outcomes,
                 "chapters_found": len(chapters_clean),
-                "capabilities_found": len(set(s.get("capability", "A") for s in syllabus_structure.values())),
+                "capabilities_found": len({s.get("capability", "A") for s in syllabus_structure.values()}),
                 "retrieval_batches": retrieval_batches,
                 "retrieval_chunks": retrieval_chunks,
                 "retrieval_source_chunks": len(all_chunks),
@@ -1845,7 +1888,7 @@ class StudyPlanEngine:
         low_v = min(values)
         high_v = max(values)
         if high_v <= low_v:
-            return {k: 10 for k in raw_weights}
+            return dict.fromkeys(raw_weights, 10)
         norm: Dict[str, int] = {}
         for chapter, value in raw_weights.items():
             ratio = (value - low_v) / (high_v - low_v)
@@ -1898,15 +1941,13 @@ class StudyPlanEngine:
         """True if chapters look like F7 (FR) 27-chapter list (Chapter 1: ... through Chapter 27: ...)."""
         if not chapters or len(chapters) != 27:
             return False
-        chapter_set = set(c.strip().lower() for c in chapters if str(c).strip())
-        ref_set = set(c.strip().lower() for c in FR_F7_CHAPTERS)
+        chapter_set = {c.strip().lower() for c in chapters if str(c).strip()}
+        ref_set = {c.strip().lower() for c in FR_F7_CHAPTERS}
         return ref_set == chapter_set or all(
             re.match(r"^chapter\s+\d+\s*[\:\-]", str(c).strip(), re.IGNORECASE) for c in chapters
         )
 
-    def _parse_fr_syllabus_for_import(
-        self, pdf_text: str, base_chapters: List[str]
-    ) -> Dict[str, Any] | None:
+    def _parse_fr_syllabus_for_import(self, pdf_text: str, base_chapters: List[str]) -> Dict[str, Any] | None:
         """
         Parse FR syllabus text into syllabus_structure keyed by base_chapters (F7 chapter titles).
         Returns a parsed dict in the same shape as parse_syllabus_pdf_text for build_module_config_from_syllabus.
@@ -1919,17 +1960,21 @@ class StudyPlanEngine:
             return None
         if not outcomes or len(outcomes) < 5:
             return None
-        chapter_set = set(c.strip() for c in base_chapters)
+        chapter_set = {c.strip() for c in base_chapters}
         section4_titles = fr_extract_subtopics_from_section_4(pdf_text)
-        structure = fr_build_syllabus_structure(
-            outcomes, chapter_list=base_chapters, section4_titles=section4_titles
-        )
+        structure = fr_build_syllabus_structure(outcomes, chapter_list=base_chapters, section4_titles=section4_titles)
         for ch in list(structure.keys()):
             if ch not in chapter_set:
                 structure.pop(ch, None)
         capabilities = fr_extract_capabilities(pdf_text)
         if not capabilities:
-            capabilities = {"A": "Conceptual and regulatory framework", "B": "Accounting for transactions", "C": "Analysis and interpretation", "D": "Preparation of financial statements", "E": "Employability and technology skills"}
+            capabilities = {
+                "A": "Conceptual and regulatory framework",
+                "B": "Accounting for transactions",
+                "C": "Analysis and interpretation",
+                "D": "Preparation of financial statements",
+                "E": "Employability and technology skills",
+            }
         total_outcomes = sum(len(info.get("learning_outcomes", [])) for info in structure.values())
         exam_code = "FR"
         m_window = re.search(r"([A-Za-z]+\s+20\d{2}\s+TO\s+[A-Za-z]+\s+20\d{2})", pdf_text, re.IGNORECASE)
@@ -1943,7 +1988,7 @@ class StudyPlanEngine:
             "exam_code": exam_code,
             "effective_window": effective_window,
             "capabilities": capabilities,
-            "chapter_map": {letter: base_chapters[0] for letter in "ABCDE"},
+            "chapter_map": dict.fromkeys("ABCDE", base_chapters[0]),
             "chapters": list(base_chapters),
             "syllabus_structure": structure,
             "warnings": ["FR syllabus parsed with section-to-chapter mapping (A1–E4 to F7 chapters)."],
@@ -1976,7 +2021,7 @@ class StudyPlanEngine:
         # Preserve existing module chapters if present; map syllabus capabilities onto them.
         preserve_existing = False
         existing_chapters: list[str] = []
-        base_chapters = (config.get("chapters") if isinstance(config, dict) else None)
+        base_chapters = config.get("chapters") if isinstance(config, dict) else None
         if isinstance(base_chapters, list):
             existing_chapters = [str(ch).strip() for ch in base_chapters if str(ch).strip()]
         if existing_chapters:
@@ -1991,12 +2036,16 @@ class StudyPlanEngine:
             def _strip_section_prefix(name: str) -> str:
                 """Remove module-agnostic section prefix (A. 1. Chapter 1: etc.)."""
                 s = name.strip()
-                return re.sub(
-                    r"^(?:[A-Z]\.\s*|\d+\.\s*|(?:Chapter|Part)\s+\d+\s*[\:\-]?\s*)",
-                    "",
-                    s,
-                    flags=re.IGNORECASE,
-                ).strip().lower()
+                return (
+                    re.sub(
+                        r"^(?:[A-Z]\.\s*|\d+\.\s*|(?:Chapter|Part)\s+\d+\s*[\:\-]?\s*)",
+                        "",
+                        s,
+                        flags=re.IGNORECASE,
+                    )
+                    .strip()
+                    .lower()
+                )
 
             def _best_match_to_existing(name: str) -> tuple[str | None, float]:
                 if not name or not existing_chapters:
@@ -2017,14 +2066,17 @@ class StudyPlanEngine:
                 # Rule-based fallback for broad capability labels.
                 if best_score < 0.45:
                     mapped: str | None = None
+
                     def _has(kw: str) -> bool:
                         return kw in name_low
+
                     def _pick(*candidates: str) -> str | None:
                         for cand in candidates:
                             for ch in existing_chapters:
                                 if ch.lower() == cand.lower():
                                     return ch
                         return None
+
                     def _pick_by_substring(*substrings: str) -> str | None:
                         for ch in existing_chapters:
                             ch_low = ch.lower()
@@ -2032,6 +2084,7 @@ class StudyPlanEngine:
                                 if sub.lower() in ch_low:
                                     return ch
                         return None
+
                     # FM (F9) fallbacks: exact chapter names.
                     if _has("environment"):
                         mapped = _pick("FM Environment")
@@ -2054,7 +2107,9 @@ class StudyPlanEngine:
                         if mapped:
                             return mapped, 0.5
                     if _has("investment appraisal") or _has("investment"):
-                        mapped = _pick("Investment Decisions", "DCF Methods", "DCF Applications", "Project Appraisal Under Risk")
+                        mapped = _pick(
+                            "Investment Decisions", "DCF Methods", "DCF Applications", "Project Appraisal Under Risk"
+                        )
                         if mapped:
                             return mapped, 0.5
                     if _has("cash management"):
@@ -2068,7 +2123,9 @@ class StudyPlanEngine:
                     )
                     if fr_like:
                         if not mapped and (_has("framework") or _has("conceptual")):
-                            mapped = _pick_by_substring("conceptual framework", "ifrs 18", "international financial reporting")
+                            mapped = _pick_by_substring(
+                                "conceptual framework", "ifrs 18", "international financial reporting"
+                            )
                         if not mapped and (_has("revenue") or "ifrs 15" in name_low or "ifrs15" in name_low):
                             mapped = _pick_by_substring("ifrs 15", "revenue")
                         if not mapped and (_has("consolidat") or _has("group")):
@@ -2113,7 +2170,10 @@ class StudyPlanEngine:
                             return mapped, 0.5
                     # TX (F6) fallbacks: taxation syllabus.
                     tx_like = any(
-                        "tax" in ch.lower() or "vat" in ch.lower() or "allowance" in ch.lower() or "corporation" in ch.lower()
+                        "tax" in ch.lower()
+                        or "vat" in ch.lower()
+                        or "allowance" in ch.lower()
+                        or "corporation" in ch.lower()
                         for ch in existing_chapters
                     )
                     if tx_like:
@@ -2159,7 +2219,9 @@ class StudyPlanEngine:
                     continue
                 # If multiple capability chapters map to the same target, keep the larger outcome set.
                 existing = remapped_structure.get(target)
-                if not isinstance(existing, dict) or int(existing.get("outcome_count", 0) or 0) < int(info.get("outcome_count", 0) or 0):
+                if not isinstance(existing, dict) or int(existing.get("outcome_count", 0) or 0) < int(
+                    info.get("outcome_count", 0) or 0
+                ):
                     remapped_structure[target] = info
             syllabus_structure = remapped_structure
             chapter_map = remapped_chapter_map
@@ -2173,7 +2235,9 @@ class StudyPlanEngine:
         capabilities = parsed.get("capabilities", {})
         if not isinstance(capabilities, dict):
             capabilities = {}
-        capabilities = {str(k).strip().upper(): str(v).strip() for k, v in capabilities.items() if str(k).strip() and str(v).strip()}
+        capabilities = {
+            str(k).strip().upper(): str(v).strip() for k, v in capabilities.items() if str(k).strip() and str(v).strip()
+        }
 
         importance = self._build_importance_weights_from_syllabus(syllabus_structure)
         aliases = self._build_aliases_from_syllabus(
@@ -2221,9 +2285,7 @@ class StudyPlanEngine:
                     existing_outcomes = existing_info.get("learning_outcomes") or []
                     new_outcomes = info.get("learning_outcomes") or []
                     if isinstance(existing_outcomes, list) and isinstance(new_outcomes, list):
-                        merged_outcomes = self._merge_learning_outcomes(
-                            existing_outcomes, new_outcomes, ch
-                        )
+                        merged_outcomes = self._merge_learning_outcomes(existing_outcomes, new_outcomes, ch)
                         merged_info["learning_outcomes"] = merged_outcomes
                         merged_info["outcome_count"] = len(merged_outcomes)
                         level_1 = sum(1 for o in merged_outcomes if int((o.get("level") or 2)) == 1)
@@ -2242,7 +2304,9 @@ class StudyPlanEngine:
             "effective_window": str(effective_window or "").strip() or None,
             "parsed_at": datetime.datetime.now().isoformat(timespec="seconds"),
             "parse_confidence": round(confidence, 4),
-            "last_parse_empty_sections": list(parsed.get("empty_sections") or []) if isinstance(parsed.get("empty_sections"), list) else [],
+            "last_parse_empty_sections": list(parsed.get("empty_sections") or [])
+            if isinstance(parsed.get("empty_sections"), list)
+            else [],
         }
         if mapping_warnings:
             config["syllabus_meta"]["mapping_warnings"] = mapping_warnings
@@ -2282,7 +2346,11 @@ class StudyPlanEngine:
                     continue
                 if not isinstance(targets, list):
                     continue
-                valid_targets = [str(t).strip() for t in targets if str(t).strip() in canonical_chapters and str(t).strip() != chapter]
+                valid_targets = [
+                    str(t).strip()
+                    for t in targets
+                    if str(t).strip() in canonical_chapters and str(t).strip() != chapter
+                ]
                 if valid_targets:
                     cleaned_flow[chapter] = valid_targets
         cleaned["chapter_flow"] = cleaned_flow
@@ -2302,7 +2370,7 @@ class StudyPlanEngine:
                 val = max(5, min(40, val))
                 cleaned_weights[chapter] = val
         else:
-            cleaned_weights = {chapter: 10 for chapter in canonical_chapters}
+            cleaned_weights = dict.fromkeys(canonical_chapters, 10)
         cleaned["importance_weights"] = cleaned_weights
 
         capabilities = cleaned.get("capabilities")
@@ -2451,9 +2519,12 @@ class StudyPlanEngine:
             base_config = {"title": str(parsed.get("exam_code") or target_module_id).upper()}
         else:
             _chapters = base_config.get("chapters")
-            base_chapters = [str(ch).strip() for ch in _chapters if str(ch).strip()] if isinstance(_chapters, list) else []
+            base_chapters = (
+                [str(ch).strip() for ch in _chapters if str(ch).strip()] if isinstance(_chapters, list) else []
+            )
             q_raw = base_config.get("questions")
             q_chapters = list(q_raw.keys()) if isinstance(q_raw, dict) and q_raw else []
+
             def _looks_like_section_headings(chs: list[str]) -> bool:
                 """True if most chapters look like section headings (e.g. A. Title, 1. Title, Chapter 1: Title)."""
                 if not chs:
@@ -2461,7 +2532,11 @@ class StudyPlanEngine:
                 hits = 0
                 for ch in chs:
                     s = ch.strip()
-                    if re.match(r"^[A-Z]\.\s+", s) or re.match(r"^\d+\.\s+", s) or re.match(r"^(?:Chapter|Part)\s+\d+", s, re.IGNORECASE):
+                    if (
+                        re.match(r"^[A-Z]\.\s+", s)
+                        or re.match(r"^\d+\.\s+", s)
+                        or re.match(r"^(?:Chapter|Part)\s+\d+", s, re.IGNORECASE)
+                    ):
                         hits += 1
                 return hits >= max(2, int(len(chs) * 0.6))
 
@@ -2492,7 +2567,9 @@ class StudyPlanEngine:
             fallback["title"] = str(
                 fallback.get("title") or str(parsed.get("exam_code") or target_module_id).upper()
             ).strip()
-            fallback["capabilities"] = parsed.get("capabilities", {}) if isinstance(parsed.get("capabilities"), dict) else {}
+            fallback["capabilities"] = (
+                parsed.get("capabilities", {}) if isinstance(parsed.get("capabilities"), dict) else {}
+            )
             fallback["syllabus_structure"] = (
                 parsed.get("syllabus_structure", {}) if isinstance(parsed.get("syllabus_structure"), dict) else {}
             )
@@ -2598,7 +2675,11 @@ class StudyPlanEngine:
                     pass
             merged["importance_weights"] = safe_weights
         if isinstance(payload.get("capabilities"), dict):
-            merged["capabilities"] = {str(k).strip().upper(): str(v).strip() for k, v in payload["capabilities"].items() if str(k).strip() and str(v).strip()}
+            merged["capabilities"] = {
+                str(k).strip().upper(): str(v).strip()
+                for k, v in payload["capabilities"].items()
+                if str(k).strip() and str(v).strip()
+            }
         if isinstance(payload.get("aliases"), dict):
             merged.setdefault("aliases", {})
             if isinstance(merged["aliases"], dict):
@@ -2610,7 +2691,9 @@ class StudyPlanEngine:
         if isinstance(payload.get("reference_pdfs"), list):
             merged.setdefault("syllabus_meta", {})
             if isinstance(merged["syllabus_meta"], dict):
-                merged["syllabus_meta"]["reference_pdfs"] = [str(p).strip() for p in payload["reference_pdfs"] if str(p).strip()]
+                merged["syllabus_meta"]["reference_pdfs"] = [
+                    str(p).strip() for p in payload["reference_pdfs"] if str(p).strip()
+                ]
         if isinstance(merged.get("chapters"), list) and merged["chapters"]:
             try:
                 validated = self.validate_syllabus_config(merged)
@@ -2761,7 +2844,11 @@ class StudyPlanEngine:
         legacy_data = self.DEFAULT_DATA_FILE
         legacy_questions = self.DEFAULT_QUESTIONS_FILE
         data_path = legacy_data if os.path.exists(legacy_data) and not os.path.exists(module_data) else module_data
-        questions_path = legacy_questions if os.path.exists(legacy_questions) and not os.path.exists(module_questions) else module_questions
+        questions_path = (
+            legacy_questions
+            if os.path.exists(legacy_questions) and not os.path.exists(module_questions)
+            else module_questions
+        )
         return data_path, questions_path
 
     def _assert_data_paths_under_module(self, module_id: str, data_path: str, questions_path: str) -> None:
@@ -2859,7 +2946,9 @@ class StudyPlanEngine:
     ) -> Dict[str, Dict[str, Any]]:
         """Re-key active review metadata by current row index and preserve deleted archives."""
         source = copy.deepcopy(meta) if isinstance(meta, dict) else self._load_question_quality_meta()
-        chapters = [str(chapter).strip()] if isinstance(chapter, str) and str(chapter).strip() else list(self.CHAPTERS or [])
+        chapters = (
+            [str(chapter).strip()] if isinstance(chapter, str) and str(chapter).strip() else list(self.CHAPTERS or [])
+        )
         for chapter_name in chapters:
             by_chapter = source.get(chapter_name, {})
             if not isinstance(by_chapter, dict):
@@ -3049,7 +3138,10 @@ class StudyPlanEngine:
                 if num_issue:
                     poor.append((idx, num_issue))
                     self._append_question_quality_quarantine(
-                        chapter, row, [num_issue], source="numerical_audit",
+                        chapter,
+                        row,
+                        [num_issue],
+                        source="numerical_audit",
                     )
             if not poor:
                 continue
@@ -3433,7 +3525,9 @@ class StudyPlanEngine:
         """
         rows_out: List[Dict[str, Any]] = []
         meta = self._load_question_quality_meta()
-        chapters = [str(chapter).strip()] if isinstance(chapter, str) and str(chapter).strip() else list(self.CHAPTERS or [])
+        chapters = (
+            [str(chapter).strip()] if isinstance(chapter, str) and str(chapter).strip() else list(self.CHAPTERS or [])
+        )
         for chapter_name in chapters:
             questions = (self.QUESTIONS or {}).get(chapter_name, [])
             if not isinstance(questions, list):
@@ -3467,7 +3561,9 @@ class StudyPlanEngine:
                 if isinstance(quality_report, dict):
                     raw_issues = list(quality_report.get("issues", []) or [])
                     if not raw_issues:
-                        raw_issues = list(quality_report.get("errors", []) or []) + list(quality_report.get("warnings", []) or [])
+                        raw_issues = list(quality_report.get("errors", []) or []) + list(
+                            quality_report.get("warnings", []) or []
+                        )
                     seen: set[str] = set()
                     for item in raw_issues:
                         text = str(item or "").strip()
@@ -3546,9 +3642,14 @@ class StudyPlanEngine:
                 )
         return rows_out
 
-
-    def __init__(self, exam_date=None, default_exam_date_to_today: bool = True, module_id: str | None = None, module_title: str | None = None, defer_data_load: bool = False):
-
+    def __init__(
+        self,
+        exam_date=None,
+        default_exam_date_to_today: bool = True,
+        module_id: str | None = None,
+        module_title: str | None = None,
+        defer_data_load: bool = False,
+    ):
         """
         Initialises the StudyPlanEngine object.
 
@@ -3594,7 +3695,7 @@ class StudyPlanEngine:
             "Business Valuation": 15,
             "FM Function": 10,
             "FM Environment": 10,
-            "Ratio Analysis": 10
+            "Ratio Analysis": 10,
         }
         config = self._load_module_config(self.module_id)
         if isinstance(config, dict):
@@ -3638,7 +3739,7 @@ class StudyPlanEngine:
         self.chapters: Dict[str, int] = {}
 
         # Initialise competence dictionary (float values to allow fractional updates)
-        self.competence: Dict[str, float] = {chapter: 0.0 for chapter in self.CHAPTERS}
+        self.competence: Dict[str, float] = dict.fromkeys(self.CHAPTERS, 0.0)
 
         # Initialise pomodoro log
         self.pomodoro_log: Dict[str, Any] = {
@@ -3700,15 +3801,24 @@ class StudyPlanEngine:
         self.semantic_rerank_enabled: bool = str(
             os.environ.get("STUDYPLAN_SEMANTIC_RERANK", "1")
         ).strip().lower() not in {"0", "false", "no", "off"}
-        self.semantic_offline_mode: bool = str(
-            os.environ.get("STUDYPLAN_SEMANTIC_OFFLINE", "0")
-        ).strip().lower() in {"1", "true", "yes", "on"}
+        self.semantic_offline_mode: bool = str(os.environ.get("STUDYPLAN_SEMANTIC_OFFLINE", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self.semantic_local_first: bool = str(
             os.environ.get("STUDYPLAN_SEMANTIC_LOCAL_FIRST", "1")
         ).strip().lower() not in {"0", "false", "no", "off"}
         try:
             self.semantic_warmup_prefetch_chapters = max(
-                0, int(os.environ.get("STUDYPLAN_SEMANTIC_PREFETCH_CHAPTERS", str(self.SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT)) or self.SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT)
+                0,
+                int(
+                    os.environ.get(
+                        "STUDYPLAN_SEMANTIC_PREFETCH_CHAPTERS", str(self.SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT)
+                    )
+                    or self.SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT
+                ),
             )
         except Exception:
             self.semantic_warmup_prefetch_chapters = int(self.SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT)
@@ -3802,7 +3912,9 @@ class StudyPlanEngine:
             self._deferred_load_error: str | None = None
             self.cognitive_state = self._load_or_build_cognitive_state()
             self._cognitive_state_lock = bind_cognitive_state_lock(self.cognitive_state, threading.RLock())
-            self.working_memory_service = WorkingMemoryService(self.cognitive_state, state_lock=self._cognitive_state_lock)
+            self.working_memory_service = WorkingMemoryService(
+                self.cognitive_state, state_lock=self._cognitive_state_lock
+            )
             self.mastery_kernel = MasteryKernel(self, self.cognitive_state, state_lock=self._cognitive_state_lock)
         else:
             self._deferred_data_load_requested = False
@@ -3826,11 +3938,9 @@ class StudyPlanEngine:
             cls._LOKY_CLEANUP_NONBLOCKING_DONE = True
         reusable_module = None
         try:
-            import importlib
             reusable_module = importlib.import_module("joblib.externals.loky.reusable_executor")
         except Exception:
             try:
-                import importlib
                 reusable_module = importlib.import_module("loky.reusable_executor")
             except Exception:
                 reusable_module = getattr(cls, "_LOKY_REUSABLE_MODULE_REF", None)
@@ -3882,7 +3992,7 @@ class StudyPlanEngine:
                         except Exception:
                             break
                 try:
-                    setattr(reusable_module, "_executor", None)
+                    cast(Any, reusable_module)._executor = None
                 except Exception:
                     pass
         if wants_blocking:
@@ -3898,7 +4008,6 @@ class StudyPlanEngine:
             "loky.process_executor",
         ):
             try:
-                import importlib
                 process_module = importlib.import_module(process_mod_name)
             except Exception:
                 continue
@@ -3923,7 +4032,6 @@ class StudyPlanEngine:
             "loky.backend.resource_tracker",
         ):
             try:
-                import importlib
                 backend_rt_module = importlib.import_module(rt_mod_name)
             except Exception:
                 continue
@@ -3978,7 +4086,9 @@ class StudyPlanEngine:
         if not hasattr(self, "cognitive_state") or self.cognitive_state is None:
             self.cognitive_state = self._load_or_build_cognitive_state()
             self._cognitive_state_lock = bind_cognitive_state_lock(self.cognitive_state, threading.RLock())
-            self.working_memory_service = WorkingMemoryService(self.cognitive_state, state_lock=self._cognitive_state_lock)
+            self.working_memory_service = WorkingMemoryService(
+                self.cognitive_state, state_lock=self._cognitive_state_lock
+            )
             self.mastery_kernel = MasteryKernel(self, self.cognitive_state, state_lock=self._cognitive_state_lock)
         self._load_recall_model()
         self._load_recall_model_sklearn()
@@ -3990,15 +4100,29 @@ class StudyPlanEngine:
             self.srs_data[chapter] = []
         # Check for None values
         none_allowed = {
-            "exam_date", "last_saved_at", "last_backup_ok", "last_backup_error",
-            "completed_chapters_date", "daily_plan_cache_date",
-            "recall_model_json", "_semantic_model", "_semantic_block_reason",
-            "_semantic_reranker", "_semantic_reranker_block_reason",
-            "recall_model_sklearn", "recall_model_sklearn_meta",
-            "recall_model_sklearn_block_reason", "difficulty_model", "interval_model",
-            "_last_loaded_module_config_path", "_cached_total_question_count",
-            "_outcome_coverage_counts_cache", "_outcome_coverage_counts_sig",
-            "_load_error", "_deferred_load_error", "_deferred_load_done",
+            "exam_date",
+            "last_saved_at",
+            "last_backup_ok",
+            "last_backup_error",
+            "completed_chapters_date",
+            "daily_plan_cache_date",
+            "recall_model_json",
+            "_semantic_model",
+            "_semantic_block_reason",
+            "_semantic_reranker",
+            "_semantic_reranker_block_reason",
+            "recall_model_sklearn",
+            "recall_model_sklearn_meta",
+            "recall_model_sklearn_block_reason",
+            "difficulty_model",
+            "interval_model",
+            "_last_loaded_module_config_path",
+            "_cached_total_question_count",
+            "_outcome_coverage_counts_cache",
+            "_outcome_coverage_counts_sig",
+            "_load_error",
+            "_deferred_load_error",
+            "_deferred_load_done",
         }
         for key, value in self.__dict__.items():
             if value is None and key not in none_allowed:
@@ -4132,7 +4256,11 @@ class StudyPlanEngine:
         for key, value in raw.items():
             if not isinstance(value, list):
                 continue
-            chapter = key if (key in self.QUESTIONS_DEFAULT or key in self.CHAPTERS) else self.CHAPTER_ALIASES.get(str(key).strip().lower())
+            chapter = (
+                key
+                if (key in self.QUESTIONS_DEFAULT or key in self.CHAPTERS)
+                else self.CHAPTER_ALIASES.get(str(key).strip().lower())
+            )
             if not chapter or (chapter not in self.QUESTIONS_DEFAULT and chapter not in self.CHAPTERS):
                 continue
             cleaned_count = 0
@@ -4539,9 +4667,7 @@ class StudyPlanEngine:
         cleaned.sort(key=lambda row: str(row.get("ts", "")))
         return cleaned[-max_keep:]
 
-    def _coerce_tutor_activity_log(
-        self, raw: Any, max_days: int = 14, max_entries: int = 500
-    ) -> List[Dict[str, Any]]:
+    def _coerce_tutor_activity_log(self, raw: Any, max_days: int = 14, max_entries: int = 500) -> List[Dict[str, Any]]:
         """Normalize tutor activity log: keep entries within max_days, cap at max_entries."""
         cleaned: List[Dict[str, Any]] = []
         if not isinstance(raw, list):
@@ -4563,14 +4689,16 @@ class StudyPlanEngine:
                 continue
             if dt < cutoff:
                 continue
-            cleaned.append({
-                "at": dt.isoformat(),
-                "chapter": str(item.get("chapter") or "").strip(),
-                "topic": str(item.get("topic") or item.get("chapter") or "").strip(),
-                "actions": str(item.get("actions") or item.get("action") or "explain").strip(),
-                "confidence_feedback": str(item.get("confidence_feedback") or item.get("confidence") or "").strip(),
-                "summary": str(item.get("summary") or "")[:200].strip(),
-            })
+            cleaned.append(
+                {
+                    "at": dt.isoformat(),
+                    "chapter": str(item.get("chapter") or "").strip(),
+                    "topic": str(item.get("topic") or item.get("chapter") or "").strip(),
+                    "actions": str(item.get("actions") or item.get("action") or "explain").strip(),
+                    "confidence_feedback": str(item.get("confidence_feedback") or item.get("confidence") or "").strip(),
+                    "summary": str(item.get("summary") or "")[:200].strip(),
+                }
+            )
         cleaned.sort(key=lambda row: str(row.get("at", "")))
         return cleaned[-max_entries:]
 
@@ -4630,7 +4758,13 @@ class StudyPlanEngine:
                 child = str(item.get("child_id", "") or "").strip()
                 if not parent or not child:
                     continue
-                out_edges.append({"parent_id": parent, "child_id": child, "relation": str(item.get("relation", "contains") or "contains")})
+                out_edges.append(
+                    {
+                        "parent_id": parent,
+                        "child_id": child,
+                        "relation": str(item.get("relation", "contains") or "contains"),
+                    }
+                )
         out_links: List[Dict[str, Any]] = []
         if isinstance(links, list):
             for item in links:
@@ -4793,11 +4927,7 @@ class StudyPlanEngine:
         for ch, items in outcome_stats_raw.items():
             if not isinstance(ch, str) or not isinstance(items, dict):
                 continue
-            inner = {
-                oid: stats
-                for oid, stats in items.items()
-                if isinstance(stats, dict) and str(oid).strip()
-            }
+            inner = {oid: stats for oid, stats in items.items() if isinstance(stats, dict) and str(oid).strip()}
             if inner:
                 reconciled[str(ch).strip()] = inner
         return reconciled
@@ -4845,10 +4975,7 @@ class StudyPlanEngine:
         for stats_by_ch in self.question_stats.values():
             if not isinstance(stats_by_ch, dict):
                 continue
-            has_qid = any(
-                isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX)
-                for k in stats_by_ch.keys()
-            )
+            has_qid = any(isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX) for k in stats_by_ch.keys())
             for key, entry in stats_by_ch.items():
                 if has_qid and isinstance(key, str) and not key.startswith(self.QUESTION_ID_PREFIX):
                     continue
@@ -4868,10 +4995,7 @@ class StudyPlanEngine:
         stats_by_ch = self.question_stats.get(chapter, {})
         if not isinstance(stats_by_ch, dict):
             return 0
-        has_qid = any(
-            isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX)
-            for k in stats_by_ch.keys()
-        )
+        has_qid = any(isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX) for k in stats_by_ch.keys())
         total = 0
         for key, entry in stats_by_ch.items():
             if has_qid and isinstance(key, str) and not key.startswith(self.QUESTION_ID_PREFIX):
@@ -4979,21 +5103,27 @@ class StudyPlanEngine:
             short_text = text[:80] + "…" if len(text) > 80 else text
             prep = self._outcome_is_preparation_focus(chapter, outcome_id)
             pfx = "[prep] " if prep else ""
-            suggestions.append({
-                "outcome_id": outcome_id,
-                "label": f"{pfx}Explain {outcome_id}",
-                "prompt": f"Explain this learning outcome in simple, exam-focused terms: {short_text}",
-            })
-            suggestions.append({
-                "outcome_id": outcome_id,
-                "label": f"{pfx}Pitfalls {outcome_id}",
-                "prompt": f"What are the main exam pitfalls for this outcome and how do I avoid them? Outcome: {short_text}",
-            })
-            suggestions.append({
-                "outcome_id": outcome_id,
-                "label": f"{pfx}Drill {outcome_id}",
-                "prompt": f"Give me 3–5 short practice questions with answers for this outcome: {short_text}",
-            })
+            suggestions.append(
+                {
+                    "outcome_id": outcome_id,
+                    "label": f"{pfx}Explain {outcome_id}",
+                    "prompt": f"Explain this learning outcome in simple, exam-focused terms: {short_text}",
+                }
+            )
+            suggestions.append(
+                {
+                    "outcome_id": outcome_id,
+                    "label": f"{pfx}Pitfalls {outcome_id}",
+                    "prompt": f"What are the main exam pitfalls for this outcome and how do I avoid them? Outcome: {short_text}",
+                }
+            )
+            suggestions.append(
+                {
+                    "outcome_id": outcome_id,
+                    "label": f"{pfx}Drill {outcome_id}",
+                    "prompt": f"Give me 3–5 short practice questions with answers for this outcome: {short_text}",
+                }
+            )
         return suggestions
 
     def normalize_concept_text(self, chapter: str, text: str) -> str:
@@ -5022,11 +5152,13 @@ class StudyPlanEngine:
                 except (TypeError, ValueError):
                     level = 2
                 level = max(1, min(3, level))
-                outcome_list.append({
-                    "id": str(item.get("id", "")).strip(),
-                    "text": str(item.get("text", "")).strip(),
-                    "level": level,
-                })
+                outcome_list.append(
+                    {
+                        "id": str(item.get("id", "")).strip(),
+                        "text": str(item.get("text", "")).strip(),
+                        "level": level,
+                    }
+                )
             payload[chapter] = {
                 "capability": str(info.get("capability", "") or "").strip().upper(),
                 "subtopics": [str(x).strip() for x in (info.get("subtopics", []) or []) if str(x).strip()],
@@ -5036,6 +5168,7 @@ class StudyPlanEngine:
 
     def build_canonical_concept_graph(self, force: bool = False) -> Dict[str, Any]:
         """Build deterministic capability->concept->subconcept graph linked to outcomes."""
+
         def _do_build() -> None:
             signature_payload = self._concept_signature_payload()
             try:
@@ -5086,13 +5219,21 @@ class StudyPlanEngine:
                     info = self.get_syllabus_chapter_intelligence(chapter)
                     if not isinstance(info, dict):
                         continue
-                    capability = str(info.get("capability", "") or "").strip().upper() or self._chapter_capability(chapter) or "X"
+                    capability = (
+                        str(info.get("capability", "") or "").strip().upper()
+                        or self._chapter_capability(chapter)
+                        or "X"
+                    )
                     outcomes = info.get("learning_outcomes", [])
                     if not isinstance(outcomes, list):
                         outcomes = []
                     subtopics = [str(x).strip() for x in (info.get("subtopics", []) or []) if str(x).strip()]
 
-                    cap_name = str(self.capabilities.get(capability, "") or "").strip() if isinstance(self.capabilities, dict) else ""
+                    cap_name = (
+                        str(self.capabilities.get(capability, "") or "").strip()
+                        if isinstance(self.capabilities, dict)
+                        else ""
+                    )
                     cap_label = cap_name or f"Capability {capability}"
                     cap_node_id = f"cap:{capability}"
                     _add_node(
@@ -5362,7 +5503,8 @@ class StudyPlanEngine:
                         # Incremental centroid update.
                         old = local_vectors[best_group_idx]
                         local_vectors[best_group_idx] = [
-                            ((old_i * (count - 1.0)) + vec_i) / max(1.0, count) for old_i, vec_i in zip(old, vec)
+                            ((old_i * (count - 1.0)) + vec_i) / max(1.0, count)
+                            for old_i, vec_i in zip(old, vec, strict=False)
                         ]
                     else:
                         local_groups.append(
@@ -5496,9 +5638,7 @@ class StudyPlanEngine:
                 return cid or None
         return None
 
-    def _resolve_interleave_cluster_context(
-        self, chapter: str, target_outcome_ids: List[str]
-    ) -> Dict[str, Any]:
+    def _resolve_interleave_cluster_context(self, chapter: str, target_outcome_ids: List[str]) -> Dict[str, Any]:
         graph = self.get_outcome_cluster_graph()
         meta = graph.get("meta", {})
         clusters = graph.get("clusters", [])
@@ -5702,7 +5842,9 @@ class StudyPlanEngine:
         cluster_rows = cluster.get("clusters", [])
         return {
             "concept_nodes": len(concept_nodes) if isinstance(concept_nodes, list) else 0,
-            "concept_links": len(concept.get("outcome_links", [])) if isinstance(concept.get("outcome_links", []), list) else 0,
+            "concept_links": len(concept.get("outcome_links", []))
+            if isinstance(concept.get("outcome_links", []), list)
+            else 0,
             "concept_version": int((concept.get("meta", {}) or {}).get("version", 0) or 0),
             "cluster_count": len(cluster_rows) if isinstance(cluster_rows, list) else 0,
             "cluster_method": str((cluster.get("meta", {}) or {}).get("method", "fallback") or "fallback"),
@@ -5763,15 +5905,6 @@ class StudyPlanEngine:
         normalized_outcome_texts: List[str],
     ) -> Dict[str, Any] | None:
         """Build per-chapter lexical assets once for fast TF-IDF query matching."""
-        try:
-            from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore
-        except Exception:
-            return None
-        try:
-            vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
-            outcome_matrix = vectorizer.fit_transform(normalized_outcome_texts)
-        except Exception:
-            return None
         alias_signature = ""
         try:
             alias_signature = json.dumps(getattr(self, "semantic_aliases", {}), sort_keys=True, default=str)
@@ -5787,9 +5920,18 @@ class StudyPlanEngine:
                 + alias_signature
             ).encode("utf-8")
         ).hexdigest()
+        try:
+            from studyplan.cython.tfidf import build_chapter_assets as _cy_build
+
+            built = _cy_build(normalized_outcome_texts, ordered_ids)
+        except Exception:
+            built = None
+        if built is None:
+            return None
+        vectorizer, outcome_matrix, oids = built
         return {
             "chapter": chapter,
-            "ordered_ids": list(ordered_ids),
+            "ordered_ids": oids,
             "normalized_outcome_texts": list(normalized_outcome_texts),
             "vectorizer": vectorizer,
             "outcome_matrix": outcome_matrix,
@@ -5825,13 +5967,13 @@ class StudyPlanEngine:
         with self._semantic_chapter_assets_lock:
             current = self._semantic_chapter_match_assets.get(chapter_key)
             if isinstance(current, dict) and str(current.get("signature", "")) == signature:
-                self._semantic_perf_stats["tfidf_asset_hits"] = float(
-                    self._semantic_perf_stats.get("tfidf_asset_hits", 0.0) or 0.0
-                ) + 1.0
+                self._semantic_perf_stats["tfidf_asset_hits"] = (
+                    float(self._semantic_perf_stats.get("tfidf_asset_hits", 0.0) or 0.0) + 1.0
+                )
                 return current
-            self._semantic_perf_stats["tfidf_asset_misses"] = float(
-                self._semantic_perf_stats.get("tfidf_asset_misses", 0.0) or 0.0
-            ) + 1.0
+            self._semantic_perf_stats["tfidf_asset_misses"] = (
+                float(self._semantic_perf_stats.get("tfidf_asset_misses", 0.0) or 0.0) + 1.0
+            )
             built = self._semantic_build_chapter_assets(
                 chapter_key, outcome_lookup, ordered_ids, normalized_outcome_texts
             )
@@ -5841,27 +5983,16 @@ class StudyPlanEngine:
             return built
 
     @staticmethod
-    def _semantic_query_tfidf_assets(
-        assets: Dict[str, Any], normalized_text: str
-    ) -> Tuple[str | None, float]:
+    def _semantic_query_tfidf_assets(assets: Dict[str, Any], normalized_text: str) -> Tuple[str | None, float]:
         try:
-            from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
-        except Exception:
-            return None, 0.0
-        try:
+            from studyplan.cython.tfidf import query_assets as _cy_query
+
             vectorizer = assets.get("vectorizer")
             outcome_matrix = assets.get("outcome_matrix")
             ordered_ids = list(assets.get("ordered_ids", []) or [])
             if vectorizer is None or outcome_matrix is None or not ordered_ids:
                 return None, 0.0
-            query_vec = vectorizer.transform([normalized_text])
-            sims = cast(List[float], cosine_similarity(query_vec, outcome_matrix).flatten().tolist())
-            if not sims:
-                return None, 0.0
-            best_idx = max(range(len(sims)), key=lambda i: float(sims[i]))
-            if best_idx < 0 or best_idx >= len(ordered_ids):
-                return None, 0.0
-            return ordered_ids[best_idx], float(sims[best_idx])
+            return _cy_query(vectorizer, outcome_matrix, ordered_ids, normalized_text)
         except Exception:
             return None, 0.0
 
@@ -5903,7 +6034,9 @@ class StudyPlanEngine:
         self._semantic_circuit_until_ts = 0.0
         self._semantic_circuit_reason = ""
         if clear_shared:
-            model_name = str(getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME).strip()
+            model_name = str(
+                getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME
+            ).strip()
             rerank_name = str(
                 getattr(self, "semantic_rerank_model_name", self.SEMANTIC_RERANK_MODEL_NAME)
                 or self.SEMANTIC_RERANK_MODEL_NAME
@@ -5921,7 +6054,9 @@ class StudyPlanEngine:
             return None
         if self._semantic_model is not None:
             return self._semantic_model
-        model_name = str(getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME).strip()
+        model_name = str(
+            getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME
+        ).strip()
         if not model_name:
             model_name = self.SEMANTIC_MODEL_NAME
         shared = self._SEMANTIC_SHARED_MODELS.get(model_name)
@@ -5951,9 +6086,7 @@ class StudyPlanEngine:
             local_first = bool(getattr(self, "semantic_local_first", True))
 
             def _load_with_flags(local_only: bool) -> Any:
-                return self._semantic_quiet_load(
-                    lambda: SentenceTransformer(model_name, local_files_only=local_only)
-                )
+                return self._semantic_quiet_load(lambda: SentenceTransformer(model_name, local_files_only=local_only))
 
             with self._SEMANTIC_SHARED_MODEL_LOCK:
                 shared = self._SEMANTIC_SHARED_MODELS.get(model_name)
@@ -5967,9 +6100,7 @@ class StudyPlanEngine:
                             shared = None
                     if shared is None and allow_remote and not offline_mode:
                         try:
-                            shared = self._semantic_quiet_load(
-                                lambda: SentenceTransformer(model_name)
-                            )
+                            shared = self._semantic_quiet_load(lambda: SentenceTransformer(model_name))
                         except Exception:
                             shared = None
                     if shared is None:
@@ -6033,9 +6164,7 @@ class StudyPlanEngine:
             local_first = bool(getattr(self, "semantic_local_first", True))
 
             def _load_with_flags(local_only: bool) -> Any:
-                return self._semantic_quiet_load(
-                    lambda: CrossEncoder(model_name, local_files_only=local_only)
-                )
+                return self._semantic_quiet_load(lambda: CrossEncoder(model_name, local_files_only=local_only))
 
             with self._SEMANTIC_SHARED_RERANK_LOCK:
                 shared = self._SEMANTIC_SHARED_RERANKERS.get(model_name)
@@ -6049,9 +6178,7 @@ class StudyPlanEngine:
                             shared = None
                     if shared is None and allow_remote and not offline_mode:
                         try:
-                            shared = self._semantic_quiet_load(
-                                lambda: CrossEncoder(model_name)
-                            )
+                            shared = self._semantic_quiet_load(lambda: CrossEncoder(model_name))
                         except Exception:
                             shared = None
                     if shared is None:
@@ -6175,9 +6302,9 @@ class StudyPlanEngine:
                 except Exception:
                     result = None
                 with self._semantic_chapter_assets_lock:
-                    self._semantic_perf_stats["tfidf_asset_misses"] = float(
-                        self._semantic_perf_stats.get("tfidf_asset_misses", 0.0) or 0.0
-                    ) + 1.0
+                    self._semantic_perf_stats["tfidf_asset_misses"] = (
+                        float(self._semantic_perf_stats.get("tfidf_asset_misses", 0.0) or 0.0) + 1.0
+                    )
                     if isinstance(result, dict):
                         existing = self._semantic_chapter_match_assets.get(chapter_key)
                         if not (
@@ -6249,9 +6376,7 @@ class StudyPlanEngine:
         module_global_alias_count = 0
         module_chapter_alias_count = 0
         try:
-            built_in_alias_count = int(
-                len(getattr(self, "SEMANTIC_CANONICAL_ALIASES", {}) or {})
-            )
+            built_in_alias_count = int(len(getattr(self, "SEMANTIC_CANONICAL_ALIASES", {}) or {}))
         except Exception:
             built_in_alias_count = 0
         aliases_raw = getattr(self, "semantic_aliases", {})
@@ -6267,9 +6392,7 @@ class StudyPlanEngine:
                         module_global_alias_count += 1
         alias_count_total = max(
             0,
-            int(built_in_alias_count)
-            + int(module_global_alias_count)
-            + int(module_chapter_alias_count),
+            int(built_in_alias_count) + int(module_global_alias_count) + int(module_chapter_alias_count),
         )
         asset_count = 0
         try:
@@ -6290,7 +6413,9 @@ class StudyPlanEngine:
             "enabled": enabled,
             "state": state,
             "readiness": readiness,
-            "model_name": str(getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME),
+            "model_name": str(
+                getattr(self, "semantic_model_name", self.SEMANTIC_MODEL_NAME) or self.SEMANTIC_MODEL_NAME
+            ),
             "rerank_enabled": rerank_enabled,
             "reranker_state": reranker_state,
             "reranker_model_name": str(
@@ -6315,25 +6440,7 @@ class StudyPlanEngine:
             "asset_count": max(0, int(asset_count)),
         }
 
-    @staticmethod
-    def _cosine_similarity(a: List[float], b: List[float]) -> float:
-        if not a or not b:
-            return 0.0
-        n = min(len(a), len(b))
-        if n <= 0:
-            return 0.0
-        dot = 0.0
-        norm_a = 0.0
-        norm_b = 0.0
-        for i in range(n):
-            va = float(a[i])
-            vb = float(b[i])
-            dot += va * vb
-            norm_a += va * va
-            norm_b += vb * vb
-        if norm_a <= 0.0 or norm_b <= 0.0:
-            return 0.0
-        return float(dot / (math.sqrt(norm_a) * math.sqrt(norm_b)))
+    _cosine_similarity = staticmethod(_cosine_sim)
 
     def _semantic_best_outcome_match(
         self, chapter: str, source_text: str, outcome_lookup: Dict[str, Dict[str, Any]]
@@ -6342,9 +6449,9 @@ class StudyPlanEngine:
         now_ts = time.time()
         circuit_until = float(getattr(self, "_semantic_circuit_until_ts", 0.0) or 0.0)
         circuit_active = bool(now_ts < circuit_until)
-        self._semantic_perf_stats["route_meta_calls"] = float(
-            self._semantic_perf_stats.get("route_meta_calls", 0.0) or 0.0
-        ) + 1.0
+        self._semantic_perf_stats["route_meta_calls"] = (
+            float(self._semantic_perf_stats.get("route_meta_calls", 0.0) or 0.0) + 1.0
+        )
         text = str(source_text or "").strip()
         if not text:
             return {"outcome_id": None, "score": 0.0, "method": "fallback"}
@@ -6358,9 +6465,7 @@ class StudyPlanEngine:
             return {"outcome_id": None, "score": 0.0, "method": "fallback"}
 
         normalized_text = self._semantic_normalize_text(chapter, text) or text
-        normalized_outcome_texts = [
-            (self._semantic_normalize_text(chapter, txt) or txt) for txt in outcome_texts
-        ]
+        normalized_outcome_texts = [(self._semantic_normalize_text(chapter, txt) or txt) for txt in outcome_texts]
         sig = "|".join(ordered_ids)
         cache_digest = hashlib.sha1(f"{chapter}|{sig}|{normalized_text}".encode("utf-8")).hexdigest()
         cache_key = f"{chapter}|{cache_digest}"
@@ -6368,9 +6473,9 @@ class StudyPlanEngine:
         if isinstance(cached, dict):
             cached_id = str(cached.get("outcome_id", "") or "").strip()
             if cached_id and cached_id in outcome_lookup:
-                self._semantic_perf_stats["route_cache_hits"] = float(
-                    self._semantic_perf_stats.get("route_cache_hits", 0.0) or 0.0
-                ) + 1.0
+                self._semantic_perf_stats["route_cache_hits"] = (
+                    float(self._semantic_perf_stats.get("route_cache_hits", 0.0) or 0.0) + 1.0
+                )
                 try:
                     cached_score = float(cached.get("score", 0.0) or 0.0)
                 except Exception:
@@ -6382,9 +6487,9 @@ class StudyPlanEngine:
                     "method": cached_method if cached_method in ("cross", "model", "tfidf", "fallback") else "fallback",
                 }
                 elapsed_ms = (time.perf_counter() - route_started) * 1000.0
-                self._semantic_perf_stats["total_route_ms"] = float(
-                    self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
-                ) + elapsed_ms
+                self._semantic_perf_stats["total_route_ms"] = (
+                    float(self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0) + elapsed_ms
+                )
                 self._semantic_perf_stats["max_route_ms"] = max(
                     float(self._semantic_perf_stats.get("max_route_ms", 0.0) or 0.0),
                     elapsed_ms,
@@ -6421,10 +6526,7 @@ class StudyPlanEngine:
                     if reranker is not None and len(dense_scores) >= 2:
                         top_k = max(2, int(getattr(self, "SEMANTIC_RERANK_TOP_K", 4) or 4))
                         rerank_candidates = dense_scores[:top_k]
-                        pairs = [
-                            [normalized_text, normalized_outcome_texts[idx]]
-                            for idx, _score in rerank_candidates
-                        ]
+                        pairs = [[normalized_text, normalized_outcome_texts[idx]] for idx, _score in rerank_candidates]
                         try:
                             raw_cross = reranker.predict(pairs)
                             cross_scores = list(raw_cross) if raw_cross is not None else []
@@ -6455,9 +6557,9 @@ class StudyPlanEngine:
                                     self._semantic_failure_streak = 0
                                     self._semantic_circuit_until_ts = 0.0
                                     self._semantic_circuit_reason = ""
-                                    self._semantic_perf_stats["total_route_ms"] = float(
-                                        self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
-                                    ) + elapsed_ms
+                                    self._semantic_perf_stats["total_route_ms"] = (
+                                        float(self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0) + elapsed_ms
+                                    )
                                     self._semantic_perf_stats["max_route_ms"] = max(
                                         float(self._semantic_perf_stats.get("max_route_ms", 0.0) or 0.0),
                                         elapsed_ms,
@@ -6470,9 +6572,9 @@ class StudyPlanEngine:
                         self._semantic_failure_streak = 0
                         self._semantic_circuit_until_ts = 0.0
                         self._semantic_circuit_reason = ""
-                        self._semantic_perf_stats["total_route_ms"] = float(
-                            self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
-                        ) + elapsed_ms
+                        self._semantic_perf_stats["total_route_ms"] = (
+                            float(self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0) + elapsed_ms
+                        )
                         self._semantic_perf_stats["max_route_ms"] = max(
                             float(self._semantic_perf_stats.get("max_route_ms", 0.0) or 0.0),
                             elapsed_ms,
@@ -6487,9 +6589,7 @@ class StudyPlanEngine:
 
         # Tier 2: sklearn TF-IDF cosine similarity.
         try:
-            assets = self._semantic_get_chapter_assets(
-                chapter, outcome_lookup, ordered_ids, normalized_outcome_texts
-            )
+            assets = self._semantic_get_chapter_assets(chapter, outcome_lookup, ordered_ids, normalized_outcome_texts)
             if isinstance(assets, dict):
                 best_id, best_score = self._semantic_query_tfidf_assets(assets, normalized_text)
                 if best_id and best_id in outcome_lookup and best_score >= max(0.18, threshold * 0.55):
@@ -6499,9 +6599,9 @@ class StudyPlanEngine:
                     if elapsed_ms > float(self.SEMANTIC_ROUTE_BUDGET_MS):
                         self._semantic_circuit_until_ts = time.time() + float(self.SEMANTIC_ROUTE_CIRCUIT_SECONDS)
                         self._semantic_circuit_reason = "semantic route budget exceeded"
-                    self._semantic_perf_stats["total_route_ms"] = float(
-                        self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
-                    ) + elapsed_ms
+                    self._semantic_perf_stats["total_route_ms"] = (
+                        float(self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0) + elapsed_ms
+                    )
                     self._semantic_perf_stats["max_route_ms"] = max(
                         float(self._semantic_perf_stats.get("max_route_ms", 0.0) or 0.0),
                         elapsed_ms,
@@ -6530,9 +6630,9 @@ class StudyPlanEngine:
         else:
             result = {"outcome_id": None, "score": 0.0, "method": "fallback"}
         elapsed_ms = (time.perf_counter() - route_started) * 1000.0
-        self._semantic_perf_stats["total_route_ms"] = float(
-            self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0
-        ) + elapsed_ms
+        self._semantic_perf_stats["total_route_ms"] = (
+            float(self._semantic_perf_stats.get("total_route_ms", 0.0) or 0.0) + elapsed_ms
+        )
         self._semantic_perf_stats["max_route_ms"] = max(
             float(self._semantic_perf_stats.get("max_route_ms", 0.0) or 0.0),
             elapsed_ms,
@@ -6603,7 +6703,9 @@ class StudyPlanEngine:
                 score = 0.0
             method = str(match.get("method", "fallback") or "fallback").strip().lower()
             result["semantic_match_confidence"] = max(0.0, min(1.0, score))
-            result["semantic_match_method"] = method if method in ("cross", "model", "tfidf", "fallback") else "fallback"
+            result["semantic_match_method"] = (
+                method if method in ("cross", "model", "tfidf", "fallback") else "fallback"
+            )
             result["reason"] = default_reason
 
         tagged_ids = question.get("outcome_ids", [])
@@ -6785,7 +6887,9 @@ class StudyPlanEngine:
                     and isinstance(stats.get("linked_outcome_ids"), list)
                     and any(str(v).strip() for v in list(stats.get("linked_outcome_ids") or []))
                 )
-                direct_linked = bool(q.get("outcome_ids") or (isinstance(q.get("outcomes"), list) and q.get("outcomes")))
+                direct_linked = bool(
+                    q.get("outcome_ids") or (isinstance(q.get("outcomes"), list) and q.get("outcomes"))
+                )
                 if manual_linked:
                     linked = stats.get("linked_outcome_ids") if isinstance(stats, dict) else []
                     if isinstance(linked, list):
@@ -7366,21 +7470,9 @@ class StudyPlanEngine:
         adjacent_clusters = cluster_ctx.get("adjacent_clusters", set())
         if not isinstance(adjacent_clusters, set):
             adjacent_clusters = set()
-        use_cluster_lane = (
-            cluster_mode in {"semantic", "lexical"}
-            and bool(target_clusters)
-            and bool(adjacent_clusters)
-        )
-        use_cluster_lane = (
-            cluster_mode in {"semantic", "lexical"}
-            and bool(target_clusters)
-            and bool(adjacent_clusters)
-        )
-        use_cluster_lane = (
-            cluster_mode in {"semantic", "lexical"}
-            and bool(target_clusters)
-            and bool(adjacent_clusters)
-        )
+        use_cluster_lane = cluster_mode in {"semantic", "lexical"} and bool(target_clusters) and bool(adjacent_clusters)
+        use_cluster_lane = cluster_mode in {"semantic", "lexical"} and bool(target_clusters) and bool(adjacent_clusters)
+        use_cluster_lane = cluster_mode in {"semantic", "lexical"} and bool(target_clusters) and bool(adjacent_clusters)
         result["cluster_mode"] = cluster_mode
         result["target_cluster_count"] = len(target_clusters)
 
@@ -7583,13 +7675,13 @@ class StudyPlanEngine:
 
         rows.sort(
             key=lambda r: (
-                -r[0],      # must-review due, then overdue
-                -r[1],      # more uncovered outcome hits first
-                r[2],       # lower retention first
-                r[3],       # lower recall first
-                -r[4],      # higher miss risk first
-                r[5],       # prefer not in cooldown
-                r[6],       # deterministic tie-break
+                -r[0],  # must-review due, then overdue
+                -r[1],  # more uncovered outcome hits first
+                r[2],  # lower retention first
+                r[3],  # lower recall first
+                -r[4],  # higher miss risk first
+                r[5],  # prefer not in cooldown
+                r[6],  # deterministic tie-break
             )
         )
 
@@ -7629,11 +7721,7 @@ class StudyPlanEngine:
         adjacent_clusters = cluster_ctx.get("adjacent_clusters", set())
         if not isinstance(adjacent_clusters, set):
             adjacent_clusters = set()
-        use_cluster_lane = (
-            cluster_mode in {"semantic", "lexical"}
-            and bool(target_clusters)
-            and bool(adjacent_clusters)
-        )
+        use_cluster_lane = cluster_mode in {"semantic", "lexical"} and bool(target_clusters) and bool(adjacent_clusters)
 
         target_set = set(normalized_targets)
         target_pos = [outcome_pos[oid] for oid in normalized_targets if oid in outcome_pos]
@@ -7737,22 +7825,22 @@ class StudyPlanEngine:
         for bucket in rows_by_bucket.keys():
             rows_by_bucket[bucket].sort(
                 key=lambda r: (
-                    -r[0],    # must-review due, then overdue
-                    r[1],     # low retention first
-                    r[2],     # low recall first
-                    -r[3],    # high miss risk first
-                    r[4],     # prefer not in cooldown
-                    r[5],     # deterministic index tie-break
+                    -r[0],  # must-review due, then overdue
+                    r[1],  # low retention first
+                    r[2],  # low recall first
+                    -r[3],  # high miss risk first
+                    r[4],  # prefer not in cooldown
+                    r[5],  # deterministic index tie-break
                 )
             )
         all_rows.sort(
             key=lambda r: (
-                -r[1],    # due pressure first across all buckets
-                r[2],     # low retention
-                r[3],     # low recall
-                -r[4],    # high miss risk
-                r[5],     # cooldown
-                r[6],     # index
+                -r[1],  # due pressure first across all buckets
+                r[2],  # low retention
+                r[3],  # low recall
+                -r[4],  # high miss risk
+                r[5],  # cooldown
+                r[6],  # index
             )
         )
 
@@ -7798,7 +7886,7 @@ class StudyPlanEngine:
             if quota <= 0:
                 continue
             added = 0
-            for due_kind, _ret, _rec, _risk, _cool, idx in rows_by_bucket.get(bucket, []):
+            for _due_kind, _ret, _rec, _risk, _cool, idx in rows_by_bucket.get(bucket, []):
                 if idx in selected_set:
                     continue
                 selected.append(idx)
@@ -7926,10 +8014,7 @@ class StudyPlanEngine:
         for chapter, stats_by_ch in self.question_stats.items():
             if not isinstance(stats_by_ch, dict):
                 continue
-            has_qid = any(
-                isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX)
-                for k in stats_by_ch.keys()
-            )
+            has_qid = any(isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX) for k in stats_by_ch.keys())
             for key, entry in stats_by_ch.items():
                 if has_qid and isinstance(key, str) and not key.startswith(self.QUESTION_ID_PREFIX):
                     continue
@@ -8085,7 +8170,7 @@ class StudyPlanEngine:
                 nk = _norm_key(k) or k
                 if nk in fixed and isinstance(v, list) and isinstance(fixed[nk], list):
                     if len(v) > len(fixed[nk]):
-                        fixed[nk].extend(v[len(fixed[nk]):])
+                        fixed[nk].extend(v[len(fixed[nk]) :])
                 elif nk in fixed:
                     continue
                 else:
@@ -8293,6 +8378,7 @@ class StudyPlanEngine:
                 self.pomodoro_log["by_chapter"] = by_chapter
             current = by_chapter.get(chapter, 0.0)
             by_chapter[chapter] = float(current) + float(minutes)
+
     def migrate_pomodoro_log(self) -> None:
         """
         Normalize pomodoro_log into canonical format:
@@ -8336,8 +8422,6 @@ class StudyPlanEngine:
 
         self.pomodoro_log = {"total_minutes": total, "by_chapter": by_chapter}
 
-
-
     def load_questions(self):
         """
         Load questions: merge class defaults + JSON file additions.
@@ -8347,14 +8431,18 @@ class StudyPlanEngine:
         raw_question_keys: list[str] = []
         if os.path.exists(self.QUESTIONS_FILE):
             try:
-                with open(self.QUESTIONS_FILE, 'r', encoding='utf-8') as f:
+                with open(self.QUESTIONS_FILE, "r", encoding="utf-8") as f:
                     raw = json.load(f)
                     if isinstance(raw, dict):
                         raw_question_keys = [str(k).strip() for k in raw.keys() if str(k).strip()]
                         for k, v in raw.items():
                             if not isinstance(v, list):
                                 continue
-                            nk = k if (k in self.QUESTIONS_DEFAULT or k in self.CHAPTERS) else self.CHAPTER_ALIASES.get(str(k).strip().lower())
+                            nk = (
+                                k
+                                if (k in self.QUESTIONS_DEFAULT or k in self.CHAPTERS)
+                                else self.CHAPTER_ALIASES.get(str(k).strip().lower())
+                            )
                             if nk and (nk in self.QUESTIONS_DEFAULT or nk in self.CHAPTERS):
                                 cleaned: list[dict] = []
                                 for q in v:
@@ -8375,7 +8463,11 @@ class StudyPlanEngine:
                 print(f"Error loading questions from JSON: {e}")
         # Use current module chapters so QUESTIONS has an entry for every chapter (e.g. F7's 27),
         # not just QUESTIONS_DEFAULT keys (e.g. F9's 19 when config has no "questions").
-        _qkeys = list(self.CHAPTERS) if self.CHAPTERS else (list(self.QUESTIONS_DEFAULT.keys()) if self.QUESTIONS_DEFAULT else [])
+        _qkeys = (
+            list(self.CHAPTERS)
+            if self.CHAPTERS
+            else (list(self.QUESTIONS_DEFAULT.keys()) if self.QUESTIONS_DEFAULT else [])
+        )
         self.QUESTIONS = {k: self.QUESTIONS_DEFAULT.get(k, []) + questions_from_json.get(k, []) for k in _qkeys}
         self._invalidate_outcome_coverage_counts_cache()
         self._cached_total_question_count_valid = False
@@ -8428,10 +8520,18 @@ class StudyPlanEngine:
             return float(self.pomodoro_log.get("total_minutes", 0))
         return float(self.pomodoro_log or 0)
 
-
-
     def sync_srs_with_questions(self):
-        """Ensure SRS data matches current question count."""
+        """Ensure SRS data matches current question count.
+
+        Fast-path: if the question count per chapter hasn't changed since the
+        last sync, skip the full reconciliation (the common case on reload).
+        """
+        # Quick check: has the question landscape changed?
+        current_fingerprint = str([(ch, len(self.QUESTIONS.get(ch, []) or [])) for ch in (self.CHAPTERS or [])])
+        if getattr(self, "_srs_sync_fingerprint", "") == current_fingerprint:
+            return
+        self._srs_sync_fingerprint = current_fingerprint
+
         for chapter in self.CHAPTERS:
             current_questions = list(self.QUESTIONS.get(chapter, []) or [])
             old_entries = list(self.srs_data.get(chapter, []) or [])
@@ -8474,9 +8574,9 @@ class StudyPlanEngine:
             print("Warning: No chapters available.")
             return
 
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("Question Summary:")
-        print("="*60)
+        print("=" * 60)
 
         total_questions = 0
         for ch in self.CHAPTERS:
@@ -8489,9 +8589,9 @@ class StudyPlanEngine:
             status = "✓" if count > 0 else "✗"
             print(f"{status} {ch:30} : {count:3} questions")
 
-        print("="*60)
+        print("=" * 60)
         print(f"Total: {total_questions} questions across {len(self.CHAPTERS)} chapters")
-        print("="*60 + "\n")
+        print("=" * 60 + "\n")
 
     def get_total_pomodoro_minutes(self):
         """Return the total Pomodoro minutes for all chapters."""
@@ -8555,7 +8655,9 @@ class StudyPlanEngine:
                     print(f"✗ Error removing file: {e}")
         self._cached_total_question_count_valid = False
 
-    def _question_quality_removed_fingerprints(self, chapter: str, meta: Dict[str, Dict[str, Any]] | None = None) -> set[str]:
+    def _question_quality_removed_fingerprints(
+        self, chapter: str, meta: Dict[str, Dict[str, Any]] | None = None
+    ) -> set[str]:
         """Return stable fingerprints for quarantined questions that should be removed from the active bank."""
         source = meta if isinstance(meta, dict) else self._load_question_quality_meta()
         by_chapter = source.get(str(chapter or "").strip(), {})
@@ -8632,7 +8734,7 @@ class StudyPlanEngine:
 
         # Load existing questions
         try:
-            with open(self.QUESTIONS_FILE, 'r', encoding='utf-8') as f:
+            with open(self.QUESTIONS_FILE, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
             questions = loaded if isinstance(loaded, dict) else {}
         except (OSError, json.JSONDecodeError):
@@ -8656,9 +8758,7 @@ class StudyPlanEngine:
 
         print(f" Added question to {chapter}")
 
-    def update_question_outcome_ids(
-        self, chapter: str, question_index: int, outcome_ids: List[str]
-    ) -> None:
+    def update_question_outcome_ids(self, chapter: str, question_index: int, outcome_ids: List[str]) -> None:
         """
         Set outcome_ids for the question at the given index and save.
         Used by the outcome-tagging UI (Phase 3 outcome linking).
@@ -8696,8 +8796,6 @@ class StudyPlanEngine:
             self.save_data()
         except Exception:
             pass
-
-
 
     def _note_low_confidence_chapter_match(self, title: str, chapter: str, similarity: float) -> None:
         """Log low-confidence chapter matching once per unique mapping and cap noisy output."""
@@ -8750,10 +8848,10 @@ class StudyPlanEngine:
             # Use a single pass to find the best match
             best_match = max(
                 chapter_lower.items(),
-                key=lambda t: difflib.SequenceMatcher(None, t[0], title_lower).quick_ratio() if t[0] is not None else 0
+                key=lambda t: difflib.SequenceMatcher(None, t[0], title_lower).quick_ratio() if t[0] is not None else 0,
             )
         except ValueError as e:
-            raise ValueError(f"Cannot find closest chapter for '{title}': {e}")
+            raise ValueError(f"Cannot find closest chapter for '{title}': {e}") from e
 
         if best_match[0] is None:
             raise ValueError(f"Cannot find closest chapter for '{title}'")
@@ -9059,7 +9157,15 @@ class StudyPlanEngine:
                         _truth = getattr(_trace, "final_result", None)
                         _correct_parsed = None
                         if correct:
-                            _cs = str(correct).strip().lstrip("$").lstrip("\u00a3").lstrip("\u20ac").replace(",", "").replace("%", "")
+                            _cs = (
+                                str(correct)
+                                .strip()
+                                .lstrip("$")
+                                .lstrip("\u00a3")
+                                .lstrip("\u20ac")
+                                .replace(",", "")
+                                .replace("%", "")
+                            )
                             try:
                                 _correct_parsed = float(_cs)
                             except (ValueError, TypeError):
@@ -9211,9 +9317,7 @@ class StudyPlanEngine:
 
         try:
             raw_existing = model.encode(existing_texts, normalize_embeddings=True)
-            existing_vectors: list[list[float]] = [
-                [float(v) for v in vec] for vec in list(raw_existing or [])
-            ]
+            existing_vectors: list[list[float]] = [[float(v) for v in vec] for vec in list(raw_existing or [])]
         except Exception:
             return new_questions, stats
         if not existing_vectors:
@@ -9230,9 +9334,7 @@ class StudyPlanEngine:
 
         # Phase 2: batch-encode all question texts in a single model call
         try:
-            all_raw = model.encode(
-                [p[0] for p in pending], normalize_embeddings=True
-            )
+            all_raw = model.encode([p[0] for p in pending], normalize_embeddings=True)
             all_vecs = [
                 [float(v) for v in vec] if vec is not None else []
                 for vec in (list(all_raw or []) if all_raw is not None else [])
@@ -9243,7 +9345,7 @@ class StudyPlanEngine:
         # Phase 3: deduplicate using pre-computed vectors
         unique_questions: list[dict] = []
         accepted_vectors: list[list[float]] = []
-        for idx, (q_text, q) in enumerate(pending):
+        for idx, (_q_text, q) in enumerate(pending):
             q_vec = all_vecs[idx] if idx < len(all_vecs) else []
             if not q_vec:
                 unique_questions.append(q)
@@ -9290,7 +9392,7 @@ class StudyPlanEngine:
             if stats is None:
                 continue
 
-            total_new_learning += stats.get('new', 0) + stats.get('learning', 0)
+            total_new_learning += stats.get("new", 0) + stats.get("learning", 0)
 
             competence = self.competence.get(chapter, 0) or 0
             if competence is None:
@@ -9327,8 +9429,8 @@ class StudyPlanEngine:
             if chapter_mastery is None:
                 continue
 
-            total_mastered += chapter_mastery.get('mastered', 0)
-            total_questions += chapter_mastery.get('total', 0)
+            total_mastered += chapter_mastery.get("mastered", 0)
+            total_questions += chapter_mastery.get("total", 0)
 
         if total_mastered < 0 or total_questions < 0:
             raise ValueError("Total mastered questions or total questions cannot be negative")
@@ -9360,10 +9462,7 @@ class StudyPlanEngine:
             ch_correct = 0
             ch_practiced = 0
             # Prefer qid-keyed entries when present; fall back to index-keyed.
-            has_qid = any(
-                isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX)
-                for k in stats_by_ch
-            )
+            has_qid = any(isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX) for k in stats_by_ch)
             for key, entry in stats_by_ch.items():
                 if has_qid and isinstance(key, str) and not key.startswith(self.QUESTION_ID_PREFIX):
                     continue
@@ -9423,10 +9522,7 @@ class StudyPlanEngine:
             if not isinstance(stats_by_ch, dict):
                 continue
             questions_in_ch: list[dict[str, Any]] = self.QUESTIONS.get(chapter) or []
-            has_qid = any(
-                isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX)
-                for k in stats_by_ch
-            )
+            has_qid = any(isinstance(k, str) and k.startswith(self.QUESTION_ID_PREFIX) for k in stats_by_ch)
             for key, entry in stats_by_ch.items():
                 if has_qid and isinstance(key, str) and not key.startswith(self.QUESTION_ID_PREFIX):
                     continue
@@ -9460,14 +9556,16 @@ class StudyPlanEngine:
                     qrow = questions_in_ch[q_idx]
                     if isinstance(qrow, dict):
                         q_text = str(qrow.get("question", "") or "")[:120]
-                rows.append({
-                    "chapter": chapter,
-                    "index": q_idx if q_idx is not None else -1,
-                    "question": q_text,
-                    "attempts": a,
-                    "correct": c,
-                    "accuracy": round(c / a, 4),
-                })
+                rows.append(
+                    {
+                        "chapter": chapter,
+                        "index": q_idx if q_idx is not None else -1,
+                        "question": q_text,
+                        "attempts": a,
+                        "correct": c,
+                        "accuracy": round(c / a, 4),
+                    }
+                )
         rows.sort(key=lambda r: (r["accuracy"], -r["attempts"]))
         return rows[:n]
 
@@ -9585,7 +9683,9 @@ class StudyPlanEngine:
                         continue
                     issue_counts[key] = int(issue_counts.get(key, 0) or 0) + 1
                 continue
-            if bool((sanitize_meta or {}).get("normalized", False)) or bool((sanitize_meta or {}).get("repaired", False)):
+            if bool((sanitize_meta or {}).get("normalized", False)) or bool(
+                (sanitize_meta or {}).get("repaired", False)
+            ):
                 semantic_dedup["quality_normalized"] = int(semantic_dedup.get("quality_normalized", 0) or 0) + 1
             valid.append(clean_q)
 
@@ -9628,10 +9728,10 @@ class StudyPlanEngine:
             return
         qlist = self.QUESTIONS.get(chapter)
         if isinstance(qlist, list) and qlist:
-            del qlist[-min(n, len(qlist)):]
+            del qlist[-min(n, len(qlist)) :]
         srs_list = self.srs_data.get(chapter)
         if isinstance(srs_list, list) and srs_list:
-            del srs_list[-min(n, len(srs_list)):]
+            del srs_list[-min(n, len(srs_list)) :]
         self._cached_total_question_count_valid = False
         self._invalidate_outcome_coverage_counts_cache()
         self._semantic_invalidate_chapter_assets(chapter)
@@ -9834,7 +9934,7 @@ class StudyPlanEngine:
                 row_mapped = int(row.get("mapped", 0) or 0)
                 row_low = int(row.get("low_confidence", 0) or 0)
                 row_unmapped = int(row.get("unmapped", 0) or 0)
-                row_cov = (100.0 * row_mapped / max(1, row_total))
+                row_cov = 100.0 * row_mapped / max(1, row_total)
                 if row_cov < 50.0 or (row_low + row_unmapped) >= int(round(row_total * 0.50)):
                     chapter_alerts.append(str(chapter))
 
@@ -9909,7 +10009,9 @@ class StudyPlanEngine:
             if not isinstance(route, dict):
                 route = {}
             route_outcomes = route.get("outcome_ids", [])
-            outcome_ids = [str(v).strip() for v in route_outcomes if str(v).strip()] if isinstance(route_outcomes, list) else []
+            outcome_ids = (
+                [str(v).strip() for v in route_outcomes if str(v).strip()] if isinstance(route_outcomes, list) else []
+            )
             method = str(route.get("semantic_match_method", "fallback") or "fallback").strip().lower()
             if method not in ("cross", "model", "tfidf", "fallback"):
                 method = "fallback"
@@ -9977,10 +10079,18 @@ class StudyPlanEngine:
                         low_confidence_matches.append(f"{chapter_name} -> {chapter} ({score:.0%})")
                     start_idx = len(self.QUESTIONS.get(chapter, []))
                     added, dedup = self._add_questions_with_stats(chapter, data.get("questions", []))
-                    semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
-                    semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
-                    semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
-                    semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
+                    semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(
+                        dedup.get("checked", 0) or 0
+                    )
+                    semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(
+                        dedup.get("skipped", 0) or 0
+                    )
+                    semantic_import["dedup_method"] = str(
+                        dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback"
+                    )
+                    semantic_import["dedup_threshold"] = float(
+                        dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90
+                    )
                     if added:
                         chapters_touched.add(chapter)
                         semantic_import = self._semantic_tag_imported_questions(
@@ -10005,10 +10115,18 @@ class StudyPlanEngine:
                         low_confidence_matches.append(f"{ch_key} -> {chapter} ({score:.0%})")
                     start_idx = len(self.QUESTIONS.get(chapter, []))
                     added, dedup = self._add_questions_with_stats(chapter, questions)
-                    semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
-                    semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
-                    semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
-                    semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
+                    semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(
+                        dedup.get("checked", 0) or 0
+                    )
+                    semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(
+                        dedup.get("skipped", 0) or 0
+                    )
+                    semantic_import["dedup_method"] = str(
+                        dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback"
+                    )
+                    semantic_import["dedup_threshold"] = float(
+                        dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90
+                    )
                     if added:
                         chapters_touched.add(chapter)
                         semantic_import = self._semantic_tag_imported_questions(
@@ -10029,15 +10147,21 @@ class StudyPlanEngine:
                     low_confidence_matches.append(f"{ch_key} -> {chapter} ({score:.0%})")
                 start_idx = len(self.QUESTIONS.get(chapter, []))
                 added, dedup = self._add_questions_with_stats(chapter, questions)
-                semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
-                semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
-                semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
-                semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
+                semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(
+                    dedup.get("checked", 0) or 0
+                )
+                semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(
+                    dedup.get("skipped", 0) or 0
+                )
+                semantic_import["dedup_method"] = str(
+                    dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback"
+                )
+                semantic_import["dedup_threshold"] = float(
+                    dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90
+                )
                 if added:
                     chapters_touched.add(chapter)
-                    semantic_import = self._semantic_tag_imported_questions(
-                        chapter, start_idx, added, semantic_import
-                    )
+                    semantic_import = self._semantic_tag_imported_questions(chapter, start_idx, added, semantic_import)
                 total_added += added
         elif isinstance(data, list):
             # Group by chapter field
@@ -10058,15 +10182,21 @@ class StudyPlanEngine:
             for chapter, questions in grouped.items():
                 start_idx = len(self.QUESTIONS.get(chapter, []))
                 added, dedup = self._add_questions_with_stats(chapter, questions)
-                semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
-                semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
-                semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
-                semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
+                semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(
+                    dedup.get("checked", 0) or 0
+                )
+                semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(
+                    dedup.get("skipped", 0) or 0
+                )
+                semantic_import["dedup_method"] = str(
+                    dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback"
+                )
+                semantic_import["dedup_threshold"] = float(
+                    dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90
+                )
                 if added:
                     chapters_touched.add(chapter)
-                    semantic_import = self._semantic_tag_imported_questions(
-                        chapter, start_idx, added, semantic_import
-                    )
+                    semantic_import = self._semantic_tag_imported_questions(chapter, start_idx, added, semantic_import)
                 total_added += added
         else:
             raise ValueError("Unsupported JSON format for AI questions")
@@ -10124,15 +10254,21 @@ class StudyPlanEngine:
             for chapter, questions in grouped.items():
                 start_idx = len(self.QUESTIONS.get(chapter, []))
                 added, dedup = self._add_questions_with_stats(chapter, questions)
-                semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(dedup.get("checked", 0) or 0)
-                semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(dedup.get("skipped", 0) or 0)
-                semantic_import["dedup_method"] = str(dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback")
-                semantic_import["dedup_threshold"] = float(dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90)
+                semantic_import["dedup_checked"] = int(semantic_import.get("dedup_checked", 0) or 0) + int(
+                    dedup.get("checked", 0) or 0
+                )
+                semantic_import["dedup_skipped"] = int(semantic_import.get("dedup_skipped", 0) or 0) + int(
+                    dedup.get("skipped", 0) or 0
+                )
+                semantic_import["dedup_method"] = str(
+                    dedup.get("method", semantic_import.get("dedup_method", "fallback")) or "fallback"
+                )
+                semantic_import["dedup_threshold"] = float(
+                    dedup.get("threshold", semantic_import.get("dedup_threshold", 0.90)) or 0.90
+                )
                 if added:
                     chapters_touched.add(chapter)
-                    semantic_import = self._semantic_tag_imported_questions(
-                        chapter, start_idx, added, semantic_import
-                    )
+                    semantic_import = self._semantic_tag_imported_questions(chapter, start_idx, added, semantic_import)
                 total_added += added
 
         self.save_questions()
@@ -10188,11 +10324,29 @@ class StudyPlanEngine:
 
         def _is_noise_line(line: str) -> bool:
             noise = {
-                "dashboard", "notes", "bookmarks", "highlights", "results",
-                "progress", "completion", "reports", "quiz name", "quiz length",
-                "quiz time", "status", "category name", "complete", "reset questions",
-                "reset all quizzes", "terms and conditions", "data privacy",
-                "contact us", "chapters", "flashcards", "quizzes", "practice",
+                "dashboard",
+                "notes",
+                "bookmarks",
+                "highlights",
+                "results",
+                "progress",
+                "completion",
+                "reports",
+                "quiz name",
+                "quiz length",
+                "quiz time",
+                "status",
+                "category name",
+                "complete",
+                "reset questions",
+                "reset all quizzes",
+                "terms and conditions",
+                "data privacy",
+                "contact us",
+                "chapters",
+                "flashcards",
+                "quizzes",
+                "practice",
             }
             low = line.lower()
             return (not low) or (low in noise)
@@ -10238,7 +10392,9 @@ class StudyPlanEngine:
                     i += 1
             return blocks
 
-        def _find_section(lines_list: list[str], start_terms: tuple[str, ...], end_terms: tuple[str, ...]) -> tuple[int, int] | None:
+        def _find_section(
+            lines_list: list[str], start_terms: tuple[str, ...], end_terms: tuple[str, ...]
+        ) -> tuple[int, int] | None:
             start_idx = None
             for i, line in enumerate(lines_list):
                 low = line.lower()
@@ -10277,7 +10433,9 @@ class StudyPlanEngine:
             except Exception:
                 return 1
 
-        def _distribute_counts(chapters: list[str], correct: int | None, total: int | None) -> dict[str, tuple[float, float]]:
+        def _distribute_counts(
+            chapters: list[str], correct: int | None, total: int | None
+        ) -> dict[str, tuple[float, float]]:
             if not chapters or total is None:
                 return {}
             weights = {ch: _chapter_weight(ch) for ch in chapters}
@@ -10493,10 +10651,19 @@ class StudyPlanEngine:
                         chapters.append(ch)
                 if chapters and section_pct is not None:
                     if section_mode == "practice":
-                        _apply_score(chapters, section_pct, section_counts, practice_scores, practice_counts, apply_competence=True)
+                        _apply_score(
+                            chapters,
+                            section_pct,
+                            section_counts,
+                            practice_scores,
+                            practice_counts,
+                            apply_competence=True,
+                        )
                         practice_section_parsed = True
                     else:
-                        _apply_score(chapters, section_pct, section_counts, quiz_scores, quiz_counts, apply_competence=False)
+                        _apply_score(
+                            chapters, section_pct, section_counts, quiz_scores, quiz_counts, apply_competence=False
+                        )
                         _update_quiz_results(chapters, section_pct)
                         quiz_section_parsed = True
                 i = j
@@ -10539,7 +10706,9 @@ class StudyPlanEngine:
                 if ch:
                     chapters.append(ch)
             if chapters:
-                _apply_score(chapters, dashboard_pct, dashboard_counts, quiz_scores, quiz_counts, apply_competence=False)
+                _apply_score(
+                    chapters, dashboard_pct, dashboard_counts, quiz_scores, quiz_counts, apply_competence=False
+                )
                 _update_quiz_results(chapters, dashboard_pct)
                 quiz_dashboard_parsed = True
 
@@ -10780,8 +10949,6 @@ class StudyPlanEngine:
             },
         }
 
-
-
     def get_questions(self, chapter):
         """Get all questions for a chapter."""
         return self.QUESTIONS.get(chapter, [])
@@ -10805,9 +10972,9 @@ class StudyPlanEngine:
         Show breakdown of default vs added questions per chapter.
         Useful for debugging the merge.
         """
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("Question Breakdown (Defaults vs Added)")
-        print("="*70)
+        print("=" * 70)
 
         total_defaults = 0
         total_added = 0
@@ -10822,7 +10989,9 @@ class StudyPlanEngine:
             defaults = len(self.QUESTIONS.get(chapter, [])) if chapter in self.QUESTIONS else 0
             total_defaults += defaults
 
-            added = len([q for q in self.QUESTIONS.get(chapter, []) if 'added' in q]) if chapter in self.QUESTIONS else 0
+            added = (
+                len([q for q in self.QUESTIONS.get(chapter, []) if "added" in q]) if chapter in self.QUESTIONS else 0
+            )
             total_added += added
 
     def is_overdue(self, srs_item, today):
@@ -10862,7 +11031,6 @@ class StudyPlanEngine:
         next_review_date = last_review_date + datetime.timedelta(days=interval)
         return next_review_date <= today
 
-
     def update_competence(self, chapter: str, delta: int, question_index: int | None = None):
         """
         Update competence with difficulty weighting.
@@ -10887,7 +11055,7 @@ class StudyPlanEngine:
         if question_index is not None and 0 <= question_index < len(self.srs_data.get(chapter, [])):
             srs_data = self.srs_data[chapter][question_index]
             try:
-                efactor = float(srs_data.get('efactor', 2.5) or 2.5)
+                efactor = float(srs_data.get("efactor", 2.5) or 2.5)
             except Exception:
                 efactor = 2.5
             difficulty_factor = 1.0 + (2.5 - efactor) / 2.0
@@ -10918,14 +11086,15 @@ class StudyPlanEngine:
 
         today = datetime.date.today()
         srs_list = self.srs_data.get(chapter, [])
-        retention_scores = [(idx, self.get_retention_probability(chapter, idx))
+        retention_scores = [
+            (idx, self.get_retention_probability(chapter, idx))
             for idx in range(len(questions))
-            if idx < len(srs_list) and self.is_overdue(srs_list[idx], today)]
+            if idx < len(srs_list) and self.is_overdue(srs_list[idx], today)
+        ]
 
         # If no overdue, pick lowest retention among all
         if not retention_scores:
-            retention_scores = [(idx, self.get_retention_probability(chapter, idx))
-                for idx in range(len(questions))]
+            retention_scores = [(idx, self.get_retention_probability(chapter, idx)) for idx in range(len(questions))]
 
         # Pick most forgotten overdue question
         if not retention_scores:
@@ -10983,7 +11152,9 @@ class StudyPlanEngine:
         srs_list = self.srs_data.get(chapter, [])
         today = datetime.date.today()
         must_review = self.must_review.get(chapter, {})
-        recent_history_raw = self.quiz_recent.get(chapter, []) if isinstance(getattr(self, "quiz_recent", None), dict) else []
+        recent_history_raw = (
+            self.quiz_recent.get(chapter, []) if isinstance(getattr(self, "quiz_recent", None), dict) else []
+        )
         if not isinstance(recent_history_raw, list):
             recent_history_raw = []
         # Defensive normalization in case legacy/corrupt data contains huge/non-int entries.
@@ -11016,14 +11187,74 @@ class StudyPlanEngine:
                 return 0.0
             return min(1.0, hits / max(1, len(outcome_ids)))
 
+        # Batch pre-compute is_overdue and retention_probability for all questions.
+        batch_has_fsrs_due: list[int] = []
+        batch_fsrs_due_days: list[int] = []
+        batch_has_review: list[int] = []
+        batch_days_since: list[int] = []
+        batch_interval: list[float] = []
+        batch_has_stability: list[int] = []
+        batch_stability: list[float] = []
+        for idx in range(len(questions)):
+            srs = srs_list[idx] if idx < len(srs_list) else {}
+            # FSRS due
+            fsrs_due = srs.get("fsrs_due")
+            if fsrs_due:
+                try:
+                    fd = datetime.date.fromisoformat(str(fsrs_due))
+                    batch_has_fsrs_due.append(1)
+                    batch_fsrs_due_days.append((today - fd).days)
+                except Exception:
+                    batch_has_fsrs_due.append(0)
+                    batch_fsrs_due_days.append(0)
+            else:
+                batch_has_fsrs_due.append(0)
+                batch_fsrs_due_days.append(0)
+            # Last review (prefer fsrs_last_review, fall back to last_review)
+            lr = srs.get("fsrs_last_review") or srs.get("last_review")
+            if lr:
+                try:
+                    lr_date = datetime.date.fromisoformat(str(lr))
+                    batch_has_review.append(1)
+                    batch_days_since.append((today - lr_date).days)
+                except Exception:
+                    batch_has_review.append(0)
+                    batch_days_since.append(-1)
+            else:
+                batch_has_review.append(0)
+                batch_days_since.append(-1)
+            # SM-2 interval
+            try:
+                batch_interval.append(float(srs.get("interval", 1) or 1))
+            except Exception:
+                batch_interval.append(1.0)
+            # FSRS stability
+            fsrs_s = srs.get("fsrs_stability")
+            if fsrs_s is not None:
+                try:
+                    batch_stability.append(float(fsrs_s))
+                    batch_has_stability.append(1)
+                except Exception:
+                    batch_stability.append(0.0)
+                    batch_has_stability.append(0)
+            else:
+                batch_stability.append(0.0)
+                batch_has_stability.append(0)
+
+        batch_overdue, batch_retention = batch_score_srs(
+            batch_has_fsrs_due, batch_fsrs_due_days,
+            batch_has_review, batch_days_since, batch_interval,
+            batch_has_stability, batch_stability,
+        )
+
         scored = []
         has_due = False
         has_overdue = False
         all_new = True
         for idx in range(len(questions)):
             srs = srs_list[idx] if idx < len(srs_list) else {}
-            overdue = 1 if self.is_overdue(srs, today) else 0
-            retention = self.get_retention_probability(chapter, idx)
+            overdue = batch_overdue[idx]
+            retention = batch_retention[idx]
             due = 0
             if isinstance(must_review, dict):
                 due_date = self._parse_date(must_review.get(str(idx)))
@@ -11053,62 +11284,17 @@ class StudyPlanEngine:
                 selected.extend(remaining[: (count - len(selected))])
             return selected
 
-        # Phase 1: include must-review first, but cap to preserve variety.
-        due_items = [item for item in scored if item[1] == 1]
-        # Prefer not-in-cooldown, then overdue, higher risk, lower retention.
-        due_items.sort(key=lambda x: (x[3], -x[2], -x[8], -x[7], x[6]))
-        max_due = min(count, max(3, int(count * 0.5)))
-        selected = [idx for idx, *_rest in due_items[:max_due]]
+        # Use shared selector (Rust-accelerated if available, pure-Python fallback)
+        selected = select_srs_from_scored(
+            scored, count, len(questions), list(recent_set),
+        )
 
-        # Phase 2: fill from non-cooldown pool for diversity.
-        if len(selected) < min(count, len(questions)):
-            remaining_slots = count - len(selected)
-            non_due = [item for item in scored if item[1] == 0 and item[0] not in selected]
-            non_cooldown = [item for item in non_due if item[3] == 0]
-            # Sort: overdue, higher risk, new cards, not-recent, low retention.
-            non_cooldown.sort(key=lambda x: (-x[2], -x[8], -x[7], -x[5], x[4], x[6]))
-            selected.extend([idx for idx, *_rest in non_cooldown[:remaining_slots]])
-
-        # Phase 3: fallback to cooldown items if chapter is exhausted.
-        if len(selected) < min(count, len(questions)):
-            remaining_slots = count - len(selected)
-            fallback = [item for item in scored if item[0] not in selected]
-            fallback.sort(key=lambda x: (-x[1], -x[2], -x[8], -x[7], x[4], x[6]))
-            selected.extend([idx for idx, *_rest in fallback[:remaining_slots]])
-
-        # If not enough unique (shouldn't happen), fill with random
-        if len(selected) < min(count, len(questions)):
+        # Safety net: fill any remaining slots with random
+        target = min(count, len(questions))
+        if len(selected) < target:
             remaining = [i for i in range(len(questions)) if i not in selected]
             random.shuffle(remaining)
-            selected.extend(remaining[: (count - len(selected))])
-
-        # Enforce a minimum non-recent ratio unless must-review pressure is high.
-        target_size = min(count, len(questions))
-        if target_size > 0 and recent_set:
-            unique_floor_ratio = 0.70
-            min_non_recent = int(math.ceil(target_size * unique_floor_ratio))
-            due_pressure = len(due_items) >= max(1, int(math.ceil(target_size * 0.60)))
-            non_recent_selected = [idx for idx in selected if idx not in recent_set]
-            if not due_pressure and len(non_recent_selected) < min_non_recent:
-                needed = min_non_recent - len(non_recent_selected)
-                candidates = [item for item in scored if item[0] not in selected and item[4] == 0]
-                candidates.sort(key=lambda x: (-x[1], -x[2], -x[8], -x[7], x[6]))
-                additions = [idx for idx, *_rest in candidates[:needed]]
-                if additions:
-                    due_by_idx = {idx: due for idx, due, *_rest in scored}
-                    replaceable = [
-                        idx for idx in selected
-                        if idx in recent_set and due_by_idx.get(idx, 0) == 0
-                    ]
-                    for add_idx in additions:
-                        if not replaceable:
-                            break
-                        old_idx = replaceable.pop(0)
-                        try:
-                            pos = selected.index(old_idx)
-                        except ValueError:
-                            continue
-                        selected[pos] = add_idx
+            selected.extend(remaining[:(target - len(selected))])
 
         return selected
 
@@ -11386,7 +11572,9 @@ class StudyPlanEngine:
                 self.recall_model_sklearn = None
                 self.recall_model_sklearn_meta = None
                 return
-            payload = joblib.load(path)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                payload = joblib.load(path)
             model = payload
             meta: Dict[str, Any] | None = None
             if isinstance(payload, dict):
@@ -11452,7 +11640,9 @@ class StudyPlanEngine:
             except Exception:
                 self.difficulty_model = None
                 return
-            payload = joblib.load(path)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                payload = joblib.load(path)
             if not isinstance(payload, dict):
                 self.difficulty_model = None
                 return
@@ -11482,7 +11672,9 @@ class StudyPlanEngine:
             except Exception:
                 self.interval_model = None
                 return
-            payload = joblib.load(path)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                payload = joblib.load(path)
             if not isinstance(payload, dict):
                 self.interval_model = None
                 return
@@ -11557,7 +11749,7 @@ class StudyPlanEngine:
             intercept = float(self.recall_model_json.get("intercept", 0.0) or 0.0)
             if len(weights) == len(features):
                 z = intercept
-                for w, x in zip(weights, features):
+                for w, x in zip(weights, features, strict=False):
                     try:
                         z += float(w) * float(x)
                     except Exception:
@@ -11805,9 +11997,7 @@ class StudyPlanEngine:
             bucket["available_total"] = int(bucket.get("available_total", 0) or 0) + max(
                 0, int(row.get("available", 0) or 0)
             )
-            bucket["hit_total"] = int(bucket.get("hit_total", 0) or 0) + max(
-                0, int(row.get("hit", 0) or 0)
-            )
+            bucket["hit_total"] = int(bucket.get("hit_total", 0) or 0) + max(0, int(row.get("hit", 0) or 0))
         for bucket in by_capability.values():
             requested = int(bucket.get("requested_total", 0) or 0)
             hit = int(bucket.get("hit_total", 0) or 0)
@@ -11817,7 +12007,9 @@ class StudyPlanEngine:
             "by_capability": by_capability,
         }
 
-    def record_error_notebook(self, chapter: str, question: dict, selected: str | None, tags: list[str] | None = None) -> None:
+    def record_error_notebook(
+        self, chapter: str, question: dict, selected: str | None, tags: list[str] | None = None
+    ) -> None:
         """Record a wrong answer into the error notebook."""
         if chapter not in self.CHAPTERS:
             return
@@ -12097,7 +12289,6 @@ class StudyPlanEngine:
         interval = max(1, interval)
         return math.pow(0.9, days_since / interval)
 
-
     def update_srs(self, chapter: str, question_index: int, is_correct: bool):
         """
         Update SRS stats.  Uses FSRS-4.5 by default, falling back to SM-2.
@@ -12145,6 +12336,7 @@ class StudyPlanEngine:
         """Update a single SRS item using the FSRS-4.5 algorithm."""
         try:
             from studyplan.fsrs import FSRSScheduler, fsrs_update_srs_item
+
             scheduler = getattr(self, "_fsrs_scheduler", None)
             if scheduler is None:
                 scheduler = FSRSScheduler()
@@ -12161,14 +12353,14 @@ class StudyPlanEngine:
     def _update_srs_sm2(self, srs: dict, chapter: str, question_index: int, is_correct: bool) -> None:
         """Update a single SRS item using improved SM-2 with capped growth."""
         try:
-            efactor = float(srs.get('efactor', 2.5) or 2.5)
+            efactor = float(srs.get("efactor", 2.5) or 2.5)
         except Exception:
             efactor = 2.5
         try:
-            interval = float(srs.get('interval', 1) or 1)
+            interval = float(srs.get("interval", 1) or 1)
         except Exception:
             interval = 1.0
-        srs['last_review'] = datetime.date.today().isoformat()
+        srs["last_review"] = datetime.date.today().isoformat()
         if is_correct:
             # Clear must-review if answered correctly
             if chapter in self.must_review:
@@ -12188,8 +12380,8 @@ class StudyPlanEngine:
         else:
             efactor = max(efactor - 0.2, 1.3)
             interval = 1.0
-        srs['efactor'] = efactor
-        srs['interval'] = interval
+        srs["efactor"] = efactor
+        srs["interval"] = interval
 
     def _leitner_box(self, srs_item: dict) -> int:
         """Map SRS item to a Leitner box (1-5)."""
@@ -12213,7 +12405,7 @@ class StudyPlanEngine:
 
     def get_leitner_counts(self, chapter: str) -> dict[int, int]:
         """Return counts per Leitner box for a chapter."""
-        counts = {i: 0 for i in range(1, 6)}
+        counts = dict.fromkeys(range(1, 6), 0)
         srs_list = self.srs_data.get(chapter, []) or []
         for item in srs_list:
             box = self._leitner_box(item)
@@ -12406,7 +12598,7 @@ class StudyPlanEngine:
         recent = set()
         history = self.quiz_recent.get(chapter, [])
         if isinstance(history, list):
-            for idx in history[-max(12, count * 2):]:
+            for idx in history[-max(12, count * 2) :]:
                 try:
                     i = int(idx)
                 except Exception:
@@ -12666,7 +12858,7 @@ class StudyPlanEngine:
 
             # Importance weighting (exam difficulty/weight)
             weight = _safe_float(self.importance_weights.get(chapter, 10))
-            urgency *= (1.0 + (weight / 100.0))
+            urgency *= 1.0 + (weight / 100.0)
 
             # Weak-area compression
             if competence < 70:
@@ -12755,10 +12947,7 @@ class StudyPlanEngine:
         # Mandatory weak-area focus: ensure weakest chapters appear in the plan.
         try:
             threshold = float(getattr(self, "mandatory_weak_threshold", 50) or 50)
-            weak = [
-                ch for ch in self.CHAPTERS
-                if float(self.competence.get(ch, 0) or 0) < threshold
-            ]
+            weak = [ch for ch in self.CHAPTERS if float(self.competence.get(ch, 0) or 0) < threshold]
             weak.sort(key=lambda ch: float(self.competence.get(ch, 0) or 0))
             for ch in weak[: min(2, max(1, num_topics))]:
                 if ch in plan:
@@ -12781,7 +12970,7 @@ class StudyPlanEngine:
             if current_topic in final:
                 final.remove(current_topic)
             final.insert(0, current_topic)
-            final = final[:max(1, num_topics)]
+            final = final[: max(1, num_topics)]
         if undercovered_target and undercovered_target in self.CHAPTERS and undercovered_target not in final:
             if len(final) < max(1, int(num_topics)):
                 final.append(undercovered_target)
@@ -12888,7 +13077,6 @@ class StudyPlanEngine:
         self._ensure_completed_today()
         self.completed_chapters.add(chapter)
 
-
     def top_recommendations(self, num_recommendations=5):
         """
         Get top N chapters that need the most study based on:
@@ -12927,6 +13115,7 @@ class StudyPlanEngine:
         except Exception:
             drift_alert_map = {}
         ml_risk_cache: dict[str, float | None] = {}
+
         def _ml_risk(ch: str) -> float | None:
             if ch in ml_risk_cache:
                 return ml_risk_cache[ch]
@@ -12952,11 +13141,8 @@ class StudyPlanEngine:
             # Add bonus for overdue SRS items
             try:
                 srs_list = self.srs_data.get(chapter, [])
-                overdue_count = sum(
-                    1 for srs in srs_list
-                    if self.is_overdue(srs, today)
-                )
-                urgency_score += (overdue_count * 5)  # 5 points per overdue item
+                overdue_count = sum(1 for srs in srs_list if self.is_overdue(srs, today))
+                urgency_score += overdue_count * 5  # 5 points per overdue item
             except Exception:
                 pass
 
@@ -13020,12 +13206,12 @@ class StudyPlanEngine:
         for card_data in srs_list:
             if not isinstance(card_data, dict):
                 continue
-            interval_raw = card_data.get('interval', 0) or 0
+            interval_raw = card_data.get("interval", 0) or 0
             try:
                 interval = float(interval_raw)
             except (TypeError, ValueError):
                 interval = 0.0
-            ease_raw = card_data.get('efactor', 2.5)
+            ease_raw = card_data.get("efactor", 2.5)
             if ease_raw is None:
                 ease_factor = 2.5
             else:
@@ -13034,7 +13220,7 @@ class StudyPlanEngine:
                 except (TypeError, ValueError):
                     ease_factor = 2.5
 
-            if card_data.get('last_review') is None:
+            if card_data.get("last_review") is None:
                 new_cards += 1
             elif interval >= 21:  # 21+ days = mastered
                 mastered += 1
@@ -13258,9 +13444,7 @@ class StudyPlanEngine:
 
     def set_availability(self, weekday_minutes: int | None, weekend_minutes: int | None) -> None:
         """Set study availability in minutes for weekdays and weekends."""
-        self.availability = self._coerce_availability(
-            {"weekday": weekday_minutes, "weekend": weekend_minutes}
-        )
+        self.availability = self._coerce_availability({"weekday": weekday_minutes, "weekend": weekend_minutes})
 
     def has_availability(self) -> bool:
         """Return True if both weekday and weekend availability are set (>0)."""
@@ -13296,9 +13480,7 @@ class StudyPlanEngine:
                 break
             minutes = self.get_available_minutes_for_date(day)
             if minutes <= 0:
-                schedule.append(
-                    {"date": day.isoformat(), "minutes": 0, "topics": [], "minutes_per_topic": 0}
-                )
+                schedule.append({"date": day.isoformat(), "minutes": 0, "topics": [], "minutes_per_topic": 0})
                 continue
             topics_count = max(1, int(round(minutes / 30.0)))
             try:
@@ -13427,34 +13609,33 @@ class StudyPlanEngine:
         print(f"  SRS data: {self.srs_data}")
         print(f"  Questions: {self.QUESTIONS}")
 
-
     def _apply_loaded_payload(self, data: dict) -> None:
         """Apply persisted payload onto current engine state, then normalize."""
         if not isinstance(data, dict):
             raise ValueError("Invalid data payload: expected JSON object")
-        self.competence = {**data.get('competence', self.competence)}
-        self.pomodoro_log = {**data.get('pomodoro_log', self.pomodoro_log)}
-        self.srs_data = {**data.get('srs_data', self.srs_data or {ch: [] for ch in self.CHAPTERS})}
-        self.study_days = data.get('study_days', self.study_days)
-        self.exam_date = data.get('exam_date')
-        self.must_review = data.get('must_review', self.must_review)
-        self.study_hub_stats = data.get('study_hub_stats', self.study_hub_stats)
-        self.quiz_results = data.get('quiz_results', self.quiz_results)
-        self.quiz_recent = data.get('quiz_recent', self.quiz_recent)
-        self.error_notebook = data.get('error_notebook', self.error_notebook)
-        self.gap_routing_log = data.get('gap_routing_log', self.gap_routing_log)
-        self.tutor_activity_log = data.get('tutor_activity_log', self.tutor_activity_log)
-        self.question_stats = data.get('question_stats', self.question_stats)
-        self.outcome_stats = data.get('outcome_stats', self.outcome_stats)
-        self.progress_log = data.get('progress_log', self.progress_log)
-        self.chapter_notes = data.get('chapter_notes', self.chapter_notes)
-        self.difficulty_counts = data.get('difficulty_counts', self.difficulty_counts)
+        self.competence = {**data.get("competence", self.competence)}
+        self.pomodoro_log = {**data.get("pomodoro_log", self.pomodoro_log)}
+        self.srs_data = {**data.get("srs_data", self.srs_data or {ch: [] for ch in self.CHAPTERS})}
+        self.study_days = data.get("study_days", self.study_days)
+        self.exam_date = data.get("exam_date")
+        self.must_review = data.get("must_review", self.must_review)
+        self.study_hub_stats = data.get("study_hub_stats", self.study_hub_stats)
+        self.quiz_results = data.get("quiz_results", self.quiz_results)
+        self.quiz_recent = data.get("quiz_recent", self.quiz_recent)
+        self.error_notebook = data.get("error_notebook", self.error_notebook)
+        self.gap_routing_log = data.get("gap_routing_log", self.gap_routing_log)
+        self.tutor_activity_log = data.get("tutor_activity_log", self.tutor_activity_log)
+        self.question_stats = data.get("question_stats", self.question_stats)
+        self.outcome_stats = data.get("outcome_stats", self.outcome_stats)
+        self.progress_log = data.get("progress_log", self.progress_log)
+        self.chapter_notes = data.get("chapter_notes", self.chapter_notes)
+        self.difficulty_counts = data.get("difficulty_counts", self.difficulty_counts)
         self.chapter_miss_streak = data.get("chapter_miss_streak", self.chapter_miss_streak)
         self.chapter_miss_last_date = data.get("chapter_miss_last_date", self.chapter_miss_last_date)
         self.hourly_quiz_stats = data.get("hourly_quiz_stats", self.hourly_quiz_stats)
-        self.availability = data.get('availability', self.availability)
-        self.completed_chapters = data.get('completed_chapters', self.completed_chapters)
-        self.completed_chapters_date = data.get('completed_chapters_date', self.completed_chapters_date)
+        self.availability = data.get("availability", self.availability)
+        self.completed_chapters = data.get("completed_chapters", self.completed_chapters)
+        self.completed_chapters_date = data.get("completed_chapters_date", self.completed_chapters_date)
         self.daily_plan_cache = data.get("daily_plan_cache", self.daily_plan_cache) or []
         self.daily_plan_cache_date = data.get("daily_plan_cache_date", self.daily_plan_cache_date)
         self.concept_graph_meta = data.get("concept_graph_meta", self.concept_graph_meta) or {}
@@ -13466,9 +13647,7 @@ class StudyPlanEngine:
         self.outcome_cluster_edges = data.get("outcome_cluster_edges", self.outcome_cluster_edges) or []
         self._normalize_loaded_data(include_question_file_hints=True)
         # Reconcile outcome_stats to current syllabus outcome ids (syllabus ingest Phase 3).
-        self.outcome_stats = self._reconcile_outcome_stats_to_syllabus(
-            getattr(self, "outcome_stats", {}) or {}
-        )
+        self.outcome_stats = self._reconcile_outcome_stats_to_syllabus(getattr(self, "outcome_stats", {}) or {})
         # Final cardinality guard after coercion.
         if not bool(getattr(self, "_initial_load_in_progress", False)):
             self.sync_srs_with_questions()
@@ -13528,8 +13707,7 @@ class StudyPlanEngine:
             suffix = ".bak"
             try:
                 entries = [
-                    name for name in os.listdir(backups_dir)
-                    if name.startswith(prefix) and name.endswith(suffix)
+                    name for name in os.listdir(backups_dir) if name.startswith(prefix) and name.endswith(suffix)
                 ]
             except OSError:
                 entries = []
@@ -13627,10 +13805,7 @@ class StudyPlanEngine:
             self._apply_loaded_payload(payload)
         except Exception as restore_error:
             self.last_load_recovery_error = f"{load_error}; restore failed: {restore_error}"
-            print(
-                "Error loading data: "
-                f"{load_error} (auto-recovery from {snapshot_path} failed: {restore_error})"
-            )
+            print(f"Error loading data: {load_error} (auto-recovery from {snapshot_path} failed: {restore_error})")
             return False
 
         note = f"Auto-recovered from snapshot after load failure: {os.path.basename(snapshot_path)}"
@@ -13688,7 +13863,10 @@ class StudyPlanEngine:
                     "competence": dict(getattr(self, "competence", {}) or {}),
                     "difficulty_counts": dict(getattr(self, "difficulty_counts", {}) or {}),
                     "chapter_miss_streak": dict(getattr(self, "chapter_miss_streak", {}) or {}),
-                    "study_days": [d.isoformat() if hasattr(d, "isoformat") else str(d) for d in list(getattr(self, "study_days", set()) or [])],
+                    "study_days": [
+                        d.isoformat() if hasattr(d, "isoformat") else str(d)
+                        for d in list(getattr(self, "study_days", set()) or [])
+                    ],
                 },
                 module_cfg,
             )
@@ -13767,7 +13945,7 @@ class StudyPlanEngine:
 
         Saves the reset state to the JSON file.
         """
-        self.competence = {chapter: 0 for chapter in self.CHAPTERS}
+        self.competence = dict.fromkeys(self.CHAPTERS, 0)
         self.pomodoro_log = {"total_minutes": 0, "by_chapter": {}}
         self.srs_data = {chapter: [] for chapter in self.CHAPTERS}
         self.sync_srs_with_questions()
@@ -13845,10 +14023,16 @@ class StudyPlanEngine:
             "concept_graph_meta": dict(self.concept_graph_meta) if isinstance(self.concept_graph_meta, dict) else {},
             "concept_nodes": list(self.concept_nodes) if isinstance(self.concept_nodes, list) else [],
             "concept_edges": list(self.concept_edges) if isinstance(self.concept_edges, list) else [],
-            "outcome_concept_links": list(self.outcome_concept_links) if isinstance(self.outcome_concept_links, list) else [],
-            "outcome_cluster_meta": dict(self.outcome_cluster_meta) if isinstance(self.outcome_cluster_meta, dict) else {},
+            "outcome_concept_links": list(self.outcome_concept_links)
+            if isinstance(self.outcome_concept_links, list)
+            else [],
+            "outcome_cluster_meta": dict(self.outcome_cluster_meta)
+            if isinstance(self.outcome_cluster_meta, dict)
+            else {},
             "outcome_clusters": list(self.outcome_clusters) if isinstance(self.outcome_clusters, list) else [],
-            "outcome_cluster_edges": list(self.outcome_cluster_edges) if isinstance(self.outcome_cluster_edges, list) else [],
+            "outcome_cluster_edges": list(self.outcome_cluster_edges)
+            if isinstance(self.outcome_cluster_edges, list)
+            else [],
         }
 
         # Ensure config folder exists (safe even if DATA_FILE has no directory)
@@ -13864,7 +14048,7 @@ class StudyPlanEngine:
         self._backup_file(self.DATA_FILE)
         if getattr(self, "QUESTIONS_FILE", ""):
             self._backup_file(self.QUESTIONS_FILE)
-        self._atomic_write_json(self.DATA_FILE, data, indent=4)
+        self._atomic_write_json(self.DATA_FILE, data, indent=2)
         self.last_saved_at = datetime.datetime.now().isoformat(timespec="seconds")
 
         # Write migration/health log if needed
@@ -13956,10 +14140,7 @@ class StudyPlanEngine:
         prefix = f"{base}."
         suffix = ".bak"
         try:
-            entries = [
-                name for name in os.listdir(backups_dir)
-                if name.startswith(prefix) and name.endswith(suffix)
-            ]
+            entries = [name for name in os.listdir(backups_dir) if name.startswith(prefix) and name.endswith(suffix)]
         except OSError:
             return
         entries.sort()
@@ -14045,10 +14226,10 @@ class StudyPlanEngine:
     def _count_questions_with_invalid_outcome_ids(self) -> int:
         """Count questions that have outcome_ids not present in syllabus_structure (warn-only for health check)."""
         valid_ids: Set[str] = set()
-        for ch, info in (getattr(self, "syllabus_structure", {}) or {}).items():
+        for _ch, info in (getattr(self, "syllabus_structure", {}) or {}).items():
             if not isinstance(info, dict):
                 continue
-            for o in (info.get("learning_outcomes") or []):
+            for o in info.get("learning_outcomes") or []:
                 if isinstance(o, dict):
                     oid = str((o.get("id") or "")).strip()
                     if oid:
@@ -14357,9 +14538,7 @@ class StudyPlanEngine:
                         explanation = str(q.get("explanation", "") or "").strip()
                         # Build front: question + lettered options.
                         letter_map = {opt: chr(ord("A") + i) for i, opt in enumerate(options)}
-                        options_block = "\n".join(
-                            f"{chr(ord('A') + i)}. {opt}" for i, opt in enumerate(options)
-                        )
+                        options_block = "\n".join(f"{chr(ord('A') + i)}. {opt}" for i, opt in enumerate(options))
                         front = f"{question_text}\n\n{options_block}" if options else question_text
                         # Build back: correct answer + optional explanation.
                         correct_letter = letter_map.get(correct, "?")
@@ -14386,9 +14565,11 @@ class StudyPlanEngine:
                         elif srs.get("last_review") is None:
                             tags_parts.append("due:new")
                         tags_str = " ".join(tags_parts)
+
                         # Escape tabs and newlines within fields (Anki TSV uses \n in fields as line breaks).
                         def _esc(text: str) -> str:
                             return text.replace("\t", " ").replace("\r", "")
+
                         row = "\t".join([_esc(front), _esc(back), _esc(tags_str)])
                         fh.write(row + "\n")
                         chapter_rows += 1

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import datetime
 import json
 import math
 import os
@@ -65,11 +64,13 @@ def _build_dataset(stats: dict) -> list[list[float]]:
                 avg_time = 0.0
             miss_rate = 1.0 - min(1.0, max(0.0, correct / max(1.0, attempts)))
             streak_factor = 1.0 - min(1.0, max(0.0, streak / 5.0))
-            X.append([
-                max(0.0, miss_rate),
-                _log1p_safe(avg_time),
-                max(0.0, streak_factor),
-            ])
+            X.append(
+                [
+                    max(0.0, miss_rate),
+                    _log1p_safe(avg_time),
+                    max(0.0, streak_factor),
+                ]
+            )
     return X
 
 

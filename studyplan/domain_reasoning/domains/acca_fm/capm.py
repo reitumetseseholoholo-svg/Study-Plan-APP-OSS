@@ -22,11 +22,32 @@ class CapmTemplate(FormulaTemplate):
         equity_premium = mr - rf
         risk_premium = b * equity_premium
         steps: list[dict[str, Any]] = [
-            {"step_id": "equity_risk_premium", "description": "Equity risk premium", "value": equity_premium, "formula": f"{mr}-{rf}"},
-            {"step_id": "beta_times_premium", "description": "Beta × premium", "value": risk_premium, "formula": f"{b}*{equity_premium}"},
-            {"step_id": "capm", "description": "CAPM = Rf + Beta × (Rm - Rf)", "value": result, "formula": f"{rf}+{b}*({mr}-{rf})"},
+            {
+                "step_id": "equity_risk_premium",
+                "description": "Equity risk premium",
+                "value": equity_premium,
+                "formula": f"{mr}-{rf}",
+            },
+            {
+                "step_id": "beta_times_premium",
+                "description": "Beta × premium",
+                "value": risk_premium,
+                "formula": f"{b}*{equity_premium}",
+            },
+            {
+                "step_id": "capm",
+                "description": "CAPM = Rf + Beta × (Rm - Rf)",
+                "value": result,
+                "formula": f"{rf}+{b}*({mr}-{rf})",
+            },
         ]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

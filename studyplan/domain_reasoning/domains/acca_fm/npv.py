@@ -24,25 +24,31 @@ class NpvTemplate(FormulaTemplate):
         steps: list[dict[str, Any]] = []
         for t, cf in enumerate(cashflows, 1):
             pv = cf / ((1.0 + rate) ** t)
-            steps.append({
-                "step_id": f"pv_year_{t}",
-                "description": f"PV of year {t} cashflow",
-                "value": pv,
-                "formula": f"{cf} / (1 + {rate})^{t}",
-            })
+            steps.append(
+                {
+                    "step_id": f"pv_year_{t}",
+                    "description": f"PV of year {t} cashflow",
+                    "value": pv,
+                    "formula": f"{cf} / (1 + {rate})^{t}",
+                }
+            )
         total_pv = sum(s["value"] for s in steps)
-        steps.append({
-            "step_id": "total_pv",
-            "description": "Sum of discounted cashflows",
-            "value": total_pv,
-            "formula": f"sum of {len(cashflows)} PVs",
-        })
-        steps.append({
-            "step_id": "npv",
-            "description": "NPV = total PV - initial investment",
-            "value": result,
-            "formula": f"{total_pv} - {initial}",
-        })
+        steps.append(
+            {
+                "step_id": "total_pv",
+                "description": "Sum of discounted cashflows",
+                "value": total_pv,
+                "formula": f"sum of {len(cashflows)} PVs",
+            }
+        )
+        steps.append(
+            {
+                "step_id": "npv",
+                "description": "NPV = total PV - initial investment",
+                "value": result,
+                "formula": f"{total_pv} - {initial}",
+            }
+        )
         return {
             "concept_id": self.concept_id,
             "result": result,

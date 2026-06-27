@@ -77,7 +77,9 @@ def _load_gate_profile(path: str) -> dict[str, Any]:
     return out
 
 
-def _request_json(host: str, path: str, payload: dict[str, Any] | None, timeout: int) -> tuple[dict[str, Any] | None, str | None]:
+def _request_json(
+    host: str, path: str, payload: dict[str, Any] | None, timeout: int
+) -> tuple[dict[str, Any] | None, str | None]:
     endpoint = path if path.startswith("/") else f"/{path}"
     url = f"{host.rstrip('/')}{endpoint}"
     headers = {"Accept": "application/json"}
@@ -243,7 +245,9 @@ def _evaluate_gates(
 
 def run() -> int:
     parser = argparse.ArgumentParser(description="Run tutor quality benchmark matrix with deterministic scoring gates.")
-    parser.add_argument("--mode", choices=("reference", "ollama"), default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_MODE", "reference"))
+    parser.add_argument(
+        "--mode", choices=("reference", "ollama"), default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_MODE", "reference")
+    )
     parser.add_argument("--matrix", default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_MATRIX", DEFAULT_MATRIX))
     parser.add_argument("--expected", default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_EXPECTED", DEFAULT_EXPECTED))
     parser.add_argument("--gates-file", default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_GATES_FILE", ""))
@@ -259,12 +263,16 @@ def run() -> int:
     parser.add_argument("--num-ctx", type=int, default=_env_int("STUDYPLAN_TUTOR_QUALITY_NUM_CTX", 3072))
     parser.add_argument("--temperature", type=float, default=_env_float("STUDYPLAN_TUTOR_QUALITY_TEMPERATURE", 0.2))
     parser.add_argument("--require-all-models-pass", type=int, default=None)
-    parser.add_argument("--allow-missing-models", type=int, default=_env_int("STUDYPLAN_TUTOR_QUALITY_ALLOW_MISSING_MODELS", 0))
+    parser.add_argument(
+        "--allow-missing-models", type=int, default=_env_int("STUDYPLAN_TUTOR_QUALITY_ALLOW_MISSING_MODELS", 0)
+    )
     args = parser.parse_args()
 
     matrix_path = os.path.abspath(os.path.expanduser(str(args.matrix or DEFAULT_MATRIX)))
     expected_path = os.path.abspath(os.path.expanduser(str(args.expected or DEFAULT_EXPECTED)))
-    gates_file = os.path.abspath(os.path.expanduser(str(args.gates_file or ""))) if str(args.gates_file or "").strip() else ""
+    gates_file = (
+        os.path.abspath(os.path.expanduser(str(args.gates_file or ""))) if str(args.gates_file or "").strip() else ""
+    )
     report_path = os.path.abspath(os.path.expanduser(str(args.report or DEFAULT_REPORT)))
     mode = str(args.mode or "reference").strip().lower()
 

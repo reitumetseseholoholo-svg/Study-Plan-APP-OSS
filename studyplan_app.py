@@ -48,22 +48,12 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 import csv
 import datetime
-from studyplan.platform_compat import (
-    lock_file_exclusive_nb as _lock_file_exclusive_nb,
-    unlock_file as _unlock_file,
-    truncate_fd as _truncate_fd,
-    open_path_in_os as _open_path_in_os,
-    open_path_in_os_sync as _open_path_in_os_sync,
-    is_focus_tracking_available as _plat_focus_tracking_available,
-    IS_WINDOWS as _IS_WINDOWS,
-)
 import hashlib
 import importlib
 import io
 import ipaddress
 import json
 import logging
-import cairo
 import math
 import os
 import random
@@ -85,6 +75,7 @@ import warnings
 import wave
 from typing import Any, Callable, Optional, cast
 
+import cairo
 from gi.repository import (
     Gdk,  # type: ignore[reportAttributeAccessIssue]
     Gio,  # type: ignore[reportAttributeAccessIssue]
@@ -93,6 +84,7 @@ from gi.repository import (
     Pango,  # type: ignore[reportAttributeAccessIssue]
 )
 
+from studyplan.ai.circuit_breaker import CircuitBreaker as _CircuitBreaker
 from studyplan.ai.context_policy import (
     context_drop_order_for_role,
     map_packet_kind_to_role,
@@ -118,16 +110,14 @@ from studyplan.ai.llm_output_sanitize import (
     ollama_think_request_value_for_section_c_judgment,
     sanitize_visible_local_llm_answer,
 )
-from studyplan.ai.circuit_breaker import CircuitBreaker as _CircuitBreaker
 from studyplan.ai.llm_telemetry import PURPOSE_TUTOR_EMBEDDED, normalize_purpose
-from studyplan.ai.model_ranker import pick_best as _model_ranker_pick_best
 from studyplan.ai.model_infer_tuning import (
     ModelRuntimeTuning,
     resolve_model_runtime_tuning,
 )
+from studyplan.ai.model_ranker import pick_best as _model_ranker_pick_best
 from studyplan.ai.model_routing import (
     routed_failover_chain_for_purpose,
-    routed_primary_for_purpose,
 )
 from studyplan.ai.rag_presets import (
     apply_rag_preset_to_runtime,
@@ -155,7 +145,6 @@ from studyplan.contracts import (
     TutorLoopTurnResult,
     TutorPracticeItem,
     TutorSessionState,
-    TutorTurnRequest,
 )
 from studyplan.dialog_ux import DisclosureLevel, TutorDialogRenderer
 from studyplan.lifecycle import ShutdownBarrier
@@ -171,12 +160,32 @@ from studyplan.performance_integration import (
 from studyplan.performance_integration import (
     performance_integration as _perf_integration,
 )
+from studyplan.platform_compat import (
+    IS_WINDOWS as _IS_WINDOWS,
+)
+from studyplan.platform_compat import (
+    is_focus_tracking_available as _plat_focus_tracking_available,
+)
+from studyplan.platform_compat import (
+    lock_file_exclusive_nb as _lock_file_exclusive_nb,
+)
+from studyplan.platform_compat import (
+    open_path_in_os as _open_path_in_os,
+)
+from studyplan.platform_compat import (
+    open_path_in_os_sync as _open_path_in_os_sync,
+)
+from studyplan.platform_compat import (
+    truncate_fd as _truncate_fd,
+)
+from studyplan.platform_compat import (
+    unlock_file as _unlock_file,
+)
 from studyplan.practice_loop_controller import (
     PracticeLoopController,
     PracticeLoopSessionState,
 )
 from studyplan.question_quality import (
-    assess_question_quality_extended,
     correct_option_length_guessable_reason,
     gap_options_look_like_llm_placeholders,
     generated_question_rejection_reasons,
@@ -190,7 +199,6 @@ from studyplan.services import (
     DeterministicTutorStrugglePolicyService,
     InMemoryTutorLearnerModelStore,
     InMemoryTutorSessionController,
-    LlamaCppTutorService,
     RuleBasedRagEvidencePolicyService,
     RuleBasedTutorLearningLoopService,
     StructureRegistry,
@@ -229,7 +237,6 @@ from studyplan_ai_tutor import (
     build_rag_concept_graph,
     build_rag_context_block,
     build_targeted_rag_queries,
-    build_tutor_rag_query_plan as _orig_build_tutor_rag_query_plan,
     build_tutor_coverage_checklist_note,
     chunk_text_for_rag,
     classify_ollama_error,
@@ -246,6 +253,56 @@ from studyplan_ai_tutor import (
     should_keep_response_bottom,
     tutor_query_suggests_format_rag_focus,
 )
+from studyplan_ai_tutor import (
+    build_tutor_rag_query_plan as _orig_build_tutor_rag_query_plan,
+)
+
+
+def _build_rag_disk_payload(
+    disk_cached: Any,
+    cache_key: str,
+    path: str,
+    _pc: Any,
+    store_mode: str,
+    *,
+    app: Any,
+    mem_ref: bool = False,
+) -> tuple[dict[str, Any], None] | None:
+    if not isinstance(disk_cached, dict):
+        return None
+    disk_rows = disk_cached.get("chunks", [])
+    if not isinstance(disk_rows, list) or not disk_rows:
+        return None
+    meta: dict[str, bool] = {"disk_cache_hit": True}
+    if mem_ref:
+        meta["mem_cache_ref_hit"] = True
+    payload_disk: dict[str, Any] = {
+        "cache_key": cache_key,
+        "path": path,
+        "source": os.path.basename(path),
+        "chunks": list(disk_rows),
+        "meta": meta,
+    }
+    if not mem_ref and _pc is not None and store_mode != "none":
+        if store_mode == "payload":
+            _pc.set(f"rag_doc:{cache_key}", dict(payload_disk))
+        else:
+            _pc.set(
+                f"rag_doc:{cache_key}",
+                {
+                    "_rag_doc_ref": "disk",
+                    "cache_key": cache_key,
+                    "path": path,
+                    "source": os.path.basename(path),
+                    "chunk_count": int(len(list(disk_rows))),
+                    "meta": {"disk_cache_hit": True, "mem_cache_ref": True},
+                },
+            )
+    cache_debug = getattr(app, "_ai_cache_debug_last", None)
+    if isinstance(cache_debug, dict):
+        cache_debug["rag_doc_cache_hit"] = int(cache_debug.get("rag_doc_cache_hit", 0) or 0) + 1
+    return payload_disk, None
+
 
 def _build_tutor_rag_query_plan_compat(
     *,
@@ -286,21 +343,22 @@ def _build_tutor_rag_query_plan_compat(
             **kwargs,
         )
     except TypeError:
-        try:
-            return _orig_build_tutor_rag_query_plan(
-                str(user_prompt or ""),
-                history=recent_user_turns,
-                module_title=module_title or "",
-                topic_hint=topic or "",
-                explicit_target_queries=target_queries,
-            )
-        except Exception:
-            return minimal_plan
+        pass
+    try:
+        return _orig_build_tutor_rag_query_plan(
+            str(user_prompt or ""),
+            history=recent_user_turns,
+            module_title=module_title or "",
+            topic_hint=topic or "",
+            explicit_target_queries=target_queries,
+        )
     except Exception:
         return minimal_plan
 
+
 # tolerant wrapper for build_tutor_rag_query_plan to accept multiple call-site variants
 # The original implementation is imported as `_orig_build_tutor_rag_query_plan`.
+
 
 def build_tutor_rag_query_plan(
     *args,
@@ -327,10 +385,6 @@ def build_tutor_rag_query_plan(
     if _orig_build_tutor_rag_query_plan is None:
         return {"primary_query": str(user_prompt or ""), "target_queries": list(target_queries or [])}
     try:
-        # Prefer keyword call to original with correct parameter names.
-        # Original signature: build_tutor_rag_query_plan(user_prompt, *, history=None, 
-        #                      module_title="", topic_hint="", max_targets=4, 
-        #                      explicit_target_queries=None)
         return _orig_build_tutor_rag_query_plan(
             user_prompt=str(user_prompt or ""),
             history=recent_user_turns,
@@ -340,18 +394,20 @@ def build_tutor_rag_query_plan(
             **kwargs,
         )
     except TypeError:
-        # Fallback: try calling with positional + keyword (best-effort).
-        try:
-            return _orig_build_tutor_rag_query_plan(
-                str(user_prompt or ""),
-                history=recent_user_turns,
-                module_title=module_title or "",
-                topic_hint=topic or "",
-                explicit_target_queries=target_queries,
-            )
-        except Exception:
-            # Last resort: return a minimal plan
-            return {"primary_query": str(user_prompt or ""), "target_queries": list(target_queries or [])}
+        pass
+    try:
+        return _orig_build_tutor_rag_query_plan(
+            str(user_prompt or ""),
+            history=recent_user_turns,
+            module_title=module_title or "",
+            topic_hint=topic or "",
+            explicit_target_queries=target_queries,
+        )
+    except Exception:
+        return {"primary_query": str(user_prompt or ""), "target_queries": list(target_queries or [])}
+
+
+from studyplan.logging_config import CaptureAndLog, get_logger, log_on_error
 from studyplan_app_path_utils import (
     atomic_write_bytes_file as _path_atomic_write_bytes,
 )
@@ -369,6 +425,12 @@ from studyplan_app_path_utils import (
 )
 from studyplan_app_path_utils import (
     validate_import_source_path as _path_validate_import,
+)
+from studyplan_app_runtime_helpers import (
+    build_question_stats_export_rows as _runtime_build_question_stats_export_rows,
+)
+from studyplan_app_runtime_helpers import (
+    resolve_local_llm_default_for_purpose as _runtime_resolve_local_llm_default_for_purpose,
 )
 from studyplan_engine import StudyPlanEngine
 from studyplan_file_safety import (
@@ -394,14 +456,6 @@ from studyplan_ui_runtime import (
     UIRenderContext,
     UISectionState,
 )
-from studyplan_app_runtime_helpers import (
-    build_question_stats_export_rows as _runtime_build_question_stats_export_rows,
-)
-from studyplan_app_runtime_helpers import (
-    resolve_local_llm_default_for_purpose as _runtime_resolve_local_llm_default_for_purpose,
-)
-
-from studyplan.logging_config import get_logger, log_on_error, CaptureAndLog
 
 log = get_logger("app")
 
@@ -447,8 +501,6 @@ def _capture_loky_diagnostics(label: str) -> dict[str, Any]:
     except Exception:
         pass
     try:
-        import importlib
-
         reusable_mod = None
         for mod_name in (
             "joblib.externals.loky.reusable_executor",
@@ -2205,7 +2257,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.coach_only_view = False
         self.sticky_coach_pick = True
         self.adaptive_quiz_prioritization = True
-        self.show_perf_stats = False
+        self.show_perf_stats = True
         self.last_coach_pick = None
         self.last_coach_pick_date = None
         self._last_coach_debug_topic = None
@@ -2328,6 +2380,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self.risk_baselines = {}
         self._perf_dashboard_renders = 0
         self._perf_last_dashboard_ms = 0.0
+        self._perf_fps_frames = 0
+        self._perf_fps_last_ts = 0.0
+        self._perf_fps_current = 0.0
+        self._perf_widgets_created = 0
+        self._perf_section_times: dict[str, float] = {}
+        self._perf_tick_source_id = 0
         self._coach_only_toggle_handler_id = 0
         self._coach_only_apply_in_progress = False
         # Coach pick snapshot now routed through _perf_cache ("coach_pick:snapshot").
@@ -3451,6 +3509,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if os.environ.get("STUDYPLAN_PERF_TRACE", "").strip() in ("1", "true", "yes"):
             try:
                 from studyplan.components.performance.cpu_monitor import CPUMonitor
+
                 self._cpu_monitor = CPUMonitor(interval_s=5.0)
                 self._cpu_monitor.start()
             except Exception:
@@ -3623,6 +3682,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cache_section.append("View Performance Stats…", "win.view_performance_stats")
         cache_section.append("Clear Performance Cache…", "win.clear_performance_cache")
         tools_menu.append_section("Cache", cache_section)
+
+        ai_section = Gio.Menu()
+        ai_section.append("Auto-discover formulas from syllabus…", "win.auto_discover_formulas")
+        tools_menu.append_section("AI", ai_section)
 
         module_section = Gio.Menu()
         module_section.append("View Module Metadata…", "app.view_module_metadata")
@@ -3996,7 +4059,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             model_label = "Auto-select"
         autopilot_enabled = bool(getattr(self, "ai_tutor_autopilot_enabled", True))
         autopilot_paused = bool(getattr(self, "ai_tutor_autopilot_paused", False))
-        autopilot_mode = self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))
+        autopilot_mode = self._coerce_ai_tutor_autonomy_mode(
+            getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE)
+        )
         semantic_enabled = bool(getattr(self, "semantic_enabled", False))
         if bool(getattr(self, "_sidebar_auto_hidden", False)):
             sidebar_state = "auto-hidden"
@@ -4036,7 +4101,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         elif compact:
             status_text = f"{page_title} • {topic_short} • {model_short} • {conn_token} • {ap_token} • {sem_token}"
         else:
-            status_text = f"{page_title} • {topic_short} • {model_short} • {conn_token} • {ap_token} • {sem_token} • {sb_token}"
+            status_text = (
+                f"{page_title} • {topic_short} • {model_short} • {conn_token} • {ap_token} • {sem_token} • {sb_token}"
+            )
         self._set_label_text_if_changed(label, status_text)
         try:
             label.set_tooltip_text(status_tooltip)
@@ -4186,7 +4253,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 f"Model catalog is syncing/importing in background. Current model: {current_model}",
             )
 
-        cb_status = self._cloud_circuit_breaker.status("cloud_endpoint") if bool(getattr(self, "cloud_ai_enabled", False)) else None
+        cb_status = (
+            self._cloud_circuit_breaker.status("cloud_endpoint")
+            if bool(getattr(self, "cloud_ai_enabled", False))
+            else None
+        )
         cloud_suffix = ""
         if cb_status:
             if cb_status.get("state") == "open":
@@ -4350,7 +4421,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return
         autopilot_enabled = bool(getattr(self, "ai_tutor_autopilot_enabled", True))
         autopilot_paused = bool(getattr(self, "ai_tutor_autopilot_paused", False))
-        mode = self._coerce_ai_tutor_autonomy_mode(getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE))
+        mode = self._coerce_ai_tutor_autonomy_mode(
+            getattr(self, "ai_tutor_autonomy_mode", AI_TUTOR_DEFAULT_AUTONOMY_MODE)
+        )
         mode_icons = {"cockpit": "🤖", "assist": "🤝", "suggest": "💬"}
         mode_icon = mode_icons.get(mode, "🤖")
         if not autopilot_enabled:
@@ -4364,7 +4437,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         history = self._sanitize_ai_tutor_recent_action_log(getattr(self, "_ai_tutor_recent_action_log", []), limit=10)
         if last_label is not None:
             executed_rows = [
-                row for row in reversed(history)
+                row
+                for row in reversed(history)
                 if str(row.get("outcome", "") or "").strip().lower() in {"executed", "suggested_accepted"}
             ]
             if executed_rows:
@@ -4537,9 +4611,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         compact_status.set_max_width_chars(120)
         compact_status.add_css_class("muted")
         compact_status.add_css_class("single-line-lock")
-        compact_status.set_tooltip_text(
-            f"Host: {self._normalize_ollama_host()}"
-        )
+        compact_status.set_tooltip_text(f"Host: {self._normalize_ollama_host()}")
         self._tutor_workspace_compact_status = compact_status
         page_box.append(compact_status)
 
@@ -5002,7 +5074,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         practice_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         practice_box.add_css_class("card")
         practice_box.add_css_class("card-tight")
-
 
         practice_state_label = Gtk.Label(label="Planner ready. Click Plan to generate a personal micro-practice step.")
         practice_state_label.set_halign(Gtk.Align.START)
@@ -6286,11 +6357,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     spacing = float(getattr(policy_svc, "min_spacing_seconds", 0.0) or 0.0)
                     last_hint_at = float(hint_state_map.get("last_hint_at", 0.0) or 0.0)
                     if spacing > 0.0 and last_hint_at > 0.0:
-                        import time as _time
-
                         remain = max(
                             0.0,
-                            spacing - max(0.0, float(_time.monotonic()) - last_hint_at),
+                            spacing - max(0.0, float(time.monotonic()) - last_hint_at),
                         )
                         if remain > 0.25:
                             cooldown_text = f"{remain:.0f}s"
@@ -6715,7 +6784,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 _set_status(f"Assessment error: {exc}")
                 return
             try:
-                if isinstance(session_state, TutorSessionState) and isinstance(learner_profile, TutorLearnerProfileSnapshot):
+                if isinstance(session_state, TutorSessionState) and isinstance(
+                    learner_profile, TutorLearnerProfileSnapshot
+                ):
                     loop_state = self._build_practice_loop_runtime_state(
                         session_state=session_state,
                         learner_profile=learner_profile,
@@ -7751,9 +7822,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             ai_backend = str(getattr(self, "_last_llm_inference_backend", "") or "").strip()
             ai_tag = f" • AI: {ai_model}" if ai_model else ""
             ai_suffix = f" ({ai_backend})" if ai_backend and ai_model else ""
-            cockpit_full = (
-                f"Autopilot: {ap_label} • mode {mode} • {scope} • dialog {'open' if dialog_open else 'closed'}{pending_suffix}{ai_tag}{ai_suffix}"
-            )
+            cockpit_full = f"Autopilot: {ap_label} • mode {mode} • {scope} • dialog {'open' if dialog_open else 'closed'}{pending_suffix}{ai_tag}{ai_suffix}"
             if very_narrow:
                 cockpit_text = (
                     f"AP: {ap_label} • {mode} • {'app' if ap_active else scope} • "
@@ -8102,24 +8171,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             _set_running(False)
 
         _generic_quick_prompt_fallback: dict[str, str] = {
-            "Explain '{topic}' for {module} in exam-focused terms.":
-                "Explain an ACCA topic in exam-focused terms to help me understand it better.",
-            "Walk me through '{topic}' for {module} with clear steps and a short example.":
-                "Walk me through an ACCA concept with clear steps and a short example.",
-            "Give exam technique for '{topic}' in {module} with timing and structure.":
-                "Give me exam technique advice with timing and structure tips.",
-            "Write a 5-question drill on '{topic}' with short answers.":
-                "Give me a 5-question practice drill with short answers on an ACCA topic.",
-            "List the must-know formulas for '{topic}' and when to use each.":
-                "List the must-know formulas for an ACCA topic and when to use each.",
-            "Give common exam pitfalls for '{topic}' and how to avoid them.":
-                "Give common exam pitfalls and how to avoid them.",
+            "Explain '{topic}' for {module} in exam-focused terms.": "Explain an ACCA topic in exam-focused terms to help me understand it better.",
+            "Walk me through '{topic}' for {module} with clear steps and a short example.": "Walk me through an ACCA concept with clear steps and a short example.",
+            "Give exam technique for '{topic}' in {module} with timing and structure.": "Give me exam technique advice with timing and structure tips.",
+            "Write a 5-question drill on '{topic}' with short answers.": "Give me a 5-question practice drill with short answers on an ACCA topic.",
+            "List the must-know formulas for '{topic}' and when to use each.": "List the must-know formulas for an ACCA topic and when to use each.",
+            "Give common exam pitfalls for '{topic}' and how to avoid them.": "Give common exam pitfalls and how to avoid them.",
             "How do I format the statement of cash flows under IAS 7 for '{topic}' in {module}? "
-            "Cover operating, investing, and financing and typical exam presentation pitfalls.":
-                "Help me understand the statement of cash flows under IAS 7 with exam-focused guidance.",
+            "Cover operating, investing, and financing and typical exam presentation pitfalls.": "Help me understand the statement of cash flows under IAS 7 with exam-focused guidance.",
             "What are the minimum line items and presentation requirements for the statement of financial position "
-            "under IAS 1 for '{topic}' in {module}? Keep it exam-focused.":
-                "Help me understand the statement of financial position requirements under IAS 1 with exam-focused guidance.",
+            "under IAS 1 for '{topic}' in {module}? Keep it exam-focused.": "Help me understand the statement of financial position requirements under IAS 1 with exam-focused guidance.",
         }
 
         def _insert_quick_prompt(template: str, action_type: str | None = None) -> None:
@@ -8137,14 +8198,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         resolved = matrix_prompt
                     else:
                         resolved = _generic_quick_prompt_fallback.get(
-                            str(template or ""),
-                            "Help me with an ACCA topic."
+                            str(template or ""), "Help me with an ACCA topic."
                         )
                 else:
-                    resolved = _generic_quick_prompt_fallback.get(
-                        str(template or ""),
-                        "Help me with an ACCA topic."
-                    )
+                    resolved = _generic_quick_prompt_fallback.get(str(template or ""), "Help me with an ACCA topic.")
             else:
                 if action_type:
                     module_id = str(getattr(self, "module_id", "") or "").strip()
@@ -8153,16 +8210,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         resolved = matrix_prompt
                     else:
                         try:
-                            resolved = str(template or "").format(
-                                topic=topic, module=module or "your studies"
-                            )
+                            resolved = str(template or "").format(topic=topic, module=module or "your studies")
                         except Exception:
                             resolved = str(template or "")
                 else:
                     try:
-                        resolved = str(template or "").format(
-                            topic=topic, module=module or "your studies"
-                        )
+                        resolved = str(template or "").format(topic=topic, module=module or "your studies")
                     except Exception:
                         resolved = str(template or "")
             prompt_buf.set_text(resolved.strip())
@@ -11858,6 +11911,138 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def on_menu_run_health_check(self, _action, _param):
         self.on_run_health_check(None)
 
+    def on_menu_auto_discover_formulas(self, _action, _param):
+        """Auto-discover formula declarations from syllabus + question bank."""
+        engine = getattr(self, "engine", None)
+        if not engine:
+            self._show_dialog("Error", "Engine not available.", "error")
+            return
+
+        syllabus = getattr(engine, "syllabus_structure", None) or {}
+        if not syllabus:
+            self._show_dialog("No Syllabus", "No syllabus structure loaded. Import a syllabus first.", "info")
+            return
+
+        chapters = getattr(engine, "CHAPTERS", []) or []
+        questions = {}
+        for ch in chapters:
+            qs = engine.get_questions(ch)
+            if qs:
+                questions[ch] = list(qs)
+
+        from studyplan.domain_reasoning.auto_declare import (
+            extract_computational_outcomes,
+            run_auto_discovery,
+        )
+
+        computational = extract_computational_outcomes(syllabus)
+        if not computational:
+            self._show_dialog(
+                "Nothing to Do", "No computational syllabus outcomes found (e.g. 'calculate', 'determine').", "info"
+            )
+            return
+
+        model = str(getattr(self, "local_llm_preferred_gguf", "") or "").strip() or "default"
+        msg = Gtk.MessageDialog(  # gtk4_lint:ignore
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.NONE,
+            text=f"Scanning {len(computational)} computational outcomes...",
+        )
+        msg.format_secondary_text("This runs the AI tutor to propose formulas. It may take a moment.")
+        msg.show()
+        GLib.timeout_add(150, lambda: (msg.destroy(), False) if msg else False)
+
+        def _llm_chat(messages: list[dict[str, str]]) -> str:
+            prompt_parts: list[str] = []
+            for m in messages:
+                role = m.get("role", "user")
+                content = m.get("content", "")
+                if role == "system":
+                    prompt_parts.append(f"System: {content}")
+                elif role == "user":
+                    prompt_parts.append(f"User: {content}")
+                else:
+                    prompt_parts.append(content)
+            combined = "\n\n".join(prompt_parts)
+            text, err = self._ollama_generate_text(
+                model,
+                combined,
+                inference_purpose="formula_discovery",
+            )
+            if err:
+                return "null"
+            return text or "null"
+
+        def _worker() -> None:
+            try:
+                result = run_auto_discovery(
+                    syllabus,
+                    questions,
+                    llm_chat_fn=_llm_chat,
+                    domain_prefix="fm",
+                    question_filter=self._build_auto_discover_filter(engine),
+                )
+                GLib.idle_add(self._show_auto_discover_result, result)
+            except Exception as exc:
+                GLib.idle_add(self._show_dialog, "Discovery Error", f"Auto-discovery failed:\n{exc}", "error")
+
+        StudyPlanGUI._start_managed_background_thread(self, _worker)
+
+    def _build_auto_discover_filter(self, engine):
+        """Return a QuestionFilter that uses the engine's semantic outcome matcher.
+
+        Only questions whose resolved outcome IDs overlap with the proposed
+        formula's concept_id will be validated.  Falls back to the default
+        regex-pattern filter when the engine matcher yields too few matches.
+        """
+        from studyplan.domain_reasoning.auto_declare import _default_question_filter as _ad_default_filter
+
+        def _filter(proposal, questions, chapter):
+            try:
+                all_qs = list(engine.get_questions(chapter))
+            except Exception:
+                return _ad_default_filter(proposal, questions, chapter)
+
+            if not hasattr(self, "_ad_outcome_cache"):
+                self._ad_outcome_cache = {}
+            cache_key = f"ad_outcomes_{chapter}"
+            if cache_key not in self._ad_outcome_cache:
+                outcome_map = {}
+                for i, q in enumerate(all_qs):
+                    try:
+                        route = engine.resolve_question_outcomes(chapter, i)
+                        outcome_map[id(q)] = list(route.get("outcome_ids", []) or []) if route else []
+                    except Exception:
+                        outcome_map[id(q)] = []
+                self._ad_outcome_cache[cache_key] = outcome_map
+
+            outcome_map = self._ad_outcome_cache[cache_key]
+            concept_suffix = proposal.concept_id.split(".")[-1].lower()
+
+            relevant = [
+                q for q in questions if any(concept_suffix in oid.lower() for oid in outcome_map.get(id(q), []))
+            ]
+            if len(relevant) >= 2:
+                return relevant
+
+            return _ad_default_filter(proposal, questions, chapter)
+
+        return _filter
+
+    def _show_auto_discover_result(self, result: Any) -> None:
+        from studyplan.domain_reasoning.auto_declare import FormulaDiscoveryResult
+
+        if not isinstance(result, FormulaDiscoveryResult):
+            return
+        summary = result.summary
+        self._show_dialog("Formula Discovery Complete", summary, "info")
+        try:
+            self.send_notification("Formula Discovery", summary.split("\n")[0])
+        except Exception:
+            pass
+
     def on_stability_repair_action(self, _action, _param):
         ok, message = self._run_ui_stability_repair()
         status_label = getattr(self, "_settings_workspace_status_label", None)
@@ -11963,7 +12148,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         search_entry.set_hexpand(True)
         search_entry.set_placeholder_text("Search question text, chapter, outcome id, issue, or note…")
         controls.append(search_entry)
-        chapter_labels = ["All chapters"] + [str(ch) for ch in list(getattr(engine, "CHAPTERS", []) or []) if isinstance(ch, str)]
+        chapter_labels = ["All chapters"] + [
+            str(ch) for ch in list(getattr(engine, "CHAPTERS", []) or []) if isinstance(ch, str)
+        ]
         chapter_model = Gtk.StringList.new(chapter_labels)
         chapter_dropdown = Gtk.DropDown.new(chapter_model, None)
         controls.append(chapter_dropdown)
@@ -12014,13 +12201,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         rescan_btn = Gtk.Button(label="Run Quality Scan")
         toggle_btn = Gtk.Button(label="Toggle Quarantine")
         delete_btn = Gtk.Button(label="Delete Flagged")
-        delete_btn.set_tooltip_text("Delete the selected flagged question from the live bank and keep its SRS mastery history. Shortcut: Delete")
+        delete_btn.set_tooltip_text(
+            "Delete the selected flagged question from the live bank and keep its SRS mastery history. Shortcut: Delete"
+        )
         auto_clean_btn = Gtk.Button(label="Auto Clean All Flagged")
-        auto_clean_btn.set_tooltip_text("Delete every flagged question across all chapters while preserving SRS mastery history.")
+        auto_clean_btn.set_tooltip_text(
+            "Delete every flagged question across all chapters while preserving SRS mastery history."
+        )
         save_note_btn = Gtk.Button(label="Save Note")
         copy_btn = Gtk.Button(label="Copy JSON")
         close_btn = Gtk.Button(label="Close")
-        for btn in (refresh_btn, rescan_btn, toggle_btn, delete_btn, auto_clean_btn, save_note_btn, copy_btn, close_btn):
+        for btn in (
+            refresh_btn,
+            rescan_btn,
+            toggle_btn,
+            delete_btn,
+            auto_clean_btn,
+            save_note_btn,
+            copy_btn,
+            close_btn,
+        ):
             btn_row.append(btn)
         detail_box.append(btn_row)
 
@@ -12135,7 +12335,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 acc_text = f"{float(acc):.0f}%" if isinstance(acc, (int, float)) else "n/a"
                 prefix = "Q" if not row.get("quarantine") else "Q!"
                 issues = list(row.get("quality_issues", []) or [])
-                subtitle = f"{prefix}{int(row.get('index', 0)) + 1} · {acc_text} · {int(row.get('attempts', 0) or 0)} tries"
+                subtitle = (
+                    f"{prefix}{int(row.get('index', 0)) + 1} · {acc_text} · {int(row.get('attempts', 0) or 0)} tries"
+                )
                 if issues:
                     subtitle += f" · {issues[0]}"
                 if row.get("review_note"):
@@ -12445,7 +12647,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 chapter_info = {}
             outcomes = list(chapter_info.get("learning_outcomes", []) or []) if isinstance(chapter_info, dict) else []
             if not outcomes:
-                self._show_text_dialog("Fix Outcome Links", "No chapter outcomes are available for this question.", Gtk.MessageType.INFO)
+                self._show_text_dialog(
+                    "Fix Outcome Links", "No chapter outcomes are available for this question.", Gtk.MessageType.INFO
+                )
                 return
             sub = self._new_dialog(title="Fix Outcome Links", transient_for=dialog, modal=True)
             try:
@@ -12520,7 +12724,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             def _save_outcomes(apply_now: bool) -> None:
                 picked = _selected_outcomes()
                 if not picked:
-                    self._show_text_dialog("Fix Outcome Links", "Select at least one outcome id.", Gtk.MessageType.WARNING)
+                    self._show_text_dialog(
+                        "Fix Outcome Links", "Select at least one outcome id.", Gtk.MessageType.WARNING
+                    )
                     return
                 ok = engine.propose_question_outcome_ids(
                     chapter,
@@ -13100,7 +13306,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             confirmed = [False]
 
             def _on_validation_response(d, r):
-                confirmed[0] = (r == Gtk.ResponseType.OK)
+                confirmed[0] = r == Gtk.ResponseType.OK
                 d.destroy()
 
             dialog.connect("response", _on_validation_response)
@@ -14861,9 +15067,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         conn_policy_label = Gtk.Label(label="Connectivity policy")
         conn_policy_label.set_halign(Gtk.Align.START)
         conn_policy_label.set_size_request(140, -1)
-        conn_policy_dropdown = Gtk.DropDown.new(
-            Gtk.StringList.new(["auto", "online", "offline"]), None
-        )
+        conn_policy_dropdown = Gtk.DropDown.new(Gtk.StringList.new(["auto", "online", "offline"]), None)
         cur_policy = str(getattr(self, "cloud_connectivity_policy", "auto") or "auto").strip().lower()
         if cur_policy == "online":
             conn_policy_dropdown.set_selected(1)
@@ -14918,7 +15122,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         cloud_fallback_entry = Gtk.Entry()
         cloud_fallback_entry.set_hexpand(True)
         cloud_fallback_entry.set_text(str(getattr(self, "cloud_ai_fallback_models", "") or ""))
-        cloud_fallback_entry.set_placeholder_text("e.g. openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet")
+        cloud_fallback_entry.set_placeholder_text(
+            "e.g. openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet"
+        )
         _try_accessible_name(cloud_fallback_entry, "Cloud fallback models")
         cloud_fallback_row.append(cloud_fallback_label)
         cloud_fallback_row.append(cloud_fallback_entry)
@@ -15545,6 +15751,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             # Apply cloud AI config to the runtime Config object so it takes effect immediately.
             try:
                 from studyplan.config import Config as _Cfg
+
                 _Cfg.LLM_GATEWAY_ENABLED = bool(self.cloud_ai_enabled)
                 if self.cloud_ai_endpoint:
                     _Cfg.LLM_GATEWAY_ENDPOINT = self.cloud_ai_endpoint
@@ -16466,9 +16673,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         rag_debug_doc_chunk_cap_evictions = max(
             0, int(rag_info.get("cache_debug_rag_doc_chunk_budget_evictions", 0) or 0)
         )
-        rag_debug_doc_cache_max_evictions = max(
-            0, int(rag_info.get("cache_debug_rag_doc_cache_max_evictions", 0) or 0)
-        )
+        rag_debug_doc_cache_max_evictions = max(0, int(rag_info.get("cache_debug_rag_doc_cache_max_evictions", 0) or 0))
         rag_debug_doc_evicted_chunks = max(0, int(rag_info.get("cache_debug_rag_doc_evicted_chunks", 0) or 0))
         rag_pdf_names = [
             str(item or "").strip()
@@ -18367,7 +18572,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     # Cloud AI preferences.
                     self.cloud_ai_enabled = bool(data.get("cloud_ai_enabled", False))
                     policy_raw = str(data.get("cloud_connectivity_policy", "auto") or "auto").strip().lower()
-                    self.cloud_connectivity_policy = policy_raw if policy_raw in {"auto", "online", "offline"} else "auto"
+                    self.cloud_connectivity_policy = (
+                        policy_raw if policy_raw in {"auto", "online", "offline"} else "auto"
+                    )
                     self.cloud_ai_endpoint = str(data.get("cloud_ai_endpoint", "") or "").strip()
                     self.cloud_ai_model = str(data.get("cloud_ai_model", "") or "").strip()
                     self.cloud_ai_fallback_models = str(data.get("cloud_ai_fallback_models", "") or "").strip()
@@ -18375,6 +18582,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     # Apply loaded cloud AI settings to the runtime Config object.
                     try:
                         from studyplan.config import Config as _Cfg
+
                         _Cfg.LLM_GATEWAY_ENABLED = bool(self.cloud_ai_enabled)
                         if self.cloud_ai_endpoint:
                             _Cfg.LLM_GATEWAY_ENDPOINT = self.cloud_ai_endpoint
@@ -19697,17 +19905,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _estimate_local_llm_model_size_b(self, model_name: str) -> float | None:
         from studyplan.ai.llama_runtime import _estimate_param_b_from_name
+
         val = _estimate_param_b_from_name(model_name)
         return val if val > 0 else None
 
     def _get_ollama_ram_budget_bytes(self) -> int:
         """Return RAM budget for Ollama model selection (bytes). 0 = no filter."""
         from studyplan.ai.llama_runtime import _get_ollama_ram_budget_bytes as _budget
+
         return _budget()
 
     def _estimate_local_llm_model_ram_bytes(self, model_name: str, num_ctx: int = 4096) -> int:
         """Estimate RAM (bytes) needed to load this Ollama model. 0 = unknown."""
         from studyplan.ai.llama_runtime import _estimate_model_ram_bytes
+
         return _estimate_model_ram_bytes(model_name, num_ctx=max(512, int(num_ctx)))
 
     def _resolve_local_llm_default_for_purpose(
@@ -22944,7 +23155,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             store_mode = "payload"
         cached = _pc.get(f"rag_doc:{cache_key}") if _pc is not None else None
         if isinstance(cached, dict):
-            # Full payload cached in memory.
             chunks = cached.get("chunks")
             if isinstance(chunks, list) and chunks:
                 result = dict(cached)
@@ -22954,59 +23164,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     merged_meta["mem_cache_hit"] = True
                     result["meta"] = merged_meta
                 return result, None
-            # Meta-only cache: fetch chunks from sqlite on demand.
             if cached.get("_rag_doc_ref") and callable(getattr(self, "_ai_cache_get_rag_doc", None)):
                 cache_get_doc = getattr(self, "_ai_cache_get_rag_doc", None)
                 disk_cached = cache_get_doc(cache_key) if callable(cache_get_doc) else None
-                if isinstance(disk_cached, dict):
-                    disk_rows = disk_cached.get("chunks", [])
-                    if isinstance(disk_rows, list) and disk_rows:
-                        payload_disk: dict[str, Any] = {
-                            "cache_key": cache_key,
-                            "path": path,
-                            "source": os.path.basename(path),
-                            "chunks": list(disk_rows),
-                            "meta": {"disk_cache_hit": True, "mem_cache_ref_hit": True},
-                        }
-                        cache_debug = getattr(self, "_ai_cache_debug_last", None)
-                        if isinstance(cache_debug, dict):
-                            cache_debug["rag_doc_cache_hit"] = int(cache_debug.get("rag_doc_cache_hit", 0) or 0) + 1
-                        return payload_disk, None
+                hit = _build_rag_disk_payload(disk_cached, cache_key, path, _pc, store_mode, app=self, mem_ref=True)
+                if hit is not None:
+                    return hit
         cache_get_doc = getattr(self, "_ai_cache_get_rag_doc", None)
         cache_put_doc = getattr(self, "_ai_cache_put_rag_doc", None)
         cache_hash = getattr(self, "_ai_cache_sha1", None)
         if not callable(cache_hash):
             cache_hash = lambda text: hashlib.sha1(str(text or "").encode("utf-8", errors="ignore")).hexdigest()
         disk_cached = cache_get_doc(cache_key) if callable(cache_get_doc) else None
-        if isinstance(disk_cached, dict):
-            disk_rows = disk_cached.get("chunks", [])
-            if isinstance(disk_rows, list) and disk_rows:
-                payload_disk: dict[str, Any] = {
-                    "cache_key": cache_key,
-                    "path": path,
-                    "source": os.path.basename(path),
-                    "chunks": list(disk_rows),
-                    "meta": {"disk_cache_hit": True},
-                }
-                if _pc is not None and store_mode != "none":
-                    if store_mode == "payload":
-                        _pc.set(f"rag_doc:{cache_key}", dict(payload_disk))
-                    else:
-                        _pc.set(
-                            f"rag_doc:{cache_key}",
-                            {
-                                "_rag_doc_ref": "disk",
-                                "cache_key": cache_key,
-                                "path": path,
-                                "source": os.path.basename(path),
-                                "chunk_count": int(len(list(disk_rows))),
-                                "meta": {"disk_cache_hit": True, "mem_cache_ref": True},
-                            },
-                        )
-                cache_debug = getattr(self, "_ai_cache_debug_last", None)
-                if isinstance(cache_debug, dict):
-                    cache_debug["rag_doc_cache_hit"] = int(cache_debug.get("rag_doc_cache_hit", 0) or 0) + 1
-                return payload_disk, None
+        hit = _build_rag_disk_payload(disk_cached, cache_key, path, _pc, store_mode, app=self, mem_ref=False)
+        if hit is not None:
+            return hit
         try:
             text, meta = self._extract_pdf_text_for_syllabus(path)
         except Exception as exc:
@@ -23243,7 +23415,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if isinstance(doc_payload, dict):
                 docs.append(doc_payload)
                 meta = doc_payload.get("meta", {})
-                if isinstance(meta, dict) and bool(meta.get("disk_cache_hit", False) or meta.get("mem_cache_hit", False)):
+                if isinstance(meta, dict) and bool(
+                    meta.get("disk_cache_hit", False) or meta.get("mem_cache_hit", False)
+                ):
                     rag_doc_cache_hit_count += 1
             elif err:
                 errors.append(f"{os.path.basename(pdf_path)}: {err}")
@@ -23477,8 +23651,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         meta["query_plan"] = dict(resolved_query_plan)
                         meta["primary_query"] = str(query_text or "")
                         meta["query_variants"] = [
-                            {"text": str(text), "weight": float(weight)}
-                            for text, weight in query_variants
+                            {"text": str(text), "weight": float(weight)} for text, weight in query_variants
                         ]
                         meta["retrieved_snippets"] = [dict(row) for row in cached_snippets]
                     return context_cached, meta
@@ -23994,10 +24167,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             meta["rag_concept_graph"] = concept_graph
             meta["query_plan"] = dict(resolved_query_plan)
             meta["primary_query"] = str(query_text or "")
-            meta["query_variants"] = [
-                {"text": str(text), "weight": float(weight)}
-                for text, weight in query_variants
-            ]
+            meta["query_variants"] = [{"text": str(text), "weight": float(weight)} for text, weight in query_variants]
             meta["retrieved_snippets"] = [dict(row) for row in snippets]
         return context_block, meta
 
@@ -26787,11 +26957,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             continue
                         if isinstance(tags, (tuple, list)):
                             tstrs = [str(t) for t in tags if t]
-                            concept_error_summary.append({
-                                "concept_id": cid,
-                                "total_errors": len(tstrs),
-                                "error_tags": list(dict.fromkeys(tstrs)),
-                            })
+                            concept_error_summary.append(
+                                {
+                                    "concept_id": cid,
+                                    "total_errors": len(tstrs),
+                                    "error_tags": list(dict.fromkeys(tstrs)),
+                                }
+                            )
                     concept_error_summary = concept_error_summary[:5]
         except Exception:
             weak_concept_ids_top = []
@@ -27486,7 +27658,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         action = str(action_plan.get("action", "") or "").strip().lower()
         reason = str(action_plan.get("reason", "") or "").strip()
         requires_confirmation = bool(action_plan.get("requires_confirmation", False))
-        evidence_rows = [str(x or "").strip() for x in list(action_plan.get("evidence", []) or []) if str(x or "").strip()]
+        evidence_rows = [
+            str(x or "").strip() for x in list(action_plan.get("evidence", []) or []) if str(x or "").strip()
+        ]
         title = "Autopilot suggestion"
         accept = "Accept"
         if requires_confirmation:
@@ -27640,14 +27814,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             stats = dict(getattr(self, "_ai_tutor_autopilot_stats", {}) or {})
             self._record_ai_tutor_autopilot_metrics(
                 {
-                    "autopilot_suggestion_accepted_count": int(
-                        stats.get("autopilot_suggestion_accepted_count", 0) or 0
-                    )
+                    "autopilot_suggestion_accepted_count": int(stats.get("autopilot_suggestion_accepted_count", 0) or 0)
                     + 1,
-                    "autopilot_action_executed_count": int(
-                        stats.get("autopilot_action_executed_count", 0) or 0
-                    )
-                    + 1,
+                    "autopilot_action_executed_count": int(stats.get("autopilot_action_executed_count", 0) or 0) + 1,
                     "autopilot_last_block_reason": "",
                 },
                 persist=False,
@@ -27985,9 +28154,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             focus_distraction_seconds = 0
         daily_plan_progress = (
-            snapshot.get("daily_plan_progress", {})
-            if isinstance(snapshot.get("daily_plan_progress", {}), dict)
-            else {}
+            snapshot.get("daily_plan_progress", {}) if isinstance(snapshot.get("daily_plan_progress", {}), dict) else {}
         )
         try:
             plan_done = int(daily_plan_progress.get("done", 0) or 0)
@@ -28289,13 +28456,18 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                                     continue
                                 if str(row.get("action", "") or "").strip().lower() != action:
                                     continue
-                                if str(row.get("topic", "") or "").strip() != str(decision.get("topic", "") or "").strip():
+                                if (
+                                    str(row.get("topic", "") or "").strip()
+                                    != str(decision.get("topic", "") or "").strip()
+                                ):
                                     continue
                                 try:
                                     row_ts = float(row.get("monotonic_at", 0.0) or 0.0)
                                 except Exception:
                                     row_ts = 0.0
-                                if row_ts > 0.0 and (now_ts - row_ts) < float(AI_TUTOR_AUTOPILOT_DUPLICATE_GUARD_SECONDS):
+                                if row_ts > 0.0 and (now_ts - row_ts) < float(
+                                    AI_TUTOR_AUTOPILOT_DUPLICATE_GUARD_SECONDS
+                                ):
                                     duplicate_recent = True
                                     break
                             if duplicate_recent:
@@ -28741,9 +28913,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         weak_cids = [str(x) for x in list(snapshot.get("weak_concept_ids_top", []) or []) if x]
         if action in {"weak_drill_start", "drill_start"} and weak_cids:
             rows.append(f"weak_concepts={','.join(weak_cids[:3])}")
-        concept_errs = [
-            row for row in list(snapshot.get("concept_error_summary", []) or []) if isinstance(row, dict)
-        ]
+        concept_errs = [row for row in list(snapshot.get("concept_error_summary", []) or []) if isinstance(row, dict)]
         if concept_errs and action in {"weak_drill_start", "drill_start"}:
             err_parts: list[str] = []
             for row in concept_errs[:2]:
@@ -28859,9 +29029,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             current_topic = ""
         must_review_due = int(snapshot.get("must_review_due", 0) or 0)
         overdue_srs_count = int(snapshot.get("overdue_srs_count", 0) or 0)
-        weak_topics = [
-            row for row in list(snapshot.get("weak_topics_top3", []) or []) if isinstance(row, dict)
-        ]
+        weak_topics = [row for row in list(snapshot.get("weak_topics_top3", []) or []) if isinstance(row, dict)]
         weak_cids = [str(x) for x in list(snapshot.get("weak_concept_ids_top", []) or []) if x]
         action = "focus_start"
         if must_review_due >= 3:
@@ -29077,9 +29245,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             task_id = TASK_ID_GAP_GENERATION
             spec = get_task_prompt_spec(task_id)
         weak_cids = [str(x) for x in list(snapshot.get("weak_concept_ids_top", []) or []) if x]
-        concept_errors = [
-            row for row in list(snapshot.get("concept_error_summary", []) or []) if isinstance(row, dict)
-        ]
+        concept_errors = [row for row in list(snapshot.get("concept_error_summary", []) or []) if isinstance(row, dict)]
         payload = {
             "topic": str(topic or ""),
             "count": int(count),
@@ -29101,7 +29267,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             extra_rules.append("Syllabus scope (strict — only examinable content): " + syllabus_scope.strip())
         if weak_cids:
             extra_rules.append(
-                "Target the following weak concepts: " + ", ".join(weak_cids)
+                "Target the following weak concepts: "
+                + ", ".join(weak_cids)
                 + ". Generate questions that specifically test these concepts or the skills they represent."
             )
             if concept_errors:
@@ -29113,7 +29280,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         error_lines.append(f"{cid}: {', '.join(str(e) for e in errs)}")
                 if error_lines:
                     extra_rules.append(
-                        "Common error patterns for these weak concepts: " + " | ".join(error_lines)
+                        "Common error patterns for these weak concepts: "
+                        + " | ".join(error_lines)
                         + ". Craft distractors that reflect these misunderstandings."
                     )
         if task_id == TASK_ID_GAP_GENERATION:
@@ -30439,7 +30607,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _save_section_c_archive(self, archive: dict[str, list[dict[str, Any]]]) -> None:
         path = self._section_c_archive_path()
-        payload = {"schema": "section_c_archive_v1", "updated_at": datetime.datetime.now().isoformat(timespec="seconds"), "questions": archive}
+        payload = {
+            "schema": "section_c_archive_v1",
+            "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "questions": archive,
+        }
         try:
             self._atomic_write_text_file(path, json.dumps(payload, ensure_ascii=True, indent=2))
             self._secure_user_path(path, 0o600)
@@ -30538,6 +30710,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def _exhibit_has_financial_data(exhibit_text: str) -> bool:
         """Return True when an exhibit string contains real numeric financial data."""
         from studyplan.ai.prompt_design import exhibit_has_financial_data
+
         return exhibit_has_financial_data(exhibit_text)
 
     def _build_section_c_generation_prompt(self, chapter: str, snapshot: dict[str, Any] | None = None) -> str:
@@ -30799,10 +30972,36 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         exhibit_text = " ".join(str(e or "") for e in exhibits).lower()
 
         stop = {
-            "the", "and", "for", "with", "that", "this", "from", "into", "your",
-            "should", "would", "could", "which", "their", "there", "about", "than",
-            "section", "question", "response", "finance", "financial", "answer",
-            "requirement", "case", "study", "using", "provide", "must", "will",
+            "the",
+            "and",
+            "for",
+            "with",
+            "that",
+            "this",
+            "from",
+            "into",
+            "your",
+            "should",
+            "would",
+            "could",
+            "which",
+            "their",
+            "there",
+            "about",
+            "than",
+            "section",
+            "question",
+            "response",
+            "finance",
+            "financial",
+            "answer",
+            "requirement",
+            "case",
+            "study",
+            "using",
+            "provide",
+            "must",
+            "will",
         }
 
         def _extract_keywords(text: str, cap: int = 12) -> list[str]:
@@ -30829,12 +31028,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             combined = f"{req_text} {outline_text} {exhibit_text}"
             keywords = _extract_keywords(combined, cap=12)
             if keywords:
-                checklist.append({
-                    "part": part,
-                    "requirement_text": req_text[:160],
-                    "marks": marks,
-                    "keywords": keywords,
-                })
+                checklist.append(
+                    {
+                        "part": part,
+                        "requirement_text": req_text[:160],
+                        "marks": marks,
+                        "keywords": keywords,
+                    }
+                )
         return checklist
 
     def _format_section_c_self_marking_guide(
@@ -31751,7 +31952,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             lines.append(f"Total: {total_marks} marks")
         return "\n".join(lines).strip()
 
-    def _format_section_c_feedback_text(self, evaluation: dict[str, Any], *, time_taken_seconds: int | None = None) -> str:
+    def _format_section_c_feedback_text(
+        self, evaluation: dict[str, Any], *, time_taken_seconds: int | None = None
+    ) -> str:
         total = int(evaluation.get("total_mark", 0) or 0)
         max_mark = int(evaluation.get("max_mark", 0) or 0)
         lines = [f"Score: {total}/{max_mark}", ""]
@@ -32348,7 +32551,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     if not rubric_key or not row_key:
                         continue
                     # Require the shorter string to be a substantial part of the longer
-                    shorter, longer = (rubric_key, row_key) if len(rubric_key) <= len(row_key) else (row_key, rubric_key)
+                    shorter, longer = (
+                        (rubric_key, row_key) if len(rubric_key) <= len(row_key) else (row_key, rubric_key)
+                    )
                     if shorter in longer:
                         overlap = len(shorter) / max(1, len(longer))
                         if overlap >= 0.35 and overlap > best_overlap:
@@ -33066,6 +33271,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         def _update_concept_bar(question_text: str) -> None:
             try:
                 from studyplan.domain_reasoning.concepts import detect_concepts
+
                 ids = detect_concepts(question_text)
                 if ids:
                     concept_label.set_label(f"Domain concepts detected: {', '.join(ids)}")
@@ -33105,9 +33311,15 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             state["rewrite_baseline_evaluation"] = None
             state["rewrite_baseline_response"] = ""
             _set_view_text(question_view, self._format_section_c_question_text(case))
-            _update_concept_bar(str(case.get("scenario", "")) + " " + " ".join(
-                str(r.get("requirement_text", "") or "") for r in (case.get("requirements", []) or []) if isinstance(r, dict)
-            ))
+            _update_concept_bar(
+                str(case.get("scenario", ""))
+                + " "
+                + " ".join(
+                    str(r.get("requirement_text", "") or "")
+                    for r in (case.get("requirements", []) or [])
+                    if isinstance(r, dict)
+                )
+            )
             if clear_feedback:
                 _set_view_text(feedback_view, "")
             _refresh_section_c_intelligence(chapter_name)
@@ -33162,15 +33374,20 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     state["rewrite_baseline_evaluation"] = None
                     state["rewrite_baseline_response"] = ""
                     _set_view_text(question_view, self._format_section_c_question_text(case))
-                    _update_concept_bar(str(case.get("scenario", "")) + " " + " ".join(
-                        str(r.get("requirement_text", "") or "") for r in (case.get("requirements", []) or []) if isinstance(r, dict)
-                    ))
+                    _update_concept_bar(
+                        str(case.get("scenario", ""))
+                        + " "
+                        + " ".join(
+                            str(r.get("requirement_text", "") or "")
+                            for r in (case.get("requirements", []) or [])
+                            if isinstance(r, dict)
+                        )
+                    )
                     _set_view_text(feedback_view, "")
                     model_answer_expander.set_visible(False)
                     model_answer_expander.set_expanded(False)
                     drill_weakest_btn.set_visible(False)
-                    import time as _time
-                    state["answer_start_time"] = _time.monotonic()
+                    state["answer_start_time"] = time.monotonic()
                     _refresh_rewrite_panel()
                     if err:
                         _set_status(f"Generated fallback case: {err}")
@@ -33197,8 +33414,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             elapsed_seconds: int | None = None
             t0 = state.get("answer_start_time")
             if isinstance(t0, float):
-                import time as _time
-                elapsed_seconds = max(0, int(_time.monotonic() - t0))
+                elapsed_seconds = max(0, int(time.monotonic() - t0))
             section_c_cancel_event.clear()
             workflow_token = int(state.get("workflow_token", 0) or 0)
             evaluation_token = _section_c_bump_evaluation_token()
@@ -33245,7 +33461,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         if guide and isinstance(evaluation, dict):
                             evaluation = dict(evaluation)
                             existing_rationale = str(evaluation.get("examiner_rationale", "") or "").strip()
-                            evaluation["examiner_rationale"] = (guide + ("\n\n" + existing_rationale if existing_rationale else "")).strip()
+                            evaluation["examiner_rationale"] = (
+                                guide + ("\n\n" + existing_rationale if existing_rationale else "")
+                            ).strip()
                     except Exception:
                         pass
 
@@ -33284,7 +33502,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                             state["rewrite_delta"] = None
                     except Exception:
                         state["rewrite_delta"] = None
-                    _set_view_text(feedback_view, self._format_section_c_feedback_text(evaluation, time_taken_seconds=elapsed_seconds))
+                    _set_view_text(
+                        feedback_view,
+                        self._format_section_c_feedback_text(evaluation, time_taken_seconds=elapsed_seconds),
+                    )
                     model_answer_expander.set_visible(True)
                     if not model_answer_expander.get_expanded():
                         model_answer_expander.set_expanded(True)
@@ -33656,7 +33877,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             last_pct = score_pcts[-1]
             best_pct = max(score_pcts)
             lines.append(f"Total attempts: {total_attempts}")
-            lines.append(f"Average score: {avg_pct}%  |  First: {first_pct}%  |  Latest: {last_pct}%  |  Best: {best_pct}%")
+            lines.append(
+                f"Average score: {avg_pct}%  |  First: {first_pct}%  |  Latest: {last_pct}%  |  Best: {best_pct}%"
+            )
             improvement = round(last_pct - first_pct, 1)
             direction = "▲" if improvement > 0 else ("▼" if improvement < 0 else "→")
             lines.append(f"Improvement (first → latest): {direction} {abs(improvement)}%")
@@ -33692,7 +33915,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 lines.append(f"  {crit[:60]}: {avg_c}% (over {count_c} evaluation{'s' if count_c != 1 else ''})")
             lines.append("")
             # Surface weak criteria
-            weak = [(crit, round(sum(pcts) / len(pcts), 1)) for crit, pcts in sorted_criteria if sum(pcts) / len(pcts) < 60.0]
+            weak = [
+                (crit, round(sum(pcts) / len(pcts), 1))
+                for crit, pcts in sorted_criteria
+                if sum(pcts) / len(pcts) < 60.0
+            ]
             if weak:
                 lines.append("⚠ Consistently weak criteria (below 60%):")
                 for crit, avg_c in weak[:3]:
@@ -33778,7 +34005,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         content = dialog.get_content_area()
         content.set_spacing(8)
 
-        header = Gtk.Label(label=f"Exam Simulation – 2 Questions × 20 marks = 40 marks total ({EXAM_TOTAL_MINUTES} minutes)")
+        header = Gtk.Label(
+            label=f"Exam Simulation – 2 Questions × 20 marks = 40 marks total ({EXAM_TOTAL_MINUTES} minutes)"
+        )
         header.set_halign(Gtk.Align.START)
         header.add_css_class("section-title")
         header.set_ellipsize(Pango.EllipsizeMode.END)
@@ -33994,7 +34223,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     def _finish() -> bool:
                         if int(sim_state.get("workflow_token", 0) or 0) != workflow_token:
                             return False
-                        sim_state["questions"][q_idx] = self._snapshot_question_payload(case) or dict(case) if isinstance(case, dict) else None
+                        sim_state["questions"][q_idx] = (
+                            self._snapshot_question_payload(case) or dict(case) if isinstance(case, dict) else None
+                        )
                         if isinstance(case, dict):
                             _set_view_text(question_views[q_idx], self._format_section_c_question_text(case))
                             q_status_labels[q_idx].set_label("Ready" + (f" ({err})" if err else ""))
@@ -34077,15 +34308,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         f"Time used: {elapsed_secs // 60} min {elapsed_secs % 60} sec of {EXAM_TOTAL_MINUTES} min",
                         "",
                         f"Q1 ({selected_chapters[0]}): {m1}/{x1}",
-                        self._format_section_c_feedback_text(ev1) if isinstance(ev1, dict) else "Evaluation unavailable",
+                        self._format_section_c_feedback_text(ev1)
+                        if isinstance(ev1, dict)
+                        else "Evaluation unavailable",
                         "",
                         f"Q2 ({selected_chapters[1]}): {m2}/{x2}",
-                        self._format_section_c_feedback_text(ev2) if isinstance(ev2, dict) else "Evaluation unavailable",
+                        self._format_section_c_feedback_text(ev2)
+                        if isinstance(ev2, dict)
+                        else "Evaluation unavailable",
                     ]
                     _set_view_text(results_view, "\n".join(result_lines))
                     results_label.set_visible(True)
                     results_scroll.set_visible(True)
-                    _set_status(f"Simulation complete. Combined: {combined_mark}/{combined_max} ({combined_pct}%) – {pass_fail}")
+                    _set_status(
+                        f"Simulation complete. Combined: {combined_mark}/{combined_max} ({combined_pct}%) – {pass_fail}"
+                    )
                     _set_busy(False)
                     return False
 
@@ -34202,7 +34439,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         open_btn.connect("clicked", _on_open_clicked)
         content.append(open_btn)
         archived_btn = Gtk.Button(label="Browse archived questions")
-        archived_btn.set_tooltip_text("View questions that were evicted from the main bank (max 64 per chapter). Opening one moves it back to the live bank.")
+        archived_btn.set_tooltip_text(
+            "View questions that were evicted from the main bank (max 64 per chapter). Opening one moves it back to the live bank."
+        )
 
         def _on_open_archived(*_args: object) -> None:
             try:
@@ -34225,7 +34464,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
             pc = pick_dialog.get_content_area()
             pc.set_spacing(6)
-            pc.append(Gtk.Label(label="Select an archived question to restore it to the live bank and open for practice."))
+            pc.append(
+                Gtk.Label(label="Select an archived question to restore it to the live bank and open for practice.")
+            )
             arc_scroll = Gtk.ScrolledWindow()
             arc_scroll.set_min_content_height(240)
             arc_listbox = Gtk.ListBox()
@@ -34758,8 +34999,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if callable(ensure_coach_selection):
                 ensure_coach_selection()
             get_recommended_topic = getattr(self, "_get_recommended_topic", None)
-            preferred = self._get_drill_topic() or self.current_topic or (
-                get_recommended_topic() if callable(get_recommended_topic) else ""
+            preferred = (
+                self._get_drill_topic()
+                or self.current_topic
+                or (get_recommended_topic() if callable(get_recommended_topic) else "")
             )
             find_due_review_topic = getattr(self, "_find_due_review_topic", None)
             if callable(find_due_review_topic):
@@ -35231,7 +35474,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 maximum=100000,
             ),
             "autopilot_last_block_reason": str(event.get("autopilot_last_block_reason", "") or "").strip()[:200],
-            "autopilot_skip_reason_counts": _clamp_skip_reason_counts_static(event.get("autopilot_skip_reason_counts", {})),
+            "autopilot_skip_reason_counts": _clamp_skip_reason_counts_static(
+                event.get("autopilot_skip_reason_counts", {})
+            ),
             "nudge_info_count": _clamp_int(event.get("nudge_info_count", 0), default=0, minimum=0, maximum=100000),
             "nudge_warning_count": _clamp_int(
                 event.get("nudge_warning_count", 0),
@@ -35652,9 +35897,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     reason_key = str(reason or "").strip()[:80]
                     if reason_key:
                         try:
-                            autopilot_skip_reason_counts[reason_key] = (
-                                int(autopilot_skip_reason_counts.get(reason_key, 0) or 0) + max(0, int(count or 0))
-                            )
+                            autopilot_skip_reason_counts[reason_key] = int(
+                                autopilot_skip_reason_counts.get(reason_key, 0) or 0
+                            ) + max(0, int(count or 0))
                         except Exception:
                             pass
 
@@ -39728,7 +39973,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if ls_cc is not None and hasattr(ls_cc, "get_or_create_profile"):
                     lp_cc = cast(
                         TutorLearnerProfileSnapshot,
-                        cast(Any, ls_cc).get_or_create_profile("local-user", str(getattr(self, "module_title", "selected module"))),
+                        cast(Any, ls_cc).get_or_create_profile(
+                            "local-user", str(getattr(self, "module_title", "selected module"))
+                        ),
                     )
             if isinstance(lp_cc, TutorLearnerProfileSnapshot):
                 wids_cc = tuple(getattr(lp_cc, "weak_concept_ids_top", ()) or ())
@@ -40457,8 +40704,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         def _open_folder(*_args):
             try:
-                import subprocess
-
                 if os.path.isdir(config_home):
                     _open_path_in_os_sync(config_home)
             except Exception:
@@ -40482,7 +40727,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 self.update_dashboard()
                 self.update_study_room_card()
             except Exception as e:
-                self._show_text_dialog("Retry failed", f"Data load failed after retry. Try File → Recover from Snapshot…\n\nDetail: {e}", Gtk.MessageType.ERROR)
+                self._show_text_dialog(
+                    "Retry failed",
+                    f"Data load failed after retry. Try File → Recover from Snapshot…\n\nDetail: {e}",
+                    Gtk.MessageType.ERROR,
+                )
 
         def _continue(*_args):
             try:
@@ -40745,7 +40994,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         try:
             last_study = getattr(self, "last_study_date", None)
-            if isinstance(last_study, datetime.date) and last_study < datetime.date.today() - datetime.timedelta(days=1):
+            if isinstance(last_study, datetime.date) and last_study < datetime.date.today() - datetime.timedelta(
+                days=1
+            ):
                 self.study_streak = 0
                 self._reset_progression_for_streak_break()
                 self.save_streak_data()
@@ -43413,7 +43664,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 due_map = self.engine.get_due_today_by_chapter(today)
                 total_due = sum(int(v or 0) for v in due_map.values())
                 if total_due > 0:
-                    self.study_room_reviews_label.set_text(f"Due today: {total_due} card(s) across {len(due_map)} chapter(s)")
+                    self.study_room_reviews_label.set_text(
+                        f"Due today: {total_due} card(s) across {len(due_map)} chapter(s)"
+                    )
                     self.study_room_reviews_btn.set_sensitive(True)
                     self.study_room_reviews_btn.set_visible(True)
                 else:
@@ -44790,7 +45043,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._remove_glib_source(self._quiz_block_timer_id)
         self._quiz_block_timer_id = GLib.timeout_add_seconds(1, self._quiz_block_timer_tick)
         self._register_glib_source(self._quiz_block_timer_id)
-        self.send_notification("Quiz Block", f"{minutes} minutes for this {'quiz' if 'quiz' in str(getattr(self, 'quiz_session', {}) or {}).lower() else 'review'} block.")
+        self.send_notification(
+            "Quiz Block",
+            f"{minutes} minutes for this {'quiz' if 'quiz' in str(getattr(self, 'quiz_session', {}) or {}).lower() else 'review'} block.",
+        )
 
     def _quiz_block_timer_tick(self) -> bool:
         remaining = getattr(self, "_quiz_block_remaining", 0)
@@ -46463,7 +46719,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             try:
                 if session_topic:
                     all_qs = list((getattr(self.engine, "QUESTIONS", {}) or {}).get(session_topic, []) or [])
-                    seen_set = set(int(i) for i in (getattr(self.engine, "quiz_recent", {}) or {}).get(session_topic, []) or [] if isinstance(i, (int, float)))
+                    seen_set = set(
+                        int(i)
+                        for i in (getattr(self.engine, "quiz_recent", {}) or {}).get(session_topic, []) or []
+                        if isinstance(i, (int, float))
+                    )
                     if all_qs and len(seen_set) >= len(all_qs):
                         self._unlock_achievement(
                             "chapter_complete",
@@ -47377,8 +47637,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     def _extract_pdf_text_pdftotext_layout(self, file_path: str) -> tuple[str, dict[str, Any]]:
         """Extract text using pdftotext -layout for better preservation of columns and structure (syllabus)."""
-        import subprocess
-
         abs_path = os.path.abspath(str(file_path))
         try:
             result = subprocess.run(
@@ -49141,6 +49399,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         """Check the structured JSON log for ERROR entries during the smoke run."""
         try:
             from studyplan.logging_config import STUDYPLAN_JSON_LOG
+
             log_path = STUDYPLAN_JSON_LOG
             if not os.path.isfile(log_path):
                 log_path = os.path.join(getattr(Config, "CONFIG_HOME", ""), "logs", "app.jsonl")
@@ -49164,10 +49423,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             if isinstance(self._smoke_metrics, dict):
                 self._smoke_metrics["log_error_count"] = error_count
             if error_count > 0:
-                raise RuntimeError(
-                    f"Log contains {error_count} ERROR level message(s): "
-                    + "; ".join(error_samples)
-                )
+                raise RuntimeError(f"Log contains {error_count} ERROR level message(s): " + "; ".join(error_samples))
         except Exception:
             raise
 
@@ -50583,7 +50839,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
     def update_dashboard(self) -> None:  # pyright: ignore[reportGeneralTypeIssues]
         if bool(getattr(self, "_core_runtime_shutdown", False)):
             return
-        # Coalesce multiple refresh requests into a single idle render.
         if self._schedule_ui_refresh(
             "dashboard_refresh",
             self._debounced_dashboard_refresh,
@@ -50608,10 +50863,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         if callable(consume_source):
             consume_source("_dashboard_update_source")
         else:
-            try:
-                setattr(self, "_dashboard_update_source", None)
-            except Exception:
-                pass
+            setattr(self, "_dashboard_update_source", None)
         if bool(getattr(self, "_core_runtime_shutdown", False)):
             return False
         try:
@@ -50645,6 +50897,69 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             return result
         except Exception:
             return (1.0, 1.0, 1.0)
+
+    _chart_color_cache: dict[str, str] = {}
+    _chart_color_cache_key: int = 0
+
+    def _resolve_chart_colors(self) -> dict[str, str]:
+        """Resolve chart color palette from current theme's @define-color CSS variables.
+
+        Falls back to system-theme hardcoded values if CSS lookup fails.
+        Caches per theme toggle (incremented by _on_theme_toggle).
+        """
+        # Check cache
+        cache_key = id(self) ^ hash(getattr(self, "use_system_theme", True))
+        if cache_key == self._chart_color_cache_key and self._chart_color_cache:
+            return dict(self._chart_color_cache)
+
+        mapping = {
+            "chart_fig_bg": "fig_bg",
+            "chart_ax_bg": "ax_bg",
+            "chart_text": "text",
+            "chart_muted": "muted",
+            "chart_grid": "grid",
+            "chart_spine": "spine",
+            "chart_accent_a": "accent_a",
+            "chart_accent_b": "accent_b",
+            "chart_accent_c": "accent_c",
+            "chart_accent_d": "accent_d",
+            "chart_legend_bg": "legend_bg",
+        }
+        fallback_system = {
+            "fig_bg": "#1a2233", "ax_bg": "#1a2233", "text": "#dbe4f4",
+            "muted": "#b1bfd8", "grid": "#465a7d", "spine": "#5d739b",
+            "accent_a": "#6aa4ff", "accent_b": "#4fd1c5", "accent_c": "#f6c453",
+            "accent_d": "#a18bff", "legend_bg": "#202b41",
+        }
+        fallback_coach = {
+            "fig_bg": "#1c2230", "ax_bg": "#1c2230", "text": "#e8edf7",
+            "muted": "#b1bcd3", "grid": "#42526f", "spine": "#4c5d82",
+            "accent_a": "#4fd1c5", "accent_b": "#8bafff", "accent_c": "#f6c453",
+            "accent_d": "#9b7cff", "legend_bg": "#202633",
+        }
+
+        result: dict[str, str] = {}
+        try:
+            widget = self.dashboard if hasattr(self, "dashboard") else None
+            if widget is None:
+                widget = self
+            ctx = widget.get_style_context()
+            for css_var, chart_key in mapping.items():
+                found, rgba = ctx.lookup_color(css_var)
+                if found:
+                    r = max(0, min(255, int(rgba.red * 255 + 0.5)))
+                    g = max(0, min(255, int(rgba.green * 255 + 0.5)))
+                    b = max(0, min(255, int(rgba.blue * 255 + 0.5)))
+                    result[chart_key] = f"#{r:02x}{g:02x}{b:02x}"
+                else:
+                    result[chart_key] = fallback_system[chart_key]
+        except Exception:
+            use_system = bool(getattr(self, "use_system_theme", True))
+            result = dict(fallback_system if use_system else fallback_coach)
+
+        self._chart_color_cache = result
+        self._chart_color_cache_key = cache_key
+        return dict(result)
 
     @classmethod
     def _chart_set_color(cls, ctx: Any, hex_color: str, alpha: float = 1.0) -> None:
@@ -50701,7 +51016,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
     @classmethod
     def _build_gtk_chart_widget(
-        self,  # pyright: ignore[reportSelfClsParameterName]
+        cls,
         spec: dict[str, Any],
         *,
         width: int,
@@ -50725,35 +51040,35 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             text = str(style.get("text", "#e8edf7"))
             muted = str(style.get("muted", "#b1bcd3"))
             grid = str(style.get("grid", "#42526f"))
-            self._chart_set_color(ctx, bg)
+            cls._chart_set_color(ctx, bg)
             ctx.rectangle(0, 0, w_f, h_f)
             ctx.fill()
             kind = str(chart_spec.get("kind", "") or "")
             title = str(chart_spec.get("title", "") or "")
             if title:
-                self._chart_set_color(ctx, text)
-                self._chart_text(ctx, title, 14, 22, size=11, weight=1)
+                cls._chart_set_color(ctx, text)
+                cls._chart_text(ctx, title, 14, 22, size=11, weight=1)
 
             def _plot_area(bottom: float = 44.0) -> tuple[float, float, float, float]:
                 left = 42.0
                 top = 34.0 if title else 18.0
                 right = 14.0
-                self._chart_set_color(ctx, ax_bg)
+                cls._chart_set_color(ctx, ax_bg)
                 ctx.rectangle(left, top, max(1.0, w_f - left - right), max(1.0, h_f - top - bottom))
                 ctx.fill()
                 return left, top, w_f - right, h_f - bottom
 
             def _grid(left: float, top: float, right: float, bottom: float, ymax: float = 100.0) -> None:
-                self._chart_set_color(ctx, grid, 0.65)
+                cls._chart_set_color(ctx, grid, 0.65)
                 ctx.set_line_width(0.7)
                 for step in range(0, 101, 25):
                     y = bottom - ((bottom - top) * (step / max(1.0, ymax)))
                     ctx.move_to(left, y)
                     ctx.line_to(right, y)
                     ctx.stroke()
-                    self._chart_set_color(ctx, muted)
-                    self._chart_text(ctx, str(step), 8, y + 4, size=8)
-                    self._chart_set_color(ctx, grid, 0.65)
+                    cls._chart_set_color(ctx, muted)
+                    cls._chart_text(ctx, str(step), 8, y + 4, size=8)
+                    cls._chart_set_color(ctx, grid, 0.65)
 
             if kind == "bar":
                 labels = [str(x) for x in list(chart_spec.get("labels", []) or [])]
@@ -50768,19 +51083,19 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     bar_w = max(14.0, min(60.0, slot * 0.75))
                     x = left + idx * slot + (slot - bar_w) / 2.0
                     y = bottom - ((bottom - top) * v / 100.0)
-                    self._chart_set_color(ctx, color, 0.85)
-                    self._rounded_top_bar_rect(ctx, x, y, bar_w, bottom - y, r=5.0)
+                    cls._chart_set_color(ctx, color, 0.85)
+                    cls._rounded_top_bar_rect(ctx, x, y, bar_w, bottom - y, r=5.0)
                     ctx.fill()
-                    self._chart_set_color(ctx, color, 1.0)
-                    self._rounded_top_bar_rect(ctx, x, y, bar_w, max(2.0, bottom - y), r=5.0)
+                    cls._chart_set_color(ctx, color, 1.0)
+                    cls._rounded_top_bar_rect(ctx, x, y, bar_w, max(2.0, bottom - y), r=5.0)
                     ctx.set_line_width(0.5)
                     ctx.stroke()
-                    self._chart_set_color(ctx, text)
+                    cls._chart_set_color(ctx, text)
                     label_y = max(top + 8, y - 7)
-                    self._chart_text(ctx, f"{v:.0f}", x + bar_w / 2.0 - 7, label_y, size=9, weight=1)
+                    cls._chart_text(ctx, f"{v:.0f}", x + bar_w / 2.0 - 7, label_y, size=9, weight=1)
                     label = labels[idx] if idx < len(labels) else str(idx + 1)
-                    self._chart_set_color(ctx, muted)
-                    self._chart_text(ctx, label[:10], x + bar_w / 2.0 - 12, bottom + 18, size=8)
+                    cls._chart_set_color(ctx, muted)
+                    cls._chart_text(ctx, label[:10], x + bar_w / 2.0 - 12, bottom + 18, size=8)
 
             elif kind == "line":
                 series = list(chart_spec.get("series", []) or [])
@@ -50802,28 +51117,28 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         y = bottom - ((bottom - top) * max(0.0, min(ymax, val)) / ymax)
                         points.append((x, y))
                     if len(points) >= 2:
-                        self._chart_gradient_fill_under_line(ctx, points, bottom, color, top_alpha=0.14)
-                        self._chart_set_color(ctx, color)
+                        cls._chart_gradient_fill_under_line(ctx, points, bottom, color, top_alpha=0.14)
+                        cls._chart_set_color(ctx, color)
                         ctx.set_line_width(2.0 if sidx == 0 else 1.5)
                         ctx.move_to(points[0][0], points[0][1])
                         for px, py in points[1:]:
                             ctx.line_to(px, py)
                         ctx.stroke()
                         for px, py in points:
-                            self._chart_set_color(ctx, color)
+                            cls._chart_set_color(ctx, color)
                             ctx.arc(px, py, 3.0, 0, 2.0 * math.pi)
                             ctx.fill()
-                            self._chart_set_color(ctx, bg)
+                            cls._chart_set_color(ctx, bg)
                             ctx.arc(px, py, 1.5, 0, 2.0 * math.pi)
                             ctx.fill()
-                    self._chart_text(ctx, str(row.get("label", ""))[:18], right - 116, top + 14 + (sidx * 14), size=8)
+                    cls._chart_text(ctx, str(row.get("label", ""))[:18], right - 116, top + 14 + (sidx * 14), size=8)
                 if labels:
-                    self._chart_set_color(ctx, muted)
+                    cls._chart_set_color(ctx, muted)
                     step = max(1, len(labels) // 5)
                     for li, lbl in enumerate(labels):
                         if li % step == 0 or li == len(labels) - 1:
                             lx = left + ((right - left) * li / max(1, count - 1))
-                            self._chart_text(ctx, lbl[:6], lx - 10, bottom + 18, size=7)
+                            cls._chart_text(ctx, lbl[:6], lx - 10, bottom + 18, size=7)
 
             elif kind == "grouped_bar":
                 labels = [str(x) for x in list(chart_spec.get("labels", []) or [])]
@@ -50842,12 +51157,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         start_x = left + idx * group_w + (group_w - (bar_w * bar_count)) / 2.0
                         x = start_x + sidx * bar_w
                         y = bottom - ((bottom - top) * v / 100.0)
-                        self._chart_set_color(ctx, color, 0.85)
-                        self._rounded_top_bar_rect(ctx, x, y, max(1.0, bar_w - 1.0), bottom - y, r=3.0)
+                        cls._chart_set_color(ctx, color, 0.85)
+                        cls._rounded_top_bar_rect(ctx, x, y, max(1.0, bar_w - 1.0), bottom - y, r=3.0)
                         ctx.fill()
                         if v >= 8:
-                            self._chart_set_color(ctx, text)
-                            self._chart_text(ctx, f"{v:.0f}", x + bar_w / 2.0 - 6, max(top + 6, y - 5), size=7)
+                            cls._chart_set_color(ctx, text)
+                            cls._chart_text(ctx, f"{v:.0f}", x + bar_w / 2.0 - 6, max(top + 6, y - 5), size=7)
                 # --- Series legend with background box ---
                 if series:
                     legend_swatch = 8
@@ -50859,10 +51174,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     legend_w = 120
                     legend_h = legend_count * legend_entry_h + legend_pad * 2
                     legend_bg = str(style.get("legend_bg", "#202633"))
-                    self._chart_set_color(ctx, legend_bg, 0.93)
+                    cls._chart_set_color(ctx, legend_bg, 0.93)
                     ctx.rectangle(legend_x0, legend_y0, legend_w, legend_h)
                     ctx.fill()
-                    self._chart_set_color(ctx, grid, 0.35)
+                    cls._chart_set_color(ctx, grid, 0.35)
                     ctx.set_line_width(0.5)
                     ctx.rectangle(legend_x0, legend_y0, legend_w, legend_h)
                     ctx.stroke()
@@ -50871,20 +51186,21 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         label_text = str(row.get("label", ""))[:14]
                         swatch_x = legend_x0 + legend_pad
                         swatch_y = legend_y0 + legend_pad + (sidx * legend_entry_h)
-                        self._chart_set_color(ctx, color, 0.85)
+                        cls._chart_set_color(ctx, color, 0.85)
                         ctx.rectangle(swatch_x, swatch_y, legend_swatch, legend_swatch)
                         ctx.fill()
-                        self._chart_set_color(ctx, muted)
-                        self._chart_text(
-                            ctx, label_text,
+                        cls._chart_set_color(ctx, muted)
+                        cls._chart_text(
+                            ctx,
+                            label_text,
                             swatch_x + legend_swatch + 4,
                             swatch_y + 1,
                             size=8,
                         )
-                self._chart_set_color(ctx, muted)
+                cls._chart_set_color(ctx, muted)
                 for idx, label in enumerate(labels):
                     x = left + idx * group_w + 2
-                    self._chart_text(ctx, label[:6], x, bottom + 18, size=7)
+                    cls._chart_text(ctx, label[:6], x, bottom + 18, size=7)
 
             elif kind == "hbar":
                 items = list(chart_spec.get("items", []) or [])
@@ -50908,12 +51224,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     y = 34.0 + idx * row_h
                     cy = y + row_h / 2.0
 
-                    self._chart_set_color(ctx, muted)
-                    self._chart_text(ctx, label[:14], label_x, cy + 3, size=8)
+                    cls._chart_set_color(ctx, muted)
+                    cls._chart_text(ctx, label[:14], label_x, cy + 3, size=8)
 
                     if val > 0:
                         bw = max(3.0, (val / max_val) * bar_max_w)
-                        r, g, b = self._chart_rgb(color)
+                        r, g, b = cls._chart_rgb(color)
                         ctx.set_source_rgba(r, g, b, 0.85)
                         ctx.rectangle(bar_x, cy - hbar_h / 2.0, bw, hbar_h)
                         ctx.fill()
@@ -50922,8 +51238,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         ctx.rectangle(bar_x, cy - hbar_h / 2.0, bw, hbar_h)
                         ctx.stroke()
 
-                        self._chart_set_color(ctx, text)
-                        self._chart_text(ctx, f"{val:.0f}m", bar_x + bw + 5, cy + 3, size=8)
+                        cls._chart_set_color(ctx, text)
+                        cls._chart_text(ctx, f"{val:.0f}m", bar_x + bw + 5, cy + 3, size=8)
 
         drawing.set_draw_func(_draw)
         return cast(Gtk.Widget, drawing)
@@ -51027,8 +51343,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                     continue
                 r, g, b = self._chart_rgb(col)
                 ctx.set_source_rgba(r, g, b, 0.92)
-                is_first = (i == 0 or seg_w > 0 and x <= pad)
-                is_last = (i == len(sizes) - 1 or seg_w < 1.0)
+                is_first = i == 0 or seg_w > 0 and x <= pad
+                is_last = i == len(sizes) - 1 or seg_w < 1.0
 
                 if is_first and seg_w > r:
                     ctx.move_to(x + r, bar_y)
@@ -51080,13 +51396,16 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             dot.set_size_request(7, 7)
             dot.set_content_width(7)
             dot.set_content_height(7)
+
             def _mk_dot(c=col):
                 def _draw_dot(_wd: Gtk.DrawingArea, _ctx: Any, _w: int, _h: int) -> None:
                     _r, _g, _b = self._chart_rgb(c)
                     _ctx.set_source_rgba(_r, _g, _b, 1.0)
                     _ctx.arc(3.5, 3.5, 3.5, 0, 2 * math.pi)
                     _ctx.fill()
+
                 return _draw_dot
+
             dot.set_draw_func(_mk_dot())
             item.append(dot)
             txt = Gtk.Label(label=f"{lbl}  {n}")
@@ -51105,8 +51424,54 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         return card
 
+    _dashboard_sections: dict[str, Gtk.Widget] = {}
+    _dashboard_section_order: list[str] = []
+    _dashboard_section_digests: dict[str, str] = {}
+    _dashboard_section_seen: set[str] = set()
+
+    def _ds_digest(self, section_id: str, data: object) -> str:
+        """Compute a section digest. If unchanged, the section is not rebuilt."""
+        old = self._dashboard_section_digests.get(section_id, "")
+        new = str(hash(repr(data)) & 0xFFFFFFFF) if data is not None else old
+        return new if new != old else old  # stable if unchanged
+
+    def _ds_mark(self, section_id: str, widget: Gtk.Widget, digest: str) -> Gtk.Widget:
+        """Register a section widget and mark it as seen this cycle."""
+        self._dashboard_sections[section_id] = widget
+        if section_id not in self._dashboard_section_order:
+            self._dashboard_section_order.append(section_id)
+        self._dashboard_section_digests[section_id] = digest
+        self._dashboard_section_seen.add(section_id)
+        return widget
+
+    def _section_timer(self, name: str):
+        _t0 = time.monotonic()
+
+        class _Timer:
+            def __init__(self, outer, name, t0):
+                self.outer = outer
+                self.name = name
+                self.t0 = t0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                elapsed = (time.monotonic() - self.t0) * 1000.0
+                try:
+                    times = self.outer._perf_section_times
+                    times[self.name] = elapsed
+                except Exception:
+                    pass
+
+        return _Timer(self, name, _t0)
+
     def _render_dashboard(self) -> bool:  # pyright: ignore[reportGeneralTypeIssues]
         self._consume_tracked_glib_source_attr("_dashboard_update_source")
+        try:
+            log.info("_render_dashboard called")
+        except Exception:
+            pass
         if bool(getattr(self, "_core_runtime_shutdown", False)):
             return False
         if getattr(self, "_dashboard_update_in_progress", False):
@@ -51115,6 +51480,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         last_refresh = float(getattr(self, "_last_dashboard_refresh_ts", 0.0) or 0.0)
         if now - last_refresh < 0.8:
             return False
+        self._perf_section_times.clear()
         # State digest: skip full rebuild when nothing meaningful changed.
         try:
             _digest_parts = [
@@ -51129,14 +51495,29 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             _new_digest = "|".join(_digest_parts)
             _old_digest = str(getattr(self, "_dashboard_render_digest", "") or "")
             if _new_digest == _old_digest:
+                log.info("_render_dashboard: digest match, skipping")
                 return False
             self._dashboard_render_digest = _new_digest
+            log.info("_render_dashboard: new digest, proceeding")
         except Exception:
-            pass
+            log.info("_render_dashboard: digest exception, proceeding anyway")
         self._dashboard_update_in_progress = True
         self._last_dashboard_refresh_ts = now
         GLib.timeout_add(1000, self._release_dashboard_update_lock)
         render_start = time.monotonic()
+
+        def _reconcile_sections() -> None:
+            """Remove sections not seen this cycle. Keep seen sections in place."""
+            try:
+                child = self.dashboard.get_first_child()
+                while child:
+                    next_child = child.get_next_sibling()
+                    sid = getattr(child, '_ds_id', None)
+                    if sid is not None and sid not in self._dashboard_section_seen:
+                        self.dashboard.remove(child)
+                    child = next_child
+            except Exception:
+                pass
 
         def _finalize_perf() -> None:
             elapsed_ms = (time.monotonic() - render_start) * 1000.0
@@ -51176,12 +51557,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         cache_stats = f" • cache {cs.get('hits', 0)}/{cs.get('total_requests', 0)} ({cs.get('hit_rate', 0.0):.0%})"
                 except Exception:
                     pass
-                perf_label = Gtk.Label(
-                    label=f"Perf: {elapsed_ms:.1f} ms • renders {self._perf_dashboard_renders}{cache_stats}"
-                )
+                fps = float(getattr(self, "_perf_fps_current", 0.0) or 0.0)
+                fps_text = f"fps {fps:.1f}" if fps > 0 else "fps —"
+                wc = int(getattr(self, "_perf_widgets_created", 0) or 0)
+                sections = str(getattr(self, "_perf_section_times", {}))
+                _perf_log = f"Perf: {elapsed_ms:.1f} ms • {fps_text} • widgets {wc} • renders {self._perf_dashboard_renders}{cache_stats}"
+                try:
+                    log.info(_perf_log)
+                except Exception:
+                    pass
+                perf_label = Gtk.Label(label=_perf_log)
                 perf_label.set_halign(Gtk.Align.START)
                 perf_label.add_css_class("muted")
                 self.dashboard.append(perf_label)
+                if getattr(self, "show_perf_stats", False) and sections:
+                    section_label = Gtk.Label(label=f"Sections: {sections}")
+                    section_label.set_halign(Gtk.Align.START)
+                    section_label.add_css_class("muted")
+                    section_label.add_css_class("dim-label")
+                    self.dashboard.append(section_label)
 
         def _append_sep_if_needed() -> None:
             """Append a rule separator only if the last child is not already a separator."""
@@ -51192,11 +51586,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             _s.add_css_class("rule")
             self.dashboard.append(_s)
 
-        # Clear old dashboard
+        # Clear dashboard children
         child = self.dashboard.get_first_child()
         while child:
             self.dashboard.remove(child)
             child = self.dashboard.get_first_child()
+        self._dashboard_section_seen.clear()
 
         focus_mode = bool(getattr(self, "focus_mode", False))
         tile_mode = bool(getattr(self, "_tile_mode", False))
@@ -51246,9 +51641,77 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         _pomodoro_log = getattr(_eng, "pomodoro_log", {}) or {}
         _srs_data = getattr(_eng, "srs_data", {}) or {}
 
+        # Single-pass: parse progress_log into typed tuples to avoid 4× redundant traversal
+        _parsed_progress: list[tuple[datetime.date, float, float]] = []
+        try:
+            if isinstance(_progress_log, list):
+                for item in _progress_log:
+                    if not isinstance(item, dict):
+                        continue
+                    date_str = item.get("date")
+                    try:
+                        date_val = datetime.date.fromisoformat(date_str) if date_str else None
+                    except Exception:
+                        date_val = None
+                    if not date_val:
+                        continue
+                    mastery_val = float(item.get("overall_mastery", 0) or 0)
+                    minutes_val = float(item.get("total_minutes", 0) or 0)
+                    _parsed_progress.append((date_val, mastery_val, minutes_val))
+            _parsed_progress.sort(key=lambda x: x[0])
+        except Exception:
+            _parsed_progress = []
+
+        # Single-pass: pre-sort competence items (used in Weak vs Strong and elsewhere)
+        _sorted_competence: list[tuple[str, float]] = []
+        try:
+            if isinstance(_competence, dict):
+                _sorted_competence = sorted(_competence.items(), key=lambda x: float(x[1] or 0))
+        except Exception:
+            _sorted_competence = []
+
         # Safe exam-date handling (engine.reset_data() may set exam_date to None)
         today = datetime.date.today()
         today_iso = today.isoformat()
+
+        # Single-pass SRS summary: overdue, due-soon, due-week per chapter
+        _srs_overdue_by_ch: dict[str, int] = {}
+        _srs_due_soon_by_ch: dict[str, int] = {}
+        _srs_due_week_by_ch: dict[str, int] = {}
+        _srs_next_due: datetime.date | None = None
+        try:
+            due_cutoff = today + datetime.timedelta(days=2)
+            week_cutoff = today + datetime.timedelta(days=7)
+            for ch in _chapters:
+                overdue = 0
+                due_soon = 0
+                due_week = 0
+                for item in _srs_data.get(ch, []) or []:
+                    if _eng.is_overdue(item, today):
+                        overdue += 1
+                    last = item.get("last_review")
+                    if last is None:
+                        due_soon += 1
+                        due_week += 1
+                    else:
+                        try:
+                            last_date = datetime.date.fromisoformat(last)
+                            interval = int(item.get("interval", 1))
+                            due = last_date + datetime.timedelta(days=interval)
+                            if due <= due_cutoff:
+                                due_soon += 1
+                            if due <= week_cutoff:
+                                due_week += 1
+                            if _srs_next_due is None or due < _srs_next_due:
+                                _srs_next_due = due
+                        except Exception:
+                            pass
+                _srs_overdue_by_ch[ch] = overdue
+                _srs_due_soon_by_ch[ch] = due_soon
+                _srs_due_week_by_ch[ch] = due_week
+        except Exception:
+            pass
+
         if self.last_coach_date != today_iso:
             try:
                 smart_day = self._get_smart_review_day()
@@ -51486,9 +51949,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         coach_title.set_ellipsize(Pango.EllipsizeMode.END)
         coach_title.set_max_width_chars(180)
         coach_title.set_margin_bottom(4)
-        coach_title.set_tooltip_text(
-            "Readiness score, mission progress, pace status, and daily target"
-        )
+        coach_title.set_tooltip_text("Readiness score, mission progress, pace status, and daily target")
         coach_box.append(coach_title)
 
         readiness_score = float(readiness_info.get("score", 0.0) or 0.0)
@@ -51697,7 +52158,9 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 if lstore_diag is not None and hasattr(lstore_diag, "get_or_create_profile"):
                     lp_diag = cast(
                         TutorLearnerProfileSnapshot,
-                        cast(Any, lstore_diag).get_or_create_profile("local-user", module_title),
+                        cast(Any, lstore_diag).get_or_create_profile(
+                            "local-user", str(getattr(self, "module_title", "") or "") or "local-user"
+                        ),
                     )
             if isinstance(lp_diag, TutorLearnerProfileSnapshot):
                 wids_diag = tuple(getattr(lp_diag, "weak_concept_ids_top", ()) or ())
@@ -51955,21 +52418,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             coach_box.append(note_label)
 
         try:
-            progress = getattr(self.engine, "progress_log", [])
-            trend_points: list[tuple[datetime.date, float]] = []
-            if isinstance(progress, list):
-                for item in progress:
-                    if not isinstance(item, dict):
-                        continue
-                    date_str = item.get("date")
-                    try:
-                        date_val = datetime.date.fromisoformat(date_str) if date_str else None
-                    except Exception:
-                        date_val = None
-                    if not date_val:
-                        continue
-                    trend_points.append((date_val, float(item.get("overall_mastery", 0) or 0)))
-            trend_points.sort(key=lambda x: x[0])
+            trend_points: list[tuple[datetime.date, float]] = [(p[0], p[1]) for p in _parsed_progress]
             if trend_points:
                 cutoff = today - datetime.timedelta(days=6)
                 recent = [p for p in trend_points if p[0] >= cutoff]
@@ -52533,35 +52982,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
-        chart_style = {
-            "fig_bg": "#1c2230",
-            "ax_bg": "#1c2230",
-            "text": "#e8edf7",
-            "muted": "#b1bcd3",
-            "grid": "#42526f",
-            "spine": "#4c5d82",
-            "accent_a": "#4fd1c5",
-            "accent_b": "#8bafff",
-            "accent_c": "#f6c453",
-            "accent_d": "#9b7cff",
-            "legend_bg": "#202633",
-        }
-        if bool(getattr(self, "use_system_theme", True)):
-            # Keep charts dark even in system-theme mode to avoid bright white blocks
-            # against the coach-style dashboard.
-            chart_style = {
-                "fig_bg": "#1a2233",
-                "ax_bg": "#1a2233",
-                "text": "#dbe4f4",
-                "muted": "#b1bfd8",
-                "grid": "#465a7d",
-                "spine": "#5d739b",
-                "accent_a": "#6aa4ff",
-                "accent_b": "#4fd1c5",
-                "accent_c": "#f6c453",
-                "accent_d": "#a18bff",
-                "legend_bg": "#202b41",
-            }
+        chart_style = self._resolve_chart_colors()
 
         try:
             if charts_available:
@@ -52727,23 +53148,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 recap_card.append(recap_title)
                 lines = []
                 cutoff = today - datetime.timedelta(days=6)
-                progress = getattr(self.engine, "progress_log", [])
-                recap_points: list[tuple[datetime.date, float, float]] = []
-                if isinstance(progress, list):
-                    for item in progress:
-                        if not isinstance(item, dict):
-                            continue
-                        date_str = item.get("date")
-                        try:
-                            date_val = datetime.date.fromisoformat(date_str) if date_str else None
-                        except Exception:
-                            date_val = None
-                        if not date_val or date_val < cutoff:
-                            continue
-                        mastery_val = float(item.get("overall_mastery", 0) or 0)
-                        minutes_val = float(item.get("total_minutes", 0) or 0)
-                        recap_points.append((date_val, mastery_val, minutes_val))
-                recap_points.sort(key=lambda x: x[0])
+                recap_points = [p for p in _parsed_progress if p[0] >= cutoff]
                 if recap_points:
                     minutes_week = (
                         recap_points[-1][2] - recap_points[0][2] if len(recap_points) >= 2 else recap_points[-1][2]
@@ -52945,12 +53350,8 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 sizes = [mastered, learning, new_cards]
                 total_cards = sum(sizes)
 
-                overdue_cards = 0
                 try:
-                    for chapter in _chapters:
-                        for card in _srs_data.get(chapter, []) or []:
-                            if _eng.is_overdue(card, today):
-                                overdue_cards += 1
+                    overdue_cards = sum(_srs_overdue_by_ch.get(ch, 0) for ch in _chapters)
                 except Exception:
                     overdue_cards = 0
 
@@ -52960,8 +53361,11 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                         self.dashboard.append(self._cached_pie_chart_widget)
                     else:
                         bar = self._build_mastery_bar(
-                            mastered, learning, new_cards,
-                            total_cards, overdue_cards,
+                            mastered,
+                            learning,
+                            new_cards,
+                            total_cards,
+                            overdue_cards,
                             width=360 if is_compact else 400,
                         )
                         self.dashboard.append(bar)
@@ -52978,29 +53382,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         # Progress over time chart
         if charts_available:
             try:
-                progress = getattr(self.engine, "progress_log", [])
-                progress_points: list[tuple[datetime.date, float, float]] = []
-                if isinstance(progress, list):
-                    for item in progress:
-                        if not isinstance(item, dict):
-                            continue
-                        date_str = item.get("date")
-                        try:
-                            date_val = datetime.date.fromisoformat(date_str) if date_str else None
-                        except Exception:
-                            date_val = None
-                        if not date_val:
-                            continue
-                        try:
-                            mastery_val = float(item.get("overall_mastery", 0) or 0)
-                        except Exception:
-                            mastery_val = 0.0
-                        try:
-                            minutes_val = float(item.get("total_minutes", 0) or 0)
-                        except Exception:
-                            minutes_val = 0.0
-                        progress_points.append((date_val, mastery_val, minutes_val))
-                progress_points.sort(key=lambda x: x[0])
+                progress_points = _parsed_progress
                 if len(progress_points) >= 2:
                     dates = [p[0] for p in progress_points]
                     masteries = [p[1] for p in progress_points]
@@ -53258,8 +53640,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
 
         # Weekly summary (last 7 days)
         try:
-            progress = getattr(self.engine, "progress_log", [])
-            weekly_points: list[tuple[datetime.date, float, float]] = []
             active_days_week: int | None = None
             try:
                 study_days = getattr(self.engine, "study_days", set()) or set()
@@ -53279,32 +53659,13 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 active_days_week = len([d for d in active_dates if d >= cutoff])
             except Exception:
                 active_days_week = None
-            if isinstance(progress, list):
-                for item in progress:
-                    if not isinstance(item, dict):
-                        continue
-                    date_str = item.get("date")
-                    try:
-                        date_val = datetime.date.fromisoformat(date_str) if date_str else None
-                    except Exception:
-                        date_val = None
-                    if not date_val:
-                        continue
-                    weekly_points.append(
-                        (
-                            date_val,
-                            float(item.get("overall_mastery", 0) or 0),
-                            float(item.get("total_minutes", 0) or 0),
-                        )
-                    )
-            weekly_points.sort(key=lambda x: x[0])
-            if weekly_points:
+            if _parsed_progress:
                 cutoff = today - datetime.timedelta(days=6)
-                recent_points = [p for p in weekly_points if p[0] >= cutoff]
+                recent_points = [p for p in _parsed_progress if p[0] >= cutoff]
                 if recent_points:
                     # Use the last point before cutoff as baseline when available
                     baseline = None
-                    for p in reversed(weekly_points):
+                    for p in reversed(_parsed_progress):
                         if p[0] < cutoff:
                             baseline = p
                             break
@@ -53464,14 +53825,14 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 pass
 
             try:
-                comp = getattr(self.engine, "competence", {})
                 weak_lines = ["No competence data yet."]
                 strong_lines = []
-                if isinstance(comp, dict) and comp:
-                    weakest = sorted(comp.items(), key=lambda x: x[1])[:3]
-                    strong = sorted(comp.items(), key=lambda x: x[1], reverse=True)[:3]
+                if _sorted_competence:
+                    weakest = _sorted_competence[:3]
+                    # Strongest = last 3 in ascending sort
+                    strongest = [item for item in reversed(_sorted_competence)][:3]
                     weak_lines = [f"- {ch}: {score:.0f}%" for ch, score in weakest]
-                    strong_lines = [f"- {ch}: {score:.0f}%" for ch, score in strong]
+                    strong_lines = [f"- {ch}: {score:.0f}%" for ch, score in strongest]
 
                 ws_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                 ws_card.add_css_class("card")
@@ -53518,43 +53879,10 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
                 total = len(daily_plan)
                 percent = (completed / total * 100) if total else 0.0
 
-                overdue = 0
-                due_soon = 0
-                due_week = 0
-                next_due = None
-                due_cutoff = today + datetime.timedelta(days=2)
-                week_cutoff = today + datetime.timedelta(days=7)
-                for ch in _chapters:
-                    srs_list = _srs_data.get(ch, [])
-                    for item in srs_list:
-                        if _eng.is_overdue(item, today):
-                            overdue += 1
-                        last = item.get("last_review")
-                        if last is None:
-                            due_soon += 1
-                            due_week += 1
-                        else:
-                            try:
-                                last_date = datetime.date.fromisoformat(last)
-                                interval = int(item.get("interval", 1))
-                                due = last_date + datetime.timedelta(days=interval)
-                                if due <= due_cutoff:
-                                    due_soon += 1
-                                if due <= week_cutoff:
-                                    due_week += 1
-                            except Exception:
-                                pass
-                        last = item.get("last_review")
-                        if last:
-                            try:
-                                last_date = datetime.date.fromisoformat(last)
-                                interval = int(item.get("interval", 1))
-                                due = last_date + datetime.timedelta(days=interval)
-                                if next_due is None or due < next_due:
-                                    next_due = due
-                            except Exception:
-                                pass
-                next_due_text = next_due.isoformat() if next_due else "N/A"
+                overdue = sum(_srs_overdue_by_ch.get(ch, 0) for ch in _chapters)
+                due_soon = sum(_srs_due_soon_by_ch.get(ch, 0) for ch in _chapters)
+                due_week = sum(_srs_due_week_by_ch.get(ch, 0) for ch in _chapters)
+                next_due_text = _srs_next_due.isoformat() if _srs_next_due else "N/A"
 
                 must_review_due = self._get_must_review_due_count(today)
                 quiz_results = getattr(self.engine, "quiz_results", {}) or {}
@@ -53830,6 +54158,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         except Exception:
             pass
 
+        _reconcile_sections()
         _finalize_perf()
         self.update_save_status_display()
 
@@ -54199,7 +54528,12 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             markup = base
 
             if completed:
-                markup = f"<span foreground='#7f8792'>{markup}</span>"
+                title.add_css_class("muted")
+            else:
+                try:
+                    title.remove_css_class("muted")
+                except Exception:
+                    pass
 
             try:
                 coach_pick = self._get_coach_pick_topic()
@@ -54417,10 +54751,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         # If the last study was more than one day ago the streak is broken.
         # Reset it to 0 and revoke streak badges so the user has to re-earn them.
         today = datetime.date.today()
-        if (
-            self.last_study_date is not None
-            and self.last_study_date < today - datetime.timedelta(days=1)
-        ):
+        if self.last_study_date is not None and self.last_study_date < today - datetime.timedelta(days=1):
             self.study_streak = 0
             self._reset_progression_for_streak_break()
 
@@ -54510,10 +54841,7 @@ def _diagnose_display_access_issue() -> str:
                     f"Error: {exc}"
                 )
     if display:
-        return (
-            "Display variables are present, but GTK could not open a usable GDK display.\n"
-            f"DISPLAY={display}"
-        )
+        return f"Display variables are present, but GTK could not open a usable GDK display.\nDISPLAY={display}"
     return _startup_no_display_message()
 
 
@@ -54636,8 +54964,6 @@ class StudyApp(Gtk.Application):
 
 
 if __name__ == "__main__":
-    import sys
-
     exam_date = None
     dialog_smoke_test = False
     dialog_smoke_strict = False
@@ -54690,10 +55016,13 @@ if __name__ == "__main__":
     if not gtk_ok:
         print(_diagnose_display_access_issue())
         sys.exit(0)
-    if _should_require_default_display(
-        dialog_smoke_test=dialog_smoke_test,
-        latency_soak_test=latency_soak_test,
-    ) and Gdk.Display.get_default() is None:
+    if (
+        _should_require_default_display(
+            dialog_smoke_test=dialog_smoke_test,
+            latency_soak_test=latency_soak_test,
+        )
+        and Gdk.Display.get_default() is None
+    ):
         print(_diagnose_display_access_issue())
         sys.exit(0)
     if not _acquire_single_instance_lock():

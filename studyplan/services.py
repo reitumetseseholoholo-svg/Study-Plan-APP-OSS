@@ -478,6 +478,7 @@ class LlamaCppTutorService:
 
         if backend_source in {"gateway", "llama_cpp_cloud"}:
             from .config import remote_llm_backends_allowed as _cloud_allowed
+
             if not _cloud_allowed():
                 logger.warning(
                     "Cloud LLM backends disabled by policy; skipping %s model resolution",
@@ -2818,12 +2819,8 @@ class InMemoryTutorLearnerModelStore:
             profile_meta["learning_loop_metrics"] = loop_metrics
 
             # Track concept-level error patterns
-            concept_ids: tuple[str, ...] = tuple(
-                str(c) for c in (getattr(assessment, "concept_ids", ()) or ())
-            )
-            error_patterns: tuple[str, ...] = tuple(
-                str(e) for e in (getattr(assessment, "error_patterns", ()) or ())
-            )
+            concept_ids: tuple[str, ...] = tuple(str(c) for c in (getattr(assessment, "concept_ids", ()) or ()))
+            error_patterns: tuple[str, ...] = tuple(str(e) for e in (getattr(assessment, "error_patterns", ()) or ()))
             concept_error_patterns: dict[str, tuple[str, ...]] = dict(
                 getattr(profile, "concept_error_patterns", {}) or {}
             )
@@ -2834,7 +2831,7 @@ class InMemoryTutorLearnerModelStore:
                     new_tags = tuple(t for t in error_patterns if t not in seen)
                     if new_tags:
                         merged = tuple(existing) + new_tags
-                        concept_error_patterns[cid] = merged[:self.max_tags]
+                        concept_error_patterns[cid] = merged[: self.max_tags]
 
             # Compute weak concept IDs from error counts
             weak_concept_ids_top: tuple[str, ...] = ()
@@ -2843,7 +2840,7 @@ class InMemoryTutorLearnerModelStore:
                     concept_error_patterns.items(),
                     key=lambda kv: -len(kv[1]),
                 )
-                weak_concept_ids_top = tuple(c for c, _ in sorted_concepts[:self.max_tags])
+                weak_concept_ids_top = tuple(c for c, _ in sorted_concepts[: self.max_tags])
 
             updated = replace(
                 profile,
@@ -2998,7 +2995,7 @@ class InMemoryTutorLearnerModelStore:
 
 from functools import lru_cache
 
-from .components.performance.caching import PerformanceCacheService, create_performance_cache_service
+from .components.performance.caching import PerformanceCacheService
 from .components.performance.optimization import PerformanceMiddleware
 from .components.performance.profiler import PerformanceProfiler
 
@@ -3095,11 +3092,7 @@ class DeterministicTutorPracticeService:
         phase = str(getattr(session_state, "loop_phase", "") or "").strip().lower()
         last_outcome = str(getattr(session_state, "last_assessment_outcome", "") or "").strip()
 
-        _include_teach_back = (
-            mode == "teach"
-            and phase == "practice"
-            and not last_outcome
-        )
+        _include_teach_back = mode == "teach" and phase == "practice" and not last_outcome
         if _include_teach_back:
             items.append(
                 TutorPracticeItem(
@@ -3116,13 +3109,18 @@ class DeterministicTutorPracticeService:
                         "keywords": list(core_keywords[:2]),
                         "marks_max": 2.0,
                         "misconception_tags_by_missing_keyword": {
-                            str(core_keywords[0]): "concept_anchor_missing" if core_keywords else "concept_anchor_missing",
+                            str(core_keywords[0]): "concept_anchor_missing"
+                            if core_keywords
+                            else "concept_anchor_missing",
                         },
                     },
                 )
             )
 
-        if mode in {"teach", "guided_practice", "retrieval_drill", "error_clinic", "revision_planner"} and len(items) < limit:
+        if (
+            mode in {"teach", "guided_practice", "retrieval_drill", "error_clinic", "revision_planner"}
+            and len(items) < limit
+        ):
             weak_topic = str(weak_topics[0] if weak_topics else topic).strip() or topic
             weak_tokens = [t for t in _tokenize_words(weak_topic) if len(t) >= 3][:3]
             items.append(
@@ -3587,6 +3585,7 @@ class DeterministicTutorAssessmentService:
         if not template_ref and not concept_ids:
             try:
                 from studyplan.domain_reasoning.concepts import detect_concepts
+
                 detected = detect_concepts(prompt)
             except Exception:
                 detected = []
@@ -3644,16 +3643,11 @@ class DeterministicTutorAssessmentService:
 
         # Extract diagnostics
         error_summary = str(trace.get("diagnostic_error_summary", trace.get("error_summary", "")) or "")
-        diag_error_tags: tuple[str, ...] = tuple(
-            str(t) for t in (trace.get("diagnostic_error_tags") or [])
-        )
+        diag_error_tags: tuple[str, ...] = tuple(str(t) for t in (trace.get("diagnostic_error_tags") or []))
         failed_steps: tuple[str, ...] = ()
         if has_result and outcome in ("incorrect", "partial"):
             exec_records = trace.get("execution") or []
-            failed_steps = tuple(
-                str(e.get("concept_id", "?")) for e in exec_records
-                if not e.get("success")
-            )
+            failed_steps = tuple(str(e.get("concept_id", "?")) for e in exec_records if not e.get("success"))
 
         # Enrich feedback with error summary when available
         if outcome in ("incorrect", "partial") and error_summary and "expected" not in feedback:

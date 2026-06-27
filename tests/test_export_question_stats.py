@@ -19,7 +19,9 @@ def test_build_question_stats_export_rows_includes_qid_keys_and_manual_links():
             }
         },
         _question_qid=lambda ch, idx: "fp1" if (ch == chapter and idx == 0) else str(idx),
-        resolve_question_outcomes=lambda ch, idx: {"outcome_ids": ["resolved1"]} if (ch == chapter and idx == 0) else {"outcome_ids": []},
+        resolve_question_outcomes=lambda ch, idx: (
+            {"outcome_ids": ["resolved1"]} if (ch == chapter and idx == 0) else {"outcome_ids": []}
+        ),
     )
 
     rows = build_question_stats_export_rows(engine)

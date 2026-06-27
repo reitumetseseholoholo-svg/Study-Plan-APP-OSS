@@ -7,6 +7,7 @@ Paths: ``STUDYPLAN_LLM_MODEL_ROUTING_PATH`` or ``<CONFIG_HOME>/llm_model_routing
 Only model names that exist in the current Ollama candidate list are used; missing
 names are skipped so deployments stay safe.
 """
+
 from __future__ import annotations
 
 import json

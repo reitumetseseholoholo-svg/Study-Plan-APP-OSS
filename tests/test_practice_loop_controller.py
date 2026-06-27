@@ -1,7 +1,7 @@
 """Unit tests for studyplan/practice_loop_controller.py."""
+
 from __future__ import annotations
 
-from typing import Any
 
 import pytest
 
@@ -9,7 +9,6 @@ from studyplan.cognitive_state import CognitiveState
 from studyplan.contracts import (
     AppStateSnapshot,
     TutorAssessmentResult,
-    TutorAssessmentSubmission,
     TutorLearnerProfileSnapshot,
     TutorPracticeItem,
     TutorSessionState,
@@ -134,20 +133,23 @@ def test_coerce_bool_handles_truthy():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("raw,expected", [
-    ("clear", "clear"),
-    ("Cleared", "clear"),
-    ("understood", "clear"),
-    ("Got it", "clear"),
-    ("partly", "partly"),
-    ("partially", "partly"),
-    ("almost", "partly"),
-    ("stuck", "stuck"),
-    ("confused", "stuck"),
-    ("not clear", "stuck"),
-    ("random_text", ""),
-    (None, ""),
-])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("clear", "clear"),
+        ("Cleared", "clear"),
+        ("understood", "clear"),
+        ("Got it", "clear"),
+        ("partly", "partly"),
+        ("partially", "partly"),
+        ("almost", "partly"),
+        ("stuck", "stuck"),
+        ("confused", "stuck"),
+        ("not clear", "stuck"),
+        ("random_text", ""),
+        (None, ""),
+    ],
+)
 def test_normalize_learner_help_feedback(raw, expected):
     assert PracticeLoopController.normalize_learner_help_feedback(raw) == expected
 

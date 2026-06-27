@@ -19,9 +19,20 @@ class CostOfPreferenceTemplate(FormulaTemplate):
         result = self._solver(d, p)
 
         steps: list[dict[str, Any]] = [
-            {"step_id": "cost_of_preference", "description": "Kp = Pref div / Market price", "value": result, "formula": f"{d}/{p}"},
+            {
+                "step_id": "cost_of_preference",
+                "description": "Kp = Pref div / Market price",
+                "value": result,
+                "formula": f"{d}/{p}",
+            },
         ]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

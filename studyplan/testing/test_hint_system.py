@@ -1,7 +1,6 @@
 """Tests for studyplan.hint_system module."""
-import pytest
 
-from studyplan.hint_system import HintBank, HintLevel
+from studyplan.hint_system import HintBank
 
 
 # ---------------------------------------------------------------------------
@@ -67,27 +66,23 @@ def test_get_hint_clamps_above_four():
 
 
 def test_numeric_with_formula_error_tag_includes_formula_context():
-    bank = HintBank(
-        topic="NPV", concept="net present value",
-        item_type="numeric", error_tags=("formula_error",)
-    )
+    bank = HintBank(topic="NPV", concept="net present value", item_type="numeric", error_tags=("formula_error",))
     light = bank.get_hint(1)
     assert "formula" in light.text.lower()
 
 
 def test_numeric_with_sign_error_tag_mentions_sign():
-    bank = HintBank(
-        topic="NPV", concept="cash flows",
-        item_type="numeric", error_tags=("sign_error",)
-    )
+    bank = HintBank(topic="NPV", concept="cash flows", item_type="numeric", error_tags=("sign_error",))
     light = bank.get_hint(1)
     assert "sign" in light.text.lower()
 
 
 def test_short_answer_with_expected_answer_includes_keywords():
     bank = HintBank(
-        topic="WACC", concept="cost of capital",
-        item_type="short_answer", expected_answer="market value weighted average discount rate"
+        topic="WACC",
+        concept="cost of capital",
+        item_type="short_answer",
+        expected_answer="market value weighted average discount rate",
     )
     light = bank.get_hint(1)
     # Should mention some of the first words of expected_answer
@@ -95,10 +90,7 @@ def test_short_answer_with_expected_answer_includes_keywords():
 
 
 def test_solution_level_uses_expected_answer_when_provided():
-    bank = HintBank(
-        topic="NPV", concept="discounting",
-        item_type="numeric", expected_answer="42.5"
-    )
+    bank = HintBank(topic="NPV", concept="discounting", item_type="numeric", expected_answer="42.5")
     solution = bank.get_hint(4)
     assert "42.5" in solution.text
 

@@ -144,7 +144,10 @@ def run() -> int:
     parser.add_argument("--benchmark", required=True)
     parser.add_argument("--compare", required=True)
     parser.add_argument("--trend", required=True)
-    parser.add_argument("--report", default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_VALIDATE_REPORT", "tutor_quality_validate_report.json"))
+    parser.add_argument(
+        "--report",
+        default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_VALIDATE_REPORT", "tutor_quality_validate_report.json"),
+    )
     args = parser.parse_args()
 
     benchmark_path = os.path.abspath(os.path.expanduser(str(args.benchmark)))

@@ -50,9 +50,7 @@ def merge_dracut(path: pathlib.Path, additions: list[str]) -> str:
         flags=re.MULTILINE,
     )
     if n != 1:
-        raise SystemExit(
-            f"Expected exactly one kernel_cmdline= line in {path}, matched {n}"
-        )
+        raise SystemExit(f"Expected exactly one kernel_cmdline= line in {path}, matched {n}")
     return new_text
 
 
@@ -71,9 +69,7 @@ def merge_grub_default(path: pathlib.Path, additions: list[str]) -> str:
         flags=re.MULTILINE,
     )
     if n != 1:
-        raise SystemExit(
-            f"Expected exactly one GRUB_CMDLINE_LINUX_DEFAULT= in {path}, matched {n}"
-        )
+        raise SystemExit(f"Expected exactly one GRUB_CMDLINE_LINUX_DEFAULT= in {path}, matched {n}")
     return new_text
 
 

@@ -1,7 +1,7 @@
 """Tests for studyplan.ai.tutor_prompts (Slice 2: matrix-aligned tutor prompts)."""
+
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 

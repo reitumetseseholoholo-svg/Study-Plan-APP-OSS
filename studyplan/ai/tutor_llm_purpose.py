@@ -6,6 +6,7 @@ deep reasoning, proofs, code, or very long analysis. Falls back to ``tutor`` oth
 
 Disable with ``STUDYPLAN_TUTOR_DYNAMIC_MODEL_PURPOSE=0`` to always use ``tutor``.
 """
+
 from __future__ import annotations
 
 import os

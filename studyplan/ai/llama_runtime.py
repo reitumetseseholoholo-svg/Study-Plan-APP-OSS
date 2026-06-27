@@ -21,7 +21,6 @@ import json
 import logging
 import os
 import shutil
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -35,7 +34,6 @@ from .model_ranker import (
     estimate_param_b,
     estimate_ram,
     pick_best,
-    quant_bpp,
     resolve_tier,
     score_quality,
 )
@@ -177,9 +175,7 @@ class LlamaRuntime:
             ctx_size=int(getattr(cfg, "LLAMA_CPP_SERVER_CTX_SIZE", 4096) or 4096),
             n_gpu_layers=int(getattr(cfg, "LLAMA_CPP_SERVER_N_GPU_LAYERS", 0) or 0),
             batch_size=int(getattr(cfg, "LLAMA_CPP_SERVER_BATCH_SIZE", 512) or 512),
-            startup_timeout_seconds=float(
-                getattr(cfg, "LLAMA_CPP_SERVER_STARTUP_TIMEOUT", 60.0) or 60.0
-            ),
+            startup_timeout_seconds=float(getattr(cfg, "LLAMA_CPP_SERVER_STARTUP_TIMEOUT", 60.0) or 60.0),
             idle_shutdown_seconds=max(0.0, idle_shutdown),
             idle_poll_interval_seconds=max(1.0, min(300.0, idle_poll)),
             extra_args=extra_list,
@@ -188,21 +184,17 @@ class LlamaRuntime:
         ram_mb = int(getattr(cfg, "LLAMA_CPP_RAM_BUDGET_MB", 0) or 0)
         ram_bytes = ram_mb * 1024 * 1024 if ram_mb > 0 else _detect_available_ram()
 
-        default_host = str(
-            getattr(cfg, "LLAMA_CPP_OLLAMA_HOST", "http://127.0.0.1:11434") or ""
-        ).rstrip("/") or "http://127.0.0.1:11434"
-        host = (
-            str(ollama_host_override or "").strip().rstrip("/")
-            or default_host
+        default_host = (
+            str(getattr(cfg, "LLAMA_CPP_OLLAMA_HOST", "http://127.0.0.1:11434") or "").rstrip("/")
+            or "http://127.0.0.1:11434"
         )
+        host = str(ollama_host_override or "").strip().rstrip("/") or default_host
 
         return cls(
             registry=GgufRegistry(config=registry_cfg),
             selector=ModelSelector(ram_budget_bytes=ram_bytes),
             server=LlamaServerManager(config=server_cfg),
-            ollama_fallback_enabled=bool(
-                getattr(cfg, "LLAMA_CPP_OLLAMA_FALLBACK", True)
-            ),
+            ollama_fallback_enabled=bool(getattr(cfg, "LLAMA_CPP_OLLAMA_FALLBACK", True)),
             ollama_host=host,
         )
 
@@ -254,9 +246,7 @@ class LlamaRuntime:
         pref_raw = (preferred_gguf_name or "").strip()
         preferred = None
         if pref_raw:
-            preferred = _resolve_preferred_gguf(
-                self.registry, self.selector, catalog, pref_raw
-            )
+            preferred = _resolve_preferred_gguf(self.registry, self.selector, catalog, pref_raw)
             if preferred is None:
                 log.warning(
                     "Preferred managed GGUF %r not found or not usable; using auto selection",
@@ -477,6 +467,7 @@ class LlamaRuntime:
 # Helpers
 # ------------------------------------------------------------------
 
+
 def _estimate_param_b_from_name(model_name: str) -> float:
     return estimate_param_b(model_name)
 
@@ -501,6 +492,7 @@ def _get_ollama_ram_budget_bytes() -> int:
     # Priority 1: Config-level env var
     try:
         from ..config import Config
+
         if int(getattr(Config, "LLAMA_CPP_RAM_BUDGET_MB", 0) or 0) > 0:
             return int(Config.LLAMA_CPP_RAM_BUDGET_MB) * 1024 * 1024
     except Exception:
@@ -589,6 +581,7 @@ def _ollama_list_models(host: str) -> list[str]:
 # Connectivity helpers (env-var deterministic, no TCP probe needed)
 # ------------------------------------------------------------------
 
+
 def _online_mode() -> bool:
     """Return True when cloud LLM backends are allowed by policy.
 
@@ -596,6 +589,7 @@ def _online_mode() -> bool:
     live TCP probe so this is safe to call from background threads.
     """
     from ..config import remote_llm_backends_allowed as _allowed
+
     return _allowed()
 
 

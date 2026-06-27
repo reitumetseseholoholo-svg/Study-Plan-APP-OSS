@@ -53,6 +53,7 @@ logger = get_logger(__name__)
 # Legacy plain-string protocol (kept for backward compatibility)
 # ---------------------------------------------------------------------------
 
+
 class QGenService(Protocol):
     """Protocol for question generation backends."""
 
@@ -62,8 +63,7 @@ class QGenService(Protocol):
         topic: str,
         source_text: str | None = None,
         count: int = 5,
-    ) -> List[str]:
-        ...
+    ) -> List[str]: ...
 
 
 class DummyQGenService:
@@ -82,7 +82,7 @@ class DummyQGenService:
         questions: List[str] = []
         base = source_text or topic
         for i in range(count):
-            questions.append(f"[{topic}] Auto-generated question {i+1} based on {base}.")
+            questions.append(f"[{topic}] Auto-generated question {i + 1} based on {base}.")
         logger.debug("dummy questions generated", extra={"topic": topic, "count": count})
         return questions
 
@@ -213,6 +213,7 @@ def get_qgen_service() -> QGenService:
 # Structured question format (matches app JSON import schema)
 # ---------------------------------------------------------------------------
 
+
 class StructuredQuestion(TypedDict):
     """A single question in the app-ready import format.
 
@@ -230,6 +231,7 @@ class StructuredQuestion(TypedDict):
 # Structured question generation protocol
 # ---------------------------------------------------------------------------
 
+
 class StructuredQGenService(Protocol):
     """Protocol for backends that produce fully structured question objects."""
 
@@ -239,8 +241,7 @@ class StructuredQGenService(Protocol):
         topic: str,
         source_text: str | None = None,
         count: int = 5,
-    ) -> List[StructuredQuestion]:
-        ...
+    ) -> List[StructuredQuestion]: ...
 
 
 class DummyStructuredQGenService:
@@ -272,9 +273,7 @@ class DummyStructuredQGenService:
                     question=q_text,
                     options=opts,
                     correct=opts[0],
-                    explanation=(
-                        f"Option A is correct for question {i + 1} on '{topic}'."
-                    ),
+                    explanation=(f"Option A is correct for question {i + 1} on '{topic}'."),
                 )
             )
         logger.debug(
@@ -295,6 +294,7 @@ def get_structured_qgen_service() -> StructuredQGenService:
 # ---------------------------------------------------------------------------
 # Single-chapter agent
 # ---------------------------------------------------------------------------
+
 
 class QGenAgent:
     """Generates structured questions for a single chapter or topic.
@@ -336,6 +336,7 @@ class QGenAgent:
 # ---------------------------------------------------------------------------
 # Orchestrator – runs agents in parallel and merges output
 # ---------------------------------------------------------------------------
+
 
 class AgentOrchestrator:
     """Runs one :class:`QGenAgent` per chapter in parallel and merges results.
@@ -394,12 +395,8 @@ class AgentOrchestrator:
         ]
 
         merged: dict[str, List[StructuredQuestion]] = {}
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=self.max_workers
-        ) as executor:
-            future_to_chapter = {
-                executor.submit(agent.run): agent.chapter for agent in agents
-            }
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_chapter = {executor.submit(agent.run): agent.chapter for agent in agents}
             for future in concurrent.futures.as_completed(future_to_chapter):
                 chapter = future_to_chapter[future]
                 try:
@@ -412,9 +409,7 @@ class AgentOrchestrator:
                     )
 
         # Restore insertion order so the output matches the input chapter list.
-        ordered: dict[str, List[StructuredQuestion]] = {
-            ch: merged[ch] for ch in chapters if ch in merged
-        }
+        ordered: dict[str, List[StructuredQuestion]] = {ch: merged[ch] for ch in chapters if ch in merged}
         logger.info(
             "orchestrator merged agent outputs",
             extra={
@@ -439,4 +434,3 @@ class AgentOrchestrator:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(merged, fh, indent=2, ensure_ascii=False)
         logger.info("merged question output saved", extra={"path": path})
-

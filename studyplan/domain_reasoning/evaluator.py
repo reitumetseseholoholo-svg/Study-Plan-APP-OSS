@@ -65,8 +65,10 @@ def evaluate_question(
     # Tier 1: Exact template execution (if template_ref provided)
     if template_ref and template_inputs:
         ev = _evaluate_single_concept(
-            template_ref, template_inputs,
-            parsed_correct, learner_answer,
+            template_ref,
+            template_inputs,
+            parsed_correct,
+            learner_answer,
             is_primary=True,
             learner_workings=learner_workings,
         )
@@ -83,8 +85,10 @@ def evaluate_question(
         if not inputs:
             continue
         ev = _evaluate_single_concept(
-            cid, inputs,
-            parsed_correct, learner_answer,
+            cid,
+            inputs,
+            parsed_correct,
+            learner_answer,
             is_primary=False,
             learner_workings=learner_workings,
         )
@@ -94,18 +98,22 @@ def evaluate_question(
     # Tier 3: Numerical verification using existing verify_numerical_answer
     if options and correct and not evaluations:
         v_result = verify_numerical_answer(
-            question, options, correct,
+            question,
+            options,
+            correct,
             template_ref=template_ref,
             template_inputs=template_inputs,
             explanation=explanation,
         )
         if v_result is not None:
-            evaluations.append(ConceptEvaluation(
-                concept_id="builtin.numerical_verification",
-                result=0.0,
-                error_tags=[v_result],
-                confidence=0.5,
-            ))
+            evaluations.append(
+                ConceptEvaluation(
+                    concept_id="builtin.numerical_verification",
+                    result=0.0,
+                    error_tags=[v_result],
+                    confidence=0.5,
+                )
+            )
 
     if not evaluations:
         return QuestionDiagnostic(
@@ -156,13 +164,15 @@ def _evaluate_single_concept(
     step_evals: list[StepEvaluation] = []
     for i, s in enumerate(truth_steps or []):
         match_info = step_matches[i] if i < len(step_matches) else {}
-        step_evals.append(StepEvaluation(
-            step_id=s.get("step_id", ""),
-            description=s.get("description", ""),
-            expected=float(s.get("value", 0)) if s.get("value") is not None else None,
-            actual=match_info.get("actual"),
-            match=bool(match_info.get("match", False)),
-        ))
+        step_evals.append(
+            StepEvaluation(
+                step_id=s.get("step_id", ""),
+                description=s.get("description", ""),
+                expected=float(s.get("value", 0)) if s.get("value") is not None else None,
+                actual=match_info.get("actual"),
+                match=bool(match_info.get("match", False)),
+            )
+        )
 
     # Error classification
     error_tags: list[str] = []
@@ -210,7 +220,8 @@ def _extract_inputs_for_concept(
     Uses the same candidate functions as the numerical solver's Tier 3,
     returning the first plausible parameter set.
     """
-    from studyplan.numerical_solver import _FORMULA_CANDIDATES, _FORMULA_SOLVERS
+    from studyplan.numerical_solver import _FORMULA_CANDIDATES
+
     formula_name = concept_id.replace("fm.", "", 1)
     candidate_fn = _FORMULA_CANDIDATES.get(formula_name)
     if candidate_fn is None:

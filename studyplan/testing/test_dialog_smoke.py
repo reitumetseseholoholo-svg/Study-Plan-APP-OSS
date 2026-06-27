@@ -14,7 +14,9 @@ def test_dialog_prompt_construction():
     # smoke simulation: ensure data structures support a request
     session = TutorSessionState(session_id="s1", module="m", topic="T1")
     learner = TutorLearnerProfileSnapshot(learner_id="u1", module="m")
-    app = AppStateSnapshot(module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0)
+    app = AppStateSnapshot(
+        module="m", current_topic="T1", coach_pick="", days_to_exam=None, must_review_due=0, overdue_srs_count=0
+    )
     req = TutorLoopTurnRequest(
         user_message="Hello tutor",
         app_snapshot=app,

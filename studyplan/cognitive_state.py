@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 import datetime as _dt
 from enum import Enum
 import math
-from typing import Any, Tuple, List
+from typing import Any
 
 from .logging_config import get_logger
 
@@ -142,12 +142,14 @@ class CognitiveState:
     last_persisted_at: str | None = None
     last_persist_ok: bool | None = None
     last_persist_error: str | None = None
+
     # recovery / degradation state
     class Mode(str, Enum):
         NORMAL = "normal"
         DEGRADED = "degraded"
         READONLY = "readonly"
         OFFLINE = "offline"
+
     mode: "CognitiveState.Mode" = Mode.NORMAL
     recovery_hints: dict[str, str] = field(default_factory=dict)
 
@@ -165,9 +167,7 @@ class CognitiveState:
             "quiz_active": bool(self.quiz_active),
             "struggle_mode": bool(self.struggle_mode),
             "mode": str(getattr(self.mode, "value", self.mode) or self.Mode.NORMAL.value),
-            "recovery_hints": {
-                str(k): str(v) for k, v in dict(self.recovery_hints or {}).items() if str(k).strip()
-            },
+            "recovery_hints": {str(k): str(v) for k, v in dict(self.recovery_hints or {}).items() if str(k).strip()},
             "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
         }
         return payload
@@ -247,9 +247,7 @@ class CognitiveState:
             state.mode = cls.Mode.NORMAL
         recovery_hints = payload.get("recovery_hints")
         if isinstance(recovery_hints, dict):
-            state.recovery_hints = {
-                str(k): str(v) for k, v in recovery_hints.items() if str(k).strip()
-            }
+            state.recovery_hints = {str(k): str(v) for k, v in recovery_hints.items() if str(k).strip()}
         return state
 
     @classmethod

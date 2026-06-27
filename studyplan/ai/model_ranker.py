@@ -21,11 +21,20 @@ log = logging.getLogger(__name__)
 # Quantisation bytes-per-parameter lookup
 # ---------------------------------------------------------------------------
 _QUANT_BPP: dict[str, float] = {
-    "q2_k": 0.35, "q2": 0.35,
-    "q3_k": 0.45, "q3": 0.45,
-    "q4_k": 0.58, "q4_0": 0.58, "q4": 0.58,
-    "q5_k": 0.75, "q5": 0.75,
-    "q6": 1.0, "q8": 1.0, "f16": 1.0, "fp16": 1.0, "bf16": 1.0,
+    "q2_k": 0.35,
+    "q2": 0.35,
+    "q3_k": 0.45,
+    "q3": 0.45,
+    "q4_k": 0.58,
+    "q4_0": 0.58,
+    "q4": 0.58,
+    "q5_k": 0.75,
+    "q5": 0.75,
+    "q6": 1.0,
+    "q8": 1.0,
+    "f16": 1.0,
+    "fp16": 1.0,
+    "bf16": 1.0,
 }
 
 
@@ -79,7 +88,7 @@ def estimate_param_b(model_name: str) -> float:
         int_start = int_end - 1
         while int_start >= 0 and raw[int_start].isdigit():
             int_start -= 1
-        int_str = raw[int_start + 1: int_end]
+        int_str = raw[int_start + 1 : int_end]
         if int_str.isdigit():
             try:
                 combined = float(f"{int_str}.{frac_str}")
@@ -100,9 +109,20 @@ def estimate_param_b(model_name: str) -> float:
 # ---------------------------------------------------------------------------
 def infer_architecture(model_name: str) -> str:
     lower = str(model_name or "").strip().lower()
-    for token in ("deepseek", "llama", "qwen", "phi", "gemma",
-                  "orca", "mistral", "mamba", "falcon", "starcoder",
-                  "tinyllama", "gpt4all"):
+    for token in (
+        "deepseek",
+        "llama",
+        "qwen",
+        "phi",
+        "gemma",
+        "orca",
+        "mistral",
+        "mamba",
+        "falcon",
+        "starcoder",
+        "tinyllama",
+        "gpt4all",
+    ):
         if token in lower:
             return token
     return ""
@@ -147,7 +167,7 @@ def resolve_tier(purpose: str) -> str:
 _ARCH_BONUS: dict[str, float] = {
     "qwen": 1.5,
     "llama": 1.5,
-    "phi": 1.0,
+    "phi": 2.0,
     "gemma": 1.0,
     "deepseek": 0.5,
     "mistral": 0.5,
@@ -158,11 +178,15 @@ _ARCH_BONUS: dict[str, float] = {
 # ---------------------------------------------------------------------------
 # Quality scoring
 # ---------------------------------------------------------------------------
-def score_quality(model_name: str, purpose_tier: str, *,
-                  param_b: float = 0.0,
-                  quant: str = "",
-                  is_instruct: bool | None = None,
-                  arch: str = "") -> float:
+def score_quality(
+    model_name: str,
+    purpose_tier: str,
+    *,
+    param_b: float = 0.0,
+    quant: str = "",
+    is_instruct: bool | None = None,
+    arch: str = "",
+) -> float:
     """Return a higher-is-better quality score for *model_name*.
 
     All keyword parameters are optional — if omitted they are inferred
@@ -264,9 +288,7 @@ def _param_size_score(size_b: float, tier: str) -> float:
 
 
 def _infer_quant_from_name(name: str) -> str:
-    m = re.search(
-        r"(q[2345678](?:_[0kms]+(?:_[sml])?)?|fp16|f16|bf16|f32)", name, re.IGNORECASE
-    )
+    m = re.search(r"(q[2345678](?:_[0kms]+(?:_[sml])?)?|fp16|f16|bf16|f32)", name, re.IGNORECASE)
     return m.group(1).lower().replace("-", "_") if m else ""
 
 
@@ -276,9 +298,7 @@ def _infer_quant_from_name(name: str) -> str:
 _RUNTIME_OVERHEAD = 300_000_000
 
 
-def estimate_ram(model_name: str, *,
-                 actual_size_bytes: int | None = None,
-                 num_ctx: int = 4096) -> int:
+def estimate_ram(model_name: str, *, actual_size_bytes: int | None = None, num_ctx: int = 4096) -> int:
     """Estimate RAM (bytes) needed to load *model_name*."""
     if actual_size_bytes is not None and actual_size_bytes > 0:
         weight_bytes = int(actual_size_bytes)
@@ -302,10 +322,14 @@ def estimate_ram(model_name: str, *,
 # ---------------------------------------------------------------------------
 # Model selection
 # ---------------------------------------------------------------------------
-def pick_best(models: list[str], purpose: str, *,
-              ram_budget: int = 0,
-              exclude: set[str] | None = None,
-              actual_sizes: dict[str, int] | None = None) -> str | None:
+def pick_best(
+    models: list[str],
+    purpose: str,
+    *,
+    ram_budget: int = 0,
+    exclude: set[str] | None = None,
+    actual_sizes: dict[str, int] | None = None,
+) -> str | None:
     """Pick the best model from *models* for *purpose*.
 
     Parameters

@@ -21,10 +21,26 @@ class CostOfEquityDvmTemplate(FormulaTemplate):
 
         d1 = d * (1.0 + g)
         steps: list[dict[str, Any]] = [
-            {"step_id": "dividend_next_year", "description": "Expected dividend next year", "value": d1, "formula": f"{d}*(1+{g})"},
-            {"step_id": "cost_of_equity_dvm", "description": "Cost of equity (DVM)", "value": result, "formula": f"({d1}/{p})+{g}"},
+            {
+                "step_id": "dividend_next_year",
+                "description": "Expected dividend next year",
+                "value": d1,
+                "formula": f"{d}*(1+{g})",
+            },
+            {
+                "step_id": "cost_of_equity_dvm",
+                "description": "Cost of equity (DVM)",
+                "value": result,
+                "formula": f"({d1}/{p})+{g}",
+            },
         ]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

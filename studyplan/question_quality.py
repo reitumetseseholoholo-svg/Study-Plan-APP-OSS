@@ -34,9 +34,7 @@ META_OPTION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 # LLM gap-generation failures: template phrases instead of real distractors.
-_GAP_OPTION_PLACEHOLDER_FULL = re.compile(
-    r"(?i)^\s*(?:full|complete)\s+option\s+text\s*[:\s]*[abcd]\s*$"
-)
+_GAP_OPTION_PLACEHOLDER_FULL = re.compile(r"(?i)^\s*(?:full|complete)\s+option\s+text\s*[:\s]*[abcd]\s*$")
 _GAP_OPTION_GENERIC = re.compile(
     r"(?i)^\s*(?:option|choice)\s*[abcd]\s*$|^\s*[abcd][\.\:\)]\s*(?:option|text|choice)\s*\d?\s*$"
 )
@@ -361,7 +359,10 @@ def _numeric_answer_consistency_issue(item: dict[str, Any]) -> str | None:
             continue
         if kind and correct_kind and kind != correct_kind:
             continue
-        if any(_numeric_values_close(value, mentioned) for mentioned in explanation_values) and not mentions_correct_value:
+        if (
+            any(_numeric_values_close(value, mentioned) for mentioned in explanation_values)
+            and not mentions_correct_value
+        ):
             return "explanation_numeric_supports_distractor"
     if CALC_KEYWORDS_PATTERN.search(question_text) and not mentions_correct_value:
         return "numeric_explanation_missing_answer_value"
@@ -601,14 +602,14 @@ class QuestionBankEvaluator:
         for path in self.paths:
             if os.path.isdir(path):
                 for fname in os.listdir(path):
-                    if fname.lower().endswith('.json'):
+                    if fname.lower().endswith(".json"):
                         self._evaluate_file(os.path.join(path, fname))
             elif os.path.isfile(path):
                 self._evaluate_file(path)
 
     def _evaluate_file(self, filepath: str) -> None:
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
             logger.error("failed to load question file", extra={"file": filepath, "error": str(e)})
@@ -776,7 +777,7 @@ def generated_question_rejection_reasons(
     opts = _options_list_from_item(item)
     question = str(item.get("question", "") or "").strip()
     correct = str(item.get("correct", "") or "").strip()
-    explanation = str(item.get("explanation", "") or "").strip()
+    str(item.get("explanation", "") or "").strip()
 
     if len(question) < (8 if strict else 4):
         reasons.append("question_too_short")
@@ -830,7 +831,7 @@ def generated_question_rejection_reasons(
 if __name__ == "__main__":
     import sys
 
-    paths = sys.argv[1:] or ['.']
+    paths = sys.argv[1:] or ["."]
     evaluator = QuestionBankEvaluator(paths)
     evaluator.run()
     print("Summary:", evaluator.summary())

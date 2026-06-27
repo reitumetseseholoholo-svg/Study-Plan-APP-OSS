@@ -22,19 +22,29 @@ class PaybackTemplate(FormulaTemplate):
         cumulative = 0.0
         for t, cf in enumerate(cfs, 1):
             cumulative += cf
-            steps.append({
-                "step_id": f"cumulative_year_{t}",
-                "description": f"Cumulative after year {t}",
-                "value": cumulative,
-                "formula": f"cumulative + {cf}",
-            })
-        steps.append({
-            "step_id": "payback",
-            "description": "Payback period (years)",
-            "value": result,
-            "formula": f"Payback({init}, {cfs})",
-        })
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+            steps.append(
+                {
+                    "step_id": f"cumulative_year_{t}",
+                    "description": f"Cumulative after year {t}",
+                    "value": cumulative,
+                    "formula": f"cumulative + {cf}",
+                }
+            )
+        steps.append(
+            {
+                "step_id": "payback",
+                "description": "Payback period (years)",
+                "value": result,
+                "formula": f"Payback({init}, {cfs})",
+            }
+        )
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)
@@ -76,22 +86,34 @@ class DiscountedPaybackTemplate(FormulaTemplate):
         for t, cf in enumerate(cfs, 1):
             pv = cf / ((1.0 + rate) ** t)
             cumulative += pv
-            steps.append({
-                "step_id": f"pv_year_{t}",
-                "description": f"PV of year {t}",
-                "value": pv,
-                "formula": f"{cf}/(1+{rate})^{t}",
-            })
-            steps.append({
-                "step_id": f"cum_disc_year_{t}",
-                "description": f"Cumulative discounted after year {t}",
-                "value": cumulative,
-                "formula": f"cumulative + {pv}",
-            })
-        steps.append({
-            "step_id": "discounted_payback",
-            "description": "Discounted payback period (years)",
-            "value": result,
-            "formula": f"DiscPayback({init}, {cfs}, {rate})",
-        })
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+            steps.append(
+                {
+                    "step_id": f"pv_year_{t}",
+                    "description": f"PV of year {t}",
+                    "value": pv,
+                    "formula": f"{cf}/(1+{rate})^{t}",
+                }
+            )
+            steps.append(
+                {
+                    "step_id": f"cum_disc_year_{t}",
+                    "description": f"Cumulative discounted after year {t}",
+                    "value": cumulative,
+                    "formula": f"cumulative + {pv}",
+                }
+            )
+        steps.append(
+            {
+                "step_id": "discounted_payback",
+                "description": "Discounted payback period (years)",
+                "value": result,
+                "formula": f"DiscPayback({init}, {cfs}, {rate})",
+            }
+        )
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }

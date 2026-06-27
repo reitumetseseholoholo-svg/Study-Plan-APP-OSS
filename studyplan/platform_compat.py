@@ -6,6 +6,7 @@ Provides platform-aware implementations for:
 - Opening files/folders in the OS file manager
 - Platform detection helpers
 """
+
 from __future__ import annotations
 
 import os
@@ -24,6 +25,7 @@ IS_MACOS = sys.platform == "darwin"
 if IS_WINDOWS:
     try:
         import msvcrt  # noqa: F401 — Windows-only stdlib module
+
         _msvcrt_any = cast(Any, msvcrt)
 
         def lock_file_exclusive_nb(fd: int) -> None:
@@ -66,6 +68,7 @@ def truncate_fd(fd: int, length: int = 0) -> None:
             os.lseek(fd, length, os.SEEK_SET)
             # _chsize is available via msvcrt on CPython for Windows
             import msvcrt as _msvcrt  # noqa: F811
+
             _msvcrt_any = cast(Any, _msvcrt)
             os_any = cast(Any, os)
 
@@ -80,6 +83,7 @@ def truncate_fd(fd: int, length: int = 0) -> None:
 # ---------------------------------------------------------------------------
 # Open file / folder in the platform's default handler
 # ---------------------------------------------------------------------------
+
 
 def open_path_in_os(path: str) -> None:
     """Open *path* (file or directory) in the platform's default handler.
@@ -115,6 +119,7 @@ def open_path_in_os_sync(path: str, timeout: int = 5) -> None:
 # Path helpers — allowed import roots
 # ---------------------------------------------------------------------------
 
+
 def extra_allowed_import_roots() -> list[str]:
     """Return additional allowed import-source root paths for the platform.
 
@@ -139,6 +144,7 @@ def extra_allowed_import_roots() -> list[str]:
 # ---------------------------------------------------------------------------
 # Focus-tracking availability
 # ---------------------------------------------------------------------------
+
 
 def is_focus_tracking_available() -> bool:
     """Return True if focus-tracking tools are available on this platform.

@@ -1,4 +1,5 @@
 """Tests for studyplan.platform_compat cross-platform helpers."""
+
 from __future__ import annotations
 
 import os

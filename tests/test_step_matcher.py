@@ -29,16 +29,14 @@ class TestParseLearnerWorkings:
 
     def test_multiline_workings(self):
         text = (
-            "WACC = 5% + 1.2*(10%-5%) = 11%\n"
-            "PV of Year 1 = 1000/1.1 = 909.09\n"
-            "NPV = -5000 + 909.09 + 826.45 = 735.54"
+            "WACC = 5% + 1.2*(10%-5%) = 11%\nPV of Year 1 = 1000/1.1 = 909.09\nNPV = -5000 + 909.09 + 826.45 = 735.54"
         )
         result = parse_learner_workings(text)
         assert len(result) >= 3
         labels = [r["step_id"] for r in result]
-        assert any("wacc" in l for l in labels)
-        assert any("pv" in l for l in labels)
-        assert any("npv" in l for l in labels)
+        assert any("wacc" in item for item in labels)
+        assert any("pv" in item for item in labels)
+        assert any("npv" in item for item in labels)
 
     def test_label_colon_value(self):
         result = parse_learner_workings("Cost of equity: 11.2%")
@@ -49,8 +47,8 @@ class TestParseLearnerWorkings:
         result = parse_learner_workings("(a) WACC = 11.2%\n(b) NPV = 735.54")
         assert len(result) >= 2
         labels = [r["step_id"] for r in result]
-        assert any("wacc" in l for l in labels)
-        assert any("npv" in l for l in labels)
+        assert any("wacc" in item for item in labels)
+        assert any("npv" in item for item in labels)
 
     def test_currency_symbols_handled(self):
         result = parse_learner_workings("Total PV = $1,234.56")
@@ -234,11 +232,7 @@ class TestIntegrationWithEvaluator:
         assert tags == []
 
     def test_pv_multi_year_workings(self):
-        workings = (
-            "PV yr 1 = 1000/1.1 = 909.09\n"
-            "PV yr 2 = 1500/1.21 = 1239.67\n"
-            "Total PV = 909.09 + 1239.67 = 2148.76"
-        )
+        workings = "PV yr 1 = 1000/1.1 = 909.09\nPV yr 2 = 1500/1.21 = 1239.67\nTotal PV = 909.09 + 1239.67 = 2148.76"
         truth_steps = [
             {"step_id": "pv_year_1", "value": 909.09, "description": "PV year 1"},
             {"step_id": "pv_year_2", "value": 1239.67, "description": "PV year 2"},

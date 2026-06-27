@@ -36,8 +36,12 @@ def _split_args(blob: str) -> list[str]:
 
 
 def run() -> int:
-    parser = argparse.ArgumentParser(description="Run full tutor-quality pipeline (benchmark -> compare -> trend -> validate).")
-    parser.add_argument("--mode", choices=("reference", "ollama"), default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_MODE", "reference"))
+    parser = argparse.ArgumentParser(
+        description="Run full tutor-quality pipeline (benchmark -> compare -> trend -> validate)."
+    )
+    parser.add_argument(
+        "--mode", choices=("reference", "ollama"), default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_MODE", "reference")
+    )
     parser.add_argument("--matrix", default=str(ROOT / "tests" / "tutor_quality" / "matrix_v1.json"))
     parser.add_argument("--expected", default=str(ROOT / "tests" / "tutor_quality" / "expected_scores_v1.json"))
     parser.add_argument("--gates-file", default=str(ROOT / "tests" / "tutor_quality" / "gates_v1.json"))

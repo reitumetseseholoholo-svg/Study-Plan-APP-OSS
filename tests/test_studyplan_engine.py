@@ -7,7 +7,6 @@ import json
 import sys
 import os
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
@@ -47,9 +46,7 @@ def test_acca_f7_load_infers_type_standard_from_outcome_text(engine_no_io):
             },
         }
     )
-    los = eng.syllabus_structure["Chapter 22: Consolidated Statement of Financial Position"][
-        "learning_outcomes"
-    ]
+    los = eng.syllabus_structure["Chapter 22: Consolidated Statement of Financial Position"]["learning_outcomes"]
     assert los[0].get("type") == "preparation"
 
 
@@ -141,6 +138,7 @@ def test_constructor_sets_today_and_initial_structures(monkeypatch):
         @classmethod
         def today(cls):
             return cls(2026, 1, 1)
+
     today = FakeDate(2026, 1, 1)
     monkeypatch.setattr(datetime, "date", FakeDate)
 
@@ -316,9 +314,13 @@ def test_cleanup_joblib_loky_runtime_blocking_pass_runs_process_cleanup_hook(mon
             shutdown_calls.append(dict(kwargs))
 
     fake_reusable = types.SimpleNamespace(_executor=_Executor())
-    fake_process = types.SimpleNamespace(_python_exit=lambda: process_calls.__setitem__("python_exit", process_calls["python_exit"] + 1))
+    fake_process = types.SimpleNamespace(
+        _python_exit=lambda: process_calls.__setitem__("python_exit", process_calls["python_exit"] + 1)
+    )
     fake_backend_rt = types.SimpleNamespace(
-        _resource_tracker=types.SimpleNamespace(_stop=lambda: tracker_calls.__setitem__("stop", tracker_calls["stop"] + 1))
+        _resource_tracker=types.SimpleNamespace(
+            _stop=lambda: tracker_calls.__setitem__("stop", tracker_calls["stop"] + 1)
+        )
     )
     monkeypatch.setitem(sys.modules, "joblib.externals.loky.reusable_executor", fake_reusable)
     monkeypatch.setitem(sys.modules, "joblib.externals.loky.process_executor", fake_process)
@@ -343,7 +345,9 @@ def test_cleanup_joblib_loky_runtime_blocking_pass_runs_process_cleanup_hook(mon
 def test_cleanup_joblib_loky_runtime_blocking_pass_runs_process_cleanup_even_without_executor(monkeypatch):
     process_calls = {"python_exit": 0}
     fake_reusable = types.SimpleNamespace(_executor=None)
-    fake_process = types.SimpleNamespace(_python_exit=lambda: process_calls.__setitem__("python_exit", process_calls["python_exit"] + 1))
+    fake_process = types.SimpleNamespace(
+        _python_exit=lambda: process_calls.__setitem__("python_exit", process_calls["python_exit"] + 1)
+    )
     monkeypatch.setitem(sys.modules, "joblib.externals.loky.reusable_executor", fake_reusable)
     monkeypatch.setitem(sys.modules, "joblib.externals.loky.process_executor", fake_process)
 
@@ -370,9 +374,13 @@ def test_cleanup_joblib_loky_runtime_uses_pending_executor_for_final_blocking_pa
             calls.append(dict(kwargs))
 
     fake_reusable = types.SimpleNamespace(_executor=_Executor())
-    fake_process = types.SimpleNamespace(_python_exit=lambda: process_calls.__setitem__("python_exit", process_calls["python_exit"] + 1))
+    fake_process = types.SimpleNamespace(
+        _python_exit=lambda: process_calls.__setitem__("python_exit", process_calls["python_exit"] + 1)
+    )
     fake_backend_rt = types.SimpleNamespace(
-        _resource_tracker=types.SimpleNamespace(_stop=lambda: tracker_calls.__setitem__("stop", tracker_calls["stop"] + 1))
+        _resource_tracker=types.SimpleNamespace(
+            _stop=lambda: tracker_calls.__setitem__("stop", tracker_calls["stop"] + 1)
+        )
     )
     monkeypatch.setitem(sys.modules, "joblib.externals.loky.reusable_executor", fake_reusable)
     monkeypatch.setitem(sys.modules, "joblib.externals.loky.process_executor", fake_process)
@@ -404,7 +412,9 @@ def test_cleanup_joblib_loky_runtime_uses_cached_process_module_when_import_fail
     process_calls = {"python_exit": 0}
     tracker_calls = {"stop": 0}
     fake_reusable = types.SimpleNamespace(_executor=None)
-    fake_process = types.SimpleNamespace(_python_exit=lambda: process_calls.__setitem__("python_exit", process_calls["python_exit"] + 1))
+    fake_process = types.SimpleNamespace(
+        _python_exit=lambda: process_calls.__setitem__("python_exit", process_calls["python_exit"] + 1)
+    )
     monkeypatch.setitem(sys.modules, "joblib.externals.loky.reusable_executor", fake_reusable)
 
     import importlib as _importlib
@@ -425,7 +435,9 @@ def test_cleanup_joblib_loky_runtime_uses_cached_process_module_when_import_fail
         StudyPlanEngine._LOKY_CLEANUP_NONBLOCKING_DONE = False
         StudyPlanEngine._LOKY_PROCESS_MODULE_REF = fake_process
         StudyPlanEngine._LOKY_BACKEND_RESOURCE_TRACKER_REF = types.SimpleNamespace(
-            _resource_tracker=types.SimpleNamespace(_stop=lambda: tracker_calls.__setitem__("stop", tracker_calls["stop"] + 1))
+            _resource_tracker=types.SimpleNamespace(
+                _stop=lambda: tracker_calls.__setitem__("stop", tracker_calls["stop"] + 1)
+            )
         )
         monkeypatch.setattr(_importlib, "import_module", _fake_import_module)
         StudyPlanEngine._cleanup_joblib_loky_runtime(wait_for_workers=True)
@@ -632,6 +644,7 @@ def test_update_question_outcome_ids_persists_via_question_stats(engine_no_io, m
     assert int(counts.get("questions_with_explicit_outcome_ids_manual", 0) or 0) == 1
     assert int(counts.get("questions_with_explicit_outcome_ids_direct", 0) or 0) == 0
 
+
 def test_match_chapter_low_confidence_logging_is_deduplicated(engine_no_io, monkeypatch):
     eng = engine_no_io
     logs: list[str] = []
@@ -699,10 +712,7 @@ def test_srs_transition_new_to_learning_to_mastered_and_donut_counts(engine_no_i
     # Ensure chapter has at least 3 questions and SRS in sync
     q_count = max(3, len(eng.QUESTIONS.get(chapter, [])))
     eng.sync_srs_with_questions()
-    eng.srs_data[chapter] = [
-        {"last_review": None, "interval": 1, "efactor": 2.5}
-        for _ in range(q_count)
-    ]
+    eng.srs_data[chapter] = [{"last_review": None, "interval": 1, "efactor": 2.5} for _ in range(q_count)]
     # All new
     stats = eng.get_mastery_stats(chapter)
     assert stats["new"] == q_count
@@ -744,13 +754,16 @@ def test_get_daily_plan_returns_requested_count(engine_no_io):
     assert len(plan5) == 5
     assert set(plan5).issubset(set(StudyPlanEngine.CHAPTERS))
 
+
 def test_toggle_completed_affects_is_completed(monkeypatch, engine_no_io):
     eng = engine_no_io
     today = datetime.date(2026, 1, 2)
+
     class FakeDate(datetime.date):
         @classmethod
         def today(cls):
             return today
+
     monkeypatch.setattr(datetime, "date", FakeDate)
 
     chapter = StudyPlanEngine.CHAPTERS[0]
@@ -809,7 +822,7 @@ def test_save_data_creates_and_prunes_rolling_backups(tmp_path, monkeypatch):
     monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
 
     eng = StudyPlanEngine()
-    setattr(eng, "BACKUP_RETENTION", 5)
+    eng.BACKUP_RETENTION = 5
 
     # First save creates data file; subsequent saves should create snapshots.
     for i in range(12):
@@ -944,8 +957,7 @@ def test_select_srs_questions_avoids_recent_when_possible(engine_with_fm_questio
 
     # Make everything previously reviewed and not overdue to isolate cooldown behavior.
     eng.srs_data[chapter] = [
-        {"last_review": datetime.date.today().isoformat(), "interval": 30, "efactor": 2.5}
-        for _ in range(total)
+        {"last_review": datetime.date.today().isoformat(), "interval": 30, "efactor": 2.5} for _ in range(total)
     ]
     eng.must_review[chapter] = {}
     # Recent history contains first 12 indices (cooldown window for count=6 is 12).
@@ -964,8 +976,7 @@ def test_select_srs_questions_keeps_due_even_if_recent(engine_with_fm_questions)
     assert total >= 10
 
     eng.srs_data[chapter] = [
-        {"last_review": datetime.date.today().isoformat(), "interval": 30, "efactor": 2.5}
-        for _ in range(total)
+        {"last_review": datetime.date.today().isoformat(), "interval": 30, "efactor": 2.5} for _ in range(total)
     ]
     today_iso = datetime.date.today().isoformat()
     eng.must_review[chapter] = {"0": today_iso, "1": today_iso}
@@ -985,8 +996,7 @@ def test_select_srs_questions_handles_corrupt_recent_history(engine_with_fm_ques
     assert total >= 8
 
     eng.srs_data[chapter] = [
-        {"last_review": datetime.date.today().isoformat(), "interval": 30, "efactor": 2.5}
-        for _ in range(total)
+        {"last_review": datetime.date.today().isoformat(), "interval": 30, "efactor": 2.5} for _ in range(total)
     ]
     eng.must_review[chapter] = {}
     # Mix of garbage/non-int/out-of-range values should not break selection.
@@ -1367,17 +1377,14 @@ def test_import_data_snapshot_clamps_srs_to_question_count(tmp_path, monkeypatch
     if q_count == 0:
         # Module-agnostic: seed one chapter with minimal questions so clamp logic is testable
         minimal = [
-            {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}
-            for _ in range(3)
+            {"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""} for _ in range(3)
         ]
         eng.QUESTIONS[chapter] = minimal
         q_count = 3
 
     snapshot = {
         "competence": {chapter: 55},
-        "srs_data": {
-            chapter: [{"last_review": None, "interval": 1, "efactor": 2.5} for _ in range(q_count + 200)]
-        },
+        "srs_data": {chapter: [{"last_review": None, "interval": 1, "efactor": 2.5} for _ in range(q_count + 200)]},
         "study_days": [datetime.date.today().isoformat()],
     }
     snap_path = tmp_path / "snapshot.json"
@@ -1397,7 +1404,12 @@ def test_add_question_preserves_outcome_ids_round_trip(tmp_path, monkeypatch):
     monkeypatch.setattr(StudyPlanEngine, "DATA_FILE", str(data_file), raising=True)
     monkeypatch.setattr(StudyPlanEngine, "QUESTIONS_FILE", str(questions_file), raising=True)
     monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
-    data_file.write_text(json.dumps({"competence": {}, "pomodoro_log": {"total_minutes": 0, "by_chapter": {}}, "srs_data": {}, "study_days": []}), encoding="utf-8")
+    data_file.write_text(
+        json.dumps(
+            {"competence": {}, "pomodoro_log": {"total_minutes": 0, "by_chapter": {}}, "srs_data": {}, "study_days": []}
+        ),
+        encoding="utf-8",
+    )
 
     eng = StudyPlanEngine(default_exam_date_to_today=False)
     q = {
@@ -1425,12 +1437,14 @@ def test_update_question_outcome_ids(tmp_path, monkeypatch):
     monkeypatch.setattr(StudyPlanEngine, "QUESTIONS_FILE", str(questions_file), raising=True)
     monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
     data_file.write_text(
-        json.dumps({
-            "competence": {},
-            "pomodoro_log": {"total_minutes": 0, "by_chapter": {}},
-            "srs_data": {chapter: [{"last_review": None, "interval": 1, "efactor": 2.5}] * 2},
-            "study_days": [],
-        }),
+        json.dumps(
+            {
+                "competence": {},
+                "pomodoro_log": {"total_minutes": 0, "by_chapter": {}},
+                "srs_data": {chapter: [{"last_review": None, "interval": 1, "efactor": 2.5}] * 2},
+                "study_days": [],
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -1460,7 +1474,12 @@ def test_restart_preserves_learning_cards_for_json_added_questions(tmp_path, mon
     monkeypatch.setattr(StudyPlanEngine, "migrate_pomodoro_log", lambda self: None, raising=True)
 
     extra_questions = [
-        {"question": "Extra Q1", "options": ["Revenue", "Costs", "Profit", "Margin"], "correct": "Revenue", "explanation": ""},
+        {
+            "question": "Extra Q1",
+            "options": ["Revenue", "Costs", "Profit", "Margin"],
+            "correct": "Revenue",
+            "explanation": "",
+        },
         {"question": "Extra Q2", "options": ["Alpha", "Beta", "Gamma", "Delta"], "correct": "Alpha", "explanation": ""},
     ]
     questions_file.write_text(json.dumps({chapter: extra_questions}), encoding="utf-8")
@@ -1490,8 +1509,7 @@ def test_select_leech_questions_targets_low_accuracy_recent_items(engine_no_io):
     chapter = "FM Function"
     # No built-in questions; inject enough for leech selection
     eng.QUESTIONS[chapter] = [
-        {"question": f"Q{i}", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}
-        for i in range(4)
+        {"question": f"Q{i}", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""} for i in range(4)
     ]
     today = datetime.date.today().isoformat()
     eng.question_stats[chapter] = {
@@ -1511,8 +1529,7 @@ def test_select_leech_questions_prefers_non_recent(engine_no_io):
     chapter = "FM Function"
     # No built-in questions; inject enough for leech selection
     eng.QUESTIONS[chapter] = [
-        {"question": f"Q{i}", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}
-        for i in range(2)
+        {"question": f"Q{i}", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""} for i in range(2)
     ]
     today = datetime.date.today().isoformat()
     eng.question_stats[chapter] = {
@@ -1917,9 +1934,9 @@ def test_import_syllabus_disk_cache_rejects_signature_mismatch(engine_no_io, tmp
 def test_import_syllabus_disk_cache_rejects_stale_entries(engine_no_io, tmp_path):
     eng = engine_no_io
     eng.syllabus_import_cache_file = str(tmp_path / "syllabus_import_cache.json")
-    old_date = (datetime.datetime.now() - datetime.timedelta(days=eng.SYLLABUS_IMPORT_CACHE_MAX_AGE_DAYS + 2)).isoformat(
-        timespec="seconds"
-    )
+    old_date = (
+        datetime.datetime.now() - datetime.timedelta(days=eng.SYLLABUS_IMPORT_CACHE_MAX_AGE_DAYS + 2)
+    ).isoformat(timespec="seconds")
     key = "acca_f9:abc:def"
     payload = {
         "schema_version": int(eng.SYLLABUS_IMPORT_CACHE_SCHEMA_VERSION),
@@ -2535,8 +2552,12 @@ def test_syllabus_pdf_ingest_parses_fm_style(engine_no_io):
     structure = config.get("syllabus_structure", {})
     assert isinstance(structure, dict), "parsed config must have syllabus_structure"
     # At least some entries in syllabus_structure must have outcomes or capability (parsing really happened)
-    with_outcomes = [k for k, v in structure.items() if isinstance(v, dict) and (v.get("learning_outcomes") or v.get("capability"))]
-    assert len(with_outcomes) >= 1, "parsed syllabus_structure must contain at least one chapter with outcomes or capability"
+    with_outcomes = [
+        k for k, v in structure.items() if isinstance(v, dict) and (v.get("learning_outcomes") or v.get("capability"))
+    ]
+    assert len(with_outcomes) >= 1, (
+        "parsed syllabus_structure must contain at least one chapter with outcomes or capability"
+    )
 
 
 def test_syllabus_pdf_ingest_parses_numbered_sections(engine_no_io):
@@ -2631,7 +2652,9 @@ def test_f7_module_load_gets_built_in_syllabus_structure(monkeypatch):
     config_with_empty_structure = {
         "title": "FR (F7) Financial Reporting",
         "chapters": list(F7_CHAPTERS),
-        "syllabus_structure": {ch: {"capability": "A", "learning_outcomes": [], "outcome_count": 0} for ch in F7_CHAPTERS},
+        "syllabus_structure": {
+            ch: {"capability": "A", "learning_outcomes": [], "outcome_count": 0} for ch in F7_CHAPTERS
+        },
     }
 
     def fake_load(mid):
@@ -2643,8 +2666,7 @@ def test_f7_module_load_gets_built_in_syllabus_structure(monkeypatch):
     assert len(eng.CHAPTERS) == 27
     assert eng.syllabus_structure
     total_outcomes = sum(
-        len((info or {}).get("learning_outcomes") or [])
-        for info in (eng.syllabus_structure or {}).values()
+        len((info or {}).get("learning_outcomes") or []) for info in (eng.syllabus_structure or {}).values()
     )
     assert total_outcomes > 0, "F7 built-in must fill syllabus_structure with outcome IDs"
     ch2 = (eng.syllabus_structure or {}).get("Chapter 2: Conceptual Framework", {})
@@ -2659,8 +2681,10 @@ def test_import_syllabus_fr_uses_fr_parser_and_maps_to_f7_chapters(engine_no_io,
     eng._syllabus_import_cache = {}
     eng._syllabus_parse_cache = {}
     base_config = {"title": "FR (F7) Financial Reporting", "chapters": list(F7_CHAPTERS)}
+
     def _fake_load(mid):
         return base_config if mid == "acca_f7" else {}
+
     monkeypatch.setattr(eng, "_load_module_config", _fake_load)
     assert eng._load_module_config("acca_f7").get("chapters") == F7_CHAPTERS
 
@@ -2745,10 +2769,7 @@ def test_parse_syllabus_with_ai_uses_retrieval_for_late_pdf_text(engine_no_io):
 def test_parse_syllabus_with_ai_uses_aliases_for_retrieval(engine_no_io):
     eng = engine_no_io
     eng.CHAPTER_ALIASES["financial management function"] = "FM Function"
-    pdf_text = (
-        "A Financial management function\n"
-        "a) Explain the nature and purpose of financial management.[1]\n"
-    )
+    pdf_text = "A Financial management function\na) Explain the nature and purpose of financial management.[1]\n"
     chapters = ["FM Function"]
 
     def _fake_llm(prompt, _max_tokens):
@@ -2900,7 +2921,9 @@ def test_semantic_tfidf_assets_reused_on_repeated_queries(engine_no_io, monkeypa
     monkeypatch.setattr(eng, "_semantic_build_chapter_assets", fake_build)
 
     first = eng._semantic_best_outcome_match(chapter, "What is the role of financial management?", outcome_lookup)
-    second = eng._semantic_best_outcome_match(chapter, "How do policy choices affect financial objectives?", outcome_lookup)
+    second = eng._semantic_best_outcome_match(
+        chapter, "How do policy choices affect financial objectives?", outcome_lookup
+    )
     assert isinstance(first, dict)
     assert isinstance(second, dict)
     stats = eng.get_semantic_perf_stats()
@@ -3141,7 +3164,7 @@ def test_get_outcome_coverage_counts_returns_shape(engine_no_io):
     assert "outcomes_with_linked_question_both" in counts
     assert "by_chapter" in counts
     assert isinstance(counts["by_chapter"], dict)
-    for ch, c in counts["by_chapter"].items():
+    for _ch, c in counts["by_chapter"].items():
         assert "total" in c and "with_resolved" in c and "with_explicit" in c
         assert "outcomes_with_linked_question" in c
         assert "outcomes_with_linked_question_direct" in c
@@ -3337,9 +3360,7 @@ def test_get_question_bank_review_rows_flags_weak_or_invalid_outcome_links(tmp_p
     eng.CHAPTERS = [chapter]
     eng.QUESTIONS_DEFAULT = {chapter: []}
     eng.QUESTIONS = {chapter: [dict(question)]}
-    eng.syllabus_structure = {
-        chapter: {"learning_outcomes": [{"id": "A1", "text": "Calculate NPV.", "level": 2}]}
-    }
+    eng.syllabus_structure = {chapter: {"learning_outcomes": [{"id": "A1", "text": "Calculate NPV.", "level": 2}]}}
     meta_path = tmp_path / "question_quality_meta.json"
     monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
     monkeypatch.setattr(
@@ -3488,8 +3509,18 @@ def test_delete_question_for_review_preserve_srs_removes_bank_row_but_keeps_mast
     monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
     eng.srs_data = {
         chapter: [
-            {"last_review": "2026-02-01", "interval": 3, "efactor": 2.2, "question_key": eng._question_bank_fingerprint(kept)},
-            {"last_review": "2026-02-02", "interval": 30, "efactor": 2.4, "question_key": eng._question_bank_fingerprint(flagged)},
+            {
+                "last_review": "2026-02-01",
+                "interval": 3,
+                "efactor": 2.2,
+                "question_key": eng._question_bank_fingerprint(kept),
+            },
+            {
+                "last_review": "2026-02-02",
+                "interval": 30,
+                "efactor": 2.4,
+                "question_key": eng._question_bank_fingerprint(flagged),
+            },
         ]
     }
     eng.must_review = {chapter: {"0": "2026-02-05", "1": "2026-02-06"}}
@@ -3512,9 +3543,7 @@ def test_delete_question_for_review_preserve_srs_removes_bank_row_but_keeps_mast
     assert archived["preserved_srs"]["interval"] == 30
 
 
-def test_delete_question_for_review_preserve_srs_reindexes_surviving_review_meta(
-    tmp_path, monkeypatch, engine_no_io
-):
+def test_delete_question_for_review_preserve_srs_reindexes_surviving_review_meta(tmp_path, monkeypatch, engine_no_io):
     eng = engine_no_io
     chapter = "FM Function"
     flagged = {"question": "Delete me?", "options": ["A", "B", "C", "D"], "correct": "B", "explanation": ""}
@@ -3528,8 +3557,18 @@ def test_delete_question_for_review_preserve_srs_reindexes_surviving_review_meta
     monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
     eng.srs_data = {
         chapter: [
-            {"last_review": "2026-02-01", "interval": 10, "efactor": 2.2, "question_key": eng._question_bank_fingerprint(flagged)},
-            {"last_review": "2026-02-02", "interval": 5, "efactor": 2.4, "question_key": eng._question_bank_fingerprint(survivor)},
+            {
+                "last_review": "2026-02-01",
+                "interval": 10,
+                "efactor": 2.2,
+                "question_key": eng._question_bank_fingerprint(flagged),
+            },
+            {
+                "last_review": "2026-02-02",
+                "interval": 5,
+                "efactor": 2.4,
+                "question_key": eng._question_bank_fingerprint(survivor),
+            },
         ]
     }
     eng.must_review = {chapter: {"1": "2026-02-06"}}
@@ -3546,9 +3585,7 @@ def test_delete_question_for_review_preserve_srs_reindexes_surviving_review_meta
     assert eng.must_review[chapter] == {"0": "2026-02-06"}
 
 
-def test_auto_clean_flagged_questions_preserves_srs_and_reindexes_must_review(
-    tmp_path, monkeypatch, engine_no_io
-):
+def test_auto_clean_flagged_questions_preserves_srs_and_reindexes_must_review(tmp_path, monkeypatch, engine_no_io):
     eng = engine_no_io
     ch1 = "FM Function"
     ch2 = "Investment appraisal"
@@ -3593,12 +3630,32 @@ def test_auto_clean_flagged_questions_preserves_srs_and_reindexes_must_review(
     monkeypatch.setattr(eng, "_question_quality_meta_path", lambda: str(meta_path))
     eng.srs_data = {
         ch1: [
-            {"last_review": "2026-02-01", "interval": 3, "efactor": 2.2, "question_key": eng._question_bank_fingerprint(keep1)},
-            {"last_review": "2026-02-02", "interval": 30, "efactor": 2.4, "question_key": eng._question_bank_fingerprint(bad1)},
+            {
+                "last_review": "2026-02-01",
+                "interval": 3,
+                "efactor": 2.2,
+                "question_key": eng._question_bank_fingerprint(keep1),
+            },
+            {
+                "last_review": "2026-02-02",
+                "interval": 30,
+                "efactor": 2.4,
+                "question_key": eng._question_bank_fingerprint(bad1),
+            },
         ],
         ch2: [
-            {"last_review": "2026-02-03", "interval": 25, "efactor": 2.3, "question_key": eng._question_bank_fingerprint(bad2)},
-            {"last_review": "2026-02-04", "interval": 7, "efactor": 2.1, "question_key": eng._question_bank_fingerprint(keep2)},
+            {
+                "last_review": "2026-02-03",
+                "interval": 25,
+                "efactor": 2.3,
+                "question_key": eng._question_bank_fingerprint(bad2),
+            },
+            {
+                "last_review": "2026-02-04",
+                "interval": 7,
+                "efactor": 2.1,
+                "question_key": eng._question_bank_fingerprint(keep2),
+            },
         ],
     }
     eng.must_review = {ch1: {"0": "2026-02-05", "1": "2026-02-06"}, ch2: {"1": "2026-02-07"}}
@@ -3649,9 +3706,7 @@ def test_get_outcome_coverage_counts_cache_invalidates_when_manual_links_change(
     eng = engine_no_io
     chapter = "FM Function"
     eng.CHAPTERS = [chapter]
-    eng.QUESTIONS = {
-        chapter: [{"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}]
-    }
+    eng.QUESTIONS = {chapter: [{"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}]}
     eng.syllabus_structure = {
         chapter: {"learning_outcomes": [{"id": "o1", "text": "Outcome 1", "level": 1}]},
     }
@@ -3688,9 +3743,7 @@ def test_resolve_question_outcomes_manual_links_work_without_outcome_lookup(engi
     eng = engine_no_io
     chapter = "FM Function"
     eng.CHAPTERS = [chapter]
-    eng.QUESTIONS = {
-        chapter: [{"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}]
-    }
+    eng.QUESTIONS = {chapter: [{"question": "Q?", "options": ["A", "B", "C", "D"], "correct": "A", "explanation": ""}]}
     eng.syllabus_structure = {}
     qid = eng._question_qid(chapter, 0) or "0"
     eng.question_stats = {chapter: {qid: {"linked_outcome_ids": ["manual.only"]}}}
@@ -3741,9 +3794,7 @@ def test_get_outcome_coverage_counts_overlap_counts(engine_no_io):
             {"question": "Q1?", "options": ["A", "B", "C", "D"], "correct": "A", "outcome_ids": ["o1"]},
         ]
     }
-    eng.syllabus_structure = {
-        chapter: {"learning_outcomes": [{"id": "o1", "text": "Outcome 1", "level": 1}]}
-    }
+    eng.syllabus_structure = {chapter: {"learning_outcomes": [{"id": "o1", "text": "Outcome 1", "level": 1}]}}
     qid = eng._question_qid(chapter, 0) or "0"
     eng.question_stats = {chapter: {qid: {"linked_outcome_ids": ["o1"], "linked_outcome_source": "manual"}}}
 
@@ -3917,7 +3968,9 @@ def test_select_outcome_gap_questions_prioritizes_due_then_low_recall(engine_no_
         {"last_review": datetime.date.today().isoformat(), "interval": 30, "efactor": 2.5}
         for _ in range(len(eng.QUESTIONS.get(chapter, [])))
     ]
-    monkeypatch.setattr(eng, "predict_recall_prob", lambda _chapter, idx: 0.2 if idx == 1 else 0.4 if idx == 0 else None)
+    monkeypatch.setattr(
+        eng, "predict_recall_prob", lambda _chapter, idx: 0.2 if idx == 1 else 0.4 if idx == 0 else None
+    )
     monkeypatch.setattr(
         type(eng),
         "_estimate_question_miss_risk",
@@ -4096,8 +4149,7 @@ def test_select_semantic_interleave_questions_prioritizes_due_and_targets(engine
     monkeypatch.setattr(eng, "_question_outcome_ids", lambda _chapter, idx: mapping.get(idx, []))
     eng.must_review[chapter] = {"3": today_iso}
     eng.srs_data[chapter] = [
-        {"last_review": today_iso, "interval": 20, "efactor": 2.5}
-        for _ in range(len(eng.QUESTIONS.get(chapter, [])))
+        {"last_review": today_iso, "interval": 20, "efactor": 2.5} for _ in range(len(eng.QUESTIONS.get(chapter, [])))
     ]
     monkeypatch.setattr(eng, "predict_recall_prob", lambda _chapter, _idx: 0.4)
     monkeypatch.setattr(
@@ -4138,7 +4190,9 @@ def test_get_semantic_interleave_mix_counts(engine_with_fm_questions, monkeypatc
             ],
         }
     }
-    eng.outcome_stats = {chapter: {"A.1": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": datetime.date.today().isoformat()}}}
+    eng.outcome_stats = {
+        chapter: {"A.1": {"attempts": 1, "correct": 0, "streak": 0, "last_seen": datetime.date.today().isoformat()}}
+    }
     mapping = {
         0: ["A.1"],
         1: ["A.2"],
@@ -4371,7 +4425,10 @@ def test_import_questions_json_rejects_oversized_file(engine_no_io, tmp_path):
     eng = engine_no_io
     eng.MAX_QUESTION_IMPORT_BYTES = 128
     path = tmp_path / "questions.json"
-    path.write_text(json.dumps({"chapter": "FM Function", "questions": [{"question": "Q", "options": ["A"], "correct": "A"}] * 50}), encoding="utf-8")
+    path.write_text(
+        json.dumps({"chapter": "FM Function", "questions": [{"question": "Q", "options": ["A"], "correct": "A"}] * 50}),
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError):
         eng.import_questions_json(str(path))
 

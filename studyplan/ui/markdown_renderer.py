@@ -18,6 +18,7 @@ The module is intentionally GTK-import-safe: the top-level functions perform the
 gi import lazily so that unit tests and non-GUI code paths can import this module
 without a display.
 """
+
 from __future__ import annotations
 
 import re
@@ -37,17 +38,17 @@ _TAG_SPECS: dict[str, dict[str, Any]] = {
     "heading1": {"weight": 700, "scale": 1.44},
     "heading2": {"weight": 700, "scale": 1.22},
     "heading3": {"weight": 700, "scale": 1.10},
-    "bold":     {"weight": 700},
-    "italic":   {"style": 2},
+    "bold": {"weight": 700},
+    "italic": {"style": 2},
     "bold_italic": {"weight": 700, "style": 2},
-    "code_inline":  {"family": "monospace"},
-    "code_block":   {"family": "monospace"},
-    "table":        {"family": "monospace"},
+    "code_inline": {"family": "monospace"},
+    "code_block": {"family": "monospace"},
+    "table": {"family": "monospace"},
     "table_header": {"family": "monospace", "weight": 700},
-    "table_total":  {"family": "monospace", "weight": 700},
-    "table_sep":    {"family": "monospace", "foreground": "#888888"},
-    "h_rule":       {"foreground": "#888888"},
-    "list_bullet":  {},
+    "table_total": {"family": "monospace", "weight": 700},
+    "table_sep": {"family": "monospace", "foreground": "#888888"},
+    "h_rule": {"foreground": "#888888"},
+    "list_bullet": {},
 }
 
 
@@ -137,9 +138,7 @@ def _is_table_sep(line: str) -> bool:
 
 
 # Pattern for numeric cell values (integers, decimals, currency, %, parenthesised negatives)
-_NUMERIC_CELL_RE = re.compile(
-    r"^\s*[£$€(]?\s*[\d,]*\.?\d+\)?\s*%?\s*$"
-)
+_NUMERIC_CELL_RE = re.compile(r"^\s*[£$€(]?\s*[\d,]*\.?\d+\)?\s*%?\s*$")
 
 # Pattern to strip inline markup characters from a cell before width measurement
 _INLINE_MARKUP_RE = re.compile(r"\*{1,3}|_{1,2}|`")
@@ -261,6 +260,7 @@ def _format_aligned_table(table_lines: list[str]) -> list[tuple[str, bool, bool,
 # ---------------------------------------------------------------------------
 # Main renderer
 # ---------------------------------------------------------------------------
+
 
 def render_markdown_to_buffer(text: str, buf: Any) -> None:
     """Clear *buf* and insert *text* parsed as Markdown with formatting tags.

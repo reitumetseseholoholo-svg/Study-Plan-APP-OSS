@@ -1,0 +1,46 @@
+{
+  "lsp": {
+    "ruff": {
+      "initialization_options": {
+        "settings": {
+          "lineLength": 120,
+          "targetVersion": "py311",
+          "select": ["E", "F", "W", "N", "C", "B"],
+          "ignore": ["E501"],
+          "exclude": ["__pycache__", ".git", ".venv", "build", "dist"],
+          "perFileIgnores": {
+            "studyplan_app.py": ["E402", "F401", "C901", "C416", "B009", "B010", "B007", "E731", "N806", "N814", "F841", "C401", "F541", "C420", "B905"],
+            "studyplan_engine.py": ["E402", "F401", "C901", "C416", "B009", "B010", "B007", "E731", "N806", "N814", "F841", "C401", "F541", "C420", "B905"],
+            "studyplan_ai_tutor.py": ["F401", "C901", "C416", "C408", "B007", "E731", "N806", "N814", "F841", "C401", "F541", "C420", "B905", "N803"],
+            "studyplan_app_runtime_helpers.py": ["C901", "N803"],
+            "tests/test_studyplan_app_ollama.py": ["C901", "C416", "F841", "E402"],
+            "studyplan/ai/*.py": ["C901"],
+            "studyplan/coach_fsm.py": ["C901"],
+            "studyplan/cognitive_state.py": ["C901"],
+            "studyplan/services.py": ["C901", "E402"],
+            "studyplan/question_quality.py": ["C901"],
+            "studyplan/outcome_linking.py": ["C901"],
+            "studyplan/practice_loop_controller.py": ["C901"],
+            "studyplan/numerical_solver.py": ["C901", "E402"],
+            "studyplan/syllabus_fr.py": ["C901"],
+            "studyplan/syllabus_outcomes.py": ["C901"],
+            "studyplan/tutor_memory.py": ["C901"],
+            "studyplan/phase1_demo.py": ["C901"],
+            "studyplan/fsrs.py": ["C901"],
+            "studyplan/module_reconfig/*.py": ["C901"],
+            "studyplan/domain_reasoning/*.py": ["C901", "N812", "N811", "E402"],
+            "studyplan/module_chapters.py": ["C901"],
+            "studyplan_app_path_utils.py": ["C901"],
+            "studyplan_theme.py": ["E402"],
+            "studyplan/ui/gtk4/*.py": ["E402"],
+            "scripts/*.py": ["E402"],
+            "tools/*.py": ["C901", "N806", "N803", "F841", "C401", "B905", "E402", "N812", "B007"],
+            "tests/test_domain_reasoning.py": ["B017", "C901", "E402"],
+            "tests/test_engine_improvements.py": ["B017"],
+            "tests/test_studyplan_engine.py": ["N803"]
+          }
+        }
+      }
+    }
+  }
+}

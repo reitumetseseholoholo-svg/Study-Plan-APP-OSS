@@ -47,7 +47,7 @@ class MasteryKernel:
                 hints = 0
 
             attention = self._attention_weight(latency_val)
-            hint_discount = 0.7 ** hints
+            hint_discount = 0.7**hints
             post.hint_penalty = max(0.0, min(1.0, float(post.hint_penalty) * float(hint_discount)))
 
             if bool(correct):
@@ -115,8 +115,8 @@ class MasteryKernel:
         hints_used: int,
     ) -> None:
         wm = self.cognitive_state.working_memory
-        wm.struggle_flags["latency_spike"] = bool(latency_ms >= 45000.0) if latency_ms > 0.0 else bool(
-            wm.struggle_flags.get("latency_spike", False)
+        wm.struggle_flags["latency_spike"] = (
+            bool(latency_ms >= 45000.0) if latency_ms > 0.0 else bool(wm.struggle_flags.get("latency_spike", False))
         )
         if correct:
             wm.struggle_flags["error_streak"] = False

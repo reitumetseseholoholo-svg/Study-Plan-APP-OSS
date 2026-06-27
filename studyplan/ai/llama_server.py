@@ -40,12 +40,8 @@ class LlamaServerConfig:
         )
     )
     host: str = "127.0.0.1"
-    port: int = field(
-        default_factory=lambda: int(os.environ.get("STUDYPLAN_LLAMA_SERVER_PORT", "8090"))
-    )
-    threads: int = field(
-        default_factory=lambda: max(1, min(os.cpu_count() or 4, 6))
-    )
+    port: int = field(default_factory=lambda: int(os.environ.get("STUDYPLAN_LLAMA_SERVER_PORT", "8090")))
+    threads: int = field(default_factory=lambda: max(1, min(os.cpu_count() or 4, 6)))
     ctx_size: int = 4096
     n_gpu_layers: int = 0
     batch_size: int = 512
@@ -184,7 +180,9 @@ class LlamaServerManager:
         binary = str(self.config.binary or "").strip()
         if not self.binary_available:
             if not self._binary_missing_logged:
-                log.warning("llama-server binary not available; disabling managed llama-server for this session: %s", binary)
+                log.warning(
+                    "llama-server binary not available; disabling managed llama-server for this session: %s", binary
+                )
                 self._binary_missing_logged = True
             return False
 
@@ -202,13 +200,20 @@ class LlamaServerManager:
 
         cmd = [
             binary,
-            "-m", model_path,
-            "--host", self.config.host,
-            "--port", str(self.config.port),
-            "-t", str(t_val),
-            "-c", str(c_val),
-            "-ngl", str(ngl_val),
-            "-b", str(b_val),
+            "-m",
+            model_path,
+            "--host",
+            self.config.host,
+            "--port",
+            str(self.config.port),
+            "-t",
+            str(t_val),
+            "-c",
+            str(c_val),
+            "-ngl",
+            str(ngl_val),
+            "-b",
+            str(b_val),
             "--log-disable",
         ]
         cmd.extend(self.config.extra_args)
@@ -306,8 +311,7 @@ class LlamaServerManager:
                 except Exception:
                     pass
                 log.warning(
-                    "System memory critically low (%.0f MB available); "
-                    "killing llama-server to prevent OOM",
+                    "System memory critically low (%.0f MB available); killing llama-server to prevent OOM",
                     avail_mb,
                 )
                 self._process = None

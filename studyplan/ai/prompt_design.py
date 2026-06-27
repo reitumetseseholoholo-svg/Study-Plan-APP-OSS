@@ -9,6 +9,7 @@ Use this module for:
 
 Design: DEVELOPER_DOC.md § "Prompt engineering design (3Es + fail-safe)".
 """
+
 from __future__ import annotations
 
 import os
@@ -32,12 +33,8 @@ GRAMMAR_QUALITY_RULE_SHORT = "Use correct grammar and spelling; no errors in any
 
 JSON_ONLY_NO_PROSE = "JSON only (no prose)."
 JSON_ONLY_NO_MARKDOWN = "Return only the JSON object. No markdown, no code block, no explanation."
-RETRY_SUFFIX_ONE_ITEM = (
-    JSON_ONLY_NO_MARKDOWN + " Generate exactly one question."
-)
-RETRY_SUFFIX_ONE_CASE = (
-    JSON_ONLY_NO_MARKDOWN + " Generate exactly one case."
-)
+RETRY_SUFFIX_ONE_ITEM = JSON_ONLY_NO_MARKDOWN + " Generate exactly one question."
+RETRY_SUFFIX_ONE_CASE = JSON_ONLY_NO_MARKDOWN + " Generate exactly one case."
 RETRY_SUFFIX_FR_TABLES = (
     "CRITICAL CORRECTION REQUIRED: your exhibits array is missing actual numeric financial data. "
     "Each exhibit string MUST contain a title line followed by real currency figures. "
@@ -84,6 +81,7 @@ def exhibit_has_financial_data(exhibit_text: str) -> bool:
             return True
     return False
 
+
 # --- Schema one-liners (economy: single source for generation prompts) ---
 
 GAP_SCHEMA_ONE_LINE = (
@@ -96,7 +94,7 @@ GAP_SCHEMA_ONE_LINE = (
 SECTION_C_SCHEMA_ONE_LINE = (
     '{"chapter":"...","scenario":"Full case narrative (company, situation). 150-400 words. No placeholders.",'
     '"exhibits":["1-4 strings. Each is Exhibit 1/2… with ALL numeric financial data. '
-    'Use any professional format: pipe tables, indented line items, **bold** headings, or labelled figures. '
+    "Use any professional format: pipe tables, indented line items, **bold** headings, or labelled figures. "
     'If any requirement says information below/appendix/exhibit, exhibits MUST contain those numbers — never empty.",'
     '"requirements":[{"part":"a","requirement_text":"Requirement with command verb (e.g. Calculate, Evaluate, Recommend).","marks":8},'
     '{"part":"b","requirement_text":"...","marks":8},{"part":"c","requirement_text":"...","marks":4}],'
@@ -108,9 +106,7 @@ SECTION_C_SCHEMA_FR_SUFFIX = (
     "the matching model_answer_outline entry must be a compact skeleton (main headings, material line items, "
     "and key subtotals), not narrative paragraphs."
 )
-SYLLABUS_OUTCOMES_SCHEMA_ONE_LINE = (
-    '{"outcomes":[{"id":"...","text":"...","level":1 or 2 or 3,"chapter":"<exact chapter title>"}],"warnings":["optional note"]}'
-)
+SYLLABUS_OUTCOMES_SCHEMA_ONE_LINE = '{"outcomes":[{"id":"...","text":"...","level":1 or 2 or 3,"chapter":"<exact chapter title>"}],"warnings":["optional note"]}'
 # Assessment (AI judge): outcome, marks, feedback, optional tags.
 ASSESSMENT_JUDGE_SCHEMA_ONE_LINE = (
     '{"outcome":"correct"|"partial"|"incorrect","marks_awarded":number,"marks_max":number,'
@@ -121,7 +117,7 @@ JUDGE_JSON_ONLY = "Return only the JSON object. No other text."
 # Coach/autopilot: single JSON action object.
 AUTOPILOT_ACTION_SCHEMA_ONE_LINE = (
     '{"action":"focus_start|timer_pause|timer_resume|timer_stop|tutor_open|coach_open|quiz_start|quick_quiz_start|'
-    'drill_start|weak_drill_start|leitner_drill_start|error_drill_start|leech_drill_start|review_start|'
+    "drill_start|weak_drill_start|leitner_drill_start|error_drill_start|leech_drill_start|review_start|"
     'interleave_start|coach_next|gap_drill_generate|section_c_start","topic":"chapter|empty","duration_minutes":25,'
     '"reason":"short reason","confidence":0.0,"requires_confirmation":false,"evidence":["signal=value"]}'
 )
@@ -169,13 +165,13 @@ GAP_GENERATION_ROLE_BASE = (
     + " Single best answer, four substantive options, professional English, strictly syllabus-aligned."
 )
 GAP_GENERATION_RULES = [
-    "Output: one JSON object with \"chapter\" (string) and \"questions\" (array), or a bare JSON array of question objects. No markdown fence, no commentary outside JSON.",
+    'Output: one JSON object with "chapter" (string) and "questions" (array), or a bare JSON array of question objects. No markdown fence, no commentary outside JSON.',
     (
-        "Schema: each question object has \"question\" (string), \"options\" (array of exactly four strings — "
+        'Schema: each question object has "question" (string), "options" (array of exactly four strings — '
         "every option must be a full, substantive answer sentence, never a placeholder like 'Option A', 'Choice B', or 'Full text C'), "
-        "\"correct\" (the EXACT full text of the one correct option — copy it verbatim from the options array; "
+        '"correct" (the EXACT full text of the one correct option — copy it verbatim from the options array; '
         "do NOT use a letter like 'A', 'B', 'C', or 'D' — the app shuffles option order on screen so a letter reference is meaningless and will be rejected), "
-        "and \"explanation\" (string)."
+        'and "explanation" (string).'
     ),
     "Stems: ACCA-style command verbs (Calculate, Evaluate, Recommend, Explain, Discuss, Compare, Assess, Advise). One unambiguous best answer; no trick wording; include marks in the stem when appropriate (e.g. (2 marks)).",
     (
@@ -262,9 +258,7 @@ SYLLABUS_EXTRACTION_ROLE_DEFAULT = (
 )
 
 # Assessment judge: role + rules; services builds prompt with module, topic, question, answer.
-ASSESSMENT_JUDGE_ROLE_BASE = (
-    "You are an ACCA examiner. Judge the learner's answer for correctness and quality. Use syllabus expertise only; do not match keywords."
-)
+ASSESSMENT_JUDGE_ROLE_BASE = "You are an ACCA examiner. Judge the learner's answer for correctness and quality. Use syllabus expertise only; do not match keywords."
 ASSESSMENT_JUDGE_RULES = [
     "Use examiner-style wording: brief, constructive, and focused on what to improve (no praise without substance).",
     "Return JSON only (no prose). Schema:",
@@ -416,6 +410,7 @@ def get_task_prompt_spec(task_id: str, version: str | None = None) -> dict[str, 
         raise KeyError(f"Unknown task_id: {task_id!r}. Known: {list(_TASK_SPECS.keys())}")
     return dict(spec)
 
+
 # --- 3Es contract: Role → Schema → Rules → Payload (one builder per prompt type; no duplication) ---
 # See docs/THREE_ES_PROMPT_IMPLEMENTATION.md. Generation tasks use build_generation_prompt;
 # syllabus extraction uses build_syllabus_extraction_prompt; assessment judge uses build_judge_prompt_3es.
@@ -508,6 +503,6 @@ def build_syllabus_extraction_prompt(
     parts.append("---")
     parts.append((syllabus_text or "").strip())
     parts.append("---")
-    parts.append("Chapters (use these exact strings for the \"chapter\" field):")
+    parts.append('Chapters (use these exact strings for the "chapter" field):')
     parts.append((chapters_blob or "").strip())
     return "\n".join(parts)

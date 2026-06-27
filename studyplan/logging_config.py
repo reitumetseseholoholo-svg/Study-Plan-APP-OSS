@@ -9,10 +9,29 @@ from typing import Any, Callable
 
 _LOG_RECORD_BUILTIN_ATTRS = frozenset(
     {
-        "args", "asctime", "created", "exc_info", "exc_text", "filename",
-        "funcName", "levelname", "levelno", "lineno", "module", "msecs",
-        "message", "msg", "name", "pathname", "process", "processName",
-        "relativeCreated", "stack_info", "thread", "threadName", "taskName",
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "module",
+        "msecs",
+        "message",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "thread",
+        "threadName",
+        "taskName",
     }
 )
 
@@ -22,7 +41,8 @@ _LOG_RECORD_RESERVED = frozenset({"loggerName", "timestamp", "function", "file",
 class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         extras = {
-            k: v for k, v in record.__dict__.items()
+            k: v
+            for k, v in record.__dict__.items()
             if k not in _LOG_RECORD_BUILTIN_ATTRS and k not in _LOG_RECORD_RESERVED
         }
         payload: dict[str, Any] = {
@@ -52,7 +72,10 @@ _logger.setLevel(logging.DEBUG)
 _logger.handlers.clear()
 
 _text_handler = RotatingFileHandler(
-    _APP_LOG, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8",
+    _APP_LOG,
+    maxBytes=5 * 1024 * 1024,
+    backupCount=3,
+    encoding="utf-8",
 )
 _text_handler.setLevel(logging.DEBUG)
 _text_handler.setFormatter(
@@ -64,7 +87,10 @@ _text_handler.setFormatter(
 _logger.addHandler(_text_handler)
 
 _json_handler = RotatingFileHandler(
-    _JSON_LOG, maxBytes=5 * 1024 * 1024, backupCount=2, encoding="utf-8",
+    _JSON_LOG,
+    maxBytes=5 * 1024 * 1024,
+    backupCount=2,
+    encoding="utf-8",
 )
 _json_handler.setLevel(logging.DEBUG)
 _json_handler.setFormatter(JSONFormatter())
@@ -100,6 +126,7 @@ def safe_json_diagnostics() -> dict[str, Any]:
     }
     try:
         from studyplan.config import Config
+
         payload["config_home"] = str(getattr(Config, "CONFIG_HOME", ""))
     except Exception:
         pass

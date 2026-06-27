@@ -109,9 +109,9 @@ def _train_logreg(
     for _ in range(max(1, epochs)):
         grad_w = [0.0] * n_features
         grad_b = 0.0
-        for xi, yi in zip(X, y):
+        for xi, yi in zip(X, y, strict=False):
             z = bias
-            for w, x in zip(weights, xi):
+            for w, x in zip(weights, xi, strict=False):
                 z += w * x
             pred = _sigmoid(z)
             err = pred - float(yi)

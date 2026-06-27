@@ -26,10 +26,9 @@ class PersistenceLayer:
             ),
         )
         self._journal: list[dict[str, Any]] = []
-        self._journal_include_snapshots = (
-            str(os.environ.get("STUDYPLAN_PERSISTENCE_JOURNAL_INCLUDE_SNAPSHOTS", "0")).strip().lower()
-            in {"1", "true", "yes", "on"}
-        )
+        self._journal_include_snapshots = str(
+            os.environ.get("STUDYPLAN_PERSISTENCE_JOURNAL_INCLUDE_SNAPSHOTS", "0")
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._learner_locks: dict[str, threading.RLock] = {}
         self._learner_locks_lock = threading.RLock()
 

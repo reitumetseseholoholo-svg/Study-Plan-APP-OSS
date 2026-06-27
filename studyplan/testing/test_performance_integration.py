@@ -1,8 +1,5 @@
 """Tests for the performance integration layer."""
 
-import time
-import pytest
-import hashlib
 from typing import Any
 
 from studyplan.performance_integration import (

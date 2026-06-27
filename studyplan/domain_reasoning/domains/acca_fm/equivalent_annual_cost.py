@@ -22,9 +22,20 @@ class EquivalentAnnualCostTemplate(FormulaTemplate):
         pvifa = (1.0 - (1.0 + r) ** (-n)) / r if abs(r) > 1e-15 else float(n)
         steps: list[dict[str, Any]] = [
             {"step_id": "pvifa", "description": "PVIFA factor", "value": pvifa, "formula": f"(1-(1+{r})^-{n})/{r}"},
-            {"step_id": "equivalent_annual_cost", "description": "EAC = Cost / PVIFA", "value": result, "formula": f"{c}/{pvifa}"},
+            {
+                "step_id": "equivalent_annual_cost",
+                "description": "EAC = Cost / PVIFA",
+                "value": result,
+                "formula": f"{c}/{pvifa}",
+            },
         ]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

@@ -7,7 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
 from tests.tutor_quality.quality_scorer import build_reference_response
 

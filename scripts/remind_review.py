@@ -20,6 +20,7 @@ Exit codes
 1  Error loading engine.
 2  Due count below --min-due threshold; no notification sent.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,9 +42,12 @@ def _notify(summary: str, body: str, urgency: str = "normal") -> None:
     if shutil.which("notify-send"):
         cmd = [
             "notify-send",
-            "--app-name", _APP_NAME,
-            "--icon", _ICON,
-            "--urgency", urgency,
+            "--app-name",
+            _APP_NAME,
+            "--icon",
+            _ICON,
+            "--urgency",
+            urgency,
             summary,
             body,
         ]

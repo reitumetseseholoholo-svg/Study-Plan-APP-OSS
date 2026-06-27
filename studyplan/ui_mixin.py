@@ -10,13 +10,13 @@ from studyplan.ui_builder import UIBuilder
 
 class UIBuilderMixin:
     """Mixin that adds a _ui property to GTK widgets for fluent widget creation.
-    
+
     Usage:
         class MyWindow(Gtk.ApplicationWindow, UIBuilderMixin):
             def __init__(self):
                 super().__init__()
                 self._init_ui_builder()
-                
+
                 # Now use self._ui throughout
                 label = self._ui.section_title("My Section")
                 self.set_child(label)
@@ -32,15 +32,13 @@ class UIBuilderMixin:
     def ui(self) -> UIBuilder:
         """Access the UI builder. Raises if not initialized."""
         if self._ui is None:
-            raise RuntimeError(
-                "UIBuilder not initialized. Call _init_ui_builder() in __init__"
-            )
+            raise RuntimeError("UIBuilder not initialized. Call _init_ui_builder() in __init__")
         return self._ui
 
 
 class WidgetCache:
     """Cache for widgets to avoid recreating identical widgets.
-    
+
     Useful for dynamic UI updates where you need to check if a widget
     already exists before creating a new one.
     """
@@ -72,7 +70,7 @@ class WidgetCache:
 
 class ReactiveWidget:
     """Widget that updates when data changes.
-    
+
     Simplifies patterns where UI needs to refresh when underlying data changes.
     """
 
@@ -90,7 +88,7 @@ class ReactiveWidget:
 
 class SectionBuilder:
     """Builder for complex sections with title, content, and actions.
-    
+
     Usage:
         section = SectionBuilder(ui)
         section.with_title("Study Room")

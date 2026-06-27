@@ -8,8 +8,7 @@ classification, financial instrument categorization.
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 
@@ -17,9 +16,11 @@ from typing import Any, Callable
 # Data structures
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Branch:
     """One branch in a classification decision tree."""
+
     condition: str
     result: str | None = None
     children: list[Branch] | None = None
@@ -32,6 +33,7 @@ class ClassificationNode:
     Either ``question`` is set (decision node) or ``result`` is set (leaf).
     ``branches`` contains the child branches.
     """
+
     question: str | None = None
     result: str | None = None
     branches: list[Branch] | None = None
@@ -45,6 +47,7 @@ class ClassificationConfig:
     branches by condition; leaf nodes produce a classification result.
     ``output_slot`` is the step identifier for the result.
     """
+
     tree: ClassificationNode
     output_slot: str = "classification_result"
 
@@ -52,6 +55,7 @@ class ClassificationConfig:
 # ---------------------------------------------------------------------------
 # Template
 # ---------------------------------------------------------------------------
+
 
 class ClassificationTemplate:
     """ConceptTemplate implementation for decision tree classification.
@@ -92,11 +96,14 @@ class ClassificationTemplate:
             "result": result,
             "inputs": dict(inputs),
             "is_nan": result is None,
-            "steps": path + [{
-                "step_id": self._output_slot,
-                "description": "Classification result",
-                "value": result,
-            }],
+            "steps": path
+            + [
+                {
+                    "step_id": self._output_slot,
+                    "description": "Classification result",
+                    "value": result,
+                }
+            ],
             "classification_path": [p.get("question", "") for p in path],
         }
 
@@ -111,13 +118,15 @@ class ClassificationTemplate:
         results: list[dict[str, Any]] = []
         for step in learner_steps:
             step_val = step.get("value")
-            match = (step_val == truth_result)
-            results.append({
-                "step_id": step.get("step_id", ""),
-                "expected": truth_result,
-                "actual": step_val,
-                "match": match,
-            })
+            match = step_val == truth_result
+            results.append(
+                {
+                    "step_id": step.get("step_id", ""),
+                    "expected": truth_result,
+                    "actual": step_val,
+                    "match": match,
+                }
+            )
         return results
 
     def classify_errors(
@@ -222,6 +231,7 @@ class ClassificationTemplate:
 # Candidate extractor
 # ---------------------------------------------------------------------------
 
+
 def _make_classification_candidate_fn(
     config: ClassificationConfig,
 ) -> Callable[..., list[dict[str, Any]]]:
@@ -230,6 +240,7 @@ def _make_classification_candidate_fn(
     Enumerates all possible leaf outcomes from the decision tree as
     candidate classifications.
     """
+
     def candidate_fn(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         _collect_leaves(config.tree, candidates, "")
@@ -260,6 +271,7 @@ def _collect_leaves(
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
 
 def make_classification_template(
     concept_id: str,

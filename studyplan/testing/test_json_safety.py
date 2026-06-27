@@ -1,4 +1,5 @@
 """Tests for studyplan.json_safety module."""
+
 import json
 import os
 

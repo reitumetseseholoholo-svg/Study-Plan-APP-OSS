@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """File and path safety: permissions, size limits, path-under-base validation."""
+
 import os
 
 
@@ -26,7 +27,7 @@ def validate_path_under(
     base = os.path.realpath(os.path.abspath(os.path.expanduser(base_dir.strip())))
     resolved = os.path.realpath(os.path.abspath(os.path.expanduser(path.strip())))
     if not resolved.startswith(base + os.sep) and resolved != base:
-        raise ValueError(f"Path is not under the allowed base directory.")
+        raise ValueError("Path is not under the allowed base directory.")
     if must_exist and not os.path.exists(resolved):
         raise FileNotFoundError(f"Path does not exist: {resolved}")
     if must_be_file and os.path.exists(resolved) and not os.path.isfile(resolved):
@@ -68,10 +69,6 @@ def enforce_file_size_limit(
         if human_readable:
             size_mb = size / (1024.0 * 1024.0)
             limit_mb = limit / (1024.0 * 1024.0)
-            raise ValueError(
-                f"{label} file is too large ({size_mb:.1f}MB). Maximum allowed is {limit_mb:.1f}MB."
-            )
-        raise ValueError(
-            f"{label} file is too large ({size} bytes). Maximum allowed is {limit} bytes."
-        )
+            raise ValueError(f"{label} file is too large ({size_mb:.1f}MB). Maximum allowed is {limit_mb:.1f}MB.")
+        raise ValueError(f"{label} file is too large ({size} bytes). Maximum allowed is {limit} bytes.")
     return size

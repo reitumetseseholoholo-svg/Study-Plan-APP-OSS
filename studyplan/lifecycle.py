@@ -72,4 +72,3 @@ class ShutdownBarrier:
                     return False
                 self._cv.wait(timeout=remaining)
             return True
-

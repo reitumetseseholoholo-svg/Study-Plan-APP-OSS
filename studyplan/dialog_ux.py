@@ -5,22 +5,23 @@ from typing import Any
 
 class DisclosureLevel(str, Enum):
     """Progressive disclosure levels for tutor feedback."""
-    SUMMARY = "summary"          # Only primary action + brief feedback
-    STANDARD = "standard"        # Summary + details
-    DEBUG = "debug"              # Everything (for dev/instructor)
+
+    SUMMARY = "summary"  # Only primary action + brief feedback
+    STANDARD = "standard"  # Summary + details
+    DEBUG = "debug"  # Everything (for dev/instructor)
 
 
 @dataclass
 class DialogFeedback:
     """Layered feedback for progressive disclosure."""
-    
-    primary_action: str           # e.g., "Try a different approach" (non-technical)
-    summary_text: str             # Short, encouraging message
-    details_text: str = ""        # Deeper explanation (hidden by default)
+
+    primary_action: str  # e.g., "Try a different approach" (non-technical)
+    summary_text: str  # Short, encouraging message
+    details_text: str = ""  # Deeper explanation (hidden by default)
     debug_info: dict[str, Any] | None = None  # For dev only
-    color_hint: str = "neutral"   # "success", "warning", "error" 
-    keyboard_shortcut: str = ""   # e.g., "h" for hint, "s" for show details
-    
+    color_hint: str = "neutral"  # "success", "warning", "error"
+    keyboard_shortcut: str = ""  # e.g., "h" for hint, "s" for show details
+
     def render(self, level: DisclosureLevel = DisclosureLevel.STANDARD) -> dict[str, Any]:
         """Render feedback at requested disclosure level."""
         base: dict[str, Any] = {
@@ -29,19 +30,19 @@ class DialogFeedback:
             "color": self.color_hint,
             "keyboard": self.keyboard_shortcut,
         }
-        
+
         if level in {DisclosureLevel.STANDARD, DisclosureLevel.DEBUG}:
             base["details"] = self.details_text
-        
+
         if level == DisclosureLevel.DEBUG and self.debug_info:
             base["debug"] = self.debug_info
-        
+
         return base
 
 
 class TutorDialogRenderer:
     """Formats assessment results and tutor responses for progressive disclosure."""
-    
+
     @staticmethod
     def render_assessment_feedback(
         outcome: str,
@@ -52,7 +53,7 @@ class TutorDialogRenderer:
         disclosure: DisclosureLevel = DisclosureLevel.STANDARD,
     ) -> DialogFeedback:
         """Convert assessment result into progressive disclosure feedback."""
-        
+
         # Primary action based on outcome
         if outcome == "correct":
             primary = "Great work! Move to the next question."
@@ -65,20 +66,20 @@ class TutorDialogRenderer:
         else:  # incorrect
             primary = "Not quite. Give it another try or ask for a hint."
             color = "error"
-            summary = f"✗ Incorrect. Let's learn from this."
-        
+            summary = "✗ Incorrect. Let's learn from this."
+
         # Detail text (non-technical explanation)
         details = feedback_text or "Review the concept and try again."
         if error_tags:
             details += f"\n\nHint: Focus on {', '.join(error_tags[:2])}."
-        
+
         # Debug info (for instructors)
         debug = {
             "outcome": outcome,
             "marks": {"awarded": marks_awarded, "max": marks_max},
             "error_tags": list(error_tags),
         }
-        
+
         return DialogFeedback(
             primary_action=primary,
             summary_text=summary,
@@ -87,7 +88,7 @@ class TutorDialogRenderer:
             color_hint=color,
             keyboard_shortcut="h" if outcome != "correct" else "",
         )
-    
+
     @staticmethod
     def render_tutor_response(
         response_text: str,
@@ -95,16 +96,16 @@ class TutorDialogRenderer:
         disclosure: DisclosureLevel = DisclosureLevel.STANDARD,
     ) -> DialogFeedback:
         """Format tutor response with keyboard navigation hints."""
-        
+
         action_map = {
             "teach": "Read the explanation below.",
             "guided_practice": "Try the practice question.",
             "error_clinic": "Review the error and try again.",
             "challenge": "Solve this stretch question.",
         }
-        
+
         primary = action_map.get(mode, "Read the response.")
-        
+
         return DialogFeedback(
             primary_action=primary,
             summary_text=response_text[:100] + ("..." if len(response_text) > 100 else ""),

@@ -1,5 +1,4 @@
 """Tests for studyplan.working_memory_service module."""
-import pytest
 
 from studyplan.cognitive_state import CognitiveState
 from studyplan.working_memory_service import WorkingMemoryService

@@ -27,9 +27,20 @@ def _model(
 
 
 SMALL_QWEN = _model("qwen2.5-1.5b-instruct-q4_k_m", param_billions=1.5, size_bytes=986_000_000)
-MEDIUM_LLAMA = _model("llama-3.2-3b-instruct-q4_0", param_billions=3.0, size_bytes=1_920_000_000, architecture="llama", quant_tag="q4_0")
-LARGE_PHI = _model("phi-3-mini-4k-instruct-q4_0", param_billions=3.8, size_bytes=2_176_000_000, architecture="phi", quant_tag="q4_0")
-BASE_MODEL = _model("llama-3.2-1b-q4_0", param_billions=1.0, is_instruct=False, architecture="llama", quant_tag="q4_0", size_bytes=738_000_000)
+MEDIUM_LLAMA = _model(
+    "llama-3.2-3b-instruct-q4_0", param_billions=3.0, size_bytes=1_920_000_000, architecture="llama", quant_tag="q4_0"
+)
+LARGE_PHI = _model(
+    "phi-3-mini-4k-instruct-q4_0", param_billions=3.8, size_bytes=2_176_000_000, architecture="phi", quant_tag="q4_0"
+)
+BASE_MODEL = _model(
+    "llama-3.2-1b-q4_0",
+    param_billions=1.0,
+    is_instruct=False,
+    architecture="llama",
+    quant_tag="q4_0",
+    size_bytes=738_000_000,
+)
 ALL_MODELS = [SMALL_QWEN, MEDIUM_LLAMA, LARGE_PHI, BASE_MODEL]
 
 

@@ -1,6 +1,6 @@
 # Domain Reasoning Architecture
 
-> **Status:** Phases 1–4 implemented (see [Current Implementation Status](#current-implementation-status)).  
+> **Status:** Phases 1–4 implemented (see [Current Implementation Status](#current-implementation-status)).
 > This document is the original architectural proposal. The section below summarises what has been built and how it differs from the original plan.
 
 ## Current Implementation Status

@@ -34,7 +34,9 @@ def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _request_json(host: str, path: str, payload: dict[str, Any] | None, timeout: int) -> tuple[dict[str, Any] | None, str | None]:
+def _request_json(
+    host: str, path: str, payload: dict[str, Any] | None, timeout: int
+) -> tuple[dict[str, Any] | None, str | None]:
     endpoint = path if path.startswith("/") else f"/{path}"
     url = f"{host.rstrip('/')}{endpoint}"
     headers = {"Accept": "application/json"}
@@ -119,7 +121,11 @@ def run() -> int:
     parser.add_argument("--report", default=os.environ.get("STUDYPLAN_PERF_REPORT", "perf_report.json"))
     parser.add_argument("--timeout", type=int, default=int(os.environ.get("STUDYPLAN_PERF_TIMEOUT_SECONDS", "120")))
     parser.add_argument("--num-ctx", type=int, default=int(os.environ.get("STUDYPLAN_PERF_NUM_CTX", "2048")))
-    parser.add_argument("--num-thread", type=int, default=int(os.environ.get("STUDYPLAN_PERF_NUM_THREAD", os.environ.get("OLLAMA_NUM_THREADS", "6"))))
+    parser.add_argument(
+        "--num-thread",
+        type=int,
+        default=int(os.environ.get("STUDYPLAN_PERF_NUM_THREAD", os.environ.get("OLLAMA_NUM_THREADS", "6"))),
+    )
     parser.add_argument("--temperature", type=float, default=float(os.environ.get("STUDYPLAN_PERF_TEMPERATURE", "0.2")))
     parser.add_argument("--warmup", type=int, default=int(os.environ.get("STUDYPLAN_PERF_WARMUP", "1")))
     parser.add_argument("--require-ollama", type=int, default=int(os.environ.get("STUDYPLAN_PERF_REQUIRE_OLLAMA", "0")))

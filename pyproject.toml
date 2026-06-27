@@ -33,13 +33,46 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-# GTK4 requires gi.require_version() before other gi.repository imports, so
-# stdlib imports end up after the gi import → E402 is structural, not a bug.
-# F401 unused-import and C-family complexity violations are pre-existing.
+# GTK4 requires gi.require_version() before gi.repository imports, so
+# some imports sit after non-import code (bootstrap fn, require_version calls) → structural.
 "studyplan_app.py" = ["E402", "F401", "C901", "C416", "B009", "B010", "B007", "E731", "N806", "N814", "F841", "C401", "F541", "C420", "B905"]
-"tests/test_studyplan_app_ollama.py" = ["C901", "C416", "F841"]
+"studyplan_engine.py" = ["E402", "F401", "C901", "C416", "B009", "B010", "B007", "E731", "N806", "N814", "F841", "C401", "F541", "C420", "B905"]
+"studyplan_ai_tutor.py" = ["F401", "C901", "C416", "C408", "B007", "E731", "N806", "N814", "F841", "C401", "F541", "C420", "B905", "N803"]
+"studyplan_app_runtime_helpers.py" = ["C901", "N803"]
+"tests/test_studyplan_app_ollama.py" = ["C901", "C416", "F841", "E402"]
 "studyplan/testing/*.py" = ["C901", "C416", "F841"]
-
+# Pre-existing complexity in AI modules
+"studyplan/ai/*.py" = ["C901"]
+"studyplan/coach_fsm.py" = ["C901"]
+"studyplan/cognitive_state.py" = ["C901"]
+"studyplan/services.py" = ["C901", "E402"]
+"studyplan/question_quality.py" = ["C901"]
+"studyplan/outcome_linking.py" = ["C901"]
+"studyplan/practice_loop_controller.py" = ["C901"]
+"studyplan/numerical_solver.py" = ["C901", "E402"]
+"studyplan/syllabus_fr.py" = ["C901"]
+"studyplan/syllabus_outcomes.py" = ["C901"]
+"studyplan/tutor_memory.py" = ["C901"]
+"studyplan/phase1_demo.py" = ["C901"]
+"studyplan/fsrs.py" = ["C901"]
+"studyplan/ui/markdown_renderer.py" = ["C901"]
+"studyplan/module_reconfig/*.py" = ["C901"]
+"studyplan/domain_reasoning/*.py" = ["C901", "N812", "N811", "E402"]
+"studyplan/module_chapters.py" = ["C901"]
+"studyplan_app_path_utils.py" = ["C901"]
+# E402 is structural for gi.require_version pattern
+"studyplan_theme.py" = ["E402"]
+"studyplan/ui/gtk4/*.py" = ["E402"]
+# Scripts with sys.path hacks
+"scripts/*.py" = ["E402"]
+# Tools with pre-existing naming/complexity issues
+"tools/*.py" = ["C901", "N806", "N803", "F841", "C401", "B905", "E402", "N812", "B007"]
+# Tests: blind exception asserts are test patterns
+"tests/test_domain_reasoning.py" = ["B017", "C901", "E402"]
+"tests/test_engine_improvements.py" = ["B017"]
+"tests/test_studyplan_engine.py" = ["N803"]
+# Module name with uppercase violates PEP8 but matches domain convention
+"studyplan/learning_Science.py" = ["N999"]
 [tool.pyright]
 include = ["studyplan", "studyplan_app.py", "studyplan_engine.py"]
 exclude = [
@@ -64,4 +97,3 @@ reportPrivateImportUsage = false
 testpaths = ["tests", "studyplan/testing"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
-

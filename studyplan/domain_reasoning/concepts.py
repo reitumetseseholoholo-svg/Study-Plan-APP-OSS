@@ -6,8 +6,7 @@ be evaluated deterministically.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -16,6 +15,7 @@ class ConceptMetadata:
 
     Fields mirror the authored module schema (see DOMAIN_REASONING_ARCHITECTURE.md).
     """
+
     concept_id: str
     label: str
     template_ref: str
@@ -301,33 +301,47 @@ BUILTIN_CONCEPTS: dict[str, ConceptMetadata] = {
 # Mapping: StructureType → concept IDs
 # ---------------------------------------------------------------------------
 
+
 # Lazy import to avoid circular dependency at module level.
 def _get_structure_type_concepts() -> dict[str, list[str]]:
     """Return mapping of StructureType enum values → concept ID lists."""
     return {
         "npv_annuity_timing": [
-            "fm.npv", "fm.payback", "fm.discounted_payback",
-            "fm.irr", "fm.equivalent_annual_cost", "fm.profitability_index",
+            "fm.npv",
+            "fm.payback",
+            "fm.discounted_payback",
+            "fm.irr",
+            "fm.equivalent_annual_cost",
+            "fm.profitability_index",
             "fm.perpetuity_npv",
         ],
         "wacc_optimization": [
-            "fm.wacc", "fm.cost_of_debt", "fm.cost_of_equity_dvm",
+            "fm.wacc",
+            "fm.cost_of_debt",
+            "fm.cost_of_equity_dvm",
             "fm.cost_of_preference",
         ],
         "fx_exposure_hedge": [],
         "working_capital_cycle": [
-            "fm.ccc", "fm.eoq",
+            "fm.ccc",
+            "fm.eoq",
         ],
         "dividend_policy_tradeoff": [
-            "fm.eps", "fm.dividend_yield", "fm.dividend_cover",
-            "fm.pe_ratio", "fm.roe",
+            "fm.eps",
+            "fm.dividend_yield",
+            "fm.dividend_cover",
+            "fm.pe_ratio",
+            "fm.roe",
         ],
         "capm_required_return": [
-            "fm.capm", "fm.cost_of_equity_dvm",
+            "fm.capm",
+            "fm.cost_of_equity_dvm",
         ],
         "gearing_financial_risk": [
-            "fm.gearing", "fm.interest_cover",
-            "fm.asset_beta", "fm.equity_beta",
+            "fm.gearing",
+            "fm.interest_cover",
+            "fm.asset_beta",
+            "fm.equity_beta",
             "fm.roce",
         ],
         "foreign_investment_appraisal": [],
@@ -381,6 +395,7 @@ from studyplan.domain_reasoning.formula_registry import (
     build_formula_to_concept,
     build_structure_type_concepts,
 )
+
 BUILTIN_CONCEPTS = build_concept_dict(BUILTIN_CONCEPTS)
 _FORMULA_TO_CONCEPT = build_formula_to_concept(_FORMULA_TO_CONCEPT)
 STRUCTURE_TYPE_CONCEPTS = build_structure_type_concepts(STRUCTURE_TYPE_CONCEPTS)
@@ -397,6 +412,7 @@ def detect_concepts(
     """
     if detected_formulas is None:
         from studyplan.numerical_solver import detect_formulas as _df
+
         detected_formulas = _df(question)
 
     seen: set[str] = set()

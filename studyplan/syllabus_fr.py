@@ -8,6 +8,7 @@ scripts/import_f7_syllabus_outcomes.py.
 
 Supports both FR S25–J26 and S26–J27 (and later) syllabus formats; structure is unchanged.
 """
+
 from __future__ import annotations
 
 import re
@@ -111,9 +112,7 @@ def fr_outcome_optional_metadata(text: str) -> dict[str, str]:
         meta["type"] = "preparation"
     elif re.search(r"\b(calculate|compute|derive|measure)\b", low):
         meta["type"] = "calculate"
-    elif re.search(
-        r"\b(explain|describe|discuss|outline|identify|define|compare|evaluate|assess)\b", low
-    ):
+    elif re.search(r"\b(explain|describe|discuss|outline|identify|define|compare|evaluate|assess)\b", low):
         meta["type"] = "explain"
     m = re.search(r"\b(IAS\s+\d+[A-Za-z]?|IFRS\s+\d+[A-Za-z]?)\b", text or "", re.IGNORECASE)
     if m:
@@ -319,14 +318,16 @@ def build_syllabus_structure(
     for o in outcomes:
         ch = o.get("chapter")
         if ch and ch in by_chapter:
-            by_chapter[ch].append({
-                "id": o["id"],
-                "text": o["text"],
-                "level": int(o.get("level", 2)),
-            })
+            by_chapter[ch].append(
+                {
+                    "id": o["id"],
+                    "text": o["text"],
+                    "level": int(o.get("level", 2)),
+                }
+            )
     section4 = section4_titles or {}
     # Section order for stable subtopic order per chapter (A1, A2, A3, A4, B1, ...)
-    section_order = [f"{l}{n}" for l in "ABCDE" for n in range(1, 13)]
+    section_order = [f"{ch}{n}" for ch in "ABCDE" for n in range(1, 13)]
     result: dict[str, dict[str, Any]] = {}
     for ch in chapters:
         subtopics: list[str] = []

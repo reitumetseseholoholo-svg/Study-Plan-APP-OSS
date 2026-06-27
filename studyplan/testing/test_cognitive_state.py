@@ -1,5 +1,3 @@
-import pytest
-
 from studyplan.cognitive_state import CognitiveState, CognitiveStateValidator, CompetencyPosterior
 
 

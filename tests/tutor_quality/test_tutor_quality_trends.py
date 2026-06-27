@@ -19,7 +19,15 @@ def _read_json(path: Path) -> dict:
     return payload
 
 
-def _write_report(path: Path, *, ts_utc: str, pass_rate: float, avg_score: float, status: str = "pass", model: str = "reference_baseline") -> None:
+def _write_report(
+    path: Path,
+    *,
+    ts_utc: str,
+    pass_rate: float,
+    avg_score: float,
+    status: str = "pass",
+    model: str = "reference_baseline",
+) -> None:
     payload = _read_json(BASELINE_REPORT)
     payload["ts_utc"] = ts_utc
     payload["status"] = status

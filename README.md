@@ -1,196 +1,235 @@
 # Study Workbench
 
-A self-contained desktop study environment for professional exam preparation — combining an adaptive coach, AI tutor, spaced repetition, focus timer, and semi-autonomous autopilot into a single GTK4 application. Module-agnostic: load any professional syllabus and the entire system adapts to it.
+> **Your personal exam cockpit.** A self-contained desktop study environment for professional exam prep — combining an adaptive coach, AI tutor, FSRS-4.5 spaced repetition, Pomodoro focus timer, and semi-autonomous autopilot into one GTK4 application. Load any professional syllabus and the entire system adapts to it.
 
-## Documentation map
+---
 
-- **End-user guide**: `USER_GUIDE.md`
-- **Developer internals & architecture**: `DEVELOPER_DOC.md`
-- **Contributing**: `CONTRIBUTING.md`
-- **Outcome linking feature**: `docs/CORE_FEATURE_IMPROVEMENT_OUTCOME_LINKING.md`
-- **LLM telemetry fields + golden prompts**: `docs/LLM_TELEMETRY_SCHEMA.md`
-- **Tutor quality tooling**: `tests/tutor_quality/README.md`
-- **Module chapter tooling notes**: `scripts/README_module_chapters.md`
+## Why this exists
 
-## Quick start
+Most exam prep tools are one-size-fits-all web apps that treat you like a passive content consumer. Study Workbench is different:
 
-```bash
-python studyplan_app.py
-# or with exam date
-python studyplan_app.py 2026-12-01
-```
+- **It runs on your machine.** No cloud dependency, no subscription, no data leaving your desk.
+- **It learns your weak spots.** ML-assisted coaching identifies recall risk, difficulty gaps, and interval-blind spots — then adjusts the daily plan in real time.
+- **It does the boring work for you.** The AI Cockpit (autopilot) can run focus sessions, quizzes, and reviews on a timer while you focus on studying.
+- **It adapts to any exam.** Swap module JSON files to switch between ACCA F7, F8, F9, or your own custom syllabus.
 
-Optional module override (env vars):
+---
+
+## At a glance
 
 ```bash
+python studyplan_app.py                    # launch the workbench
+python studyplan_app.py 2026-12-01         # with exam date
 STUDYPLAN_MODULE_TITLE="Your Module" python studyplan_app.py
 ```
 
-### Key environment variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `STUDYPLAN_SRS_ALGORITHM` | `fsrs` | Spaced-repetition algorithm. Set to `sm2` or `legacy` to use the original SM-2 scheduler. When unset or set to any other value, FSRS-4.5 is used by default. |
-| `STUDYPLAN_LLM_GATEWAY_ENABLED` | `0` | Set to `1` to route AI tutor through the cloud gateway instead of local Ollama. Can also be toggled in Preferences → Cloud AI. |
-| `STUDYPLAN_LLM_GATEWAY_ENDPOINT` | — | OpenAI-compatible endpoint URL, e.g. `https://openrouter.ai/api/v1/chat/completions`. |
-| `STUDYPLAN_LLM_GATEWAY_API_KEY` | — | API key for the cloud gateway (also settable as `OPENROUTER_API_KEY`). |
-| `STUDYPLAN_LLM_GATEWAY_MODEL` | — | Primary model ID for the cloud gateway, e.g. `openrouter/google/gemini-2.5-flash`. |
-| `STUDYPLAN_LLM_GATEWAY_MODEL_FALLBACKS` | — | Comma-separated fallback model IDs. |
-| `STUDYPLAN_CLOUD_CONNECTIVITY_POLICY` | `auto` | Connectivity mode: `auto` (probe), `force_online`, `force_offline`. Can also be set via Preferences → Cloud AI. |
-| `STUDYPLAN_MODULE_TITLE` | — | Override the active module title at startup. |
-| `STUDYPLAN_SMOKE_MODE` | `0` | Set to `1` to run the dialog smoke test (headless CI). |
-| `STUDYPLAN_CONFIG_HOME` | `~/.config/studyplan` | Override the config directory (useful for isolated smoke/soak runs). |
-
-## Requirements
-
-- Python 3 with **PyGObject (GTK4)**
-- Optional:
-  - **PyMuPDF (fitz)** for PDF score import
-  - **pytesseract + Pillow + numpy + scikit-image** for enhanced OCR preprocessing
-  - **sentence-transformers** for semantic mapping (falls back safely when unavailable)
-  - **matplotlib** for charts
-  - **hyprctl** (Hyprland) for focus tracking
-  - **hypridle** (optional hook for idle file)
-
-## Testing
-
-Run the test suite:
-
-```bash
-pytest
-# or explicitly
-pytest tests/ studyplan/testing/
-```
-
-- **Default (no GTK):** **~1,448 test items** run. GTK-free tests live in `tests/` (minus `tests/test_studyplan_app_ollama.py`) and `studyplan/testing/`. The GTK-dependent `tests/test_studyplan_app_ollama.py` (~322 test functions, parametrized to ~348 items) requires `studyplan_app` and thus PyGObject/GTK4.
-- **Full suite:** install the optional extra and system GTK4 so the ollama app tests run: `pip install -e ".[test-full]"` (or `poetry install -E test-full`). Requires system libraries (e.g. Debian/Ubuntu: `apt install python3-gi gir1.2-gtk-4.0`). Then `pytest` runs **~1,796 test items** (1,795 passed + 1 skipped).
-- **Domain reasoning engine** (80 tests): `tests/test_reasoning_engine.py` (76) + `tests/test_domain_reasoning.py` (63) + `tests/test_numerical_solver.py` (81) = 220 test functions covering solver correctness, multi-path fallback, gap analysis, and weighted confidence.
-
-### Protected no-regression flows
-
-- Module loading and path safety: `tests/test_studyplan_app_paths.py`, `tests/test_studyplan_file_safety.py`
-- Cognitive/runtime state and persistence recovery: `tests/test_cognitive_runtime.py`, `studyplan/testing/test_persistence.py`, `studyplan/testing/test_schema_migration.py`
-- Tutor prompt and routing behavior: `tests/test_model_routing.py`, `tests/test_tutor_prompt_layers.py`, `tests/test_golden_tutor_prompts.py`, `tests/tutor_quality/`
-- KPI/smoke routing helpers: `tests/test_smoke_kpi.py`, `tests/test_soak_kpi.py`
-- GTK-independent action/runtime seams: `tests/test_action_registry.py`, `tests/test_studyplan_ui_runtime.py`
-- Secure import and module reconfiguration: `studyplan/testing/test_secure_importer.py`, `studyplan/testing/test_module_reconfig.py`, `tests/test_rag_and_reconfig_safety.py`
-
-### Canonical desktop validation
-
-The primary desktop no-regression gate is `.github/workflows/linux-ci.yml`:
-
-- `python tools/gtk4_lint.py`
-- `pyright studyplan_app.py studyplan_ai_tutor.py studyplan_engine.py studyplan`
-- `pytest -q`
-- `xvfb-run -a timeout 180s python studyplan_app.py --dialog-smoke-strict`
-
-`studyplan_app.py` remains a large orchestration module. When adding new non-GTK logic, prefer extracting it into small testable modules so unit tests can run without importing the GTK runtime.
-
-## Terminology
-
-- **Workbench**: the main UI paradigm — a tabbed desktop with Dashboard, Tutor, Coach, Insights, and Settings pages. Everything lives in the workbench shell.
-- **Dashboard**: the home page showing coach briefing, charts, study snapshot, AI Cockpit status, reviews, and data health.
-- **Coach**: heuristic/AI engine that picks the next topic, sets the daily plan, and generates a readiness briefing. Runs continuously.
-- **Tutor**: interactive AI chat for explanations, practice, and Section C constructed-response problems. Uses local Ollama or cloud gateway.
-- **AI Cockpit / Autopilot**: semi-autonomous agent that can execute study actions (focus, quiz, drill, review) on a timer. Three modes: `cockpit` (full autonomy), `assist` (safe actions only), `suggest` (propose only).
-- **SRS (Spaced Repetition)**: FSRS-4.5 by default, SM-2 opt-in. Drives review scheduling, card stability, and difficulty tracking.
-- **Module**: a JSON-based config that defines chapters, syllabus outcomes, question bank, and domain adapter. The app is module-agnostic — switch modules to switch exam subjects.
+---
 
 ## Core features
 
-- **FSRS-4.5 spaced-repetition**: per-card stability/difficulty model (default); SM-2 opt-in via `STUDYPLAN_SRS_ALGORITHM=sm2`
-- **AI Cockpit (Autopilot)**: runs autonomously in the background; three modes — Cockpit (default, executes safe actions), Assist (notifies after), Suggest (prompts approval); rate-limited to 6 actions/10 min
-- **Coach Briefing**: readiness score, mission checklist, pace status, daily target
-- **Exam Readiness Index** + retrieval quota bar (exam‑aware pacing)
-- **Coach Pick**: single “do this now” topic with reasons + pace tip
-- **Outcome Mastery**: covered vs uncovered syllabus outcomes (global + per capability)
-- **ML‑assisted coaching**: recall risk, difficulty mix, interval‑aware release (when models available)
-- **Coach Next**: one‑click “do the right thing now” action
-- **Study Room**: next action, mission progress, quick actions
-- **Interleave quiz**: quick rotation to the next chapter in plan
-- **Pomodoro**: focus timer, break timer, alerts, streaks
-- **Focus verification**: Hyprland allowlist + idle detection for verified minutes
-- **Quizzes**: SRS‑weighted questions, streak bonuses, weak‑area drill
-- **Leech remediation**: one-click drill for repeatedly-missed questions
-- **Responsive quiz flow**: lightweight per‑question updates, full dashboard refresh on quiz completion
-- **Gamification**: XP, levels, badges, daily quests
-- **Daily plan**: coach‑aligned topic list with **automatic** daily completion
-- **Plan stability**: stays consistent for the day unless a major import refreshes it
-- **Smart empty states**: Daily plan explains how to populate when no topics are available
-- **Insights**: mastery stats, weak/strong areas, reviews & due items
-- **Reflections**: quick reflections + confidence notes (Review Reflections…)
-- **Local AI Tutor (Ollama)**: run local GGUF models in-app for explanations and revision drills
-- **Hardest Concepts**: tracks repeated misses per chapter
-- **Time Analytics**: time per action + per‑topic leaderboards
-- **Balance checks**: topic saturation + confidence drift (competence vs mastery/quiz)
-- **Domain reasoning engine**: deterministic concept solver with 10 FM concepts (NPV, WACC, CAPM, IRR, payback, ARR, CCC, EOQ, gearing), multi-path fallback, input gap analysis, and weighted confidence scoring
-- **Domain-aware assessment**: practice loop integration via `DeterministicTutorAssessmentService._assess_domain_item()` — items with `template_ref` are evaluated against deterministic truth; step-level diagnostics (`failed_steps`, `error_patterns`) flow into `TutorAssessmentResult` and `TutorLearnerProfileSnapshot`
-- **Concept error tracking**: learner profile tracks `weak_concept_ids_top` and `concept_error_patterns`; surfaced in tutor context brief as "Weak domain concepts"
-- **Semantic graph + clusters**: canonical concept graph and outcome cluster graph for stable semantic routing
-- **Semantic Drift KPI**: thresholded drift alerts when chapter competence diverges from outcome mastery
-- **Confidence Drift chart**: top gap visualization
-- **Data Health Check**: one‑click normalization + health summary in Tools
-- **Syllabus cache tools**: view cache stats and clear parse/import caches
-- **Weekly summary export**: auto writes `weekly_report.txt` under config home (see Data locations)
-- **Study Hub import**: parse Study Hub PDFs (practice/quiz reports)
-- **Syllabus import (draft-first)**: parse syllabus PDFs into module intelligence
-- **Import Syllabus (JSON)**: seed syllabus_meta from JSON to reduce AI work in Reconfigure from RAG (see `docs/CORE_FEATURE_IMPROVEMENT_OUTCOME_LINKING.md`)
-- **Modules**: switch or edit modules via JSON configs
-- **Snapshot recovery**: auto-recovery on load failure + manual snapshot import/restore
+### 🧠 Adaptive Coach
+- **Coach Briefing** — readiness score, mission checklist, pace status, daily target
+- **Coach Pick** — "do this now" topic with reasoning + pace tip every session
+- **Coach Next** — one-click "do the right thing now" action
+- **Exam Readiness Index** — exam-aware pacing with retrieval quota bar
+- **Outcome Mastery** — covered vs uncovered syllabus outcomes (global + per capability)
+- **ML‑assisted decisions** — recall risk, difficulty mix, interval‑aware release
+- **Confidence Drift chart** — top gap visualization between competence and mastery
 
-## ML training (optional)
+### 📅 Daily Plan
+- Coach-aligned topic list with **automatic** daily completion
+- Plan stays consistent for the day (stable unless a module import refreshes it)
+- Smart empty states that explain how to populate when no topics are available
+- Interleave quiz: quick rotation to the next chapter in plan
 
-- In-app: **Application → Train ML Models…**
-- Models:
-  - Recall (sklearn): `~/.config/studyplan/recall_model.pkl`
-  - Difficulty (sklearn): `~/.config/studyplan/difficulty_model.pkl`
-  - Interval (sklearn): `~/.config/studyplan/interval_model.pkl`
-- Recall trainer includes:
-  - recency weighting
-  - class balancing
-  - automatic `C` candidate search
-  - optional probability calibration
-  - promotion gates on Brier, ECE, AUC, and improvement over existing model
-- Runtime safety:
-  - model load falls back safely when a model is missing/invalid
-  - sklearn recall model is rejected if metadata feature count mismatches engine features
+### 🤖 AI Cockpit (Autopilot)
+Runs autonomously in the background. Three modes:
+- **Cockpit** — full autonomy, executes safe actions (default)
+- **Assist** — notifies you after executing
+- **Suggest** — proposes actions, waits for approval
 
-## Keyboard shortcuts
+Rate-limited to 6 actions per 10 minutes. Runs focus sessions, quizzes, drills, and reviews on your behalf.
 
-- **F1** Show shortcuts
-- **F5** Start Pomodoro
-- **F6** Pause/Resume Pomodoro
-- **F7** Stop Pomodoro
-- **F8** Quick Quiz
-- **F9** Toggle Focus Mode
-- **Ctrl+E** Set exam date
-- **Ctrl+,** Preferences
-- **Ctrl+M** Toggle menu bar
-- **Ctrl+Q** Quit
+### 🧪 AI Tutor (local)
+- Interactive chat for explanations, practice, and Section C constructed-response problems
+- Runs via Ollama (local GGUF models) or cloud gateway (OpenAI-compatible)
+- RAG retrieval from syllabus outcomes and session history
+- Domain-aware assessment with step-level diagnostics for ACCA FM concepts
+- Response streaming, sanitization, telemetry
 
-## Coach-only mode
+### 🎯 Spaced Repetition (FSRS-4.5)
+- Per-card stability/difficulty model (default)
+- SM-2 opt-in via `STUDYPLAN_SRS_ALGORITHM=sm2`
+- Anti-repeat cooldown to prevent immediate re-asks
+- Rust-accelerated question selection (`studyplan/rs/`) for SRS priority scoring
 
-- Toggles in Preferences or the plan header
-- Hides the daily plan list and **forces coach topic selection**
-- Badge is clickable to exit coach‑only quickly
+### ⏱ Pomodoro Focus Timer
+- Focus timer, break timer, alerts, streaks
+- Anti-cheat: credit only if ≥10 verified minutes
+- Verified focus time with Hyprland window class tracking
+- Auto-pause after idle threshold; resume on return
+- At most 2 short credits per day for tiny sessions
+
+### 📊 Dashboard & Insights
+- Coach briefing with readiness score, pace, mission checklist
+- Progress Over Time chart, Per-Topic Snapshot, Study Snapshot stats
+- Weak vs Strong areas, Reviews Due Today, Leech Alerts
+- Weekly Summary, Study Hub, Data Health
+- Confidence Drift bar, Mastery Snapshot, Plan View
+
+### 🎮 Gamification
+- XP, levels, badges, daily quests
+- Streak tracking
+- Balanced reward rates (non-trivial, not inflated)
+
+### 📈 ML Training (optional, in-app)
+- **Application → Train ML Models…**
+- Recall model (sklearn): recency weighting, class balancing, C search, calibration
+- Difficulty model (sklearn): predicts question difficulty from stats
+- Interval model (sklearn): predicts optimal review interval
+- Promotion gates on Brier, ECE, AUC, and improvement over existing model
+- Runtime safety: model load falls back gracefully when missing or invalid
+
+### 🔬 Domain Reasoning Engine
+Deterministic concept solver for ACCA FM with **220+ tests**:
+- **10 FM concepts**: NPV, WACC, CAPM, IRR, payback, ARR, CCC, EOQ, gearing, and more
+- Multi-path fallback: alternative concepts for same output slot
+- Input gap analysis: greedy fixed-point provider insertion
+- Weighted confidence scoring: `avg_quality × success_rate`
+- Step-level diagnostics flow into tutor assessment and learner profile
+
+---
+
+## Performance architecture
+
+Study Workbench is designed to be responsive even on modest hardware:
+
+| Layer | Technology | What it accelerates |
+|-------|-----------|-------------------|
+| **Rust/PyO3** | `studyplan_rs` (`studyplan/rs/`) | SRS question selection (sorting, diversity enforcement), batch overdue/retention scoring |
+| **Cython** | `cosine_fast`, `tfidf_fast` | Cosine similarity, TF-IDF build/query for semantic outcome matching |
+| **Python** | GTK4 + Cairo | All UI, charts, dashboard rendering |
+
+All native modules have pure-Python fallbacks with `try/except ImportError` — no hard dependency on a Rust toolchain or Cython.
+
+---
+
+## Requirements
+
+**Required:**
+- Python 3.11+ with **PyGObject (GTK4)** (`python3-gi`, `gir1.2-gtk-4.0`)
+
+**Optional but recommended:**
+- **Ollama** — local LLM for AI tutor (app degrades gracefully without it)
+- **PyMuPDF (fitz)** — PDF score import (Study Hub reports)
+- **sentence-transformers** — enhanced semantic outcome mapping (falls back to TF-IDF + Cython)
+- **pytesseract + Pillow + numpy + scikit-image** — OCR preprocessing for noisy PDFs
+- **matplotlib** — fallback chart renderer (Cairo charts are built-in)
+- **hyprctl** (Hyprland) — focus tracking for Pomodoro verified minutes
+
+---
+
+## Environment variables
+
+| Variable | Default | What it does |
+|----------|---------|-------------|
+| `STUDYPLAN_SRS_ALGORITHM` | `fsrs` | `sm2` or `legacy` to force SM-2 |
+| `STUDYPLAN_LLM_GATEWAY_ENABLED` | `0` | `1` to route tutor through cloud API |
+| `STUDYPLAN_LLM_GATEWAY_ENDPOINT` | — | OpenAI-compatible URL, e.g. `https://openrouter.ai/api/v1/...` |
+| `STUDYPLAN_LLM_GATEWAY_API_KEY` | — | API key (also `OPENROUTER_API_KEY`) |
+| `STUDYPLAN_LLM_GATEWAY_MODEL` | — | Model ID, e.g. `openrouter/google/gemini-2.5-flash` |
+| `STUDYPLAN_LLM_GATEWAY_MODEL_FALLBACKS` | — | Comma-separated fallback model IDs |
+| `STUDYPLAN_CLOUD_CONNECTIVITY_POLICY` | `auto` | `auto`, `force_online`, `force_offline` |
+| `STUDYPLAN_MODULE_TITLE` | — | Override active module title at startup |
+| `STUDYPLAN_CONFIG_HOME` | `~/.config/studyplan` | Override config directory |
+| `STUDYPLAN_LLAMA_CPP_RAM_BUDGET_MB` | auto | Override RAM budget for model selection |
+
+---
+
+## Testing
+
+```bash
+pytest -q                    # 1903 tests, 0 regressions
+python -m py_compile studyplan_app.py studyplan_engine.py
+pyright studyplan_app.py studyplan_engine.py tests/
+```
+
+**Canonical CI gate** (`.github/workflows/linux-ci.yml`):
+```bash
+python tools/gtk4_lint.py
+pyright studyplan_app.py studyplan_engine.py studyplan tests
+pytest -q
+xvfb-run -a timeout 300s python studyplan_app.py --dialog-smoke-strict
+```
+
+**Strict smoke KPI thresholds**: coach_pick_consistency_rate ≥ 0.999, coach_only/integrity rates = 1.0
+
+---
 
 ## Data locations
 
-Data is stored per module (defaults to the active module id):
+```
+~/.config/studyplan/
+├── <module_id>/data.json           # SRS state, progress, competence
+├── <module_id>/questions.json      # question bank + stats
+├── <module_id>/backups/*.bak       # automatic snapshots
+├── preferences.json
+├── streak.json
+├── app.log
+├── coach_debug.log
+├── smoke_last.json
+└── modules/*.json                  # module configs
+```
 
-- `~/.config/studyplan/<module_id>/data.json`
-- `~/.config/studyplan/<module_id>/questions.json`
+---
 
-Global app files:
+## Keyboard shortcuts
 
-- `~/.config/studyplan/preferences.json`
-- `~/.config/studyplan/streak.json`
-- `~/.config/studyplan/import_history.jsonl`
-- `~/.config/studyplan/app.log`
-- `~/.config/studyplan/coach_debug.log` (coach pick audit)
-- `~/.config/studyplan/smoke_last.json` (latest dialog smoke/KPI report)
-- `~/.config/studyplan/modules/*.json` (module configs)
-- `~/.config/studyplan/<module_id>/backups/*.bak` (automatic snapshots)
+| Key | Action |
+|-----|--------|
+| **F1** | Show shortcuts |
+| **F5** | Start Pomodoro |
+| **F6** | Pause/Resume Pomodoro |
+| **F7** | Stop Pomodoro |
+| **F8** | Quick Quiz |
+| **F9** | Toggle Focus Mode |
+| **Ctrl+E** | Set exam date |
+| **Ctrl+,** | Preferences |
+| **Ctrl+M** | Toggle menu bar |
+| **Ctrl+Q** | Quit |
+
+---
+
+## Project map
+
+| File/Dir | Lines | Role |
+|----------|-------|------|
+| `studyplan_app.py` | ~54,700 | GTK4 UI — dashboard, quiz flow, Pomodoro, AI Cockpit, preferences |
+| `studyplan_engine.py` | ~20,000 | Data model, SRS, daily plan, coach, ML inference, syllabus parsing |
+| `studyplan_ai_tutor.py` | ~10,000 | Tutor session management, RAG retrieval, prompt assembly, streaming |
+| `studyplan/rs/` | Rust | PyO3-accelerated SRS selection (`select_srs_from_scored`, `batch_score_srs`) |
+| `studyplan/cython/` | Cython | Accelerated cosine similarity + TF-IDF for semantic matching |
+| `studyplan/domain_reasoning/` | 1k | Deterministic FM concept solver with multi-path fallback |
+| `studyplan/numerical_solver.py` | 1.4k | Formula solver pipeline for numerical quiz answers |
+| `studyplan/fsrs.py` | 558 | FSRS-4.5 scheduler with PyO3-ready pure math |
+| `studyplan/` | lib | Config, contracts, coach FSM, cognitive state, AI routing, persistence |
+| `modules/*.json` | data | Built-in module configs (ACCA F6–F9) + question banks |
+| `tools/` | — | ML training scripts, GTK4 linter, tutor quality pipeline |
+| `tests/` | — | 1903 tests (including 220 domain-reasoning tests) |
+
+---
+
+## Documentation
+
+- [`USER_GUIDE.md`](USER_GUIDE.md) — end-user manual
+- [`DEVELOPER_DOC.md`](DEVELOPER_DOC.md) — architecture, internals, extension guide
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute
+- [`AGENTS.md`](AGENTS.md) — AI assistant context (architecture notes, conventions, pitfalls)
+- [`docs/LLM_TELEMETRY_SCHEMA.md`](docs/LLM_TELEMETRY_SCHEMA.md) — LLM telemetry fields + golden prompts
+- [`tests/tutor_quality/README.md`](tests/tutor_quality/README.md) — tutor quality tooling
+- [`scripts/README_module_chapters.md`](scripts/README_module_chapters.md) — module chapter tooling
+
+---
 
 ## Module switching
 
@@ -199,159 +238,23 @@ Global app files:
 3. Click **Apply** → **Restart Now**
 
 **Manage modules**: Module → Manage Modules… (opens module folders + list)
-
-**Edit modules**: Module → Edit Module… (GUI editor for title/chapters/weights/flow/JSON)
-
-Use **Tools → More → Module** to view the metadata/paths that the app has loaded for the active module or to reload the configuration after editing the JSON on disk.
-
-**Import syllabus intelligence**:
-1. Module → Import Syllabus PDF…
-2. Select syllabus PDF
-3. Review the draft in the import review wizard (confidence, warnings, preserve question-bank toggle)
-4. Optional: use **Improve with AI (RAG)** to run retrieval-assisted outcome extraction against the PDF text (chunked retrieval so long PDFs are not truncated)
-5. For automated or low-confidence runs, set `STUDYPLAN_AUTO_IMPROVE_SYLLABUS_AI=1` to auto-run RAG improvement when confidence &lt; 75% and a local LLM is available
-6. A low-confidence parse requires explicit acknowledgment before opening the draft
-7. Module Editor opens with draft JSON (no automatic save)
-8. Save explicitly when ready
-9. Optional: use **View Syllabus Cache Stats** in Tools to inspect cache hit rates and disk status
-
-For stable setups, prefer versioned module JSON as the source of truth and use PDF import + RAG to review or update when new syllabi are published (see `DEVELOPER_DOC.md` § Syllabus ingestion strategy).
-
-### Module JSON format
-
-```json
-{
-  "title": "Your Module",
-  "chapters": ["Topic 1", "Topic 2"],
-  "chapter_flow": {
-    "Topic 1": ["Topic 2"]
-  },
-  "importance_weights": {
-    "Topic 1": 20,
-    "Topic 2": 10
-  },
-  "target_total_hours": 180,
-  "aliases": {
-    "topic one": "Topic 1"
-  },
-  "capabilities": {
-    "A": "Financial management function"
-  },
-  "syllabus_structure": {
-    "A. Financial management function": {
-      "capability": "A",
-      "subtopics": ["The nature and purpose of financial management"],
-      "learning_outcomes": [{"id": "A.1", "text": "Explain ...", "level": 2}],
-      "intellectual_level_mix": {"level_1": 0, "level_2": 1, "level_3": 0},
-      "outcome_count": 1
-    }
-  },
-  "syllabus_meta": {
-    "source_pdf": "module syllabus and study guide.pdf",
-    "exam_code": "MODULE",
-    "effective_window": "Sep 2025 - Jun 2026",
-    "parsed_at": "2026-02-06T20:30:00",
-    "parse_confidence": 0.83
-  },
-  "questions": {
-    "Topic 1": [
-      {
-        "question": "Example?",
-        "options": ["A", "B", "C", "D"],
-        "correct": "A",
-        "explanation": "Why A"
-      }
-    ]
-  }
-}
-```
-
-Grab the schema reference from `module_schema.json` in the repo root; the app uses it to surface metadata and validation warnings before saving module edits.
-
-## Focus tracking (Hyprland)
-
-- Uses `hyprctl activewindow -j` and **class matching**
-- Configure allowlist via **Edit → Focus Allowlist…** or Preferences
-- Auto‑pause after idle threshold off allowed apps; resume on return
-
-## Pomodoro anti‑cheat
-
-- **Credit only if ≥ 10 verified minutes**
-- Rewards based on **verified focus time**
-- At most **2 short credits/day** for tiny sessions
-
-## Study Hub PDF import
-
-Use **Import PDF Scores** to ingest Study Hub reports (practice/quiz). The app parses chapter and category performance to update competence and analytics.
-
-OCR behavior:
-- native text extraction first
-- then optional skimage + Tesseract preprocessing for sparse/noisy pages
-- then PyMuPDF OCR fallback
-
-## Tests
-
-```bash
-pytest -q
-python -m py_compile studyplan_app.py studyplan_engine.py
-pyright studyplan_app.py studyplan_engine.py tests/test_studyplan_engine.py
-```
-
-Dialog smoke (exploratory):
-
-```bash
-timeout 40s python studyplan_app.py --dialog-smoke-test
-```
-
-Dialog smoke (strict gate, non-zero on KPI/report failure):
-
-```bash
-timeout 40s python studyplan_app.py --dialog-smoke-strict
-```
-
-**Isolated smoke/soak runs:** Set `STUDYPLAN_CONFIG_HOME` to a separate directory (e.g. a temp dir) so the run uses its own data and lock file. The smoke report is written to `smoke_last.json` under that config home, and `--dialog-smoke-strict` reads the report from the same path. Example:
-
-```bash
-STUDYPLAN_CONFIG_HOME=$(mktemp -d) timeout 40s python studyplan_app.py --dialog-smoke-strict
-```
-
-Strict smoke KPI thresholds:
-
-- `coach_pick_consistency_rate >= 0.999`
-- `coach_only_toggle_integrity_rate == 1.0`
-- `coach_next_burst_integrity_rate == 1.0`
-
-## Troubleshooting
-
-- **Focus tracking unavailable**: ensure `hyprctl` is installed
-- **Notifications not showing**: enable desktop notifications in Preferences
-- **Charts missing**: install `matplotlib`
-- **PDF import missing**: install `PyMuPDF (fitz)`
-- **Enhanced OCR not active**: install `pytesseract`, `Pillow`, `numpy`, `scikit-image`, and the `tesseract` binary
-- **Semantic map shows fallback**: confirm launcher environment has `sentence-transformers`
-- **Data file failed to load**: app auto-recovers from latest snapshot; manual options are in **File → Recover from Snapshot…**
-
-## Recent stability updates
-
-- FSRS-4.5 is now the default SRS algorithm (SM-2 opt-in via `STUDYPLAN_SRS_ALGORITHM=sm2`)
-- AI Cockpit default autonomy mode is now `cockpit` (was `suggest`)
-- Fixed a quiz runtime issue where full dashboard rebuilds could trigger high CPU/jank during answer confirmation
-- Added defensive quiz selection/history handling to reduce repetitive card loops and corrupted history impact
-- Hardened file chooser path handling to avoid noisy GTK deprecation warnings in normal use
-- **Domain reasoning engine** (`studyplan/domain_reasoning/`): four-phase implementation adding parameter key detection, multi-path fallback (alternative concepts for same output slot), input gap analysis (greedy fixed-point provider insertion), and weighted confidence (`avg_quality × success_rate`). 220 test functions; pyright-clean.
-
-## Files
-
-- `studyplan_app.py` — GTK4 main window, all UI (~54,700 lines; StudyPlanGUI/StudyApp). Workbench shell, dashboard, quiz flow, Pomodoro, AI Cockpit, preferences.
-- `studyplan_engine.py` — data model, SRS (FSRS-4.5/SM-2), daily plan, coach urgency scoring, ML inference, syllabus parsing, semantic routing, persistence (~20,000 lines).
-- `studyplan_ai_tutor.py` — AI tutor session management, RAG retrieval, prompt assembly, streaming, response sanitization (~10,000 lines).
-- `studyplan/logging_config.py` — Enhanced logging: rotating file+JSON handlers, `CaptureAndLog` context manager, `log_on_error` decorator
-- `studyplan/` — pure-Python library: config, FSRS, contracts, coach FSM, cognitive state, AI routing
-- `studyplan/domain_reasoning/` — GTK-free domain reasoning engine: deterministic concept solver, multi-path fallback, gap analysis, weighted confidence
-- `modules/*.json` — built-in module configs (ACCA F6, F7, F8, F9) and question banks
-- `tools/` — ML training scripts, GTK4 linter, tutor quality pipeline
-- `tests/` — unit tests (~388 no-GTK tests + tutor quality suite)
+**Edit modules**: Module → Edit Module… (GUI editor for title, chapters, weights, flow, JSON)
+**Import Syllabus PDF**: Module → Import Syllabus PDF… with RAG-improvement support
 
 ---
 
-For detailed usage, see [`USER_GUIDE.md`](USER_GUIDE.md). For internals, see [`DEVELOPER_DOC.md`](DEVELOPER_DOC.md). To contribute, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+## Troubleshooting quick reference
+
+| Symptom | Fix |
+|---------|-----|
+| Focus tracking unavailable | Install `hyprctl` (Hyprland) |
+| Notifications not showing | Enable in Preferences |
+| Charts missing | Install `matplotlib` (or use built-in Cairo charts) |
+| PDF import not working | Install `PyMuPDF (fitz)` |
+| Semantic map shows fallback | Install `sentence-transformers` |
+| Data file won't load | **File → Recover from Snapshot…** (auto-recovery kicks in first) |
+| `studyplan_rs` import error | Rust module not built — pure-Python fallback is active |
+
+---
+
+*Built with GTK4, PyO3, Cython, and a lot of coffee. Module-agnostic, local-first, and free.*

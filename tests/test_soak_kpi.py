@@ -67,8 +67,6 @@ def test_evaluate_soak_kpi_thresholds_unknown_operator_fails():
     try:
         failures = _evaluate_soak_kpi_thresholds({"samples": 10.0})
         metrics = {f["metric"] for f in failures}
-        assert "samples" in metrics, (
-            "Unknown operator must produce a failure entry, not silently pass"
-        )
+        assert "samples" in metrics, "Unknown operator must produce a failure entry, not silently pass"
     finally:
         m.SOAK_KPI_THRESHOLDS = original

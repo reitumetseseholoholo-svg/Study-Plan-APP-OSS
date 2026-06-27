@@ -45,7 +45,12 @@ def discover_llm_auth_headers(
     # Explicit generic override: always wins.
     candidates.extend(
         [
-            ("generic", ("STUDYPLAN_CLOUD_LLAMACPP_AUTH_BEARER",), {"Authorization": "Bearer {token}"}, "generic_override"),
+            (
+                "generic",
+                ("STUDYPLAN_CLOUD_LLAMACPP_AUTH_BEARER",),
+                {"Authorization": "Bearer {token}"},
+                "generic_override",
+            ),
             ("generic", ("STUDYPLAN_LLM_AUTH_BEARER",), {"Authorization": "Bearer {token}"}, "generic_override"),
             ("generic", ("STUDYPLAN_LLM_GATEWAY_API_KEY",), {"Authorization": "Bearer {token}"}, "generic_override"),
             ("generic", ("LLM_GATEWAY_API_KEY",), {"Authorization": "Bearer {token}"}, "generic_override"),
@@ -191,7 +196,12 @@ def _common_fallback_rules() -> list[tuple[str, tuple[str, ...], dict[str, str],
     return [
         ("generic", ("OPENROUTER_API_KEY",), {"Authorization": "Bearer {token}"}, "fallback_env"),
         ("generic", ("OPENAI_API_KEY",), {"Authorization": "Bearer {token}"}, "fallback_env"),
-        ("generic", ("ANTHROPIC_API_KEY",), {"Authorization": "Bearer {token}", "x-api-key": "{token}"}, "fallback_env"),
+        (
+            "generic",
+            ("ANTHROPIC_API_KEY",),
+            {"Authorization": "Bearer {token}", "x-api-key": "{token}"},
+            "fallback_env",
+        ),
         ("generic", ("STUDYPLAN_LITELLM_API_KEY",), {"Authorization": "Bearer {token}"}, "fallback_env"),
         ("generic", ("LITELLM_API_KEY",), {"Authorization": "Bearer {token}"}, "fallback_env"),
         ("generic", ("LITELLM_PROXY_API_KEY",), {"Authorization": "Bearer {token}"}, "fallback_env"),

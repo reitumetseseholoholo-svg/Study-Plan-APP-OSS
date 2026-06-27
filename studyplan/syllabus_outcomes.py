@@ -6,6 +6,7 @@ outcomes are extracted, any outcome text that looks truncated (e.g. ends with ".
 or is very short, or ends mid-sentence) is sent to the LLM to produce a complete
 sentence. The updated config is then saved so the syllabus has full outcome text.
 """
+
 from __future__ import annotations
 
 import copy

@@ -9,6 +9,7 @@ logger = get_logger(__name__)
 @dataclass
 class SchemaMigration:
     """Describes a schema version migration."""
+
     from_version: int
     to_version: int
     description: str

@@ -7,6 +7,7 @@ and optional JSON overrides (``STUDYPLAN_LLM_MODEL_RUNTIME_PATH`` or
 
 Disable custom profiles with ``STUDYPLAN_LLM_MODEL_RUNTIME_DISABLE=1`` (defaults only).
 """
+
 from __future__ import annotations
 
 import json
@@ -252,6 +253,15 @@ def _apply_model_specific_defaults(model_name: str, purpose: str, t: ModelRuntim
                 max_output_tokens=max(256, min(8192, 1280)),
                 llama_server_batch_size=512,
             )
+        return t
+    # Phi-4 Mini 3.8B: hard-cap num_ctx at 4096 across all purposes
+    # to keep KV cache within 5.6 GB RAM on Ryzen 3700U.
+    if "phi4mini" in compact or "phi-4" in name.replace("_", "-"):
+        return replace(
+            t,
+            num_ctx=max(2048, min(4096, int(t.num_ctx))),
+            llama_server_batch_size=512,
+        )
     return t
 
 
@@ -280,7 +290,9 @@ def _patch_tuning(base: ModelRuntimeTuning, patch: dict[str, Any]) -> ModelRunti
     if "num_ctx" in patch:
         kwargs["num_ctx"] = max(512, min(32768, _coerce_int(patch.get("num_ctx"), base.num_ctx)))
     if "thread_multiplier" in patch:
-        kwargs["thread_multiplier"] = max(0.25, min(1.5, _coerce_float(patch.get("thread_multiplier"), base.thread_multiplier)))
+        kwargs["thread_multiplier"] = max(
+            0.25, min(1.5, _coerce_float(patch.get("thread_multiplier"), base.thread_multiplier))
+        )
     if "thread_cap" in patch:
         cap_raw = patch.get("thread_cap")
         if cap_raw is None or str(cap_raw).strip().lower() in {"", "none", "null"}:
@@ -288,7 +300,9 @@ def _patch_tuning(base: ModelRuntimeTuning, patch: dict[str, Any]) -> ModelRunti
         else:
             kwargs["thread_cap"] = max(1, min(32, _coerce_int(cap_raw, 8)))
     if "max_output_tokens" in patch:
-        kwargs["max_output_tokens"] = max(256, min(8192, _coerce_int(patch.get("max_output_tokens"), base.max_output_tokens)))
+        kwargs["max_output_tokens"] = max(
+            256, min(8192, _coerce_int(patch.get("max_output_tokens"), base.max_output_tokens))
+        )
     if "llama_server_threads" in patch:
         lt = patch.get("llama_server_threads")
         if lt is None or str(lt).strip().lower() in {"", "none", "null"}:

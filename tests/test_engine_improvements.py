@@ -1,12 +1,10 @@
 """Tests for StudyPlanEngine.export_flashcards_csv and module versioning helpers."""
+
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import os
-import tempfile
-from unittest import mock
 
 import pytest
 
@@ -70,9 +68,22 @@ def test_export_csv_has_correct_headers(engine_with_questions, tmp_path):
         reader = csv.DictReader(fh)
         headers = reader.fieldnames or []
     expected = {
-        "chapter", "question", "option1", "option2", "option3", "option4",
-        "correct", "explanation", "last_review", "interval_days", "efactor",
-        "due_date", "fsrs_stability", "fsrs_difficulty", "fsrs_reps", "fsrs_lapses",
+        "chapter",
+        "question",
+        "option1",
+        "option2",
+        "option3",
+        "option4",
+        "correct",
+        "explanation",
+        "last_review",
+        "interval_days",
+        "efactor",
+        "due_date",
+        "fsrs_stability",
+        "fsrs_difficulty",
+        "fsrs_reps",
+        "fsrs_lapses",
     }
     assert expected.issubset(set(headers))
 
@@ -326,9 +337,7 @@ def test_get_weakest_questions_sorted_worst_first(engine_no_io):
 
 def test_get_weakest_questions_respects_n_limit(engine_no_io):
     chapter = engine_no_io.CHAPTERS[0]
-    engine_no_io.question_stats[chapter] = {
-        str(i): {"attempts": 3, "correct": i % 3} for i in range(10)
-    }
+    engine_no_io.question_stats[chapter] = {str(i): {"attempts": 3, "correct": i % 3} for i in range(10)}
     result = engine_no_io.get_weakest_questions(n=3, min_attempts=1)
     assert len(result) <= 3
 

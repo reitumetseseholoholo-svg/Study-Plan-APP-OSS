@@ -87,33 +87,45 @@ def test_cognitive_state_transfer_eligibility_uses_structure_posteriors_and_flag
     post = state.get_structure_posterior("npv_annuity_timing_v1")
     post.alpha = 10.0
     post.beta = 2.0
-    assert state.should_offer_transfer_test(
-        structure_id="npv_annuity_timing_v1",
-        base_correct=True,
-        hint_penalty=1.0,
-    ) is True
+    assert (
+        state.should_offer_transfer_test(
+            structure_id="npv_annuity_timing_v1",
+            base_correct=True,
+            hint_penalty=1.0,
+        )
+        is True
+    )
 
     state.quiz_active = True
-    assert state.should_offer_transfer_test(
-        structure_id="npv_annuity_timing_v1",
-        base_correct=True,
-        hint_penalty=1.0,
-    ) is False
+    assert (
+        state.should_offer_transfer_test(
+            structure_id="npv_annuity_timing_v1",
+            base_correct=True,
+            hint_penalty=1.0,
+        )
+        is False
+    )
     state.quiz_active = False
 
     state.struggle_mode = True
-    assert state.should_offer_transfer_test(
-        structure_id="npv_annuity_timing_v1",
-        base_correct=True,
-        hint_penalty=1.0,
-    ) is False
+    assert (
+        state.should_offer_transfer_test(
+            structure_id="npv_annuity_timing_v1",
+            base_correct=True,
+            hint_penalty=1.0,
+        )
+        is False
+    )
     state.struggle_mode = False
 
-    assert state.should_offer_transfer_test(
-        structure_id="npv_annuity_timing_v1",
-        base_correct=True,
-        hint_penalty=0.3,
-    ) is False
+    assert (
+        state.should_offer_transfer_test(
+            structure_id="npv_annuity_timing_v1",
+            base_correct=True,
+            hint_penalty=0.3,
+        )
+        is False
+    )
 
 
 def test_cognitive_state_transfer_tracking_roundtrips_snapshot():

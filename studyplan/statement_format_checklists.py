@@ -1,4 +1,5 @@
 """Static IFRS/ACCA-oriented statement format checklists (Phase 2.1, FR plan)."""
+
 from __future__ import annotations
 
 import json

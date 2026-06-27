@@ -1047,9 +1047,7 @@ def test_build_rag_context_block_shows_tier_label_when_tier_present():
 
 
 def test_build_rag_context_block_no_tier_label_when_tier_absent():
-    block = build_rag_context_block(
-        [{"id": "S1", "source": "notes.pdf", "text": "A definition."}]
-    )
+    block = build_rag_context_block([{"id": "S1", "source": "notes.pdf", "text": "A definition."}])
     assert "[S1] notes.pdf:" in block
 
 
@@ -2337,9 +2335,7 @@ def test_rag_source_weight_notes_outranks_supplemental_outranks_syllabus():
     Notes/textbooks are the primary knowledge source.
     """
     dummy = types.SimpleNamespace()
-    dummy._classify_ai_tutor_rag_source_tier = types.MethodType(
-        StudyPlanGUI._classify_ai_tutor_rag_source_tier, dummy
-    )
+    dummy._classify_ai_tutor_rag_source_tier = types.MethodType(StudyPlanGUI._classify_ai_tutor_rag_source_tier, dummy)
     weight_fn = types.MethodType(StudyPlanGUI._ai_tutor_rag_source_weight_multiplier, dummy)
 
     w_notes = weight_fn("course_notes_textbook.pdf", "course_notes_textbook.pdf")
@@ -2803,7 +2799,9 @@ def test_query_ai_tutor_rag_uses_explicit_target_queries():
     dummy = types.SimpleNamespace(module_title="FM")
     dummy._tutor_topic_for_context = lambda: "Investment appraisal"
 
-    def _fake_builder(self_arg, user_prompt, history=None, top_k=4, char_budget_override=None, rag_preset=None, query_plan=None):
+    def _fake_builder(
+        self_arg, user_prompt, history=None, top_k=4, char_budget_override=None, rag_preset=None, query_plan=None
+    ):
         captured["user_prompt"] = user_prompt
         captured["query_plan"] = dict(query_plan or {})
         return "ctx", {"retrieved_snippets": [{"id": "S1", "text": "snippet"}]}
@@ -3688,7 +3686,10 @@ def test_generate_gap_drill_questions_surfaces_validation_reasons():
         _build_gap_generation_prompt=lambda chapter, count, snapshot: "prompt",
         _ollama_generate_text=lambda model, prompt: (valid_json, None),
         _parse_generated_gap_questions=lambda text: ("Topic A", [row], None),
-        _validate_generated_gap_questions=lambda ch, q, **kw: ([], ["duplicate_or_near_duplicate", "question_too_short"]),
+        _validate_generated_gap_questions=lambda ch, q, **kw: (
+            [],
+            ["duplicate_or_near_duplicate", "question_too_short"],
+        ),
         _append_gap_question_quarantine=lambda *_args, **_kw: None,
         _record_ai_tutor_autopilot_metrics=lambda *_args, **_kw: None,
         _ai_tutor_autopilot_stats={},
@@ -4462,7 +4463,6 @@ def test_parse_section_c_evaluation_criterion_fuzzy_match_prefers_best_overlap()
     # "Method and workings" should match "Method, workings, and assumptions" (not exact but substring)
     assert rows[1]["score"] <= 5
 
-
     dummy = types.SimpleNamespace()
     dummy._evaluate_section_c_response_deterministic = types.MethodType(
         StudyPlanGUI._evaluate_section_c_response_deterministic,
@@ -5075,7 +5075,8 @@ def test_open_section_c_practice_dialog_wires_generate_case_button(monkeypatch):
         start_quiz_session=lambda **_kwargs: None,
         on_focus_now=lambda _arg: None,
         _generate_section_c_question=lambda chapter, snapshot=None, cancel_check=None: (
-            generated.append(str(chapter)) or {"chapter": chapter, "scenario": f"Generated for {chapter}", "requirements": []},
+            generated.append(str(chapter))
+            or {"chapter": chapter, "scenario": f"Generated for {chapter}", "requirements": []},
             None,
         ),
     )
@@ -5477,9 +5478,7 @@ def test_generate_section_c_question_fr_retries_when_exhibits_lack_tables():
         "exhibits": ["Exhibit 1: Statement of Financial Position (see scenario)"],
     }
     data_case = dict(no_data_case)
-    data_case["exhibits"] = [
-        "Exhibit 1: Draft SoFP\nPPE: £5,200\nInventories: £1,800\nTotal assets: £7,000"
-    ]
+    data_case["exhibits"] = ["Exhibit 1: Draft SoFP\nPPE: £5,200\nInventories: £1,800\nTotal assets: £7,000"]
 
     prompts_seen: list[str] = []
 
@@ -5514,16 +5513,15 @@ def test_generate_section_c_question_fr_retries_when_exhibits_lack_tables():
 
     assert isinstance(row, dict)
     exhibits = row.get("exhibits", [])
-    assert any(
-        StudyPlanGUI._exhibit_has_financial_data(ex) for ex in exhibits
-    ), "FR retry should have produced a case with exhibits containing real financial figures"
+    assert any(StudyPlanGUI._exhibit_has_financial_data(ex) for ex in exhibits), (
+        "FR retry should have produced a case with exhibits containing real financial figures"
+    )
     assert any(RETRY_SUFFIX_FR_TABLES in p for p in prompts_seen), "FR table retry prompt should have been used"
     assert warn is None
 
 
 def test_generate_section_c_question_fr_keeps_initial_result_when_retry_has_no_data():
     """If FR table retry also returns exhibits without financial figures, the initial valid result is kept."""
-    from studyplan.ai.prompt_design import RETRY_SUFFIX_FR_TABLES
 
     engine = types.SimpleNamespace(CHAPTERS=["Topic A"])
 
@@ -6086,14 +6084,18 @@ def test_cloud_connectivity_policy_mode_accepts_force_modes(monkeypatch) -> None
 def test_has_internet_connectivity_respects_forced_offline_policy(monkeypatch) -> None:
     dummy = _make_dummy()
     monkeypatch.setenv("STUDYPLAN_CLOUD_CONNECTIVITY_POLICY", "offline")
-    monkeypatch.setattr("studyplan_app.socket.create_connection", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(
+        "studyplan_app.socket.create_connection", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError)
+    )
     assert dummy._has_internet_connectivity(force_refresh=True) is False
 
 
 def test_has_internet_connectivity_respects_forced_online_policy(monkeypatch) -> None:
     dummy = _make_dummy()
     monkeypatch.setenv("STUDYPLAN_CLOUD_CONNECTIVITY_POLICY", "online")
-    monkeypatch.setattr("studyplan_app.socket.create_connection", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(
+        "studyplan_app.socket.create_connection", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError)
+    )
     assert dummy._has_internet_connectivity(force_refresh=True) is True
 
 
@@ -6154,7 +6156,9 @@ def test_select_ollama_cloud_model_filters_to_cloud_candidates(monkeypatch) -> N
     )
     captured: dict[str, object] = {}
 
-    def _select_local_llm_model(*, model_override=None, purpose="general", available_models=None, persist=True, **_kwargs):
+    def _select_local_llm_model(
+        *, model_override=None, purpose="general", available_models=None, persist=True, **_kwargs
+    ):
         captured["purpose"] = purpose
         captured["available_models"] = list(available_models or [])
         return "qwen3.5:cloud", None
@@ -6190,7 +6194,9 @@ def test_reconfig_cloud_llm_available_accepts_ollama_cloud_model(monkeypatch) ->
 def test_reconfig_cloud_llm_available_rejects_local_only_models(monkeypatch) -> None:
     dummy = _make_dummy()
     monkeypatch.setattr(dummy, "_cloud_endpoint_is_candidate", lambda: False)
-    monkeypatch.setattr(dummy, "_select_ollama_cloud_model", lambda purpose="general": ("", "No Ollama cloud models found."))
+    monkeypatch.setattr(
+        dummy, "_select_ollama_cloud_model", lambda purpose="general": ("", "No Ollama cloud models found.")
+    )
     ok, err = dummy._reconfig_cloud_llm_available()
     assert ok is False
     assert err == "No Ollama cloud models found."
@@ -6233,7 +6239,9 @@ def test_syllabus_ai_llm_generate_rejects_local_only_ollama_models(monkeypatch) 
     dummy._syllabus_ai_llm_generate = types.MethodType(StudyPlanGUI._syllabus_ai_llm_generate, dummy)
     monkeypatch.setattr(dummy, "_remote_llm_backends_allowed", lambda: True)
     monkeypatch.setattr(dummy, "_cloud_endpoint_is_candidate", lambda: False)
-    monkeypatch.setattr(dummy, "_select_ollama_cloud_model", lambda purpose="general": ("", "No Ollama cloud models found."))
+    monkeypatch.setattr(
+        dummy, "_select_ollama_cloud_model", lambda purpose="general": ("", "No Ollama cloud models found.")
+    )
     logged: list[tuple[str, str]] = []
     dummy._log_message = lambda code, msg: logged.append((code, msg))
     monkeypatch.setattr(dummy, "_ollama_generate_text", lambda *_args, **_kwargs: ("local-result", None))
@@ -7280,6 +7288,7 @@ def test_render_grounded_tutor_feedback_coerces_invalid_confidence_and_citations
 # Streak-break and badge-revocation tests
 # ---------------------------------------------------------------------------
 
+
 def _make_streak_dummy():
     """Return a minimal SimpleNamespace wired up for streak/badge methods."""
     dummy = types.SimpleNamespace(
@@ -7513,8 +7522,6 @@ def test_load_streak_data_keeps_streak_when_studied_today(tmp_path, monkeypatch)
 # Helper: import the module-level constants we need from studyplan_app.
 try:
     from studyplan_app import (
-        AI_TUTOR_AUTOPILOT_ACTION_COOLDOWN_SECONDS,
-        AI_TUTOR_AUTOPILOT_QUIET_AFTER_SUCCESS_SECONDS,
         AI_TUTOR_DEFAULT_AUTONOMY_MODE,
         AI_TUTOR_NUDGE_COOLDOWN_SECONDS,
     )
@@ -7526,6 +7533,7 @@ except Exception:  # pragma: no cover
 # Fix 1 / edge case #12–13: _accept_ai_tutor_pending_suggestion
 # must enforce the 20 s cooldown and 60 s duplicate guard.
 # ------------------------------------------------------------------
+
 
 def _make_accept_dummy(*, last_action_offset: float = 0.0, executed_topic: str = "", executed_action: str = ""):
     """Build a minimal dummy with the accept method bound."""
@@ -7618,6 +7626,7 @@ def test_accept_suggestion_proceeds_when_guards_pass():
 # Fix 1 / edge case #18: accept must use the env-var quiet period.
 # ------------------------------------------------------------------
 
+
 def test_accept_suggestion_respects_quiet_env_var(monkeypatch):
     """The quiet period set by _accept must honour STUDYPLAN_AI_TUTOR_AUTOPILOT_QUIET_SECONDS."""
     monkeypatch.setenv("STUDYPLAN_AI_TUTOR_AUTOPILOT_QUIET_SECONDS", "300")
@@ -7635,6 +7644,7 @@ def test_accept_suggestion_respects_quiet_env_var(monkeypatch):
 # Fix 2 / edge cases #14 & #17: repeated-suggestion backoff must
 # only count entries with outcome exactly == "suggested".
 # ------------------------------------------------------------------
+
 
 def _make_backoff_dummy(outcomes: list[str]):
     """Return a dummy with a recent-action log containing the given outcomes."""
@@ -7663,7 +7673,7 @@ def _make_backoff_dummy(outcomes: list[str]):
     )
 
     def _sanitize(rows, limit=10):
-        return list(rows or [])[-max(1, limit):]
+        return list(rows or [])[-max(1, limit) :]
 
     dummy._sanitize_ai_tutor_recent_action_log = _sanitize
 
@@ -7689,18 +7699,14 @@ def _make_backoff_dummy(outcomes: list[str]):
 
 def test_backoff_only_fires_for_pending_suggested_outcomes():
     """Backoff must NOT fire when the three recent outcomes are suggested_accepted/dismissed."""
-    dummy, snapshot = _make_backoff_dummy(
-        ["suggested_accepted", "suggested_dismissed", "suggested_accepted"]
-    )
+    dummy, snapshot = _make_backoff_dummy(["suggested_accepted", "suggested_dismissed", "suggested_accepted"])
     sig = StudyPlanGUI._build_ai_tutor_autopilot_event_signature(dummy, snapshot)
     dummy._ai_tutor_global_last_event_sig = sig
 
     should, reason, _ = StudyPlanGUI._should_request_global_ai_tutor_decision(
         dummy, snapshot, now_ts=float(time.monotonic()) + 200.0
     )
-    assert reason != "repeated_suggestion_backoff", (
-        "accepted/dismissed entries must not trigger backoff"
-    )
+    assert reason != "repeated_suggestion_backoff", "accepted/dismissed entries must not trigger backoff"
 
 
 def test_backoff_fires_for_three_pending_suggested():
@@ -7739,6 +7745,7 @@ def test_backoff_ignores_older_suggested_rows_once_latest_suggestion_was_resolve
 # ------------------------------------------------------------------
 # Fix 4 / edge case #9: nudge per-key cooldown.
 # ------------------------------------------------------------------
+
 
 def _make_nudge_dummy_perkey(policy: str = "moderate"):
     """Nudge dummy for the per-key cooldown edge-case tests (fix 4)."""
@@ -7790,6 +7797,7 @@ def test_nudge_key_times_pruned_on_emit():
 # Fix 5 / edge case #4: fallback topic validated against CHAPTERS.
 # ------------------------------------------------------------------
 
+
 def _make_fallback_dummy(chapters: list[str]):
     import types as _types
 
@@ -7802,7 +7810,12 @@ def _make_fallback_dummy(chapters: list[str]):
 def test_fallback_action_rejects_invalid_current_topic():
     """_build_ai_tutor_fallback_action must clear current_topic if not in CHAPTERS."""
     dummy = _make_fallback_dummy(chapters=["Valid Chapter"])
-    snapshot = {"current_topic": "Stale Bad Topic", "must_review_due": 0, "overdue_srs_count": 0, "weak_topics_top3": []}
+    snapshot = {
+        "current_topic": "Stale Bad Topic",
+        "must_review_due": 0,
+        "overdue_srs_count": 0,
+        "weak_topics_top3": [],
+    }
     result = StudyPlanGUI._build_ai_tutor_fallback_action(dummy, snapshot)
     assert result["topic"] == "", "invalid topic must be cleared"
 
@@ -7848,6 +7861,7 @@ def test_fallback_action_uses_valid_weak_topic_chapter():
 # module-level AI_TUTOR_DEFAULT_AUTONOMY_MODE, not "assist".
 # ------------------------------------------------------------------
 
+
 def test_effective_autonomy_mode_matches_module_default():
     """_effective_ai_tutor_autonomy_mode must return the module default when unset."""
     dummy = types.SimpleNamespace()
@@ -7865,7 +7879,6 @@ def test_effective_autonomy_mode_matches_module_default():
 # ---------------------------------------------------------------------------
 
 from studyplan_app import (
-    AI_TUTOR_ALLOWED_ACTIONS,
     AI_TUTOR_AUTOPILOT_ACTION_WINDOW_SECONDS,
     AI_TUTOR_AUTOPILOT_MAX_ACTIONS_PER_WINDOW,
     AI_TUTOR_NUDGE_COOLDOWN_SECONDS,
@@ -7873,6 +7886,7 @@ from studyplan_app import (
 
 
 # --- _consume_global_ai_tutor_action_budget -----------------------------------
+
 
 def test_consume_global_ai_tutor_action_budget_allows_when_empty():
     dummy = types.SimpleNamespace(_ai_tutor_global_autopilot_action_window=[])
@@ -7906,6 +7920,7 @@ def test_consume_global_ai_tutor_action_budget_tolerates_invalid_entries():
 
 # --- _record_ai_tutor_action_budget_use --------------------------------------
 
+
 def test_record_ai_tutor_action_budget_use_appends_timestamp():
     dummy = types.SimpleNamespace(_ai_tutor_global_autopilot_action_window=[100.0, 200.0])
     StudyPlanGUI._record_ai_tutor_action_budget_use(dummy, 300.0)
@@ -7919,6 +7934,7 @@ def test_record_ai_tutor_action_budget_use_initialises_missing_window():
 
 
 # --- _emit_global_ai_tutor_nudge ---------------------------------------------
+
 
 def _make_nudge_dummy(*, enabled=True, policy="moderate"):
     notifications = []
@@ -7986,6 +8002,7 @@ def test_emit_global_ai_tutor_nudge_different_message_after_cooldown_fires_again
 
 
 # --- duplicate-guard in _global_ai_tutor_autopilot_tick ----------------------
+
 
 def test_autopilot_duplicate_guard_blocks_repeated_action_within_60s():
     """Identical action+topic executed less than 60 s ago must be blocked."""
@@ -8062,6 +8079,7 @@ def test_autopilot_duplicate_guard_allows_action_after_60s():
 
 
 # --- _execute_ai_tutor_action dispatcher -------------------------------------
+
 
 def _make_execute_dummy():
     engine = types.SimpleNamespace(CHAPTERS=["Topic A", "Topic B"])
@@ -8185,6 +8203,7 @@ def test_execute_ai_tutor_action_coach_next_calls_handler():
 
 # --- _restart_ai_tutor_global_autopilot_timer --------------------------------
 
+
 def _make_restart_dummy(*, enabled=True, tick_seconds=45):
     removed = []
     registered = []
@@ -8253,6 +8272,7 @@ def test_restart_ai_tutor_global_autopilot_timer_skips_new_timer_when_disabled()
 
 
 # --- worker exception is logged (smoke check) --------------------------------
+
 
 def test_global_ai_tutor_autopilot_tick_worker_exception_is_logged(caplog):
     """Exceptions in the autopilot background worker must be logged, not silently dropped."""

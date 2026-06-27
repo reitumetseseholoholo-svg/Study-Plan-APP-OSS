@@ -1,4 +1,5 @@
 """Tests for module_chapters: load_chapter_spec_from_path, validation."""
+
 from __future__ import annotations
 
 import pytest

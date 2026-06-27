@@ -1,5 +1,4 @@
 """Tests for studyplan.confidence_tracking module."""
-import pytest
 
 from studyplan.confidence_tracking import (
     ConfidenceCalibration,
@@ -21,7 +20,7 @@ def test_add_attempt_stores_record():
 
 def test_window_size_enforced():
     cal = ConfidenceCalibrator(window_size=3)
-    for i in range(5):
+    for _i in range(5):
         cal.add_attempt(3, True)
     assert len(cal.history) == 3
 
@@ -161,45 +160,66 @@ def test_get_summary_stats_keys():
 
 
 def test_escalate_difficulty_true_when_all_conditions_met():
-    assert ConfidenceThresholdPolicy.should_escalate_difficulty(
-        confidence=5, recent_accuracy=0.9, confidence_matches_accuracy=True
-    ) is True
+    assert (
+        ConfidenceThresholdPolicy.should_escalate_difficulty(
+            confidence=5, recent_accuracy=0.9, confidence_matches_accuracy=True
+        )
+        is True
+    )
 
 
 def test_escalate_difficulty_false_when_low_confidence():
-    assert ConfidenceThresholdPolicy.should_escalate_difficulty(
-        confidence=2, recent_accuracy=0.9, confidence_matches_accuracy=True
-    ) is False
+    assert (
+        ConfidenceThresholdPolicy.should_escalate_difficulty(
+            confidence=2, recent_accuracy=0.9, confidence_matches_accuracy=True
+        )
+        is False
+    )
 
 
 def test_escalate_difficulty_false_when_low_accuracy():
-    assert ConfidenceThresholdPolicy.should_escalate_difficulty(
-        confidence=5, recent_accuracy=0.4, confidence_matches_accuracy=True
-    ) is False
+    assert (
+        ConfidenceThresholdPolicy.should_escalate_difficulty(
+            confidence=5, recent_accuracy=0.4, confidence_matches_accuracy=True
+        )
+        is False
+    )
 
 
 def test_escalate_difficulty_false_when_not_calibrated():
-    assert ConfidenceThresholdPolicy.should_escalate_difficulty(
-        confidence=5, recent_accuracy=0.9, confidence_matches_accuracy=False
-    ) is False
+    assert (
+        ConfidenceThresholdPolicy.should_escalate_difficulty(
+            confidence=5, recent_accuracy=0.9, confidence_matches_accuracy=False
+        )
+        is False
+    )
 
 
 def test_provide_scaffolding_true_low_confidence_and_low_accuracy():
-    assert ConfidenceThresholdPolicy.should_provide_extra_scaffolding(
-        confidence=1, recent_accuracy=0.3, confidence_matches_accuracy=True
-    ) is True
+    assert (
+        ConfidenceThresholdPolicy.should_provide_extra_scaffolding(
+            confidence=1, recent_accuracy=0.3, confidence_matches_accuracy=True
+        )
+        is True
+    )
 
 
 def test_provide_scaffolding_true_overconfident_and_failing():
-    assert ConfidenceThresholdPolicy.should_provide_extra_scaffolding(
-        confidence=5, recent_accuracy=0.3, confidence_matches_accuracy=False
-    ) is True
+    assert (
+        ConfidenceThresholdPolicy.should_provide_extra_scaffolding(
+            confidence=5, recent_accuracy=0.3, confidence_matches_accuracy=False
+        )
+        is True
+    )
 
 
 def test_provide_scaffolding_false_when_doing_well():
-    assert ConfidenceThresholdPolicy.should_provide_extra_scaffolding(
-        confidence=3, recent_accuracy=0.8, confidence_matches_accuracy=True
-    ) is False
+    assert (
+        ConfidenceThresholdPolicy.should_provide_extra_scaffolding(
+            confidence=3, recent_accuracy=0.8, confidence_matches_accuracy=True
+        )
+        is False
+    )
 
 
 def test_trigger_metacognition_true_for_severe():

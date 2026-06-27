@@ -1,10 +1,10 @@
 """Tests for tutor memory: context packet and format line."""
+
 from __future__ import annotations
 
 import datetime
 import types
 
-import pytest
 
 from studyplan.tutor_memory import (
     build_tutor_context_packet,
@@ -19,9 +19,7 @@ def test_build_tutor_context_packet_basic() -> None:
         competence={"Ch1": 45.0, "Ch2": 80.0},
         quiz_results={"Ch1": 40.0, "Ch2": 75.0},
         get_syllabus_chapter_intelligence=lambda ch: (
-            {"learning_outcomes": [{"id": "F.2.1", "text": "Explain NPV"}]}
-            if ch == "Ch1"
-            else {}
+            {"learning_outcomes": [{"id": "F.2.1", "text": "Explain NPV"}]} if ch == "Ch1" else {}
         ),
     )
     packet = build_tutor_context_packet(engine, "Ch1", topic="NPV", recent_activity=[])
@@ -73,7 +71,14 @@ def test_build_packet_with_recent_activity() -> None:
         get_syllabus_chapter_intelligence=lambda ch: {},
     )
     activity = [
-        {"at": (today - datetime.timedelta(days=1)).isoformat(), "chapter": "Ch1", "topic": "NPV", "actions": "explain", "confidence_feedback": "ok", "summary": "Asked about timing"},
+        {
+            "at": (today - datetime.timedelta(days=1)).isoformat(),
+            "chapter": "Ch1",
+            "topic": "NPV",
+            "actions": "explain",
+            "confidence_feedback": "ok",
+            "summary": "Asked about timing",
+        },
     ]
     packet = build_tutor_context_packet(engine, "Ch1", recent_activity=activity)
     assert len(packet["recent_study_last_3_days"]) >= 1

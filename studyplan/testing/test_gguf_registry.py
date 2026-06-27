@@ -2,11 +2,9 @@
 
 import json
 import os
-import struct
 import tempfile
 
 from studyplan.ai.gguf_registry import (
-    GgufModel,
     GgufRegistry,
     GgufRegistryConfig,
     _build_model_entry,

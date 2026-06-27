@@ -27,13 +27,42 @@ class WaccTemplate(FormulaTemplate):
         if v > 0:
             w_e = eq / v
             w_d = db / v
-            steps.append({"step_id": "weight_equity", "description": "Equity weight", "value": w_e, "formula": f"{eq}/{v}"})
+            steps.append(
+                {"step_id": "weight_equity", "description": "Equity weight", "value": w_e, "formula": f"{eq}/{v}"}
+            )
             steps.append({"step_id": "weight_debt", "description": "Debt weight", "value": w_d, "formula": f"{db}/{v}"})
-            steps.append({"step_id": "cost_equity_component", "description": "Equity component", "value": w_e * re, "formula": f"{w_e}*{re}"})
-            steps.append({"step_id": "cost_debt_component", "description": "Debt component (after-tax)", "value": w_d * rd, "formula": f"{w_d}*{rd}"})
-        steps.append({"step_id": "wacc", "description": "WACC", "value": result, "formula": f"{w_e if v>0 else 0}*{re}+{w_d if v>0 else 0}*{rd}"})
+            steps.append(
+                {
+                    "step_id": "cost_equity_component",
+                    "description": "Equity component",
+                    "value": w_e * re,
+                    "formula": f"{w_e}*{re}",
+                }
+            )
+            steps.append(
+                {
+                    "step_id": "cost_debt_component",
+                    "description": "Debt component (after-tax)",
+                    "value": w_d * rd,
+                    "formula": f"{w_d}*{rd}",
+                }
+            )
+        steps.append(
+            {
+                "step_id": "wacc",
+                "description": "WACC",
+                "value": result,
+                "formula": f"{w_e if v > 0 else 0}*{re}+{w_d if v > 0 else 0}*{rd}",
+            }
+        )
 
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

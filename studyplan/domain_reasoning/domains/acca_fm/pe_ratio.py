@@ -21,7 +21,13 @@ class PeRatioTemplate(FormulaTemplate):
         steps: list[dict[str, Any]] = [
             {"step_id": "pe_ratio", "description": "P/E = Market price / EPS", "value": result, "formula": f"{p}/{e}"},
         ]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

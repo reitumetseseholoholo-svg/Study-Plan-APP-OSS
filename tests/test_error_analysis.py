@@ -1,4 +1,5 @@
 """Unit tests for studyplan/error_analysis.py."""
+
 from __future__ import annotations
 
 import pytest

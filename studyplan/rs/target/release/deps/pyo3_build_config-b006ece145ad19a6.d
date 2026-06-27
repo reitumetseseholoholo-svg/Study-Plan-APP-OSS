@@ -1,0 +1,14 @@
+/home/pyprog/APP/ACCA-Study-Plan-APP-OSS-/studyplan/rs/target/release/deps/pyo3_build_config-b006ece145ad19a6.d: /home/pyprog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.23.5/src/lib.rs /home/pyprog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.23.5/src/errors.rs /home/pyprog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.23.5/src/impl_.rs /home/pyprog/APP/ACCA-Study-Plan-APP-OSS-/studyplan/rs/target/release/build/pyo3-build-config-55ef10a62c57e8fd/out/pyo3-build-config-file.txt /home/pyprog/APP/ACCA-Study-Plan-APP-OSS-/studyplan/rs/target/release/build/pyo3-build-config-55ef10a62c57e8fd/out/pyo3-build-config.txt
+
+/home/pyprog/APP/ACCA-Study-Plan-APP-OSS-/studyplan/rs/target/release/deps/libpyo3_build_config-b006ece145ad19a6.rlib: /home/pyprog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.23.5/src/lib.rs /home/pyprog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.23.5/src/errors.rs /home/pyprog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.23.5/src/impl_.rs /home/pyprog/APP/ACCA-Study-Plan-APP-OSS-/studyplan/rs/target/release/build/pyo3-build-config-55ef10a62c57e8fd/out/pyo3-build-config-file.txt /home/pyprog/APP/ACCA-Study-Plan-APP-OSS-/studyplan/rs/target/release/build/pyo3-build-config-55ef10a62c57e8fd/out/pyo3-build-config.txt
+
+/home/pyprog/APP/ACCA-Study-Plan-APP-OSS-/studyplan/rs/target/release/deps/libpyo3_build_config-b006ece145ad19a6.rmeta: /home/pyprog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.23.5/src/lib.rs /home/pyprog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.23.5/src/errors.rs /home/pyprog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.23.5/src/impl_.rs /home/pyprog/APP/ACCA-Study-Plan-APP-OSS-/studyplan/rs/target/release/build/pyo3-build-config-55ef10a62c57e8fd/out/pyo3-build-config-file.txt /home/pyprog/APP/ACCA-Study-Plan-APP-OSS-/studyplan/rs/target/release/build/pyo3-build-config-55ef10a62c57e8fd/out/pyo3-build-config.txt
+
+/home/pyprog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.23.5/src/lib.rs:
+/home/pyprog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.23.5/src/errors.rs:
+/home/pyprog/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.23.5/src/impl_.rs:
+/home/pyprog/APP/ACCA-Study-Plan-APP-OSS-/studyplan/rs/target/release/build/pyo3-build-config-55ef10a62c57e8fd/out/pyo3-build-config-file.txt:
+/home/pyprog/APP/ACCA-Study-Plan-APP-OSS-/studyplan/rs/target/release/build/pyo3-build-config-55ef10a62c57e8fd/out/pyo3-build-config.txt:
+
+# env-dep:CARGO_PKG_VERSION=0.23.5
+# env-dep:OUT_DIR=/home/pyprog/APP/ACCA-Study-Plan-APP-OSS-/studyplan/rs/target/release/build/pyo3-build-config-55ef10a62c57e8fd/out

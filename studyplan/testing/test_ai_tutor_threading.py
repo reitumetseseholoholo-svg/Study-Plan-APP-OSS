@@ -47,9 +47,7 @@ def test_schedule_when_starter_refuses_invokes_idle_callback():
         idle_results.append(True)
         return False
 
-    assert _schedule_gui_background_thread(
-        app, _FakeGLib, target, name="tutor-test", on_start_failed=on_fail
-    ) is False
+    assert _schedule_gui_background_thread(app, _FakeGLib, target, name="tutor-test", on_start_failed=on_fail) is False
     assert idle_results == [True]
 
 

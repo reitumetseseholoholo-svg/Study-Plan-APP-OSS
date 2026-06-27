@@ -19,9 +19,20 @@ class RoceTemplate(FormulaTemplate):
         result = self._solver(p, ce)
 
         steps: list[dict[str, Any]] = [
-            {"step_id": "roce", "description": "ROCE = PBIT / Capital employed", "value": result, "formula": f"{p}/{ce}"},
+            {
+                "step_id": "roce",
+                "description": "ROCE = PBIT / Capital employed",
+                "value": result,
+                "formula": f"{p}/{ce}",
+            },
         ]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

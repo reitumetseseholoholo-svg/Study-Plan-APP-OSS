@@ -187,7 +187,7 @@ def test_phase8_learner_model_store_tracks_learning_loop_metrics_recurrence_and_
         error_tags=("missing_risk",),
         misconception_tags=("wc_policy_risk_ignored",),
     )
-    p1 = store.note_assessment("u8", "FM", incorrect, confidence=5)
+    store.note_assessment("u8", "FM", incorrect, confidence=5)
     partial = TutorAssessmentResult(
         item_id="x2",
         outcome="partial",
@@ -429,11 +429,16 @@ def test_phase3_no_teach_back_for_non_teach_mode():
             active=True,
         ),
         learner_profile=TutorLearnerProfileSnapshot(
-            learner_id="u-noteach", module="FM",
+            learner_id="u-noteach",
+            module="FM",
         ),
         app_snapshot=AppStateSnapshot(
-            module="FM", current_topic="Working Capital", coach_pick="", days_to_exam=30,
-            must_review_due=0, overdue_srs_count=0,
+            module="FM",
+            current_topic="Working Capital",
+            coach_pick="",
+            days_to_exam=30,
+            must_review_due=0,
+            overdue_srs_count=0,
         ),
         max_items=3,
     )
@@ -482,7 +487,9 @@ def test_phase3_assessment_service_marks_mcq_and_keyword_short_answer():
     )
     short_partial = assessor.assess(
         item=short_item,
-        submission=TutorAssessmentSubmission(item_id="sa-1", answer_text="It is a policy for managing working capital."),
+        submission=TutorAssessmentSubmission(
+            item_id="sa-1", answer_text="It is a policy for managing working capital."
+        ),
         session_state=TutorSessionState(session_id="s", module="FM", topic="Working Capital Management"),
         learner_profile=TutorLearnerProfileSnapshot(learner_id="u", module="FM"),
     )
@@ -879,7 +886,11 @@ def test_transfer_attempt_log_service_roundtrips_recent_attempts(tmp_path: Path)
 def test_transfer_attempt_log_service_ignores_bad_lines(tmp_path: Path):
     svc = TransferAttemptLogService()
     log_path = tmp_path / "transfer_attempts.jsonl"
-    log_path.write_text("{bad json}\n" + "{\"attempt_id\":\"ok1\",\"student_id\":\"u1\",\"base_question_id\":\"b\",\"variant_question_id\":\"v\",\"structure_id\":\"s\",\"base_result\":\"correct\",\"variant_result\":\"correct\",\"base_latency_seconds\":1,\"variant_latency_seconds\":1,\"base_hint_penalty\":1,\"variant_hint_penalty\":1}\n", encoding="utf-8")
+    log_path.write_text(
+        "{bad json}\n"
+        + '{"attempt_id":"ok1","student_id":"u1","base_question_id":"b","variant_question_id":"v","structure_id":"s","base_result":"correct","variant_result":"correct","base_latency_seconds":1,"variant_latency_seconds":1,"base_hint_penalty":1,"variant_hint_penalty":1}\n',
+        encoding="utf-8",
+    )
     loaded = svc.load_recent_attempts(str(log_path), max_rows=10)
     assert len(loaded) == 1
     assert loaded[0].attempt_id == "ok1"
@@ -1328,7 +1339,7 @@ class TestDomainAwareAssessment:
     def test_domain_item_no_reasoner_fallback(self):
         """No domain_reasoner configured → falls through to default path (calculation_step)."""
         svc = DeterministicTutorAssessmentService(domain_reasoner=None)
-        item = _make_domain_item()
+        _make_domain_item()
         # Set meta numeric_answer so _assess_numeric can match
         item_numeric = TutorPracticeItem(
             item_id="domain-001",
@@ -1415,12 +1426,22 @@ class TestConceptProfileTracking:
     def test_note_assessment_merges_consecutive_error_patterns(self):
         store = InMemoryTutorLearnerModelStore()
         r1 = TutorAssessmentResult(
-            item_id="t1", outcome="incorrect", marks_awarded=0, marks_max=5, feedback="",
-            concept_ids=("fm.npv",), error_patterns=("sign_error",),
+            item_id="t1",
+            outcome="incorrect",
+            marks_awarded=0,
+            marks_max=5,
+            feedback="",
+            concept_ids=("fm.npv",),
+            error_patterns=("sign_error",),
         )
         r2 = TutorAssessmentResult(
-            item_id="t1", outcome="incorrect", marks_awarded=0, marks_max=5, feedback="",
-            concept_ids=("fm.npv",), error_patterns=("sign_error", "wrong_rate"),
+            item_id="t1",
+            outcome="incorrect",
+            marks_awarded=0,
+            marks_max=5,
+            feedback="",
+            concept_ids=("fm.npv",),
+            error_patterns=("sign_error", "wrong_rate"),
         )
         store.note_assessment("u1", "acca_fm", r1)
         profile = store.note_assessment("u1", "acca_fm", r2)

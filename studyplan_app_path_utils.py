@@ -2,6 +2,7 @@
 Path and atomic file helpers used by StudyPlanGUI.
 Extracted so tests can run without importing studyplan_app (GTK/gi).
 """
+
 from __future__ import annotations
 
 import csv
@@ -37,13 +38,11 @@ def validate_import_source_path(
         tmp = os.path.realpath(tempfile.gettempdir())
         under_home = real == home or real.startswith(home + os.sep)
         under_tmp = real.startswith(tmp + os.sep)
-        under_extra = any(
-            real.startswith(os.path.realpath(root) + os.sep) for root in extra_allowed_import_roots()
-        )
+        under_extra = any(real.startswith(os.path.realpath(root) + os.sep) for root in extra_allowed_import_roots())
         if not (under_home or under_tmp or under_extra):
             raise ValueError(f"{label} path must be under your home directory, temp directory, or a removable drive.")
     except (OSError, ValueError):
-        raise ValueError(f"{label} path is not allowed (path traversal or invalid).")
+        raise ValueError(f"{label} path is not allowed (path traversal or invalid).") from None
     if allowed_extensions:
         lower = path.lower()
         allowed = tuple(str(ext).lower() for ext in allowed_extensions if str(ext).strip())

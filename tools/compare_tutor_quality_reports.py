@@ -146,13 +146,18 @@ def run() -> int:
     parser.add_argument("--max-avg-score-drop", type=float, default=None)
     parser.add_argument("--max-disallow-increase", type=int, default=None)
     parser.add_argument("--require-model-match", type=int, default=None)
-    parser.add_argument("--report", default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_COMPARE_REPORT", "tutor_quality_compare_report.json"))
+    parser.add_argument(
+        "--report",
+        default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_COMPARE_REPORT", "tutor_quality_compare_report.json"),
+    )
     args = parser.parse_args()
 
     baseline_path = os.path.abspath(os.path.expanduser(str(args.baseline)))
     candidate_path = os.path.abspath(os.path.expanduser(str(args.candidate)))
     report_path = os.path.abspath(os.path.expanduser(str(args.report)))
-    policy_file = os.path.abspath(os.path.expanduser(str(args.policy_file or ""))) if str(args.policy_file or "").strip() else ""
+    policy_file = (
+        os.path.abspath(os.path.expanduser(str(args.policy_file or ""))) if str(args.policy_file or "").strip() else ""
+    )
     policy_name = str(args.policy or "").strip()
 
     baseline = _load_json_file(baseline_path)

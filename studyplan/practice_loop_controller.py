@@ -63,7 +63,7 @@ class PracticeLoopSessionState:
     current_result: TutorAssessmentResult | None = None
     practice_fsm_state: str = PracticeLoopFsmState.IDLE.value
     transition_log: list[dict[str, Any]] = field(default_factory=list)
-    
+
     # Tutor improvement tracking
     error_detector: ErrorPatternDetector = field(default_factory=ErrorPatternDetector)
     confidence_tracker: ConfidenceCalibrator = field(default_factory=ConfidenceCalibrator)
@@ -72,6 +72,7 @@ class PracticeLoopSessionState:
 
 class _NullQGenService:
     """Placeholder for unused question generation — returns empty list."""
+
     @staticmethod
     def generate_questions(*, topic: str = "", source_text: str | None = None, count: int = 5) -> list[str]:
         return []
@@ -542,8 +543,12 @@ class PracticeLoopController:
             )
         if isinstance(raw_hint, dict):
             return HintLevel(
-                level=PracticeLoopController._coerce_int(raw_hint.get("level"), default_level, min_value=0, max_value=4),
-                text=PracticeLoopController._coerce_str(raw_hint.get("text"), "Think through the question step by step."),
+                level=PracticeLoopController._coerce_int(
+                    raw_hint.get("level"), default_level, min_value=0, max_value=4
+                ),
+                text=PracticeLoopController._coerce_str(
+                    raw_hint.get("text"), "Think through the question step by step."
+                ),
                 label=PracticeLoopController._coerce_str(raw_hint.get("label"), "Hint"),
                 context=PracticeLoopController._coerce_str(raw_hint.get("context"), "fallback"),
             )
@@ -649,7 +654,9 @@ class PracticeLoopController:
             "telemetry": dict(turn.telemetry or {}),
         }
 
-    def build_practice_items(self, loop_state: PracticeLoopSessionState, max_items: int = 3) -> tuple[TutorPracticeItem, ...]:
+    def build_practice_items(
+        self, loop_state: PracticeLoopSessionState, max_items: int = 3
+    ) -> tuple[TutorPracticeItem, ...]:
         """Generate practice items for the session."""
         safe_max_items = self._coerce_int(max_items, 3, min_value=1, max_value=20)
         with self.perf_monitor.context("practice_item_build"):
@@ -759,7 +766,7 @@ class PracticeLoopController:
                 )
                 raw_result = None
             result = self._normalize_assessment_result(raw_result, fallback_item_id=item.item_id)
-            logger.info(f"assessment result", extra={"outcome": result.outcome, "marks": result.marks_awarded})
+            logger.info("assessment result", extra={"outcome": result.outcome, "marks": result.marks_awarded})
 
             # Update cognitive state based on result
             with self.perf_monitor.context("posterior_update"):
@@ -777,7 +784,9 @@ class PracticeLoopController:
             self.note_assessment_result(loop_state, item, result, source="controller_submit_attempt")
             return result
 
-    def advance_state(self, loop_state: PracticeLoopSessionState, event: str, metadata: dict[str, Any] | None = None) -> str:
+    def advance_state(
+        self, loop_state: PracticeLoopSessionState, event: str, metadata: dict[str, Any] | None = None
+    ) -> str:
         """Advance `SocraticFSM` with `PracticeLoopFSM` runtime logging/fallbacks for practice events."""
         fsm = SocraticFSM(loop_state.cognitive_state)
         try:
@@ -786,7 +795,7 @@ class PracticeLoopController:
         except RECOVERABLE_LOOP_ERRORS as exc:
             next_state = self._coerce_str(loop_state.cognitive_state.working_memory.socratic_state, "DIAGNOSE")
             logger.warning("fsm transition failed", extra={"event": event, "error": str(exc)})
-        logger.info(f"fsm transition", extra={"event": event, "next_state": next_state})
+        logger.info("fsm transition", extra={"event": event, "next_state": next_state})
         return next_state
 
     def validate_loop_invariants(self, loop_state: PracticeLoopSessionState) -> tuple[bool, list[str]]:
@@ -821,9 +830,7 @@ class PracticeLoopController:
         rec = self._coerce_str(recommendation, "medium").lower()
         if rec not in {"easy", "medium", "hard", "easier", "same", "harder"}:
             rec = "medium"
-        explanation = DesirableDifficultyCalibrator.explain_calibration(
-            current="medium", recommendation=rec
-        )
+        explanation = DesirableDifficultyCalibrator.explain_calibration(current="medium", recommendation=rec)
         logger.info("difficulty calibrated", extra={"rec": rec, "reason": explanation})
         return rec
 
@@ -863,15 +870,18 @@ class PracticeLoopController:
         logger.info("transfer task generated", extra={"topic": item.topic, "domain": domain})
         return task
 
-    def schedule_next_retest(self, loop_state: PracticeLoopSessionState, item: TutorPracticeItem, result: TutorAssessmentResult) -> dict[str, Any]:
+    def schedule_next_retest(
+        self, loop_state: PracticeLoopSessionState, item: TutorPracticeItem, result: TutorAssessmentResult
+    ) -> dict[str, Any]:
         """Schedule optimal retest using spaced retrieval (Ebbinghaus spacing)."""
         from datetime import datetime, timezone
+
         posterior = loop_state.cognitive_state.posteriors.get(item.topic)
         mastery = posterior.mean if posterior else 0.0
-        
+
         # Mark last_correct only if correct/partial
         last_correct = datetime.now(timezone.utc).isoformat() if result.outcome in {"correct", "partial"} else None
-        
+
         try:
             schedule = SpacedRetrievalSchedule(
                 topic=item.topic,
@@ -902,11 +912,11 @@ class PracticeLoopController:
     ) -> str:
         """End-of-session summary for metacognition (reflection principle)."""
         safe_history = attempts_history if isinstance(attempts_history, list) else []
-        topics_covered = list(set(self._coerce_str(t) for t, _ in safe_history if self._coerce_str(t)))
+        topics_covered = list({self._coerce_str(t) for t, _ in safe_history if self._coerce_str(t)})
         correct_count = sum(1 for _, c in safe_history if c)
         total_count = len(safe_history)
         correct_rate = correct_count / max(1, total_count)
-        
+
         # Identify mastery/struggling topics
         topics_mastered = [
             t
@@ -930,23 +940,21 @@ class PracticeLoopController:
             )
             < 0.4
         ]
-        
+
         # Confidence calibration: signed (predicted - actual) from session tracker
         cal = loop_state.confidence_tracker.assess_calibration()
         if cal.sample_size >= 3:
             confidence_calibration = cal.predicted_confidence - cal.actual_accuracy
         else:
-            confidence_calibration = getattr(
-                loop_state.learner_profile, "confidence_calibration_bias", 0.0
-            )
-        
+            confidence_calibration = getattr(loop_state.learner_profile, "confidence_calibration_bias", 0.0)
+
         # Average latency: from history when provided, else default
         if latencies_ms and len(latencies_ms) > 0:
             avg_latency_ms = sum(latencies_ms) / len(latencies_ms)
             avg_latency_ms = max(1000.0, min(120_000.0, avg_latency_ms))
         else:
             avg_latency_ms = 25000.0
-        
+
         try:
             reflection = SessionReflection(
                 session_id=loop_state.session_state.session_id,
@@ -961,9 +969,14 @@ class PracticeLoopController:
             )
             feedback = reflection.generate_feedback()
         except Exception as exc:
-            logger.warning("session reflection generation failed", extra={"session": loop_state.session_state.session_id, "error": str(exc)})
+            logger.warning(
+                "session reflection generation failed",
+                extra={"session": loop_state.session_state.session_id, "error": str(exc)},
+            )
             feedback = ""
-        feedback = self._coerce_str(feedback, "Session complete. Review the key mistakes and retry one similar question.")
+        feedback = self._coerce_str(
+            feedback, "Session complete. Review the key mistakes and retry one similar question."
+        )
         logger.info("session reflection generated", extra={"session": loop_state.session_state.session_id})
         return feedback
 
@@ -981,7 +994,7 @@ class PracticeLoopController:
         current_outcome = self._coerce_str(getattr(result, "outcome", "") if result is not None else "").lower()
 
         if attempts > 0:
-            progress = f"Progress: {attempts} checked attempt(s), accuracy {accuracy*100:.0f}%."
+            progress = f"Progress: {attempts} checked attempt(s), accuracy {accuracy * 100:.0f}%."
         elif current_outcome == "correct":
             progress = "Progress: latest checked attempt is correct."
         elif current_outcome == "partial":
@@ -994,11 +1007,7 @@ class PracticeLoopController:
         weak_tokens: list[str] = []
         if result is not None:
             weak_tokens.extend(
-                [
-                    self._coerce_str(x)
-                    for x in list(getattr(result, "error_tags", ()) or ())
-                    if self._coerce_str(x)
-                ]
+                [self._coerce_str(x) for x in list(getattr(result, "error_tags", ()) or ()) if self._coerce_str(x)]
             )
             weak_tokens.extend(
                 [
@@ -1013,9 +1022,7 @@ class PracticeLoopController:
                 weak_tokens.append(topic)
         weak_tokens = list(dict.fromkeys(weak_tokens))
         weak_spots = (
-            f"Weak spots: {', '.join(weak_tokens[:3])}."
-            if weak_tokens
-            else "Weak spots: none flagged in this check."
+            f"Weak spots: {', '.join(weak_tokens[:3])}." if weak_tokens else "Weak spots: none flagged in this check."
         )
 
         next_action = ""
@@ -1049,12 +1056,12 @@ class PracticeLoopController:
     ) -> list[HintLevel]:
         """
         Generate 5-level progressive hints using ZPD (Zone of Proximal Development).
-        
+
         Args:
             loop_state: Current practice state
             item: Practice item
             error_tags: Error tags from previous attempt (if any)
-        
+
         Returns:
             List of HintLevel objects [nudge, light, medium, heavy, solution]
         """
@@ -1085,13 +1092,13 @@ class PracticeLoopController:
     ) -> HintLevel:
         """
         Get the appropriate next hint level based on struggle state.
-        
+
         Args:
             loop_state: Current practice state
             item: Practice item
             has_attempted: Did learner try again after last hint?
             error_tags: Errors from current attempt
-        
+
         Returns:
             HintLevel to show learner
         """
@@ -1108,7 +1115,7 @@ class PracticeLoopController:
             max_value=4,
         )
         loop_state.current_hint_level = next_level
-        
+
         bank = HintBank(
             topic=item.topic,
             concept=item.prompt[:50] if item.prompt else "concept",
@@ -1119,7 +1126,9 @@ class PracticeLoopController:
         try:
             hint = bank.get_hint(next_level)
         except Exception as exc:
-            logger.warning("next hint generation failed", extra={"topic": item.topic, "level": next_level, "error": str(exc)})
+            logger.warning(
+                "next hint generation failed", extra={"topic": item.topic, "level": next_level, "error": str(exc)}
+            )
             hint = None
         normalized_hint = self._normalize_hint(hint, default_level=next_level)
         logger.info(
@@ -1136,12 +1145,12 @@ class PracticeLoopController:
     ) -> dict[str, Any]:
         """
         Diagnose error root cause (misconception vs careless mistake).
-        
+
         Args:
             loop_state: Current practice state
             result: Assessment result with error_tags
             item: Practice item
-        
+
         Returns:
             Dict with category, misconception, remediation advice
         """
@@ -1160,11 +1169,11 @@ class PracticeLoopController:
                 user_answer="",
                 expected_answer="",
             )
-        
+
         # Track error pattern
         loop_state.error_detector.add_error(error_analysis)
         pattern = loop_state.error_detector.detect_pattern()
-        
+
         logger.info(
             "error diagnosed",
             extra={
@@ -1173,10 +1182,12 @@ class PracticeLoopController:
                 "pattern": pattern[0] if pattern else None,
             },
         )
-        
+
         return {
             "category": self._coerce_str(getattr(error_analysis.category, "value", None), "unknown"),
-            "misconception": self._coerce_str(error_analysis.misconception.name, "") if error_analysis.misconception else None,
+            "misconception": self._coerce_str(error_analysis.misconception.name, "")
+            if error_analysis.misconception
+            else None,
             "remediation": self._coerce_str(error_analysis.remediation, "Concept gap detected."),
             "confidence": self._coerce_float(error_analysis.confidence, 0.0, min_value=0.0, max_value=1.0),
             "pattern_detected": self._coerce_bool(pattern is not None),
@@ -1194,14 +1205,14 @@ class PracticeLoopController:
     ) -> dict[str, Any]:
         """
         Track confidence prediction vs actual outcome for metacognitive awareness.
-        
+
         Args:
             loop_state: Current practice state
             predicted_confidence: Learner's stated confidence (1-5)
             was_correct: Actual performance
             topic: Topic attempted
             concept: Concept name
-        
+
         Returns:
             Dict with calibration metrics and feedback
         """
@@ -1211,33 +1222,33 @@ class PracticeLoopController:
             topic=topic,
             concept=concept,
         )
-        
+
         calibration = loop_state.confidence_tracker.assess_calibration()
         feedback = loop_state.confidence_tracker.get_calibration_feedback()
-        
+
         # Check if we should intervene with extra scaffolding
         should_scaffold = ConfidenceThresholdPolicy.should_provide_extra_scaffolding(
             confidence=predicted_confidence,
             recent_accuracy=calibration.actual_accuracy,
             confidence_matches_accuracy=(calibration.severity == "none"),
         )
-        
+
         should_escalate = ConfidenceThresholdPolicy.should_escalate_difficulty(
             confidence=predicted_confidence,
             recent_accuracy=calibration.actual_accuracy,
             confidence_matches_accuracy=(calibration.severity == "none"),
         )
-        
+
         logger.info(
             "confidence tracked",
             extra={
                 "predicted": predicted_confidence,
-                "actual_accuracy": f"{calibration.actual_accuracy*100:.0f}%",
-                "calibration_error": f"{calibration.calibration_error*100:.0f}%",
+                "actual_accuracy": f"{calibration.actual_accuracy * 100:.0f}%",
+                "calibration_error": f"{calibration.calibration_error * 100:.0f}%",
                 "severity": calibration.severity,
             },
         )
-        
+
         stats = loop_state.confidence_tracker.get_summary_stats()
         if not isinstance(stats, dict):
             stats = {}
@@ -1270,11 +1281,13 @@ class PracticeLoopController:
             diagnosis = self.analyze_error_and_diagnose(loop_state, result, item)
         elif outcome == "correct":
             hint_penalty = 1.0 if int(hints_used or 0) == 0 else 0.3
-            can_transfer = bool(loop_state.cognitive_state.should_offer_transfer_test(
-                structure_id=(topic or str(getattr(loop_state.session_state, "topic", "") or "unknown")),
-                base_correct=True,
-                hint_penalty=float(hint_penalty),
-            ))
+            can_transfer = bool(
+                loop_state.cognitive_state.should_offer_transfer_test(
+                    structure_id=(topic or str(getattr(loop_state.session_state, "topic", "") or "unknown")),
+                    base_correct=True,
+                    hint_penalty=float(hint_penalty),
+                )
+            )
 
         decision = recommend_action_policy(
             outcome=outcome,

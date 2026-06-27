@@ -60,13 +60,16 @@ When any command (smoke test, compile check, etc.) fails:
 | `studyplan/ai/model_selector.py` | Task-aware model ranking and filtering | ~300 lines |
 | `tools/gtk4_lint.py` | Custom lint for GTK4 patterns | — |
 
-### Dashboard rendering (`_render_dashboard` at line ~52120)
+### Dashboard rendering (`_render_dashboard` at line ~51397)
 
 - Clears and rebuilds all dashboard children **every refresh** (triggered by timer or manual refresh).
 - `chart_style` dict is defined at line ~52160 with color palette (`fig_bg`, `ax_bg`, `text`, `muted`, `grid`, `accent_a`/`b`/`c`/`d`, `legend_bg`). Two variants: dark and system-theme-aware dark.
 - Chart **caching** via `_cached_*_sig` + `_cached_*_widget` pairs prevents Cairo redraw when data unchanged. Signature is a tuple (typically the data values). If sig matches and cached widget exists, re-append the cached widget; otherwise build, cache, append.
 - **Performance helper**: `_chart_rgb_cache` dict (class-level) avoids redundant hex→RGB parsing (~80-120 saves per refresh).
-- **Local variable caching**: Engine references (`_eng`, `_chapters`, `_competence`, etc.) are cached as locals at the top of `_render_dashboard` to save ~50 attribute lookups per refresh.
+- **Local variable caching** (at line ~51582): Engine references (`_eng`, `_chapters`, `_competence`, `_progress_log`, `_srs_data`) are cached as locals. Additional single-pass derived caches:
+  - `_parsed_progress` (line ~51591): `list[(date, mastery, minutes)]` sorted — replaces 4× redundant dict→tuple parsing across Coach Briefing, Coach Recap, Progress Over Time chart, and Weekly Summary.
+  - `_sorted_competence` (line ~51612): `list[(chapter, score)]` sorted ascending — replaces 2× sort in Weak vs Strong.
+  - `_srs_overdue_by_ch`, `_srs_due_soon_by_ch`, `_srs_due_week_by_ch`, `_srs_next_due` (line ~51626): Per-chapter SRS summary computed once — replaces 2× nested loop in Pie Chart and Reviews & Pace sections.
 - Dashboard order: Coach briefing → Confidence Drift bar → Progress Over Time line → Per-Topic Snapshot grouped_bar → Separator → Study Snapshot stats → Weekly Summary → Plan View → Mastery Snapshot → Weak vs Strong → Reviews & Pace → Reviews Due Today → Leech Alerts → Study Hub → Data Health → Activity chart (on-demand button).
 
 ### Chart system (`_build_gtk_chart_widget` at line ~50380)
@@ -211,3 +214,14 @@ Connectivity is probed via `_has_internet_connectivity()` (TCP to 1.1.1.1:443, 8
 - Tooltips on single-line labels: `self._sync_single_line_label_tooltip(label, full_text)`.
 - Buttons: `Gtk.Button(label="...")` + `add_css_class("flat")` + `set_halign(START)`. On-demand buttons should show at the bottom of the dashboard.
 - All GTK operations happen in the main thread. No thread safety concerns.
+
+### Rust/PyO3 crate (`studyplan/rs/`)
+
+| Item | Detail |
+|------|--------|
+| Location | `studyplan/rs/` — Cargo.toml, pyproject.toml, `src/lib.rs` |
+| Python wrapper | `studyplan/rs/srs_select.py` — tries `from studyplan_rs import ...`, falls back to `_select_srs_from_scored_py()` |
+| Build | `cd studyplan/rs && maturin build --release` (requires Rust toolchain + maturin). Output wheel → `pip install target/wheels/studyplan_rs-*.whl` |
+| CI | `.github/workflows/linux-ci.yml` → `build-rust` job (non-gating, `continue-on-error: true`) |
+| First function | `select_srs_from_scored()` — Phases 1-4 of `select_srs_questions` in `studyplan_engine.py:11140`. Pure-data pipeline: scored tuples → selected indices. |
+| Caveats | Python ≥3.14 requires `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` until PyO3 releases a new version. CI uses Python 3.12 so this doesn't apply there.

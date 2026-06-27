@@ -21,19 +21,29 @@ class IrrTemplate(FormulaTemplate):
         steps: list[dict[str, Any]] = []
         for rate_guess in [0.05, 0.10, 0.15, 0.20]:
             npv_at = solve_npv(cfs, rate_guess, init)
-            steps.append({
-                "step_id": f"npv_at_{int(rate_guess*100)}pct",
-                "description": f"NPV at {int(rate_guess*100)}%",
-                "value": npv_at,
-                "formula": f"NPV({cfs}, {rate_guess}, {init})",
-            })
-        steps.append({
-            "step_id": "irr",
-            "description": "IRR (interpolated)",
-            "value": result,
-            "formula": f"IRR({cfs}, {init})",
-        })
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+            steps.append(
+                {
+                    "step_id": f"npv_at_{int(rate_guess * 100)}pct",
+                    "description": f"NPV at {int(rate_guess * 100)}%",
+                    "value": npv_at,
+                    "formula": f"NPV({cfs}, {rate_guess}, {init})",
+                }
+            )
+        steps.append(
+            {
+                "step_id": "irr",
+                "description": "IRR (interpolated)",
+                "value": result,
+                "formula": f"IRR({cfs}, {init})",
+            }
+        )
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

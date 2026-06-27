@@ -1,4 +1,5 @@
 """Unit tests for studyplan/learning_Science.py."""
+
 from __future__ import annotations
 
 import datetime

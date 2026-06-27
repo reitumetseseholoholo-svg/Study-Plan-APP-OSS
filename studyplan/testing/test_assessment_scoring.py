@@ -1,4 +1,4 @@
-from studyplan.services import DeterministicTutorPracticeService, DeterministicTutorAssessmentService
+from studyplan.services import DeterministicTutorAssessmentService
 from studyplan.contracts import (
     TutorPracticeItem,
     TutorAssessmentSubmission,
@@ -85,6 +85,7 @@ def test_short_answer_fallback_no_keywords():
 # MCQ assessment – core correctness
 # ---------------------------------------------------------------------------
 
+
 def test_mcq_plain_letter_correct():
     """User types the bare letter — the happy path."""
     assert _assess(make_mcq_item(correct_option="A"), "A").outcome == "correct"
@@ -99,14 +100,13 @@ def test_mcq_plain_letter_wrong():
 # Bug fix: correct_option stored as full option text (the exact bug in screenshot)
 # ---------------------------------------------------------------------------
 
+
 def test_mcq_correct_option_full_text_user_types_letter():
     """LLM stored correct_option as full text; user types the matching letter.
     Previously returned 'incorrect' because 'A' != 'TO VERIFY THE ACCURACY…'."""
     item = make_mcq_item(correct_option=INVENTORY_OPTIONS[0])  # full text → index 0 = A
     result = _assess(item, "A")
-    assert result.outcome == "correct", (
-        f"Expected correct but got {result.outcome!r}. Feedback: {result.feedback!r}"
-    )
+    assert result.outcome == "correct", f"Expected correct but got {result.outcome!r}. Feedback: {result.feedback!r}"
 
 
 def test_mcq_correct_option_full_text_user_types_full_text():
@@ -122,6 +122,7 @@ def test_mcq_correct_option_full_text_wrong_letter():
 # ---------------------------------------------------------------------------
 # Bug fix: regex word-boundary — letters inside words must not be extracted
 # ---------------------------------------------------------------------------
+
 
 def test_mcq_natural_language_answer_correct():
     """'my answer is A' — previously 'a' in 'answer' was extracted, giving wrong letter."""
@@ -141,6 +142,7 @@ def test_mcq_letter_in_word_ignored():
 # ---------------------------------------------------------------------------
 # Bug fix: full-text answer accepted as fallback
 # ---------------------------------------------------------------------------
+
 
 def test_mcq_full_text_answer_accepted():
     """User types the complete option text instead of a letter."""

@@ -12,11 +12,12 @@ References
 ----------
 - FSRS algorithm: https://github.com/open-spaced-repetition/fsrs4anki/wiki/The-Algorithm
 """
+
 from __future__ import annotations
 
 import datetime
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -26,10 +27,22 @@ from typing import Any
 # studyplan engine preferences if they train on their own data.
 # ---------------------------------------------------------------------------
 _DEFAULT_W = (
-    0.4072, 1.1829, 3.1262, 15.4722,
-    7.2102, 0.5316, 1.0651, 0.0589,
-    1.5330, 0.1544, 1.0070, 1.9395,
-    0.1100, 0.2900, 2.2700, 0.2500,
+    0.4072,
+    1.1829,
+    3.1262,
+    15.4722,
+    7.2102,
+    0.5316,
+    1.0651,
+    0.0589,
+    1.5330,
+    0.1544,
+    1.0070,
+    1.9395,
+    0.1100,
+    0.2900,
+    2.2700,
+    0.2500,
     2.9898,
 )
 
@@ -194,9 +207,7 @@ class FSRSScheduler:
             new_lapses = card.lapses + 1
         else:
             # Recalled (hard / good / easy)
-            new_stability = self._stability_after_recall(
-                card.stability, card.difficulty, retrievability, rating
-            )
+            new_stability = self._stability_after_recall(card.stability, card.difficulty, retrievability, rating)
             new_difficulty = self._next_difficulty(card.difficulty, rating)
             new_reps = card.reps + 1
             new_lapses = card.lapses
@@ -255,24 +266,14 @@ class FSRSScheduler:
         raw = d + (target - d) * coeff
         return max(1.0, min(10.0, raw))
 
-    def _stability_after_recall(
-        self, s: float, d: float, r: float, rating: int
-    ) -> float:
+    def _stability_after_recall(self, s: float, d: float, r: float, rating: int) -> float:
         # S'_r = S * (e^(w_8) * (11 - d) * S^(-w_9) * (e^(w_10*(1-r)) - 1) * hard/easy + 1)
         w9, w10 = self.w[9], self.w[10]
         hard_penalty = self.w[15] if rating == 2 else 1.0
         easy_bonus = self.w[16] if rating == 4 else 1.0
-        raw = (
-            s
-            * (
-                self._exp_w8
-                * (11.0 - d)
-                * math.pow(s, -w9)
-                * (math.exp(w10 * (1.0 - r)) - 1.0)
-                * hard_penalty
-                * easy_bonus
-                + 1.0
-            )
+        raw = s * (
+            self._exp_w8 * (11.0 - d) * math.pow(s, -w9) * (math.exp(w10 * (1.0 - r)) - 1.0) * hard_penalty * easy_bonus
+            + 1.0
         )
         return max(0.1, raw)
 

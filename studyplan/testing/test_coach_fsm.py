@@ -1,5 +1,3 @@
-import pytest
-
 from studyplan.coach_fsm import SocraticFSM, SocraticDecision
 from studyplan.cognitive_state import CognitiveState
 

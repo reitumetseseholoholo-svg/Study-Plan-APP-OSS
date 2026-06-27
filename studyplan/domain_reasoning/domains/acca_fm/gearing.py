@@ -5,7 +5,13 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from studyplan.numerical_solver import solve_gearing, solve_interest_cover, solve_eps, solve_dividend_yield, solve_dividend_cover
+from studyplan.numerical_solver import (
+    solve_gearing,
+    solve_interest_cover,
+    solve_eps,
+    solve_dividend_yield,
+    solve_dividend_cover,
+)
 from studyplan.domain_reasoning.templates import FormulaTemplate
 
 
@@ -23,7 +29,13 @@ class GearingTemplate(FormulaTemplate):
             {"step_id": "total_capital", "description": "Debt + Equity", "value": v, "formula": f"{db}+{eq}"},
             {"step_id": "gearing", "description": "Debt / (Debt + Equity)", "value": result, "formula": f"{db}/{v}"},
         ]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)
@@ -59,8 +71,21 @@ class InterestCoverTemplate(FormulaTemplate):
         pbit = float(inputs.get("pbit", 0))
         interest = float(inputs.get("interest_expense", 0))
         result = self._solver(pbit, interest)
-        steps = [{"step_id": "interest_cover", "description": "PBIT / Interest", "value": result, "formula": f"{pbit}/{interest}"}]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        steps = [
+            {
+                "step_id": "interest_cover",
+                "description": "PBIT / Interest",
+                "value": result,
+                "formula": f"{pbit}/{interest}",
+            }
+        ]
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
 
 class EpsTemplate(FormulaTemplate):
@@ -72,7 +97,13 @@ class EpsTemplate(FormulaTemplate):
         shares = float(inputs.get("number_of_shares", 1))
         result = self._solver(profit, shares)
         steps = [{"step_id": "eps", "description": "Profit / Shares", "value": result, "formula": f"{profit}/{shares}"}]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
 
 class DividendYieldTemplate(FormulaTemplate):
@@ -83,8 +114,16 @@ class DividendYieldTemplate(FormulaTemplate):
         d = float(inputs.get("dividend_per_share", 0))
         p = float(inputs.get("market_price", 1))
         result = self._solver(d, p)
-        steps = [{"step_id": "dividend_yield", "description": "Dividend / Price", "value": result, "formula": f"{d}/{p}"}]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        steps = [
+            {"step_id": "dividend_yield", "description": "Dividend / Price", "value": result, "formula": f"{d}/{p}"}
+        ]
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
 
 class DividendCoverTemplate(FormulaTemplate):
@@ -95,5 +134,13 @@ class DividendCoverTemplate(FormulaTemplate):
         eps_val = float(inputs.get("eps", 0))
         d = float(inputs.get("dividend_per_share", 1))
         result = self._solver(eps_val, d)
-        steps = [{"step_id": "dividend_cover", "description": "EPS / Dividend", "value": result, "formula": f"{eps_val}/{d}"}]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        steps = [
+            {"step_id": "dividend_cover", "description": "EPS / Dividend", "value": result, "formula": f"{eps_val}/{d}"}
+        ]
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }

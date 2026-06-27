@@ -67,7 +67,11 @@ def adaptive_tutor_recent_cap(
         cap = max(2, min(20, int(base_recent_limit)))
     except Exception:
         cap = 10
-    tier = str(device_tier if device_tier is not None else os.environ.get("STUDYPLAN_DEVICE_TIER", "") or "").strip().lower()
+    tier = (
+        str(device_tier if device_tier is not None else os.environ.get("STUDYPLAN_DEVICE_TIER", "") or "")
+        .strip()
+        .lower()
+    )
     if tier == "low":
         cap = min(cap, 8)
     raw = str(os.environ.get("STUDYPLAN_TUTOR_RECENT_CAP", "") or "").strip()

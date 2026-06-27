@@ -2,6 +2,7 @@
 """Build F7 kickstart import JSON with 10 exam-style MCQs per chapter.
 Output: modules/acca_f7_kickstart_questions.json (chapter -> list of questions)
 """
+
 from __future__ import annotations
 
 import json
@@ -38,8 +39,10 @@ CHAPTERS = [
     "Chapter 27: IAS 7 Statement of Cash Flows",
 ]
 
+
 def q(question: str, options: list[str], correct: str, explanation: str) -> dict:
     return {"question": question, "options": options, "correct": correct, "explanation": explanation}
+
 
 def main() -> None:
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -54,18 +57,23 @@ def main() -> None:
         else:
             # Pad to 10 by duplicating then trim to 10 (placeholder: user to replace with real Qs)
             while len(current) < 10:
-                current.append(current[0] if current else {
-                    "question": "Replace with exam-style question.",
-                    "options": ["A", "B", "C", "D"],
-                    "correct": "A",
-                    "explanation": "Replace with explanation.",
-                })
+                current.append(
+                    current[0]
+                    if current
+                    else {
+                        "question": "Replace with exam-style question.",
+                        "options": ["A", "B", "C", "D"],
+                        "correct": "A",
+                        "explanation": "Replace with explanation.",
+                    }
+                )
             out[ch] = current[:10]
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
     print("Written", path)
     total = sum(len(v) for v in out.values())
     print("Total questions:", total)
+
 
 if __name__ == "__main__":
     main()

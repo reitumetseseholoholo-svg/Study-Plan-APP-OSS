@@ -14,6 +14,7 @@ from typing import Any, Protocol, runtime_checkable
 # Protocol
 # ---------------------------------------------------------------------------
 
+
 @runtime_checkable
 class ConceptTemplate(Protocol):
     """Interface for a deterministic concept template.
@@ -21,6 +22,7 @@ class ConceptTemplate(Protocol):
     Implementations wrap a solver function with input/output schemas
     and error classification.
     """
+
     concept_id: str
     template_version: str
 
@@ -48,6 +50,7 @@ class ConceptTemplate(Protocol):
 # ---------------------------------------------------------------------------
 # Concrete: FormulaTemplate — wraps a bare solver function
 # ---------------------------------------------------------------------------
+
 
 class FormulaTemplate:
     """Adapter that wraps a numerical solver function as a ConceptTemplate.
@@ -92,12 +95,14 @@ class FormulaTemplate:
                 match = abs(float(step_val) - float(truth_result)) < max(0.01, abs(float(truth_result)) * 0.005)
             else:
                 match = False
-            results.append({
-                "step_id": step.get("step_id", ""),
-                "expected": truth_result,
-                "actual": step_val,
-                "match": match,
-            })
+            results.append(
+                {
+                    "step_id": step.get("step_id", ""),
+                    "expected": truth_result,
+                    "actual": step_val,
+                    "match": match,
+                }
+            )
         return results
 
     def classify_errors(
@@ -128,6 +133,7 @@ class FormulaTemplate:
 # Registry: concept_id → template instance
 # ---------------------------------------------------------------------------
 
+
 def _build_registry() -> dict[str, ConceptTemplate]:
     """Build the template registry.
 
@@ -140,7 +146,13 @@ def _build_registry() -> dict[str, ConceptTemplate]:
     from studyplan.domain_reasoning.domains.acca_fm.ccc import CccTemplate
     from studyplan.domain_reasoning.domains.acca_fm.irr import IrrTemplate
     from studyplan.domain_reasoning.domains.acca_fm.payback import PaybackTemplate, DiscountedPaybackTemplate
-    from studyplan.domain_reasoning.domains.acca_fm.gearing import GearingTemplate, InterestCoverTemplate, EpsTemplate, DividendYieldTemplate, DividendCoverTemplate
+    from studyplan.domain_reasoning.domains.acca_fm.gearing import (
+        GearingTemplate,
+        InterestCoverTemplate,
+        EpsTemplate,
+        DividendYieldTemplate,
+        DividendCoverTemplate,
+    )
     from studyplan.domain_reasoning.domains.acca_fm.eoq import EoqTemplate
     from studyplan.domain_reasoning.domains.acca_fm.arr import ArrTemplate
     from studyplan.domain_reasoning.domains.acca_fm.cost_of_debt import CostOfDebtTemplate
@@ -190,6 +202,7 @@ TEMPLATE_REGISTRY: dict[str, ConceptTemplate] = _build_registry()
 
 # Merge in auto-generated templates from formula registry
 from studyplan.domain_reasoning.formula_registry import build_template_registry
+
 TEMPLATE_REGISTRY = build_template_registry(TEMPLATE_REGISTRY)
 
 

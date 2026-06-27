@@ -103,7 +103,10 @@ def test_config_llama_cpp_parsing_and_clamps(monkeypatch):
     assert mod.Config.LLM_GATEWAY_ENABLED is True
     assert mod.Config.LLM_GATEWAY_ENDPOINT == "https://gateway.example.com/v1/chat/completions"
     assert mod.Config.LLM_GATEWAY_MODEL == "openrouter/google/gemini-2.5-flash"
-    assert mod.Config.LLM_GATEWAY_MODEL_FALLBACKS == "openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet"
+    assert (
+        mod.Config.LLM_GATEWAY_MODEL_FALLBACKS
+        == "openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet"
+    )
     assert mod.Config.LLM_GATEWAY_REQUEST_TIMEOUT_SECONDS == 60.0
 
 

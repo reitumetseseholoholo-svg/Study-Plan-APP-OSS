@@ -154,7 +154,7 @@ def _parse_c_grid(raw: str, fallback_c: float) -> list[float]:
 def _brier_score(y_true: list[int], probs: list[float]) -> float:
     n = max(1, len(y_true))
     total = 0.0
-    for yt, p in zip(y_true, probs):
+    for yt, p in zip(y_true, probs, strict=False):
         total += (float(yt) - float(p)) ** 2
     return total / n
 
@@ -181,8 +181,8 @@ def _expected_calibration_error(y_true: list[int], probs: list[float], bins: int
 def _roc_auc(y_true: list[int], probs: list[float]) -> float | None:
     if len(y_true) < 2:
         return None
-    positives = [p for y, p in zip(y_true, probs) if int(y) == 1]
-    negatives = [p for y, p in zip(y_true, probs) if int(y) == 0]
+    positives = [p for y, p in zip(y_true, probs, strict=False) if int(y) == 1]
+    negatives = [p for y, p in zip(y_true, probs, strict=False) if int(y) == 0]
     if not positives or not negatives:
         return None
     wins = 0.0
@@ -506,6 +506,7 @@ def main() -> int:
     try:
         from sklearn.linear_model import LogisticRegression
         from sklearn.model_selection import train_test_split
+
         try:
             from sklearn.calibration import CalibratedClassifierCV
         except Exception:
@@ -533,7 +534,7 @@ def main() -> int:
     if split is not None:
         X_train, X_test, y_train, y_test, w_train, w_test = split
     else:
-        y_unique = set(int(v) for v in y)
+        y_unique = {int(v) for v in y}
         stratify = y if len(y_unique) > 1 else None
         try:
             X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
@@ -548,13 +549,12 @@ def main() -> int:
             split_idx = max(1, int(len(X) * (1.0 - test_size)))
             X_train, X_test = X[:split_idx], X[split_idx:]
             y_train, y_test = y[:split_idx], y[split_idx:]
-            w_train, w_test = w[:split_idx], w[split_idx:]
+            w_train, _w_test = w[:split_idx], w[split_idx:]
     if not X_test:
         X_test = X_train
         y_test = y_train
-        w_test = w_train
 
-    if len(set(int(v) for v in y_train)) < 2:
+    if len({int(v) for v in y_train}) < 2:
         print("Not enough class diversity in training split (need both positive and negative labels).")
         return 1
 
@@ -627,16 +627,10 @@ def main() -> int:
             old_ece = _expected_calibration_error(y_test, old_probs, bins=10)
 
     beats_baseline = (baseline_brier - new_brier) >= float(args.min_baseline_gain)
-    beats_existing = (
-        old_brier is None
-        or (old_brier - new_brier) >= float(args.min_improvement_brier)
-    )
+    beats_existing = old_brier is None or (old_brier - new_brier) >= float(args.min_improvement_brier)
     beats_calibration = new_ece <= max_ece
     beats_auc = (new_auc is None) or (float(new_auc) >= min_auc)
-    beats_existing_ece = (
-        old_ece is None
-        or (float(old_ece) - float(new_ece)) >= min_improvement_ece
-    )
+    beats_existing_ece = old_ece is None or (float(old_ece) - float(new_ece)) >= min_improvement_ece
 
     backtest_windows = _build_time_backtest_windows(
         X=X,
@@ -653,11 +647,9 @@ def main() -> int:
     backtest_gains: list[float] = []
     for idx, window in enumerate(backtest_windows):
         wx_train, wx_test, wy_train, wy_test, ww_train, _ww_test = window
-        if len(set(int(v) for v in wy_train)) < 2:
+        if len({int(v) for v in wy_train}) < 2:
             backtest_failures += 1
-            backtest_details.append(
-                {"window": idx + 1, "skipped": True, "reason": "single_class_train"}
-            )
+            backtest_details.append({"window": idx + 1, "skipped": True, "reason": "single_class_train"})
             continue
         candidate = _fit_logistic_candidate(
             LogisticRegression=LogisticRegression,
@@ -672,16 +664,12 @@ def main() -> int:
         )
         if candidate is None:
             backtest_failures += 1
-            backtest_details.append(
-                {"window": idx + 1, "skipped": True, "reason": "fit_failed"}
-            )
+            backtest_details.append({"window": idx + 1, "skipped": True, "reason": "fit_failed"})
             continue
         probs = _predict_probs(candidate, wx_test)
         if probs is None:
             backtest_failures += 1
-            backtest_details.append(
-                {"window": idx + 1, "skipped": True, "reason": "predict_failed"}
-            )
+            backtest_details.append({"window": idx + 1, "skipped": True, "reason": "predict_failed"})
             continue
         w_brier = _brier_score(wy_test, probs)
         w_auc = _roc_auc(wy_test, probs)
@@ -691,9 +679,7 @@ def main() -> int:
         win_gain = float(win_baseline_brier) - float(w_brier)
         backtest_gains.append(win_gain)
         window_ok = (
-            win_gain >= min_backtest_gain
-            and w_ece <= max_ece
-            and ((w_auc is None) or (float(w_auc) >= min_auc))
+            win_gain >= min_backtest_gain and w_ece <= max_ece and ((w_auc is None) or (float(w_auc) >= min_auc))
         )
         if not window_ok:
             backtest_failures += 1
@@ -709,18 +695,10 @@ def main() -> int:
                 "passed": bool(window_ok),
             }
         )
-    beats_backtest = (
-        bool(backtest_windows)
-        and backtest_failures <= max_backtest_failures
-    ) or (not backtest_windows)
+    beats_backtest = (bool(backtest_windows) and backtest_failures <= max_backtest_failures) or (not backtest_windows)
 
     should_promote = (
-        beats_baseline
-        and beats_existing
-        and beats_calibration
-        and beats_auc
-        and beats_existing_ece
-        and beats_backtest
+        beats_baseline and beats_existing and beats_calibration and beats_auc and beats_existing_ece and beats_backtest
     )
 
     new_meta = {

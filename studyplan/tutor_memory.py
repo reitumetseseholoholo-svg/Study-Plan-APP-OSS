@@ -6,6 +6,7 @@ Tutor memory: hybrid context for personalized explanations.
 - format_tutor_context_line(): single-line [STUDENT CONTEXT] for prompt injection.
 - Used so the tutor tailors explanations to the learner's level and gaps.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -82,7 +83,11 @@ def build_tutor_context_packet(
 
     outcome_ids: list[str] = []
     try:
-        intel = engine.get_syllabus_chapter_intelligence(chapter) if hasattr(engine, "get_syllabus_chapter_intelligence") else {}
+        intel = (
+            engine.get_syllabus_chapter_intelligence(chapter)
+            if hasattr(engine, "get_syllabus_chapter_intelligence")
+            else {}
+        )
         if isinstance(intel, dict):
             los = intel.get("learning_outcomes") or []
             if isinstance(los, list):

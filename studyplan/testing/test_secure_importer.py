@@ -1,7 +1,5 @@
 import pytest
-import tempfile
 import json
-from pathlib import Path
 
 from studyplan.secure_importer import SecureImporter, ImportSecurityError
 from studyplan.config import Config

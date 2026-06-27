@@ -14,6 +14,7 @@ Usage:
 
 Run from project root so that studyplan is importable, or set PYTHONPATH to the repo root.
 """
+
 from __future__ import annotations
 
 import json
@@ -106,6 +107,7 @@ def main() -> int:
                 pdf_path = Path.home() / "Downloads" / name
             if pdf_path.exists():
                 import subprocess
+
                 result = subprocess.run(
                     ["pdftotext", "-layout", str(pdf_path), "-"],
                     capture_output=True,
@@ -135,12 +137,14 @@ def main() -> int:
             print("Warning: few outcomes parsed; using static 95-outcome map.", file=sys.stderr)
         outcomes = []
         for oid, ch_key, level in FR_OUTCOME_IDS_AND_CHAPTERS:
-            outcomes.append({
-                "id": oid,
-                "text": f"Learning outcome {oid}",
-                "level": level,
-                "chapter": FR_CHAPTER_KEY_TO_TITLE[ch_key],
-            })
+            outcomes.append(
+                {
+                    "id": oid,
+                    "text": f"Learning outcome {oid}",
+                    "level": level,
+                    "chapter": FR_CHAPTER_KEY_TO_TITLE[ch_key],
+                }
+            )
 
     structure = build_syllabus_structure(outcomes)
     print(json.dumps({"syllabus_structure": structure, "outcome_count": len(outcomes)}, indent=2))

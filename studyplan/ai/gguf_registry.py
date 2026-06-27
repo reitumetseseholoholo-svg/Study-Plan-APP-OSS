@@ -16,7 +16,6 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
 
 from .model_ranker import estimate_param_b
 
@@ -43,17 +42,11 @@ class GgufModel:
 
 @dataclass
 class GgufRegistryConfig:
-    gpt4all_dir: str = field(
-        default_factory=lambda: os.path.expanduser("~/.local/share/nomic.ai/GPT4All")
-    )
+    gpt4all_dir: str = field(default_factory=lambda: os.path.expanduser("~/.local/share/nomic.ai/GPT4All"))
     ollama_manifests_dir: str = field(
-        default_factory=lambda: os.path.expanduser(
-            "~/.ollama/models/manifests/registry.ollama.ai/library"
-        )
+        default_factory=lambda: os.path.expanduser("~/.ollama/models/manifests/registry.ollama.ai/library")
     )
-    ollama_blobs_dir: str = field(
-        default_factory=lambda: os.path.expanduser("~/.ollama/models/blobs")
-    )
+    ollama_blobs_dir: str = field(default_factory=lambda: os.path.expanduser("~/.ollama/models/blobs"))
     extra_dirs: list[str] = field(default_factory=list)
     ttl_seconds: float = 120.0
 
@@ -160,12 +153,14 @@ class GgufRegistry:
                 continue
             if not _is_gguf(path):
                 continue
-            out.append(_build_model_entry(
-                path=path,
-                filename=fname,
-                source="gpt4all",
-                size_bytes=size,
-            ))
+            out.append(
+                _build_model_entry(
+                    path=path,
+                    filename=fname,
+                    source="gpt4all",
+                    size_bytes=size,
+                )
+            )
         return out
 
     def _scan_ollama(self) -> list[GgufModel]:
@@ -190,21 +185,21 @@ class GgufRegistry:
                 tag_path = os.path.join(model_path, tag)
                 if not os.path.isfile(tag_path):
                     continue
-                gguf_path = _resolve_ollama_manifest_to_gguf(
-                    tag_path, blobs_dir
-                )
+                gguf_path = _resolve_ollama_manifest_to_gguf(tag_path, blobs_dir)
                 if not gguf_path:
                     continue
                 size = _safe_file_size(gguf_path)
                 if size < 1024:
                     continue
                 display_name = f"{model_name}:{tag}" if tag != "latest" else model_name
-                out.append(_build_model_entry(
-                    path=gguf_path,
-                    filename=display_name,
-                    source="ollama",
-                    size_bytes=size,
-                ))
+                out.append(
+                    _build_model_entry(
+                        path=gguf_path,
+                        filename=display_name,
+                        source="ollama",
+                        size_bytes=size,
+                    )
+                )
         return out
 
     def _scan_extra_dirs(self) -> list[GgufModel]:
@@ -228,18 +223,21 @@ class GgufRegistry:
                     continue
                 if not _is_gguf(path):
                     continue
-                out.append(_build_model_entry(
-                    path=path,
-                    filename=fname,
-                    source="extra",
-                    size_bytes=size,
-                ))
+                out.append(
+                    _build_model_entry(
+                        path=path,
+                        filename=fname,
+                        source="extra",
+                        size_bytes=size,
+                    )
+                )
         return out
 
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
 
 def _safe_file_size(path: str) -> int:
     try:
@@ -271,9 +269,7 @@ def _partial_content_hash(path: str, size_bytes: int) -> str:
     return h.hexdigest()[:24]
 
 
-def _resolve_ollama_manifest_to_gguf(
-    manifest_path: str, blobs_dir: str
-) -> str | None:
+def _resolve_ollama_manifest_to_gguf(manifest_path: str, blobs_dir: str) -> str | None:
     """Parse an Ollama manifest JSON and return the GGUF blob path."""
     try:
         with open(manifest_path, "r", encoding="utf-8") as f:
@@ -316,9 +312,7 @@ _ARCH_PATTERNS: list[tuple[str, str]] = [
     (r"starcoder", "starcoder"),
 ]
 
-_QUANT_PATTERN = re.compile(
-    r"(q[2345678](?:_[0kms]+(?:_[sml])?)?|fp16|f16|bf16|f32)", re.IGNORECASE
-)
+_QUANT_PATTERN = re.compile(r"(q[2345678](?:_[0kms]+(?:_[sml])?)?|fp16|f16|bf16|f32)", re.IGNORECASE)
 
 _PARAM_PATTERNS = [
     re.compile(r"(?:^|[^0-9])(\d+\.\d+)\s*[bB](?![a-z])"),

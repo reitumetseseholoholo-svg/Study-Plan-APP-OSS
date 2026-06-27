@@ -93,5 +93,3 @@ def test_resolve_openai_compatible_model_candidates_prefers_routed_gateway_model
         "openrouter/openai/gpt-4o-mini",
         "openrouter/anthropic/claude-3.5-sonnet",
     ]
-
-

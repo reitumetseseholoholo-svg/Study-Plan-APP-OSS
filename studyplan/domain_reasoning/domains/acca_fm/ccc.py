@@ -21,9 +21,20 @@ class CccTemplate(FormulaTemplate):
 
         steps: list[dict[str, Any]] = [
             {"step_id": "dio_plus_dso", "description": "DIO + DSO", "value": dio + dso, "formula": f"{dio}+{dso}"},
-            {"step_id": "ccc", "description": "CCC = DIO + DSO - DPO", "value": result, "formula": f"{dio}+{dso}-{dpo}"},
+            {
+                "step_id": "ccc",
+                "description": "CCC = DIO + DSO - DPO",
+                "value": result,
+                "formula": f"{dio}+{dso}-{dpo}",
+            },
         ]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

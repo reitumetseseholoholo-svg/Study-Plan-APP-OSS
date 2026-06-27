@@ -1,4 +1,3 @@
-import datetime
 from typing import Any, Dict, List
 
 from studyplan_ai_tutor import build_rag_concept_graph
@@ -43,4 +42,3 @@ def test_build_rag_concept_graph_basic_terms_and_edges() -> None:
     edge_pairs = {(e.get("term_id"), e.get("snippet_id")) for e in edges}
     assert any(pair[1] == "snip:S1" for pair in edge_pairs)
     assert any(pair[1] == "snip:S2" for pair in edge_pairs)
-

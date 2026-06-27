@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .gguf_registry import GgufModel
-from .model_ranker import score_quality, resolve_tier
+from .model_ranker import score_quality
 
 log = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class ModelSelector:
         with self._lock:
             self._perf_history.append(sample)
             if len(self._perf_history) > self._MAX_HISTORY:
-                self._perf_history = self._perf_history[-self._MAX_HISTORY:]
+                self._perf_history = self._perf_history[-self._MAX_HISTORY :]
 
     def get_model_stats(self, model_name: str) -> dict[str, Any]:
         with self._lock:
@@ -149,9 +149,7 @@ class ModelSelector:
             return self.purpose_tier_overrides[purpose]
         return _PURPOSE_TIERS.get(purpose, "balanced")
 
-    def _score_model(
-        self, model: GgufModel, tier: str, purpose: str
-    ) -> ModelRanking:
+    def _score_model(self, model: GgufModel, tier: str, purpose: str) -> ModelRanking:
         quality = score_quality(
             model.name,
             tier,
@@ -171,9 +169,7 @@ class ModelSelector:
             f"ram_fit={ram_score:+.2f}; history={perf_score:+.2f}; "
             f"samples={perf_stats.get('samples', 0)}"
         )
-        return ModelRanking(
-            model=model, score=round(total, 3), tier=tier, rationale=rationale
-        )
+        return ModelRanking(model=model, score=round(total, 3), tier=tier, rationale=rationale)
 
     def _score_ram_fit(self, model: GgufModel) -> float:
         """Bonus for fitting in RAM; only used when not filtering by fit (e.g. no budget)."""

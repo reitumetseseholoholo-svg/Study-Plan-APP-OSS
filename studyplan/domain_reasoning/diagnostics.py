@@ -13,6 +13,7 @@ from typing import Any
 @dataclass
 class StepEvaluation:
     """Result of comparing one learner step against truth."""
+
     step_id: str
     description: str = ""
     expected: float | None = None
@@ -23,6 +24,7 @@ class StepEvaluation:
 @dataclass
 class ConceptEvaluation:
     """Evaluation result for a single concept."""
+
     concept_id: str
     template_version: str = ""
     result: float | None = None
@@ -39,6 +41,7 @@ class QuestionDiagnostic:
 
     Carries concept-level evaluations plus a summary for the tutor/autopilot.
     """
+
     question_slug: str = ""
     concept_ids: list[str] = field(default_factory=list)
     primary_concept_id: str = ""
@@ -81,9 +84,7 @@ def merge_concept_results(
         meta = concepts_metadata.get(ev.concept_id)
         if meta and hasattr(meta, "dependencies"):
             for dep_id in meta.dependencies:
-                dep_ev = next(
-                    (e for e in evaluations if e.concept_id == dep_id), None
-                )
+                dep_ev = next((e for e in evaluations if e.concept_id == dep_id), None)
                 if dep_ev and dep_ev.error_tags:
                     blocked.append(f"{ev.concept_id} blocked by {dep_id}")
 
@@ -91,9 +92,7 @@ def merge_concept_results(
     confidence = best_conf if evaluations else 0.0
 
     error_summary = "; ".join(sorted(set(all_tags))) if all_tags else ""
-    weak = sorted(set(
-        ev.concept_id for ev in evaluations if ev.error_tags
-    ))
+    weak = sorted({ev.concept_id for ev in evaluations if ev.error_tags})
 
     return QuestionDiagnostic(
         concept_ids=concept_ids,

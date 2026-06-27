@@ -1,4 +1,5 @@
 """Tests for studyplan.performance_monitor module."""
+
 import time
 
 import pytest
@@ -72,7 +73,7 @@ def test_report_empty_when_no_metrics():
 
 def test_report_counts_total_and_exceeded():
     mon = PerformanceMonitor()
-    mon.record("assess", 5.0, "ts")   # under threshold (20ms)
+    mon.record("assess", 5.0, "ts")  # under threshold (20ms)
     mon.record("assess", 500.0, "ts")  # over threshold
     report = mon.report()
     assert report["total_recorded"] == 2

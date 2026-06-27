@@ -3,6 +3,7 @@ Built-in ACCA FR (F7) syllabus: learning outcome IDs mapped to F7 chapters.
 Used by the engine to auto-fill syllabus_structure when loading the F7 module,
 so no script or manual JSON merge is required.
 """
+
 from __future__ import annotations
 
 # Outcome (id, chapter_index_1based, level). Chapter index 1..27 matches F7 order.
@@ -45,15 +46,31 @@ def _capability(chapter_title: str) -> str:
     if any(
         x in chapter_title
         for x in [
-            "IAS 16", "IAS 38", "IAS 36", "Inventories", "Financial Instruments",
-            "IFRS 16", "IAS 37", "IAS 10", "IAS 12", "IAS 33", "IFRS 15",
-            "Government", "Foreign Currency", "IFRS 5",
+            "IAS 16",
+            "IAS 38",
+            "IAS 36",
+            "Inventories",
+            "Financial Instruments",
+            "IFRS 16",
+            "IAS 37",
+            "IAS 10",
+            "IAS 12",
+            "IAS 33",
+            "IFRS 15",
+            "Government",
+            "Foreign Currency",
+            "IFRS 5",
         ]
     ):
         return "B"
     if "Analysis and Interpretation" in chapter_title:
         return "C"
-    if "Consolidat" in chapter_title or "IAS 7" in chapter_title or "IFRS 18" in chapter_title or "IAS 8" in chapter_title:
+    if (
+        "Consolidat" in chapter_title
+        or "IAS 7" in chapter_title
+        or "IFRS 18" in chapter_title
+        or "IAS 8" in chapter_title
+    ):
         return "D"
     return "E"
 
@@ -71,11 +88,13 @@ def get_f7_syllabus_structure(chapters: list[str]) -> dict[str, dict]:
     for outcome_id, ch_num, level in F7_OUTCOMES:
         if 1 <= ch_num <= len(chapters):
             ch_title = chapters[ch_num - 1]
-            by_chapter[ch_title].append({
-                "id": outcome_id,
-                "text": f"Learning outcome {outcome_id}",
-                "level": level,
-            })
+            by_chapter[ch_title].append(
+                {
+                    "id": outcome_id,
+                    "text": f"Learning outcome {outcome_id}",
+                    "level": level,
+                }
+            )
     return {
         ch: {
             "capability": _capability(ch),

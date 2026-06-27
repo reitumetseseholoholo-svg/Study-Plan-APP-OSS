@@ -1,4 +1,5 @@
 """Tests for studyplan.lifecycle module (ShutdownBarrier)."""
+
 import threading
 import time
 

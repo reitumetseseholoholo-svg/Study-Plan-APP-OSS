@@ -10,7 +10,6 @@ from studyplan.question_generator import (
     DummyStructuredQGenService,
     OllamaQGenService,
     QGenAgent,
-    StructuredQuestion,
     get_qgen_service,
     get_structured_qgen_service,
 )
@@ -50,7 +49,7 @@ def test_ollama_qgen_service_parse_questions():
 
 def test_ollama_qgen_service_parse_questions_respects_count_cap():
     svc = OllamaQGenService()
-    text = "\n".join(f"{i+1}. Question number {i+1} about finance?" for i in range(10))
+    text = "\n".join(f"{i + 1}. Question number {i + 1} about finance?" for i in range(10))
     questions = svc._parse_questions(text, 4)
     assert len(questions) == 4
 
@@ -132,6 +131,7 @@ def test_regression_auto_generate_questions_malformed_dict_payload_returns_empty
 # ---------------------------------------------------------------------------
 # Agent-based question generation tests
 # ---------------------------------------------------------------------------
+
 
 def test_dummy_structured_service_returns_correct_count():
     svc = DummyStructuredQGenService()
@@ -248,5 +248,5 @@ def test_orchestrator_save_creates_parent_dirs(tmp_path):
 
 if __name__ == "__main__":
     import pytest
-    pytest.main([__file__, "-v"])
 
+    pytest.main([__file__, "-v"])

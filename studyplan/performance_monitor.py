@@ -36,10 +36,15 @@ class PerformanceMonitor:
         if not self.enabled:
             return
         threshold = self._thresholds.get(operation, 100.0)
-        metric = PerformanceMetric(operation=operation, duration_ms=duration_ms, timestamp=timestamp, threshold_ms=threshold)
+        metric = PerformanceMetric(
+            operation=operation, duration_ms=duration_ms, timestamp=timestamp, threshold_ms=threshold
+        )
         self.metrics.append(metric)
         if metric.exceeded:
-            logger.warning(f"perf_budget_exceeded", extra={"operation": operation, "duration_ms": duration_ms, "threshold_ms": threshold})
+            logger.warning(
+                "perf_budget_exceeded",
+                extra={"operation": operation, "duration_ms": duration_ms, "threshold_ms": threshold},
+            )
 
     def context(self, operation: str):
         """Context manager for measuring operation latency."""

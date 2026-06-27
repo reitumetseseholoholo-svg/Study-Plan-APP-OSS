@@ -59,7 +59,9 @@ def test_matrix_case_shape_and_ids() -> None:
         assert len(prompt) >= 20, f"prompt too short for case {rid}"
         assert isinstance(expected, dict), f"expected must be object for case {rid}"
         assert "must_include" in expected and "disallow" in expected, f"expected keys missing for case {rid}"
-        assert isinstance(expected["must_include"], list) and expected["must_include"], f"must_include empty for case {rid}"
+        assert isinstance(expected["must_include"], list) and expected["must_include"], (
+            f"must_include empty for case {rid}"
+        )
         assert isinstance(expected["disallow"], list) and expected["disallow"], f"disallow empty for case {rid}"
 
 

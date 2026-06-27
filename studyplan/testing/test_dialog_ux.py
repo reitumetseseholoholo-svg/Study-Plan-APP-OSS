@@ -1,5 +1,3 @@
-import pytest
-
 from studyplan.dialog_ux import DialogFeedback, DisclosureLevel, TutorDialogRenderer
 
 

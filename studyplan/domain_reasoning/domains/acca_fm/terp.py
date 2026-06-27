@@ -21,10 +21,26 @@ class TerpTemplate(FormulaTemplate):
 
         total_value = n * cum + issue
         steps: list[dict[str, Any]] = [
-            {"step_id": "total_value", "description": "N × cum-rights + issue price", "value": total_value, "formula": f"{n}*{cum}+{issue}"},
-            {"step_id": "terp", "description": "TERP = Total / (N + 1)", "value": result, "formula": f"{total_value}/({n}+1)"},
+            {
+                "step_id": "total_value",
+                "description": "N × cum-rights + issue price",
+                "value": total_value,
+                "formula": f"{n}*{cum}+{issue}",
+            },
+            {
+                "step_id": "terp",
+                "description": "TERP = Total / (N + 1)",
+                "value": result,
+                "formula": f"{total_value}/({n}+1)",
+            },
         ]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

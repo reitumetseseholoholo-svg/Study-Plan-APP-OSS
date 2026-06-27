@@ -70,8 +70,5 @@ def load_json_file_with_limit(
         if quarantine_corrupt:
             quarantined_at = quarantine_corrupt_file(path, suffix="json")
         if quarantined_at:
-            raise ValueError(
-                f"{label} JSON is corrupt: {exc}. Quarantined copy created at: {quarantined_at}"
-            ) from exc
+            raise ValueError(f"{label} JSON is corrupt: {exc}. Quarantined copy created at: {quarantined_at}") from exc
         raise ValueError(f"{label} JSON is corrupt: {exc}") from exc
-

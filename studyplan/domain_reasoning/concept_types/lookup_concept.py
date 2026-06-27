@@ -7,14 +7,14 @@ by year, standard deduction tables.
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class LookupRule:
@@ -23,6 +23,7 @@ class LookupRule:
     When *condition* evaluates to True (against the input context),
     the *output_key* is used to look up a value from the table.
     """
+
     condition: str
     output_key: str
 
@@ -36,6 +37,7 @@ class LookupConfig:
     the key used for the lookup.  If no rule matches, *default key* or
     ``None`` is returned.
     """
+
     table: dict[str, Any]
     rules: list[LookupRule]
     default_key: str | None = None
@@ -45,6 +47,7 @@ class LookupConfig:
 # ---------------------------------------------------------------------------
 # Template
 # ---------------------------------------------------------------------------
+
 
 class LookupTemplate:
     """ConceptTemplate implementation for table-based lookups.
@@ -84,6 +87,7 @@ class LookupTemplate:
 
         for rule in self._rules:
             from studyplan.domain_reasoning.concept_types.rule_concept import _eval_rule_expression
+
             try:
                 cond_val = _eval_rule_expression(rule.condition, ctx)
                 if bool(cond_val):
@@ -106,12 +110,14 @@ class LookupTemplate:
             "result": value,
             "inputs": dict(inputs),
             "is_nan": is_nan,
-            "steps": [{
-                "step_id": self._output_slot,
-                "description": f"Lookup: {matched_key or 'none'}",
-                "value": value,
-                "matched_condition": matched_condition,
-            }],
+            "steps": [
+                {
+                    "step_id": self._output_slot,
+                    "description": f"Lookup: {matched_key or 'none'}",
+                    "value": value,
+                    "matched_condition": matched_condition,
+                }
+            ],
             "lookup_key": matched_key,
         }
 
@@ -129,13 +135,15 @@ class LookupTemplate:
             if step_val is not None and truth_result is not None:
                 match = step_val == truth_result
             else:
-                match = (step_val is None and truth_result is None)
-            results.append({
-                "step_id": step.get("step_id", ""),
-                "expected": truth_result,
-                "actual": step_val,
-                "match": match,
-            })
+                match = step_val is None and truth_result is None
+            results.append(
+                {
+                    "step_id": step.get("step_id", ""),
+                    "expected": truth_result,
+                    "actual": step_val,
+                    "match": match,
+                }
+            )
         return results
 
     def classify_errors(
@@ -162,6 +170,7 @@ class LookupTemplate:
 # Candidate extractor
 # ---------------------------------------------------------------------------
 
+
 def _make_lookup_candidate_fn(
     config: LookupConfig,
 ) -> Callable[..., list[dict[str, Any]]]:
@@ -171,6 +180,7 @@ def _make_lookup_candidate_fn(
     classification targets, since the inputs are typically category
     descriptors, not numbers.
     """
+
     def candidate_fn(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         for key, val in config.table.items():
@@ -183,6 +193,7 @@ def _make_lookup_candidate_fn(
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
 
 def make_lookup_template(
     concept_id: str,

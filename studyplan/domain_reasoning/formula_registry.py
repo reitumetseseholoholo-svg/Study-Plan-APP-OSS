@@ -25,7 +25,7 @@ import ast
 import itertools
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 
@@ -41,12 +41,14 @@ CONCEPT_TYPE_RULE_CHAIN = "rule_chain"
 CONCEPT_TYPE_LOOKUP = "lookup"
 CONCEPT_TYPE_CLASSIFICATION = "classification"
 
-_CONCEPT_TYPES = frozenset({
-    CONCEPT_TYPE_EXPRESSION,
-    CONCEPT_TYPE_RULE_CHAIN,
-    CONCEPT_TYPE_LOOKUP,
-    CONCEPT_TYPE_CLASSIFICATION,
-})
+_CONCEPT_TYPES = frozenset(
+    {
+        CONCEPT_TYPE_EXPRESSION,
+        CONCEPT_TYPE_RULE_CHAIN,
+        CONCEPT_TYPE_LOOKUP,
+        CONCEPT_TYPE_CLASSIFICATION,
+    }
+)
 
 
 @dataclass
@@ -60,16 +62,17 @@ class FormulaDecl:
     chains, lookups, and classification trees.  Fields beyond the common
     ones are type-specific.
     """
+
     concept_id: str
     concept_type: str = CONCEPT_TYPE_EXPRESSION
 
     # -- Expression-specific fields --
-    formula_name: str = ""               # e.g. "mirr" (concept_id without "fm.")
+    formula_name: str = ""  # e.g. "mirr" (concept_id without "fm.")
     solver_fn: Callable[..., float] | None = None
     candidate_fn: Callable[..., list[dict[str, Any]]] | None = None
     compiled_patterns: list[re.Pattern] | None = None
-    template: Any = None                 # ConceptTemplate instance
-    expression: str | None = None        # None if hand-written solver
+    template: Any = None  # ConceptTemplate instance
+    expression: str | None = None  # None if hand-written solver
     param_names: tuple[str, ...] = ()
     param_kinds: tuple[ParamKind, ...] = ()
 
@@ -103,6 +106,7 @@ def get_registry_formulas() -> list[str]:
 # ---------------------------------------------------------------------------
 # Registry validation
 # ---------------------------------------------------------------------------
+
 
 class RegistryValidationError(Exception):
     """Raised when the formula registry has structural errors."""
@@ -158,6 +162,7 @@ def _init_builtin_ids() -> None:
     global BUILTIN_CONCEPT_IDS
     try:
         from studyplan.domain_reasoning.concepts import BUILTIN_CONCEPTS as _bc
+
         BUILTIN_CONCEPT_IDS = set(_bc.keys())
     except ImportError:
         BUILTIN_CONCEPT_IDS = set()
@@ -170,22 +175,29 @@ _init_builtin_ids()
 # Expression solver (variable substitution via eval with restricted env)
 # ---------------------------------------------------------------------------
 
+
 def _substitute_and_eval(expr: str, env: dict[str, float]) -> float:
     """Evaluate *expr* with variable names replaced by values in *env*.
 
     Uses a safe AST walk + restricted ``eval()``.
     """
     safe_builtins: dict[str, Any] = {
-        "sqrt": math.sqrt, "abs": abs,
-        "float": float, "int": int, "round": round,
-        "sum": sum, "len": len, "min": min, "max": max,
+        "sqrt": math.sqrt,
+        "abs": abs,
+        "float": float,
+        "int": int,
+        "round": round,
+        "sum": sum,
+        "len": len,
+        "min": min,
+        "max": max,
     }
 
     locals_dict: dict[str, float] = {}
     try:
         tree = ast.parse(expr.strip(), mode="eval")
     except SyntaxError:
-        raise ValueError(f"Invalid expression: {expr}")
+        raise ValueError(f"Invalid expression: {expr}") from None
 
     collector = _NameCollector()
     collector.visit(tree)
@@ -199,6 +211,7 @@ def _substitute_and_eval(expr: str, env: dict[str, float]) -> float:
             raise NameError(f"Variable '{name}' not provided in env")
 
     from studyplan.numerical_solver import safe_expression_evaluate
+
     result = safe_expression_evaluate(expr, env=locals_dict)
     if result is None:
         raise ValueError("Expression evaluation returned None")
@@ -231,6 +244,7 @@ def _make_expression_solver(
     All keyword arguments are forwarded to the expression environment,
     enabling intermediate values from prior chain steps to be available.
     """
+
     def solver(**kwargs: Any) -> float:
         env: dict[str, float] = {}
         # Required params — if any are missing, return nan
@@ -261,6 +275,7 @@ def _make_expression_solver(
 # Auto-candidate generation — permutation-aware
 # ---------------------------------------------------------------------------
 
+
 def _make_candidate_fn(
     param_names: tuple[str, ...],
     param_kinds: tuple[ParamKind, ...],
@@ -271,12 +286,8 @@ def _make_candidate_fn(
     Tries every assignment of extracted numbers to parameter names and
     picks the assignment(s) that produce the most plausible solver output.
     """
-    value_param_indices = [
-        i for i, kind in enumerate(param_kinds) if kind == "value"
-    ]
-    percent_param_indices = [
-        i for i, kind in enumerate(param_kinds) if kind == "percent"
-    ]
+    value_param_indices = [i for i, kind in enumerate(param_kinds) if kind == "value"]
+    percent_param_indices = [i for i, kind in enumerate(param_kinds) if kind == "percent"]
 
     def _plausible_score(val: float) -> float:
         if math.isnan(val) or math.isinf(val):
@@ -343,6 +354,7 @@ def _make_candidate_fn(
 # Auto-template
 # ---------------------------------------------------------------------------
 
+
 class ExpressionTemplate:
     """Minimal ConceptTemplate implementation for expression-based formulas."""
 
@@ -375,12 +387,14 @@ class ExpressionTemplate:
             for k, v in inputs.items():
                 if isinstance(v, (int, float)):
                     display_expr = display_expr.replace(k, f"{v}")
-            steps.append({
-                "step_id": self.concept_id.replace("fm.", "", 1),
-                "description": f"{self.concept_id} formula",
-                "value": result,
-                "formula": display_expr,
-            })
+            steps.append(
+                {
+                    "step_id": self.concept_id.replace("fm.", "", 1),
+                    "description": f"{self.concept_id} formula",
+                    "value": result,
+                    "formula": display_expr,
+                }
+            )
         result_dict["steps"] = steps
         return result_dict
 
@@ -399,12 +413,14 @@ class ExpressionTemplate:
                 match = abs(float(step_val) - float(truth_result)) < max(0.01, abs(float(truth_result)) * 0.005)
             else:
                 match = False
-            results.append({
-                "step_id": step.get("step_id", ""),
-                "expected": truth_result,
-                "actual": step_val,
-                "match": match,
-            })
+            results.append(
+                {
+                    "step_id": step.get("step_id", ""),
+                    "expected": truth_result,
+                    "actual": step_val,
+                    "match": match,
+                }
+            )
         return results
 
     def classify_errors(
@@ -435,9 +451,11 @@ class ExpressionTemplate:
 # Chain template — multi-step formula declarations
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ChainStep:
     """One step in a multi-step formula chain."""
+
     slot: str
     expression: str
     param_names: tuple[str, ...]
@@ -474,7 +492,7 @@ class ChainTemplate:
         step_results: list[dict[str, Any]] = []
         final_result: float | None = None
 
-        for i, (step, solver) in enumerate(zip(self._steps, self._solvers)):
+        for i, (step, solver) in enumerate(zip(self._steps, self._solvers, strict=False)):
             step_inputs: dict[str, Any] = {}
             # Step-specific params
             for pname in step.param_names:
@@ -499,12 +517,14 @@ class ChainTemplate:
                 if isinstance(v, (int, float)):
                     display = display.replace(k, f"{v}")
 
-            step_results.append({
-                "step_id": step.slot,
-                "description": step.description or f"Step {i+1}: {step.slot}",
-                "value": result,
-                "formula": display,
-            })
+            step_results.append(
+                {
+                    "step_id": step.slot,
+                    "description": step.description or f"Step {i + 1}: {step.slot}",
+                    "value": result,
+                    "formula": display,
+                }
+            )
 
             if math.isnan(result):
                 break
@@ -538,12 +558,14 @@ class ChainTemplate:
                 match = abs(float(step_val) - float(truth_result)) < max(0.01, abs(float(truth_result)) * 0.005)
             else:
                 match = False
-            results.append({
-                "step_id": step_id,
-                "expected": truth_result,
-                "actual": step_val,
-                "match": match,
-            })
+            results.append(
+                {
+                    "step_id": step_id,
+                    "expected": truth_result,
+                    "actual": step_val,
+                    "match": match,
+                }
+            )
         return results
 
     def classify_errors(
@@ -621,8 +643,7 @@ def declare_concept(
     Returns the registered ``FormulaDecl``.
     """
     if concept_type not in _CONCEPT_TYPES:
-        raise ValueError(f"Unknown concept_type '{concept_type}'. "
-                         f"Must be one of: {', '.join(sorted(_CONCEPT_TYPES))}")
+        raise ValueError(f"Unknown concept_type '{concept_type}'. Must be one of: {', '.join(sorted(_CONCEPT_TYPES))}")
 
     if concept_type == CONCEPT_TYPE_EXPRESSION:
         return _declare_expression_concept(
@@ -803,6 +824,7 @@ def _declare_expression_concept(
         template = multi_step_template
     else:
         from studyplan.domain_reasoning.concept_types.expression_concept import make_expression_template
+
         template = make_expression_template(concept_id, expression, pnames)
 
     # -- Metadata defaults --
@@ -863,7 +885,7 @@ def _declare_rule_chain_concept(
     )
 
     template = make_rule_template(concept_id, config)
-    candidate_fn = _make_rule_chain_candidate_fn(config.steps, template)
+    _make_rule_chain_candidate_fn(config.steps, template)
 
     compiled_patterns: list[re.Pattern] = []
     if patterns:
@@ -920,7 +942,7 @@ def _declare_lookup_concept(
     )
 
     template = make_lookup_template(concept_id, config)
-    candidate_fn = _make_lookup_candidate_fn(config)
+    _make_lookup_candidate_fn(config)
 
     compiled_patterns: list[re.Pattern] = []
     if patterns:
@@ -977,7 +999,7 @@ def _declare_classification_concept(
     )
 
     template = make_classification_template(concept_id, config)
-    candidate_fn = _make_classification_candidate_fn(config)
+    _make_classification_candidate_fn(config)
 
     compiled_patterns: list[re.Pattern] = []
     if patterns:
@@ -1072,11 +1094,15 @@ def declare_formula_chain(
         pnames = tuple(s.get("param_names", []))
         pkinds = tuple(s.get("param_kinds", ["value"] * len(pnames)))
         desc = s.get("description", "")
-        chain_steps.append(ChainStep(
-            slot=slot, expression=expr,
-            param_names=pnames, param_kinds=pkinds,
-            description=desc,
-        ))
+        chain_steps.append(
+            ChainStep(
+                slot=slot,
+                expression=expr,
+                param_names=pnames,
+                param_kinds=pkinds,
+                description=desc,
+            )
+        )
         for i, p in enumerate(pnames):
             if p not in seen_params:
                 seen_params.add(p)
@@ -1140,10 +1166,11 @@ def declare_formula_chain(
 # Build helpers for existing data structures
 # ---------------------------------------------------------------------------
 
+
 def build_solver_dict(base: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return ``formula_name → solver_fn`` for all expression-type formulas."""
     result = dict(base or {})
-    for cid, decl in _registry.items():
+    for _cid, decl in _registry.items():
         if decl.concept_type != CONCEPT_TYPE_EXPRESSION:
             continue
         if decl.formula_name not in result and decl.solver_fn is not None:
@@ -1154,7 +1181,7 @@ def build_solver_dict(base: dict[str, Any] | None = None) -> dict[str, Any]:
 def build_candidate_dict(base: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return ``formula_name → candidate_fn`` for all registered formulas."""
     result = dict(base or {})
-    for cid, decl in _registry.items():
+    for _cid, decl in _registry.items():
         if decl.formula_name not in result and decl.candidate_fn is not None:
             result[decl.formula_name] = decl.candidate_fn
     return result
@@ -1180,6 +1207,7 @@ def build_concept_dict(
 ) -> dict[str, Any]:
     """Return ``concept_id → ConceptMetadata`` from registered formulas."""
     from studyplan.domain_reasoning.concepts import ConceptMetadata
+
     result = dict(base or {})
     for cid, decl in _registry.items():
         if cid not in result:
@@ -1237,7 +1265,8 @@ def build_structure_type_concepts(
 # Formula registrations via the DSL
 # ---------------------------------------------------------------------------
 
-declare_formula("fm.dividend_growth_rate",
+declare_formula(
+    "fm.dividend_growth_rate",
     expression="roe * retention_ratio",
     patterns=[r"\bdividend growth\b", r"\bgrowth.*model\b", r"\bretention.*growth\b"],
     param_names=["roe", "retention_ratio"],
@@ -1250,7 +1279,8 @@ declare_formula("fm.dividend_growth_rate",
     structure_types=["dividend_policy_tradeoff"],
 )
 
-declare_formula("fm.earning_yield",
+declare_formula(
+    "fm.earning_yield",
     expression="eps / market_price",
     patterns=[r"\bearning yield\b", r"\bE/P\b", r"\bearnings.*price\b", r"\bEarnings yield\b"],
     param_names=["eps", "market_price"],
@@ -1263,7 +1293,8 @@ declare_formula("fm.earning_yield",
     structure_types=["dividend_policy_tradeoff"],
 )
 
-declare_formula("fm.quick_ratio",
+declare_formula(
+    "fm.quick_ratio",
     expression="(current_assets - inventory) / current_liabilities",
     patterns=[r"\bquick ratio\b", r"\bacid test\b", r"\bliquid ratio\b"],
     param_names=["current_assets", "inventory", "current_liabilities"],
@@ -1276,7 +1307,8 @@ declare_formula("fm.quick_ratio",
     structure_types=["working_capital_cycle"],
 )
 
-declare_formula("fm.asset_turnover",
+declare_formula(
+    "fm.asset_turnover",
     expression="sales / capital_employed",
     patterns=[r"\basset turnover\b", r"\bcapital turnover\b", r"\bsales.*capital employed\b"],
     param_names=["sales", "capital_employed"],
@@ -1291,11 +1323,14 @@ declare_formula("fm.asset_turnover",
 
 # --- Working capital efficiency ratios (common in Section C) ---
 
-declare_formula("fm.receivables_days",
+declare_formula(
+    "fm.receivables_days",
     expression="receivables / credit_sales * 365",
     patterns=[
-        r"\breceivable.*day[s]?\b", r"\breceivable.*collection\b",
-        r"\bdebtor.*day[s]?\b", r"\breceivable.*period\b",
+        r"\breceivable.*day[s]?\b",
+        r"\breceivable.*collection\b",
+        r"\bdebtor.*day[s]?\b",
+        r"\breceivable.*period\b",
     ],
     param_names=["receivables", "credit_sales"],
     param_kinds=["value", "value"],
@@ -1307,11 +1342,14 @@ declare_formula("fm.receivables_days",
     structure_types=["working_capital_cycle"],
 )
 
-declare_formula("fm.payables_days",
+declare_formula(
+    "fm.payables_days",
     expression="payables / credit_purchases * 365",
     patterns=[
-        r"\bpayable.*day[s]?\b", r"\bpayable.*payment\b",
-        r"\bcreditor.*day[s]?\b", r"\bpayable.*period\b",
+        r"\bpayable.*day[s]?\b",
+        r"\bpayable.*payment\b",
+        r"\bcreditor.*day[s]?\b",
+        r"\bpayable.*period\b",
     ],
     param_names=["payables", "credit_purchases"],
     param_kinds=["value", "value"],
@@ -1323,11 +1361,14 @@ declare_formula("fm.payables_days",
     structure_types=["working_capital_cycle"],
 )
 
-declare_formula("fm.inventory_days",
+declare_formula(
+    "fm.inventory_days",
     expression="inventory / cost_of_sales * 365",
     patterns=[
-        r"\binventory.*day[s]?\b", r"\binventory.*holding\b",
-        r"\bstock.*day[s]?\b", r"\binventory.*period\b",
+        r"\binventory.*day[s]?\b",
+        r"\binventory.*holding\b",
+        r"\bstock.*day[s]?\b",
+        r"\binventory.*period\b",
     ],
     param_names=["inventory", "cost_of_sales"],
     param_kinds=["value", "value"],
@@ -1341,22 +1382,23 @@ declare_formula("fm.inventory_days",
 
 # --- Multi-step chains ---
 
-declare_formula_chain("fm.cost_equity_capm_to_wacc",
+declare_formula_chain(
+    "fm.cost_equity_capm_to_wacc",
     steps=[
-        dict(
-            slot="cost_equity",
-            expression="risk_free + beta * (market_return - risk_free)",
-            param_names=["risk_free", "beta", "market_return"],
-            param_kinds=["percent", "value", "percent"],
-            description="Cost of equity (CAPM)",
-        ),
-        dict(
-            slot="wacc",
-            expression="cost_equity * eq_weight + cost_debt * (1 - tax) * debt_weight",
-            param_names=["cost_debt", "tax", "eq_weight", "debt_weight"],
-            param_kinds=["percent", "percent", "percent", "percent"],
-            description="Weighted average cost of capital",
-        ),
+        {
+            "slot": "cost_equity",
+            "expression": "risk_free + beta * (market_return - risk_free)",
+            "param_names": ["risk_free", "beta", "market_return"],
+            "param_kinds": ["percent", "value", "percent"],
+            "description": "Cost of equity (CAPM)",
+        },
+        {
+            "slot": "wacc",
+            "expression": "cost_equity * eq_weight + cost_debt * (1 - tax) * debt_weight",
+            "param_names": ["cost_debt", "tax", "eq_weight", "debt_weight"],
+            "param_kinds": ["percent", "percent", "percent", "percent"],
+            "description": "Weighted average cost of capital",
+        },
     ],
     patterns=[r"\bWACC\b", r"\bweighted average cost\b", r"\bcost of capital\b"],
     label="Cost of equity (CAPM) → WACC",
@@ -1367,22 +1409,23 @@ declare_formula_chain("fm.cost_equity_capm_to_wacc",
     structure_types=["wacc_optimization"],
 )
 
-declare_formula_chain("fm.cost_equity_dvm_to_wacc",
+declare_formula_chain(
+    "fm.cost_equity_dvm_to_wacc",
     steps=[
-        dict(
-            slot="cost_equity",
-            expression="dividend * (1 + growth) / market_price + growth",
-            param_names=["dividend", "growth", "market_price"],
-            param_kinds=["value", "percent", "value"],
-            description="Cost of equity (DVM)",
-        ),
-        dict(
-            slot="wacc",
-            expression="cost_equity * eq_weight + cost_debt * (1 - tax) * debt_weight",
-            param_names=["cost_debt", "tax", "eq_weight", "debt_weight"],
-            param_kinds=["percent", "percent", "percent", "percent"],
-            description="Weighted average cost of capital",
-        ),
+        {
+            "slot": "cost_equity",
+            "expression": "dividend * (1 + growth) / market_price + growth",
+            "param_names": ["dividend", "growth", "market_price"],
+            "param_kinds": ["value", "percent", "value"],
+            "description": "Cost of equity (DVM)",
+        },
+        {
+            "slot": "wacc",
+            "expression": "cost_equity * eq_weight + cost_debt * (1 - tax) * debt_weight",
+            "param_names": ["cost_debt", "tax", "eq_weight", "debt_weight"],
+            "param_kinds": ["percent", "percent", "percent", "percent"],
+            "description": "Weighted average cost of capital",
+        },
     ],
     patterns=[r"\bWACC\b", r"\bdividend.*growth.*model.*wacc\b"],
     label="Cost of equity (DVM) → WACC",
@@ -1393,22 +1436,23 @@ declare_formula_chain("fm.cost_equity_dvm_to_wacc",
     structure_types=["wacc_optimization"],
 )
 
-declare_formula_chain("fm.ungear_regear",
+declare_formula_chain(
+    "fm.ungear_regear",
     steps=[
-        dict(
-            slot="asset_beta",
-            expression="equity_beta / (1 + (1 - tax) * debt_equity)",
-            param_names=["equity_beta", "tax", "debt_equity"],
-            param_kinds=["value", "percent", "percent"],
-            description="Ungear equity beta to asset beta",
-        ),
-        dict(
-            slot="new_equity_beta",
-            expression="asset_beta * (1 + (1 - tax) * new_debt_new_equity)",
-            param_names=["tax", "new_debt_new_equity"],
-            param_kinds=["percent", "percent"],
-            description="Regear to new equity beta",
-        ),
+        {
+            "slot": "asset_beta",
+            "expression": "equity_beta / (1 + (1 - tax) * debt_equity)",
+            "param_names": ["equity_beta", "tax", "debt_equity"],
+            "param_kinds": ["value", "percent", "percent"],
+            "description": "Ungear equity beta to asset beta",
+        },
+        {
+            "slot": "new_equity_beta",
+            "expression": "asset_beta * (1 + (1 - tax) * new_debt_new_equity)",
+            "param_names": ["tax", "new_debt_new_equity"],
+            "param_kinds": ["percent", "percent"],
+            "description": "Regear to new equity beta",
+        },
     ],
     patterns=[r"\bungear\b", r"\bregear\b", r"\basset beta\b.*\bnew equity\b"],
     label="Ungear and regear equity beta",
@@ -1428,6 +1472,7 @@ declare_formula_chain("fm.ungear_regear",
 _validation_messages = validate_registry()
 if _validation_messages:
     import logging
+
     _log = logging.getLogger(__name__)
     for msg in _validation_messages:
         _log.warning("Formula registry: %s", msg)

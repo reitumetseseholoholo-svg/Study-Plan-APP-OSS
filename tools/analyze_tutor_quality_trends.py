@@ -143,16 +143,22 @@ def run() -> int:
     parser.add_argument("--min-latest-pass-rate", type=float, default=None)
     parser.add_argument("--min-latest-avg-score", type=float, default=None)
     parser.add_argument("--allow-empty", type=int, default=None)
-    parser.add_argument("--report", default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_TREND_REPORT", "tutor_quality_trend_report.json"))
+    parser.add_argument(
+        "--report", default=os.environ.get("STUDYPLAN_TUTOR_QUALITY_TREND_REPORT", "tutor_quality_trend_report.json")
+    )
     args = parser.parse_args()
 
-    policy_file = os.path.abspath(os.path.expanduser(str(args.policy_file or ""))) if str(args.policy_file or "").strip() else ""
+    policy_file = (
+        os.path.abspath(os.path.expanduser(str(args.policy_file or ""))) if str(args.policy_file or "").strip() else ""
+    )
     policy_name = str(args.policy or "").strip()
     policy_block: dict[str, Any] = {}
     if policy_file and policy_name:
         policy_block = _load_policy_block(policy_file, policy_name, "trend")
 
-    model = str(os.environ.get("STUDYPLAN_TUTOR_QUALITY_TREND_MODEL", "reference_baseline") or "reference_baseline").strip()
+    model = str(
+        os.environ.get("STUDYPLAN_TUTOR_QUALITY_TREND_MODEL", "reference_baseline") or "reference_baseline"
+    ).strip()
     if "model" in policy_block:
         model = str(policy_block.get("model", model) or model).strip() or model
     if args.model is not None:
@@ -256,7 +262,7 @@ def run() -> int:
     max_seen_pass_drop = 0.0
     max_seen_avg_drop = 0.0
     max_seen_disallow_increase = 0
-    for prev, curr in zip(window, window[1:]):
+    for prev, curr in zip(window, window[1:], strict=False):
         if (not bool(prev.get("has_model"))) or (not bool(curr.get("has_model"))):
             continue
         pass_drop = float(prev.get("pass_rate", 0.0) or 0.0) - float(curr.get("pass_rate", 0.0) or 0.0)

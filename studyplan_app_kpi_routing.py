@@ -3,6 +3,7 @@ KPI thresholds and quiz gap routing helpers used by studyplan_app.
 Extracted so tests can import them without pulling in GTK (gi).
 Report paths respect STUDYPLAN_CONFIG_HOME for isolated smoke/soak runs.
 """
+
 from __future__ import annotations
 
 import json
@@ -60,7 +61,9 @@ def _merge_gap_and_srs_indices(gap_indices: list[int], srs_indices: list[int], t
     return merged[:target]
 
 
-def _combine_quiz_indices(kind: str, primary_indices: list[int], total: int, gap_indices: list[int] | None = None) -> list[int]:
+def _combine_quiz_indices(
+    kind: str, primary_indices: list[int], total: int, gap_indices: list[int] | None = None
+) -> list[int]:
     """Combine selector outputs for a quiz session while preserving review semantics."""
     if str(kind or "").strip().lower() == "review":
         try:
@@ -79,13 +82,13 @@ def _adjust_outcome_gap_ratio(base_ratio: float, capability_hit_rate: float | No
         ratio = DEFAULT_OUTCOME_GAP_QUIZ_RATIO
     ratio = max(0.0, min(1.0, ratio))
     if capability_hit_rate is None:
-        return ratio
+        return max(0.20, min(0.90, ratio))
     try:
         hit_rate = float(capability_hit_rate)
     except Exception:
-        return ratio
+        return max(0.20, min(0.90, ratio))
     if not math.isfinite(hit_rate):
-        return ratio
+        return max(0.20, min(0.90, ratio))
     hit_rate = max(0.0, min(1.0, hit_rate))
     if hit_rate < 0.45:
         ratio += 0.20

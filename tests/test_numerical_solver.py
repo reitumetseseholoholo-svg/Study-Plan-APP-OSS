@@ -1,37 +1,55 @@
 """Tests for the deterministic numerical solver."""
 
 import math
-import pytest
 
 from studyplan.numerical_solver import (
-    solve_npv, solve_wacc, solve_capm,
-    solve_payback_period, solve_discounted_payback,
-    solve_cash_conversion_cycle, solve_cost_of_debt,
+    solve_npv,
+    solve_wacc,
+    solve_capm,
+    solve_payback_period,
+    solve_discounted_payback,
+    solve_cash_conversion_cycle,
+    solve_cost_of_debt,
     solve_cost_of_equity_dvm,
-    solve_irr, solve_arr, solve_eoq,
-    solve_equivalent_annual_cost, solve_profitability_index,
-    solve_gearing, solve_interest_cover, solve_eps,
-    solve_dividend_yield, solve_dividend_cover,
-    solve_asset_beta, solve_equity_beta,
-    solve_pe_ratio, solve_roe, solve_cost_of_preference,
-    solve_terp, solve_perpetuity_npv, solve_roce,
-    extract_numbers, detect_formulas,
+    solve_irr,
+    solve_arr,
+    solve_eoq,
+    solve_equivalent_annual_cost,
+    solve_profitability_index,
+    solve_gearing,
+    solve_interest_cover,
+    solve_eps,
+    solve_dividend_yield,
+    solve_dividend_cover,
+    solve_asset_beta,
+    solve_equity_beta,
+    solve_pe_ratio,
+    solve_roe,
+    solve_cost_of_preference,
+    solve_terp,
+    solve_perpetuity_npv,
+    solve_roce,
+    extract_numbers,
+    detect_formulas,
     verify_numerical_answer,
-    safe_expression_evaluate, extract_expressions, freeform_verify,
+    safe_expression_evaluate,
+    extract_expressions,
+    freeform_verify,
 )
 
 # ---------------------------------------------------------------------------
 # Existing formula solvers
 # ---------------------------------------------------------------------------
 
+
 class TestSolveNPV:
     def test_basic(self):
         result = solve_npv([100, 200, 300], 0.10)
-        assert abs(result - (100/1.1 + 200/1.1**2 + 300/1.1**3)) < 0.01
+        assert abs(result - (100 / 1.1 + 200 / 1.1**2 + 300 / 1.1**3)) < 0.01
 
     def test_with_initial(self):
         result = solve_npv([100, 200, 300], 0.10, initial=50)
-        expected = (100/1.1 + 200/1.1**2 + 300/1.1**3) - 50
+        expected = (100 / 1.1 + 200 / 1.1**2 + 300 / 1.1**3) - 50
         assert abs(result - expected) < 0.01
 
     def test_nan_on_bad_rate(self):
@@ -44,12 +62,12 @@ class TestSolveNPV:
 class TestSolveWACC:
     def test_no_tax(self):
         result = solve_wacc(60, 40, 0.12, 0.06)
-        expected = (60/100)*0.12 + (40/100)*0.06
+        expected = (60 / 100) * 0.12 + (40 / 100) * 0.06
         assert abs(result - expected) < 0.001
 
     def test_with_tax(self):
         result = solve_wacc(60, 40, 0.12, 0.042, 0.30)
-        expected = (60/100)*0.12 + (40/100)*0.042
+        expected = (60 / 100) * 0.12 + (40 / 100) * 0.042
         assert abs(result - expected) < 0.001
 
     def test_nan_on_zero_value(self):
@@ -116,6 +134,7 @@ class TestSolveCostOfEquityDVM:
 # ---------------------------------------------------------------------------
 # New formula solvers
 # ---------------------------------------------------------------------------
+
 
 class TestSolveIRR:
     def test_basic(self):
@@ -232,6 +251,7 @@ class TestSolveEquityBeta:
 # Number extraction
 # ---------------------------------------------------------------------------
 
+
 class TestExtractNumbers:
     def test_basic_numbers(self):
         nums = extract_numbers("The cost is $50,000 and rate is 12%")
@@ -255,6 +275,7 @@ class TestExtractNumbers:
 # ---------------------------------------------------------------------------
 # Formula detection
 # ---------------------------------------------------------------------------
+
 
 class TestDetectFormulas:
     def test_detect_npv(self):
@@ -281,6 +302,7 @@ class TestDetectFormulas:
 # ---------------------------------------------------------------------------
 # Safe expression evaluation
 # ---------------------------------------------------------------------------
+
 
 class TestSafeExpressionEvaluate:
     def test_simple_addition(self):
@@ -332,6 +354,7 @@ class TestSafeExpressionEvaluate:
 # Expression extraction
 # ---------------------------------------------------------------------------
 
+
 class TestExtractExpressions:
     def test_equal_sign(self):
         exprs = extract_expressions("NPV = 5000 * 0.12 = 600")
@@ -348,6 +371,7 @@ class TestExtractExpressions:
 # ---------------------------------------------------------------------------
 # Freeform verification
 # ---------------------------------------------------------------------------
+
 
 class TestFreeformVerify:
     def test_matches_correct_ok(self):
@@ -393,6 +417,7 @@ class TestFreeformVerify:
 # verify_numerical_answer — integration
 # ---------------------------------------------------------------------------
 
+
 class TestVerifyNumericalAnswer:
     def test_heuristic_correct_passes(self):
         reason = verify_numerical_answer(
@@ -426,8 +451,11 @@ class TestVerifyNumericalAnswer:
             "9.0%",
             template_ref="wacc",
             template_inputs={
-                "equity": 50, "debt": 50,
-                "cost_equity": 0.12, "cost_debt": 0.06, "tax_rate": 0.0,
+                "equity": 50,
+                "debt": 50,
+                "cost_equity": 0.12,
+                "cost_debt": 0.06,
+                "tax_rate": 0.0,
             },
         )
         # WACC = 0.5*0.12 + 0.5*0.06 = 0.09 = 9.0%
@@ -440,8 +468,11 @@ class TestVerifyNumericalAnswer:
             "7.5%",  # Wrong — should be 9.0%
             template_ref="wacc",
             template_inputs={
-                "equity": 50, "debt": 50,
-                "cost_equity": 0.12, "cost_debt": 0.06, "tax_rate": 0.0,
+                "equity": 50,
+                "debt": 50,
+                "cost_equity": 0.12,
+                "cost_debt": 0.06,
+                "tax_rate": 0.0,
             },
         )
         assert reason is not None
@@ -516,6 +547,7 @@ class TestVerifyNumericalAnswer:
 # New concept solver tests
 # ===================================================================
 
+
 class TestSolvePeRatio:
     def test_basic(self):
         result = solve_pe_ratio(10.0, 2.0)
@@ -588,15 +620,18 @@ class TestSolveRoce:
 # DSL-registered formula solvers (accessed via _FORMULA_SOLVERS)
 # ---------------------------------------------------------------------------
 
+
 class TestSolveDividendGrowthRate:
     def test_basic(self):
         from studyplan.numerical_solver import _FORMULA_SOLVERS
+
         s = _FORMULA_SOLVERS["dividend_growth_rate"]
         result = s(roe=0.15, retention_ratio=0.6)
         assert abs(result - 0.09) < 0.001
 
     def test_nan_on_missing_param(self):
         from studyplan.numerical_solver import _FORMULA_SOLVERS
+
         s = _FORMULA_SOLVERS["dividend_growth_rate"]
         assert math.isnan(s(roe=0.15))
 
@@ -608,6 +643,7 @@ class TestSolveDividendGrowthRate:
 class TestSolveEarningYield:
     def test_basic(self):
         from studyplan.numerical_solver import _FORMULA_SOLVERS
+
         s = _FORMULA_SOLVERS["earning_yield"]
         result = s(eps=2.5, market_price=50.0)
         assert abs(result - 0.05) < 0.001
@@ -620,12 +656,14 @@ class TestSolveEarningYield:
 class TestSolveQuickRatio:
     def test_basic(self):
         from studyplan.numerical_solver import _FORMULA_SOLVERS
+
         s = _FORMULA_SOLVERS["quick_ratio"]
         result = s(current_assets=100.0, inventory=30.0, current_liabilities=50.0)
         assert abs(result - 1.4) < 0.001
 
     def test_nan_on_zero_liabilities(self):
         from studyplan.numerical_solver import _FORMULA_SOLVERS
+
         s = _FORMULA_SOLVERS["quick_ratio"]
         result = s(current_assets=100.0, inventory=30.0, current_liabilities=0.0)
         assert math.isnan(result) or abs(result) > 1e6
@@ -638,6 +676,7 @@ class TestSolveQuickRatio:
 class TestSolveAssetTurnover:
     def test_basic(self):
         from studyplan.numerical_solver import _FORMULA_SOLVERS
+
         s = _FORMULA_SOLVERS["asset_turnover"]
         result = s(sales=500.0, capital_employed=250.0)
         assert abs(result - 2.0) < 0.001

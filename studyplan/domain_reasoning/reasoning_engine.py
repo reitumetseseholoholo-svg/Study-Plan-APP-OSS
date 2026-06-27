@@ -41,9 +41,7 @@ from studyplan.domain_reasoning.templates import (
     run_template,
 )
 from studyplan.domain_reasoning.diagnostics import (
-    ConceptEvaluation,
     QuestionDiagnostic,
-    merge_concept_results,
     format_error_summary,
 )
 
@@ -51,6 +49,7 @@ from studyplan.domain_reasoning.diagnostics import (
 # ---------------------------------------------------------------------------
 # Phase 4: Input source quality weights
 # ---------------------------------------------------------------------------
+
 
 class InputSource(str, Enum):
     EXPLICIT = "explicit"
@@ -72,6 +71,7 @@ _INPUT_QUALITY: dict[str, float] = {
 # ---------------------------------------------------------------------------
 # Phase 2: Output slot groups for multi-path resolution
 # ---------------------------------------------------------------------------
+
 
 def _build_slot_groups() -> dict[str, list[str]]:
     groups: dict[str, list[str]] = {}
@@ -103,9 +103,11 @@ def _find_alternatives(concept_id: str) -> list[str]:
 # Public data types (extended for Phases 2–4)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PlanStep:
     """A single step in the execution plan — *what* to compute and *how*."""
+
     concept_id: str
     template_ref: str
     label: str
@@ -121,6 +123,7 @@ class PlanStep:
 @dataclass
 class ExecutionRecord:
     """Outcome of running one plan step."""
+
     concept_id: str
     success: bool
     label: str = ""
@@ -135,6 +138,7 @@ class ExecutionRecord:
 @dataclass
 class ReasoningTrace:
     """Full output of the reasoning engine — trace + diagnostics."""
+
     question: str
     target_concept_id: str | None = None
     concept_ids: list[str] = field(default_factory=list)
@@ -188,13 +192,9 @@ class ReasoningTrace:
                 }
                 for e in self.execution
             ],
-            "diagnostic_error_tags": (
-                list(self.diagnostic.all_error_tags)
-                if self.diagnostic else []
-            ),
+            "diagnostic_error_tags": (list(self.diagnostic.all_error_tags) if self.diagnostic else []),
             "diagnostic_error_summary": (
-                self.diagnostic.error_summary
-                if self.diagnostic and self.diagnostic.error_summary else ""
+                self.diagnostic.error_summary if self.diagnostic and self.diagnostic.error_summary else ""
             ),
         }
 
@@ -202,6 +202,7 @@ class ReasoningTrace:
 # ---------------------------------------------------------------------------
 # Phase 1: Parameter key detection  (candidate-function probing)
 # ---------------------------------------------------------------------------
+
 
 def _get_expected_param_keys(concept_id: str) -> set[str] | None:
     """Return the set of parameter names a concept's solver expects.
@@ -214,16 +215,86 @@ def _get_expected_param_keys(concept_id: str) -> set[str] | None:
     # -- Build a synthetic number pool rich enough to trigger every
     #    candidate function (including chain formulas with many percent params). --
     _pool = [
-        {"value": 500.0, "raw": "500",  "is_percent": False, "is_currency": False, "is_year_like": False, "is_negative": False},
-        {"value": 300.0, "raw": "300",  "is_percent": False, "is_currency": False, "is_year_like": False, "is_negative": False},
-        {"value": 100.0, "raw": "100",  "is_percent": False, "is_currency": False, "is_year_like": False, "is_negative": False},
-        {"value": 0.12,  "raw": "12%",  "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
-        {"value": 0.08,  "raw": "8%",   "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
-        {"value": 0.30,  "raw": "30%",  "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
-        {"value": 0.06,  "raw": "6%",   "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
-        {"value": 1.2,   "raw": "120%", "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
-        {"value": 0.60,  "raw": "60%",  "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
-        {"value": 0.40,  "raw": "40%",  "is_percent": True,  "is_currency": False, "is_year_like": False, "is_negative": False},
+        {
+            "value": 500.0,
+            "raw": "500",
+            "is_percent": False,
+            "is_currency": False,
+            "is_year_like": False,
+            "is_negative": False,
+        },
+        {
+            "value": 300.0,
+            "raw": "300",
+            "is_percent": False,
+            "is_currency": False,
+            "is_year_like": False,
+            "is_negative": False,
+        },
+        {
+            "value": 100.0,
+            "raw": "100",
+            "is_percent": False,
+            "is_currency": False,
+            "is_year_like": False,
+            "is_negative": False,
+        },
+        {
+            "value": 0.12,
+            "raw": "12%",
+            "is_percent": True,
+            "is_currency": False,
+            "is_year_like": False,
+            "is_negative": False,
+        },
+        {
+            "value": 0.08,
+            "raw": "8%",
+            "is_percent": True,
+            "is_currency": False,
+            "is_year_like": False,
+            "is_negative": False,
+        },
+        {
+            "value": 0.30,
+            "raw": "30%",
+            "is_percent": True,
+            "is_currency": False,
+            "is_year_like": False,
+            "is_negative": False,
+        },
+        {
+            "value": 0.06,
+            "raw": "6%",
+            "is_percent": True,
+            "is_currency": False,
+            "is_year_like": False,
+            "is_negative": False,
+        },
+        {
+            "value": 1.2,
+            "raw": "120%",
+            "is_percent": True,
+            "is_currency": False,
+            "is_year_like": False,
+            "is_negative": False,
+        },
+        {
+            "value": 0.60,
+            "raw": "60%",
+            "is_percent": True,
+            "is_currency": False,
+            "is_year_like": False,
+            "is_negative": False,
+        },
+        {
+            "value": 0.40,
+            "raw": "40%",
+            "is_percent": True,
+            "is_currency": False,
+            "is_year_like": False,
+            "is_negative": False,
+        },
     ]
 
     formula = concept_id.replace("fm.", "", 1) if concept_id.startswith("fm.") else concept_id
@@ -236,11 +307,13 @@ def _get_expected_param_keys(concept_id: str) -> set[str] | None:
         # non-percent values, so pass the whole pool.
         param_sets = candidate_fn(_pool)
     elif formula == "eoq":
-        param_sets = candidate_fn([
-            {"is_percent": False, "value": 10000},
-            {"is_percent": False, "value": 50},
-            {"is_percent": False, "value": 2},
-        ])
+        param_sets = candidate_fn(
+            [
+                {"is_percent": False, "value": 10000},
+                {"is_percent": False, "value": 50},
+                {"is_percent": False, "value": 2},
+            ]
+        )
     else:
         param_sets = candidate_fn(_pool)
     if param_sets:
@@ -251,6 +324,7 @@ def _get_expected_param_keys(concept_id: str) -> set[str] | None:
 # ---------------------------------------------------------------------------
 # Phase 4: Input assembly with source tracking
 # ---------------------------------------------------------------------------
+
 
 def _build_inputs_with_sources(
     concept_id: str,
@@ -319,7 +393,11 @@ def _build_inputs_for(
 ) -> dict[str, Any]:
     """Legacy wrapper — returns only the inputs dict (no sources)."""
     inputs, _ = _build_inputs_with_sources(
-        concept_id, question, explicit_ref, explicit_inputs, intermed,
+        concept_id,
+        question,
+        explicit_ref,
+        explicit_inputs,
+        intermed,
     )
     return inputs
 
@@ -347,6 +425,7 @@ def _compute_input_source_quality(
 # ---------------------------------------------------------------------------
 # Phase 3: Input gap analysis & auto-discovery
 # ---------------------------------------------------------------------------
+
 
 def _plug_input_gaps(
     plan: list[PlanStep],
@@ -399,7 +478,11 @@ def _plug_input_gaps(
                         continue
 
                     p_inputs, p_sources = _build_inputs_with_sources(
-                        provider_id, question, explicit_ref, explicit_inputs, available,
+                        provider_id,
+                        question,
+                        explicit_ref,
+                        explicit_inputs,
+                        available,
                     )
                     new_step = PlanStep(
                         concept_id=provider_id,
@@ -427,6 +510,7 @@ def _plug_input_gaps(
 # ---------------------------------------------------------------------------
 # Phase 2: Plan compilation + multi-path fallback
 # ---------------------------------------------------------------------------
+
 
 def _resolve_dependency_chain(
     target_id: str,
@@ -489,19 +573,25 @@ def _compile_plan(
 
         expected = _get_expected_param_keys(cid)
         step_inputs, step_sources = _build_inputs_with_sources(
-            cid, question, explicit_ref, explicit_inputs, intermed,
+            cid,
+            question,
+            explicit_ref,
+            explicit_inputs,
+            intermed,
         )
 
-        plan.append(PlanStep(
-            concept_id=cid,
-            template_ref=tref,
-            label=meta.label,
-            inputs=step_inputs,
-            output_slots=meta.output_slots,
-            depends_on=meta.dependencies,
-            expected_params=expected or set(),
-            input_sources=step_sources,
-        ))
+        plan.append(
+            PlanStep(
+                concept_id=cid,
+                template_ref=tref,
+                label=meta.label,
+                inputs=step_inputs,
+                output_slots=meta.output_slots,
+                depends_on=meta.dependencies,
+                expected_params=expected or set(),
+                input_sources=step_sources,
+            )
+        )
 
         # If this step's concept has output slots that are now in inputs,
         # carry them forward for the next iteration
@@ -511,7 +601,10 @@ def _compile_plan(
 
     # Phase 3: auto-discover missing sub-goals
     plan = _plug_input_gaps(
-        plan, concept_map, question, givens,
+        plan,
+        concept_map,
+        question,
+        givens,
         explicit_ref=explicit_ref,
         explicit_inputs=explicit_inputs,
     )
@@ -522,6 +615,7 @@ def _compile_plan(
 # ---------------------------------------------------------------------------
 # Phase 2: Multi-path execution with fallback
 # ---------------------------------------------------------------------------
+
 
 def _try_run_template(
     template_ref: str,
@@ -560,10 +654,15 @@ def _execute_plan(
     for step in plan:
         if step.skipped:
             quality = _compute_input_source_quality(step.expected_params, step.input_sources)
-            execution.append(ExecutionRecord(
-                concept_id=step.concept_id, success=False, skipped=True,
-                label=step.label, input_source_quality=quality,
-            ))
+            execution.append(
+                ExecutionRecord(
+                    concept_id=step.concept_id,
+                    success=False,
+                    skipped=True,
+                    label=step.label,
+                    input_source_quality=quality,
+                )
+            )
             continue
 
         # Build execution context — supplement with intermed from prior steps.
@@ -584,14 +683,18 @@ def _execute_plan(
             result_val = float(raw["result"]) if raw and raw.get("result") is not None else None
             for slot in step.output_slots:
                 intermed[slot] = result_val
-            execution.append(ExecutionRecord(
-                concept_id=step.concept_id, success=True,
-                label=step.label, result=result_val,
-                detailed_steps=raw.get("steps", []) if raw else [],
-                error_tags=raw.get("error_tags", []) if raw else [],
-                duration_ms=duration,
-                input_source_quality=quality,
-            ))
+            execution.append(
+                ExecutionRecord(
+                    concept_id=step.concept_id,
+                    success=True,
+                    label=step.label,
+                    result=result_val,
+                    detailed_steps=raw.get("steps", []) if raw else [],
+                    error_tags=raw.get("error_tags", []) if raw else [],
+                    duration_ms=duration,
+                    input_source_quality=quality,
+                )
+            )
             continue
 
         # --- original failed → try alternatives (multi-path) ---
@@ -605,7 +708,11 @@ def _execute_plan(
 
             # Fresh inputs for the alternative (no ctx from the failed step)
             alt_inputs, alt_sources = _build_inputs_with_sources(
-                alt_id, "", None, None, intermed,
+                alt_id,
+                "",
+                None,
+                None,
+                intermed,
             )
             alt_expected = _get_expected_param_keys(alt_id) or set()
             alt_ctx = dict(alt_inputs)
@@ -614,7 +721,8 @@ def _execute_plan(
                     alt_ctx[k] = v
 
             fb_success, fb_raw, fb_duration = _try_run_template(
-                alt_meta.template_ref, alt_ctx,
+                alt_meta.template_ref,
+                alt_ctx,
             )
             fb_quality = _compute_input_source_quality(alt_expected, alt_sources)
 
@@ -623,8 +731,10 @@ def _execute_plan(
                 for slot in step.output_slots:
                     intermed[slot] = fb_result
                 fb_record = ExecutionRecord(
-                    concept_id=alt_id, success=True,
-                    label=alt_meta.label, result=fb_result,
+                    concept_id=alt_id,
+                    success=True,
+                    label=alt_meta.label,
+                    result=fb_result,
                     detailed_steps=fb_raw.get("steps", []) if fb_raw else [],
                     error_tags=fb_raw.get("error_tags", []) if fb_raw else [],
                     duration_ms=fb_duration,
@@ -636,16 +746,16 @@ def _execute_plan(
             execution.append(fb_record)
         else:
             # All alternatives failed — record the original failure
-            execution.append(ExecutionRecord(
-                concept_id=step.concept_id, success=False,
-                label=step.label,
-                error_tags=(
-                    raw.get("error_tags", ["nan_result"])
-                    if raw else ["execution_error"]
-                ),
-                duration_ms=duration,
-                input_source_quality=quality,
-            ))
+            execution.append(
+                ExecutionRecord(
+                    concept_id=step.concept_id,
+                    success=False,
+                    label=step.label,
+                    error_tags=(raw.get("error_tags", ["nan_result"]) if raw else ["execution_error"]),
+                    duration_ms=duration,
+                    input_source_quality=quality,
+                )
+            )
 
     return execution, intermed
 
@@ -653,6 +763,7 @@ def _execute_plan(
 # ---------------------------------------------------------------------------
 # Phase 4: Weighted confidence
 # ---------------------------------------------------------------------------
+
 
 def _compute_confidence(execution: list[ExecutionRecord]) -> float:
     """Weighted confidence from input source quality + step success rate."""
@@ -678,6 +789,7 @@ def _compute_confidence(execution: list[ExecutionRecord]) -> float:
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
 
 def reason_question(
     question: str,
@@ -737,7 +849,10 @@ def reason_question(
 
     # 4. Compile plan
     plan = _compile_plan(
-        target_id, BUILTIN_CONCEPTS, question, givens,
+        target_id,
+        BUILTIN_CONCEPTS,
+        question,
+        givens,
         explicit_ref=template_ref,
         explicit_inputs=template_inputs,
     )
@@ -760,6 +875,7 @@ def reason_question(
 
     # 8. Diagnostics (use the existing pipeline)
     from studyplan.domain_reasoning.evaluator import evaluate_question
+
     diag = evaluate_question(
         question,
         options=options,

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <interface>
   <requires lib="gtk" version="4.0"/>
-  
+
   <template class="PracticeSessionWindow" parent="GtkBox">
     <property name="orientation">vertical</property>
     <property name="spacing">12</property>
@@ -9,7 +9,7 @@
     <property name="margin-end">16</property>
     <property name="margin-top">16</property>
     <property name="margin-bottom">16</property>
-    
+
     <!-- Session Header -->
     <child>
       <object class="GtkLabel" id="session_header">
@@ -19,7 +19,7 @@
         <property name="valign">center</property>
       </object>
     </child>
-    
+
     <!-- Progress Bar -->
     <child>
       <object class="GtkProgressBar" id="progress_bar">
@@ -28,25 +28,25 @@
         <property name="text">0%</property>
       </object>
     </child>
-    
+
     <!-- Main Content Area -->
     <child>
       <object class="GtkPaned" orientation="horizontal">
         <property name="vexpand">True</property>
         <property name="hexpand">True</property>
-        
+
         <!-- Left Panel: Question and Answer -->
         <child>
           <object class="GtkBox" orientation="vertical">
             <property name="spacing">12</property>
-            
+
             <!-- Question Display -->
             <child>
               <object class="GtkScrolledWindow">
                 <property name="vexpand">True</property>
                 <property name="hexpand">True</property>
                 <property name="min-content-height">200</property>
-                
+
                 <child>
                   <object class="GtkLabel" id="question_display">
                     <property name="wrap">True</property>
@@ -60,24 +60,24 @@
                 </child>
               </object>
             </child>
-            
+
             <!-- Answer Input -->
             <child>
               <object class="GtkBox" orientation="vertical">
                 <property name="spacing">8</property>
-                
+
                 <!-- Confidence Slider -->
                 <child>
                   <object class="GtkBox" orientation="horizontal">
                     <property name="spacing">8</property>
                     <property name="halign">center</property>
-                    
+
                     <child>
                       <object class="GtkLabel">
                         <property name="label">Confidence:</property>
                       </object>
                     </child>
-                    
+
                     <child>
                       <object class="GtkScale" id="confidence_slider">
                         <property name="orientation">horizontal</property>
@@ -90,7 +90,7 @@
                         <property name="digits">0</property>
                       </object>
                     </child>
-                    
+
                     <child>
                       <object class="GtkLabel">
                         <property name="label">Not Sure → Very Sure</property>
@@ -98,13 +98,13 @@
                     </child>
                   </object>
                 </child>
-                
+
                 <!-- Answer Input Field -->
                 <child>
                   <object class="GtkScrolledWindow">
                     <property name="min-content-height">120</property>
                     <property name="hexpand">True</property>
-                    
+
                     <child>
                       <object class="GtkTextView" id="answer_input">
                         <property name="wrap-mode">word</property>
@@ -114,20 +114,20 @@
                     </child>
                   </object>
                 </child>
-                
+
                 <!-- Action Buttons -->
                 <child>
                   <object class="GtkBox" orientation="horizontal">
                     <property name="spacing">8</property>
                     <property name="halign">center</property>
-                    
+
                     <child>
                       <object class="GtkButton" id="submit_button">
                         <property name="label">Submit Answer</property>
                         <property name="css-classes">submit-button</property>
                       </object>
                     </child>
-                    
+
                     <child>
                       <object class="GtkButton" id="hint_button">
                         <property name="label">Get Hint</property>
@@ -139,7 +139,7 @@
                 </child>
               </object>
             </child>
-            
+
             <!-- Session Stats -->
             <child>
               <object class="GtkLabel" id="session_stats">
@@ -150,19 +150,19 @@
             </child>
           </object>
         </child>
-        
+
         <!-- Right Panel: Feedback and Hints -->
         <child>
           <object class="GtkBox" orientation="vertical">
             <property name="spacing">12</property>
-            
+
             <!-- Feedback Display -->
             <child>
               <object class="GtkScrolledWindow">
                 <property name="vexpand">True</property>
                 <property name="hexpand">True</property>
                 <property name="min-content-height">300</property>
-                
+
                 <child>
                   <object class="GtkLabel" id="feedback_display">
                     <property name="wrap">True</property>
@@ -176,24 +176,24 @@
                 </child>
               </object>
             </child>
-            
+
             <!-- Hint Level Indicator -->
             <child>
               <object class="GtkBox" orientation="vertical">
                 <property name="spacing">8</property>
-                
+
                 <child>
                   <object class="GtkLabel">
                     <property name="label">Hint Level Progression</property>
                     <property name="css-classes">hint-level-header</property>
                   </object>
                 </child>
-                
+
                 <child>
                   <object class="GtkBox" orientation="horizontal">
                     <property name="spacing">8</property>
                     <property name="halign">center</property>
-                    
+
                     <!-- Hint level indicators would go here -->
                     <child>
                       <object class="GtkLabel">
@@ -201,28 +201,28 @@
                         <property name="css-classes">hint-level</property>
                       </object>
                     </child>
-                    
+
                     <child>
                       <object class="GtkLabel">
                         <property name="label">Level 2: Light</property>
                         <property name="css-classes">hint-level</property>
                       </object>
                     </child>
-                    
+
                     <child>
                       <object class="GtkLabel">
                         <property name="label">Level 3: Medium</property>
                         <property name="css-classes">hint-level</property>
                       </object>
                     </child>
-                    
+
                     <child>
                       <object class="GtkLabel">
                         <property name="label">Level 4: Heavy</property>
                         <property name="css-classes">hint-level</property>
                       </object>
                     </child>
-                    
+
                     <child>
                       <object class="GtkLabel">
                         <property name="label">Level 5: Solution</property>
@@ -238,7 +238,7 @@
       </object>
     </child>
   </template>
-  
+
   <style>
     .session-header {
       font-size: 18px;
@@ -246,7 +246,7 @@
       color: #2c3e50;
       margin-bottom: 8px;
     }
-    
+
     .question-text {
       font-size: 16px;
       line-height: 1.6;
@@ -256,7 +256,7 @@
       border-radius: 8px;
       border: 1px solid #e9ecef;
     }
-    
+
     .answer-input {
       font-size: 14px;
       padding: 12px;
@@ -264,7 +264,7 @@
       border-radius: 6px;
       background-color: white;
     }
-    
+
     .submit-button {
       background-color: #28a745;
       color: white;
@@ -272,11 +272,11 @@
       padding: 10px 20px;
       border-radius: 6px;
     }
-    
+
     .submit-button:hover {
       background-color: #218838;
     }
-    
+
     .hint-button {
       background-color: #17a2b8;
       color: white;
@@ -284,16 +284,16 @@
       padding: 10px 20px;
       border-radius: 6px;
     }
-    
+
     .hint-button:hover {
       background-color: #138496;
     }
-    
+
     .hint-button:disabled {
       background-color: #6c757d;
       color: #fff;
     }
-    
+
     .feedback-text {
       font-size: 14px;
       line-height: 1.5;
@@ -303,7 +303,7 @@
       border-radius: 8px;
       border: 1px solid #e9ecef;
     }
-    
+
     .stats-label {
       font-size: 14px;
       font-weight: 600;
@@ -312,13 +312,13 @@
       padding: 8px 16px;
       border-radius: 20px;
     }
-    
+
     .hint-level-header {
       font-size: 14px;
       font-weight: 600;
       color: #495057;
     }
-    
+
     .hint-level {
       font-size: 12px;
       color: #6c757d;

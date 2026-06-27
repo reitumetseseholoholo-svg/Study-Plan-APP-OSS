@@ -68,9 +68,7 @@ class TestRuntimeStatus:
             rt = LlamaRuntime(
                 registry=GgufRegistry(config=cfg),
                 selector=ModelSelector(),
-                server=LlamaServerManager(
-                    config=LlamaServerConfig(binary="/nonexistent/llama-server")
-                ),
+                server=LlamaServerManager(config=LlamaServerConfig(binary="/nonexistent/llama-server")),
                 ollama_fallback_enabled=False,
             )
             status = rt.ensure_ready()
@@ -95,16 +93,18 @@ class TestRuntimeStatus:
                 ollama_fallback_enabled=True,
                 ollama_host="http://127.0.0.1:11434",
             )
-            rt._try_ollama_fallback = MagicMock(return_value=RuntimeStatus(
-                backend="ollama",
-                model_name="fallback-model",
-                model_path="",
-                endpoint="http://127.0.0.1:11434/api/generate",
-                healthy=True,
-                startup_latency_ms=0,
-                catalog_size=1,
-                error="",
-            ))
+            rt._try_ollama_fallback = MagicMock(
+                return_value=RuntimeStatus(
+                    backend="ollama",
+                    model_name="fallback-model",
+                    model_path="",
+                    endpoint="http://127.0.0.1:11434/api/generate",
+                    healthy=True,
+                    startup_latency_ms=0,
+                    catalog_size=1,
+                    error="",
+                )
+            )
 
             status = rt.ensure_ready()
 
@@ -125,9 +125,7 @@ class TestRuntimeStatus:
             rt = LlamaRuntime(
                 registry=GgufRegistry(config=cfg),
                 selector=ModelSelector(),
-                server=LlamaServerManager(
-                    config=LlamaServerConfig(binary="/nonexistent")
-                ),
+                server=LlamaServerManager(config=LlamaServerConfig(binary="/nonexistent")),
                 ollama_fallback_enabled=False,
             )
             report = rt.status()
@@ -249,9 +247,7 @@ class TestLlamaCppPrecedence:
                 ollama_fallback_enabled=False,
                 ollama_host="",
             )
-            status = rt.ensure_ready(
-                Purpose.GENERAL, preferred_gguf_name="zzz-7b-q4.gguf"
-            )
+            status = rt.ensure_ready(Purpose.GENERAL, preferred_gguf_name="zzz-7b-q4.gguf")
             assert status.healthy
             assert status.model_name == "zzz-7b-q4"
             first = fake_server.ensure_running.call_args_list[0]
@@ -273,7 +269,11 @@ class TestRuntimeFromConfig:
 
 class TestOllamaPurposeSelection:
     def test_no_budget_picks_by_purpose_tier(self):
-        models = ["qwen2-1-5b-instruct-q4-0:latest", "llama-3-2-3b-instruct-q4-0:latest", "qwen2-5-7b-instruct-q4-0:latest"]
+        models = [
+            "qwen2-1-5b-instruct-q4-0:latest",
+            "llama-3-2-3b-instruct-q4-0:latest",
+            "qwen2-5-7b-instruct-q4-0:latest",
+        ]
         with patch(
             "studyplan.ai.llama_runtime._get_ollama_ram_budget_bytes",
             return_value=0,
@@ -289,7 +289,11 @@ class TestOllamaPurposeSelection:
             assert "3b" in picked_tutor
 
     def test_budget_filtered_picks_by_purpose_tier(self):
-        models = ["qwen2-1-5b-instruct-q4-0:latest", "llama-3-2-3b-instruct-q4-0:latest", "qwen2-5-7b-instruct-q4-0:latest"]
+        models = [
+            "qwen2-1-5b-instruct-q4-0:latest",
+            "llama-3-2-3b-instruct-q4-0:latest",
+            "qwen2-5-7b-instruct-q4-0:latest",
+        ]
         with patch(
             "studyplan.ai.llama_runtime._get_ollama_ram_budget_bytes",
             return_value=3_500_000_000,  # ~3.5 GiB: fits 1.5B and 3B but not 7B

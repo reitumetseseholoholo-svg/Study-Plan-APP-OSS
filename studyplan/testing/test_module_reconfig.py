@@ -1,9 +1,9 @@
 """Tests for RAG reconfig: pre-chunked retrieval, syllabus preference, stable ids, confidence."""
+
 from __future__ import annotations
 
 import os
 
-import pytest
 
 from studyplan.module_reconfig.reconfig import (
     _chapter_slug,
@@ -49,9 +49,7 @@ def test_retrieve_from_chunks_by_path_prefers_matching_terms() -> None:
         "/a.pdf": [{"text": "Chapter 1: Introduction. Learning outcome 1.1 explain framework."}],
         "/b.pdf": [{"text": "Unrelated content about other topics."}],
     }
-    out = retrieve_from_chunks_by_path(
-        chunks, ["Chapter 1: Introduction"], ["Chapter 1: Introduction"], max_chars=5000
-    )
+    out = retrieve_from_chunks_by_path(chunks, ["Chapter 1: Introduction"], ["Chapter 1: Introduction"], max_chars=5000)
     assert "framework" in out or "Chapter" in out
     assert "Learning" in out or "outcome" in out
 
@@ -119,7 +117,12 @@ def test_analyze_outcome_count_regressions_warn_only() -> None:
 
 def test_reconfig_outcome_totals_and_changed_chapters() -> None:
     o = {"syllabus_structure": {"A": {"learning_outcomes": [{"id": "1", "text": "a"}]}, "B": {"learning_outcomes": []}}}
-    p = {"syllabus_structure": {"A": {"learning_outcomes": [{"id": "1", "text": "a"}, {"id": "2", "text": "b"}]}, "B": {"learning_outcomes": []}}}
+    p = {
+        "syllabus_structure": {
+            "A": {"learning_outcomes": [{"id": "1", "text": "a"}, {"id": "2", "text": "b"}]},
+            "B": {"learning_outcomes": []},
+        }
+    }
     old_t, new_t, chg = reconfig_outcome_totals_and_changed_chapters(o, p)
     assert old_t == 1 and new_t == 2 and chg == 1
 
@@ -259,7 +262,9 @@ def test_reconfigure_from_rag_derives_chapters_when_config_has_none() -> None:
     config = {"chapters": [], "syllabus_structure": {}, "syllabus_meta": {}}
     chunks = {
         "/syllabus.pdf": [
-            {"text": "4. The syllabus\nA Financial management function\n1. Purpose.\nB Economic environment\n1. Impact."},
+            {
+                "text": "4. The syllabus\nA Financial management function\n1. Purpose.\nB Economic environment\n1. Impact."
+            },
         ],
     }
 
@@ -312,7 +317,7 @@ def test_reconfigure_from_rag_never_reduces_outcome_count() -> None:
             '{"outcomes":['
             '{"chapter":"Ch1","text":"Explain the concept of NPV","level":2},'
             '{"chapter":"Ch1","text":"Apply sensitivity analysis to investment decisions","level":3}'
-            ']}'
+            "]}"
         )
 
     # target_chapters_only=False forces the merge for all chapters (including Ch1 at median)

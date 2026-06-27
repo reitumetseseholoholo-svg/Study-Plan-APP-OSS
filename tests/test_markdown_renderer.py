@@ -2,6 +2,7 @@
 
 Uses a lightweight stub TextBuffer so the tests run without a GTK display.
 """
+
 from __future__ import annotations
 
 import sys
@@ -12,6 +13,7 @@ import unittest
 # ---------------------------------------------------------------------------
 # Stub GTK TextBuffer / TextTag infrastructure (no display required)
 # ---------------------------------------------------------------------------
+
 
 class _FakeTag:
     def __init__(self, name: str, **props):
@@ -78,6 +80,7 @@ class _FakeBuffer:
 # Patch gi so the module can be imported without a real GTK installation
 # ---------------------------------------------------------------------------
 
+
 def _install_gi_stub():
     """Insert a minimal gi / gi.repository stub into sys.modules."""
     if "gi" in sys.modules:
@@ -90,7 +93,7 @@ def _install_gi_stub():
     # Pango stub values used by markdown_renderer tag specs
     pango_mod = types.ModuleType("gi.repository.Pango")
     pango_mod.Weight = types.SimpleNamespace(BOLD=700)  # type: ignore[attr-defined]
-    pango_mod.Style = types.SimpleNamespace(ITALIC=2)   # type: ignore[attr-defined]
+    pango_mod.Style = types.SimpleNamespace(ITALIC=2)  # type: ignore[attr-defined]
 
     # Gtk stub (needs Align for ui_builder)
     class _GtkAlignStub:
@@ -103,8 +106,8 @@ def _install_gi_stub():
     gtk_mod = types.ModuleType("gi.repository.Gtk")
     gtk_mod.Align = _GtkAlignStub  # type: ignore[attr-defined]
 
-    gi_repo.Pango = pango_mod   # type: ignore[attr-defined]
-    gi_repo.Gtk = gtk_mod       # type: ignore[attr-defined]
+    gi_repo.Pango = pango_mod  # type: ignore[attr-defined]
+    gi_repo.Gtk = gtk_mod  # type: ignore[attr-defined]
 
     sys.modules["gi"] = gi_mod
     sys.modules["gi.repository"] = gi_repo
@@ -130,8 +133,8 @@ from studyplan.ui.markdown_renderer import render_markdown_to_buffer  # noqa: E4
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestRenderMarkdownToBuffer(unittest.TestCase):
 
+class TestRenderMarkdownToBuffer(unittest.TestCase):
     def _render(self, text: str) -> _FakeBuffer:
         buf = _FakeBuffer()
         render_markdown_to_buffer(text, buf)
@@ -241,12 +244,7 @@ class TestRenderMarkdownToBuffer(unittest.TestCase):
         self.assertIn("200", buf.plain_text)
 
     def test_pipe_table_columns_padded_to_same_width(self):
-        md = (
-            "| Short | Amt |\n"
-            "|-------|-----|\n"
-            "| A very long description | 1,234 |\n"
-            "| B | 56 |\n"
-        )
+        md = "| Short | Amt |\n|-------|-----|\n| A very long description | 1,234 |\n| B | 56 |\n"
         buf = self._render(md)
         # All data rows should be tagged with "table"
         self.assertIn("table", buf.tag_names_for("A very long description"))
@@ -266,12 +264,7 @@ class TestRenderMarkdownToBuffer(unittest.TestCase):
         self.assertNotIn("|", buf.plain_text)
 
     def test_pipe_table_total_row_gets_table_total_tag(self):
-        md = (
-            "| Item | Amount |\n"
-            "|------|--------|\n"
-            "| Revenue | 100 |\n"
-            "| Total assets | 100 |"
-        )
+        md = "| Item | Amount |\n|------|--------|\n| Revenue | 100 |\n| Total assets | 100 |"
         buf = self._render(md)
         self.assertIn("table_total", buf.tag_names_for("Total assets"))
 

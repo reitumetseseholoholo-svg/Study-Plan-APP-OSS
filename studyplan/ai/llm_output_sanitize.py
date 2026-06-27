@@ -1,4 +1,5 @@
 """Strip model \"thinking\" / chain-of-thought traces from visible LLM output."""
+
 from __future__ import annotations
 
 import os

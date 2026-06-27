@@ -1,7 +1,7 @@
 """Tests for studyplan.state_locking module."""
+
 import threading
 
-import pytest
 
 from studyplan.cognitive_state import CognitiveState
 from studyplan.state_locking import (

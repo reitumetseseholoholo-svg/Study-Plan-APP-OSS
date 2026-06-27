@@ -5,6 +5,7 @@ Shared coach-identity lines live here so task-specific heads can evolve without
 duplicating the base block. Pedagogical mode is explicit metadata for telemetry
 and future routing.
 """
+
 from __future__ import annotations
 
 from typing import Final
@@ -13,9 +14,7 @@ from typing import Final
 _TUTOR_NEXT_STEP_RULE = (
     "End with one concrete next step (topic + mode + duration); suggest topic-based practice or in-app drill."
 )
-_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE = (
-    "Never suggest a specific study-guide question or textbook page number."
-)
+_TUTOR_NO_STUDY_GUIDE_QUESTION_RULE = "Never suggest a specific study-guide question or textbook page number."
 
 PEDAGOGICAL_EXPLAIN = "explain"
 PEDAGOGICAL_PRACTICE = "practice"

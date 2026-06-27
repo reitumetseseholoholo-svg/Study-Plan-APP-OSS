@@ -1,19 +1,13 @@
 """Tests for RAG encoding (bytes from PDF) and reconfig chunk building (non-dict entries)."""
+
 from __future__ import annotations
 
-import types
-
-import pytest
 
 # Chunk-building logic used by studyplan_app when building chunks_by_path from doc["chunks"].
 # We test that non-dict entries are filtered so no .get() is called on non-dict.
 def _build_chunks_for_reconfig(doc_chunks: list) -> list[dict]:
     """Same filtering as studyplan_app on_reconfigure_from_rag / _maybe_auto_reconfigure_from_rag."""
-    return [
-        {"text": str(c.get("text", "") or "").strip()}
-        for c in doc_chunks
-        if isinstance(c, dict) and c.get("text")
-    ]
+    return [{"text": str(c.get("text", "") or "").strip()} for c in doc_chunks if isinstance(c, dict) and c.get("text")]
 
 
 def test_reconfig_chunk_building_filters_non_dict():

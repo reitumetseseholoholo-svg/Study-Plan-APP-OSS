@@ -6,10 +6,7 @@ from studyplan.ai.tutor_prompt_layers import derive_pedagogical_mode
 
 
 def test_derive_pedagogical_mode_exam_only():
-    assert (
-        derive_pedagogical_mode(concise_mode=True, exam_technique_only=True, mode_hint="teach")
-        == "exam_technique"
-    )
+    assert derive_pedagogical_mode(concise_mode=True, exam_technique_only=True, mode_hint="teach") == "exam_technique"
 
 
 def test_derive_pedagogical_mode_from_hint():

@@ -23,12 +23,23 @@ class AssetBetaTemplate(FormulaTemplate):
         v = ve + vd * (1.0 - t)
         w = ve / v
         steps: list[dict[str, Any]] = [
-            {"step_id": "debt_after_tax", "description": "Vd × (1-T)", "value": vd * (1.0 - t), "formula": f"{vd}*(1-{t})"},
+            {
+                "step_id": "debt_after_tax",
+                "description": "Vd × (1-T)",
+                "value": vd * (1.0 - t),
+                "formula": f"{vd}*(1-{t})",
+            },
             {"step_id": "firm_value", "description": "Ve + Vd×(1-T)", "value": v, "formula": f"{ve}+{vd}*(1-{t})"},
             {"step_id": "equity_weight", "description": "Ve / (Ve + Vd×(1-T))", "value": w, "formula": f"{ve}/{v}"},
             {"step_id": "asset_beta", "description": "βa = βe × weight", "value": result, "formula": f"{be}*{w}"},
         ]
-        return {"concept_id": self.concept_id, "result": result, "steps": steps, "inputs": dict(inputs), "is_nan": isinstance(result, float) and math.isnan(result)}
+        return {
+            "concept_id": self.concept_id,
+            "result": result,
+            "steps": steps,
+            "inputs": dict(inputs),
+            "is_nan": isinstance(result, float) and math.isnan(result),
+        }
 
     def classify_errors(self, learner_steps: list[dict[str, Any]], truth: dict[str, Any]) -> list[str]:
         tags: list[str] = super().classify_errors(learner_steps, truth)

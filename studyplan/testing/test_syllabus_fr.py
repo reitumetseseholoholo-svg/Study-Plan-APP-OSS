@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from studyplan.syllabus_fr import (
     F7_CHAPTERS,
@@ -199,9 +198,7 @@ def test_extract_subtopics_from_section_4() -> None:
 def test_build_syllabus_structure_includes_subtopics_from_section_4() -> None:
     outcomes = parse_syllabus_text(SAMPLE_FR_DETAILED_GUIDE)
     section4_titles = extract_subtopics_from_section_4(SAMPLE_FR_SECTION_4)
-    structure = build_syllabus_structure(
-        outcomes, chapter_list=F7_CHAPTERS, section4_titles=section4_titles
-    )
+    structure = build_syllabus_structure(outcomes, chapter_list=F7_CHAPTERS, section4_titles=section4_titles)
     ch2 = structure["Chapter 2: Conceptual Framework"]
     assert "subtopics" in ch2
     assert len(ch2["subtopics"]) >= 1

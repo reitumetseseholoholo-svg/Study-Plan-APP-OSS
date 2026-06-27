@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Any
 
@@ -34,9 +33,7 @@ class SecureImporter:
             raise ImportSecurityError(f"extension {ext} not allowed")
 
         # Check directory whitelist
-        allowed = any(
-            path.is_relative_to(Path(d).resolve()) for d in Config.SECURE_IMPORT_ALLOWED_DIRS
-        )
+        allowed = any(path.is_relative_to(Path(d).resolve()) for d in Config.SECURE_IMPORT_ALLOWED_DIRS)
         if not allowed:
             raise ImportSecurityError(f"path {path} not in whitelist")
 
@@ -45,7 +42,7 @@ class SecureImporter:
         if size_mb > Config.SECURE_IMPORT_MAX_SIZE_MB:
             raise ImportSecurityError(f"file {size_mb}MB exceeds max {Config.SECURE_IMPORT_MAX_SIZE_MB}MB")
 
-        logger.info(f"secure import validation passed", extra={"path": str(path)})
+        logger.info("secure import validation passed", extra={"path": str(path)})
         return SecureImporter._safe_load(path)
 
     @staticmethod

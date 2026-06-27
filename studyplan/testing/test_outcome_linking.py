@@ -35,8 +35,10 @@ def test_link_questions_to_outcomes_heuristic_empty_engine() -> None:
 
 def test_link_questions_to_outcomes_heuristic_no_outcomes() -> None:
     """Chapters but no syllabus outcomes -> no linking."""
+
     def get_intel(ch):
         return {}
+
     engine = types.SimpleNamespace(
         CHAPTERS=["Ch1"],
         QUESTIONS={"Ch1": [{"question": "What is NPV?", "outcome_ids": []}]},
@@ -50,6 +52,7 @@ def test_link_questions_to_outcomes_heuristic_no_outcomes() -> None:
 
 def test_link_questions_to_outcomes_heuristic_links_added_question() -> None:
     """Added question (not in default) gets outcome_ids when outcome text matches."""
+
     def get_intel(ch):
         if ch == "Ch1":
             return {
@@ -79,8 +82,10 @@ def test_link_questions_to_outcomes_heuristic_links_added_question() -> None:
 
 def test_auto_refresh_syllabus_and_link_outcomes() -> None:
     """Pipeline runs concept graph build (may no-op) and linker."""
+
     def build_graph(force=False):
         pass
+
     engine = types.SimpleNamespace(
         CHAPTERS=["Ch1"],
         QUESTIONS={"Ch1": []},

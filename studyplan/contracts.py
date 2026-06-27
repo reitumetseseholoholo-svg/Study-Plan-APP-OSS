@@ -389,9 +389,7 @@ class TutorLearnerProfileSnapshot:
         if self.weak_concept_ids_top:
             d["weak_concept_ids_top"] = list(self.weak_concept_ids_top)
         if self.concept_error_patterns:
-            d["concept_error_patterns"] = {
-                k: list(v) for k, v in self.concept_error_patterns.items()
-            }
+            d["concept_error_patterns"] = {k: list(v) for k, v in self.concept_error_patterns.items()}
         return d
 
     @classmethod
@@ -409,7 +407,9 @@ class TutorLearnerProfileSnapshot:
             weak_capabilities_top=_tuple_str(data.get("weak_capabilities_top")),
             weak_concept_ids_top=_tuple_str(data.get("weak_concept_ids_top")),
             concept_error_patterns=cep,
-            preferred_explanation_style=str(data.get("preferred_explanation_style", "worked_example") or "worked_example"),
+            preferred_explanation_style=str(
+                data.get("preferred_explanation_style", "worked_example") or "worked_example"
+            ),
             response_speed_tier=str(data.get("response_speed_tier", "unknown") or "unknown"),
             confidence_calibration_bias=_clamp_float(data.get("confidence_calibration_bias", 0.0), 0.0, -5.0, 5.0),
             chat_to_quiz_transfer_score=_clamp_float(data.get("chat_to_quiz_transfer_score", 0.0), 0.0, -1.0, 1.0),

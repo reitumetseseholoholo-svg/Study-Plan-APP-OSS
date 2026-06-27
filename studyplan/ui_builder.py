@@ -8,18 +8,18 @@ from gi.repository import Gtk, Pango  # pyright: ignore[reportAttributeAccessIss
 
 class UIBuilder:
     """Fluent builder for common GTK widget patterns to reduce UI boilerplate.
-    
+
     Usage:
         ui = UIBuilder(window)
-        
+
         # Instead of:
         label = Gtk.Label(label="Title")
         label.set_halign(Gtk.Align.START)
         label.add_css_class("section-title")
-        
+
         # Use:
         label = ui.section_title("Title")
-        
+
         # Or more complex:
         warning = ui.label(
             text="Warning message",
@@ -45,22 +45,22 @@ class UIBuilder:
         """Create a label with common configurations."""
         lbl = Gtk.Label(label=text)
         lbl.set_halign(halign)
-        
+
         if css_classes:
             for cls in css_classes:
                 lbl.add_css_class(cls)
-        
+
         lbl.set_wrap(wrap)
-        
+
         if ellipsize is not None:
             lbl.set_ellipsize(ellipsize)
-        
+
         if max_width_chars is not None:
             lbl.set_max_width_chars(max_width_chars)
-        
+
         if tooltip:
             lbl.set_tooltip_text(tooltip)
-        
+
         return lbl
 
     def section_title(self, text: str, *, max_width_chars: int = 120) -> Gtk.Label:
@@ -183,16 +183,11 @@ class UIBuilder:
 
     def list_scroller(self) -> Gtk.ScrolledWindow:
         """Create a scrolled window for lists (card + list-card classes)."""
-        return self.scrolled_window(
-            css_classes=["card", "list-card"]
-        )
+        return self.scrolled_window(css_classes=["card", "list-card"])
 
     def panel_scroller(self) -> Gtk.ScrolledWindow:
         """Create a panel scroll area (panel + panel-scroll classes)."""
-        sw = self.scrolled_window(
-            v_policy=Gtk.PolicyType.AUTOMATIC,
-            css_classes=["panel", "panel-scroll"]
-        )
+        sw = self.scrolled_window(v_policy=Gtk.PolicyType.AUTOMATIC, css_classes=["panel", "panel-scroll"])
         sw.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         return sw
 
@@ -208,19 +203,19 @@ class UIBuilder:
     ) -> Gtk.Box:
         """Create a box with common layout properties."""
         box = Gtk.Box(orientation=orientation, spacing=spacing)
-        
+
         if css_classes:
             for cls in css_classes:
                 box.add_css_class(cls)
-        
+
         if halign is not None:
             box.set_halign(halign)
         if valign is not None:
             box.set_valign(valign)
-        
+
         box.set_hexpand(hexpand)
         box.set_vexpand(vexpand)
-        
+
         return box
 
     def hbox(self, spacing: int = 0, **kwargs) -> Gtk.Box:
@@ -292,7 +287,7 @@ class UIBuilder:
 
     def quest_row(self, title: str, target: int) -> tuple[Gtk.Box, Gtk.Label, Gtk.ProgressBar]:
         """Create a quest row with label and progress bar.
-        
+
         Returns:
             Tuple of (row_box, label, progress_bar)
         """

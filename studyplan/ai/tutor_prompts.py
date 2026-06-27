@@ -4,6 +4,7 @@ Tutor action prompts from the quality matrix (explain, apply, exam_technique, dr
 Provides a single source of truth so the in-app tutor and the tutor quality benchmark
 use the same prompts when (module_id, chapter, action_type) match. See PROMPT_QUALITY_SLICE.md.
 """
+
 from __future__ import annotations
 
 import json

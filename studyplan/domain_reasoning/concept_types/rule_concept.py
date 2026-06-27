@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import ast
 import math
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 
@@ -19,8 +18,13 @@ from typing import Any, Callable
 # ---------------------------------------------------------------------------
 
 _SAFE_BUILTINS: dict[str, Any] = {
-    "abs": abs, "max": max, "min": min, "round": round,
-    "float": float, "int": int, "sum": sum,
+    "abs": abs,
+    "max": max,
+    "min": min,
+    "round": round,
+    "float": float,
+    "int": int,
+    "sum": sum,
 }
 
 
@@ -37,12 +41,11 @@ def _eval_rule_expression(
 
     Comparison expressions return ``1.0`` (True) or ``0.0`` (False).
     """
-    import ast
 
     try:
         tree = ast.parse(expr.strip(), mode="eval")
     except SyntaxError:
-        raise ValueError(f"Invalid rule expression: {expr}")
+        raise ValueError(f"Invalid rule expression: {expr}") from None
 
     # Safety check: only allow known node types
     _validate_safe(tree)
@@ -70,18 +73,40 @@ def _eval_rule_expression(
     except Exception as e:
         if isinstance(e, (ValueError, NameError, ZeroDivisionError)):
             raise
-        raise ValueError(f"Rule expression evaluation failed: {e}")
+        raise ValueError(f"Rule expression evaluation failed: {e}") from e
 
 
-_SAFE_NODES = frozenset({
-    ast.Expression, ast.Add, ast.Sub, ast.Mult, ast.Div,
-    ast.Pow, ast.Mod, ast.USub, ast.UAdd,
-    ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.And, ast.Or, ast.Not,
-    ast.Compare, ast.Gt, ast.GtE, ast.Lt, ast.LtE, ast.Eq, ast.NotEq,
-    ast.Constant,
-    ast.Call, ast.Name, ast.Load,
-    ast.IfExp,
-})
+_SAFE_NODES = frozenset(
+    {
+        ast.Expression,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Pow,
+        ast.Mod,
+        ast.USub,
+        ast.UAdd,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.BoolOp,
+        ast.And,
+        ast.Or,
+        ast.Not,
+        ast.Compare,
+        ast.Gt,
+        ast.GtE,
+        ast.Lt,
+        ast.LtE,
+        ast.Eq,
+        ast.NotEq,
+        ast.Constant,
+        ast.Call,
+        ast.Name,
+        ast.Load,
+        ast.IfExp,
+    }
+)
 
 
 def _validate_safe(tree: ast.AST) -> None:
@@ -98,11 +123,11 @@ def _validate_safe(tree: ast.AST) -> None:
 
 class _NameCollector:
     """Collect ``ast.Name`` nodes (variable references) from an expression."""
+
     def __init__(self) -> None:
         self.names: set[str] = set()
 
     def visit(self, node: Any) -> None:
-        import ast
         if isinstance(node, ast.Name):
             self.names.add(node.id)
         elif isinstance(node, ast.Call):
@@ -137,6 +162,7 @@ class _NameCollector:
 # Rule / step data structures
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Rule:
     """A single conditional rule within a rule-chain step.
@@ -145,6 +171,7 @@ class Rule:
     ``condition`` can be a boolean expression string or the literal ``True``
     (catch-all / default case).
     """
+
     condition: str | bool
     value: str | float
 
@@ -158,6 +185,7 @@ class RuleChainStep:
     execution context.  Rules are evaluated in order; the first matching
     rule's value becomes the step output.
     """
+
     slot: str
     rules: list[Rule]
     description: str = ""
@@ -172,6 +200,7 @@ class RuleChainConfig:
     Pass this to ``declare_concept(type="rule_chain")`` via the
     ``concept_config`` parameter.
     """
+
     steps: list[RuleChainStep]
     output_slot: str
 
@@ -179,6 +208,7 @@ class RuleChainConfig:
 # ---------------------------------------------------------------------------
 # Template
 # ---------------------------------------------------------------------------
+
 
 class RuleChainTemplate:
     """ConceptTemplate implementation for conditional rule chains.
@@ -244,13 +274,15 @@ class RuleChainTemplate:
             if matched_rule_value is None:
                 matched_rule_value = 0.0
 
-            step_results.append({
-                "step_id": step.slot,
-                "description": step.description or f"Step: {step.slot}",
-                "value": matched_rule_value,
-                "matched_condition": matched_condition,
-                "formula": step.expression or matched_condition,
-            })
+            step_results.append(
+                {
+                    "step_id": step.slot,
+                    "description": step.description or f"Step: {step.slot}",
+                    "value": matched_rule_value,
+                    "matched_condition": matched_condition,
+                    "formula": step.expression or matched_condition,
+                }
+            )
 
             ctx[step.slot] = matched_rule_value
             final_value = matched_rule_value
@@ -271,7 +303,7 @@ class RuleChainTemplate:
     ) -> list[dict[str, Any]]:
         if not learner_steps or not truth:
             return []
-        truth_result = truth.get("result")
+        truth.get("result")
         truth_steps = truth.get("steps", [])
         results: list[dict[str, Any]] = []
 
@@ -284,12 +316,14 @@ class RuleChainTemplate:
                 match = abs(float(step_val) - float(expected_val)) < max(0.01, abs(float(expected_val)) * 0.02)
             else:
                 match = False
-            results.append({
-                "step_id": step.get("step_id", str(i)),
-                "expected": expected_val,
-                "actual": step_val,
-                "match": match,
-            })
+            results.append(
+                {
+                    "step_id": step.get("step_id", str(i)),
+                    "expected": expected_val,
+                    "actual": step_val,
+                    "match": match,
+                }
+            )
         return results
 
     def classify_errors(
@@ -341,6 +375,7 @@ class RuleChainTemplate:
 # Candidate extractor for rule chains
 # ---------------------------------------------------------------------------
 
+
 def _make_rule_chain_candidate_fn(
     steps: list[RuleChainStep],
     template: RuleChainTemplate,
@@ -352,6 +387,7 @@ def _make_rule_chain_candidate_fn(
     in the question text, then try the solver.  The best result is
     determined by plausibility (non-NaN, non-zero, reasonable magnitude).
     """
+
     def candidate_fn(nums: list[dict[str, Any]]) -> list[dict[str, Any]]:
         values = [n["value"] for n in nums]
         if not values:
@@ -373,6 +409,7 @@ def _make_rule_chain_candidate_fn(
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
 
 def make_rule_template(
     concept_id: str,
