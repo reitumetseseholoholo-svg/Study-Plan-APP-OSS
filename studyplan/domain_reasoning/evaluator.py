@@ -38,6 +38,7 @@ def evaluate_question(
     options: list[str] | None = None,
     correct: str | None = None,
     *,
+    domain: str | None = None,
     template_ref: str | None = None,
     template_inputs: dict[str, Any] | None = None,
     explanation: str | None = None,
@@ -46,17 +47,27 @@ def evaluate_question(
 ) -> QuestionDiagnostic:
     """Run the full deterministic evaluation pipeline on a question.
 
-    Steps:
-      1. Detect formula names from question text.
-      2. Map to concept IDs.
-      3. For each concept, try to execute its template.
-      4. Aggregate concept-level evaluations into a ``QuestionDiagnostic``.
-
-    This is a best-effort pipeline — it returns whatever diagnostics are
-    available without raising on missing data.
+    Parameters
+    ----------
+    question : str
+        The question text.
+    domain : str | None
+        Exam domain prefix (e.g. ``"fm"``, ``"pmp"``).  Defaults to ACCA FM.
+    ...
     """
+    # Resolve domain registry (defaults to ACCA FM globals)
+    if domain is not None:
+        from studyplan.domain_reasoning.domain_registry import get_registry
+
+        reg = get_registry(domain)
+        _concepts = reg.concepts
+        _templates = reg.templates
+    else:
+        _concepts = BUILTIN_CONCEPTS
+        _templates = TEMPLATE_REGISTRY
+
     formulas = detect_formulas(question)
-    concept_ids = detect_concepts(question, formulas)
+    concept_ids = detect_concepts(question, formulas, domain=domain)
     nums = extract_numbers(question)
     parsed_correct = _try_parse_correct(correct)
 
@@ -71,6 +82,7 @@ def evaluate_question(
             learner_answer,
             is_primary=True,
             learner_workings=learner_workings,
+            template_registry=_templates,
         )
         if ev is not None:
             evaluations.append(ev)
@@ -79,7 +91,7 @@ def evaluate_question(
     for cid in concept_ids:
         if cid == template_ref:
             continue  # Already evaluated as Tier 1
-        if cid not in TEMPLATE_REGISTRY:
+        if cid not in _templates:
             continue
         inputs = _extract_inputs_for_concept(cid, nums, question)
         if not inputs:
@@ -91,6 +103,7 @@ def evaluate_question(
             learner_answer,
             is_primary=False,
             learner_workings=learner_workings,
+            template_registry=_templates,
         )
         if ev is not None:
             evaluations.append(ev)
@@ -121,7 +134,7 @@ def evaluate_question(
             has_deterministic_truth=False,
         )
 
-    return merge_concept_results(evaluations, BUILTIN_CONCEPTS)
+    return merge_concept_results(evaluations, _concepts)
 
 
 def _try_parse_correct(correct: str | None) -> float | None:
@@ -142,8 +155,10 @@ def _evaluate_single_concept(
     learner_answer: str | None,
     is_primary: bool = False,
     learner_workings: str | None = None,
+    template_registry: dict[str, Any] | None = None,
 ) -> ConceptEvaluation | None:
-    template = TEMPLATE_REGISTRY.get(concept_id)
+    _treg = template_registry if template_registry is not None else TEMPLATE_REGISTRY
+    template = _treg.get(concept_id)
     if template is None:
         return None
     try:
@@ -222,7 +237,7 @@ def _extract_inputs_for_concept(
     """
     from studyplan.numerical_solver import _FORMULA_CANDIDATES
 
-    formula_name = concept_id.replace("fm.", "", 1)
+    formula_name = concept_id.split(".", 1)[1] if "." in concept_id else concept_id
     candidate_fn = _FORMULA_CANDIDATES.get(formula_name)
     if candidate_fn is None:
         return None

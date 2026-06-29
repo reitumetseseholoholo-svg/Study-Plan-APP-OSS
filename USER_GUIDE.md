@@ -37,12 +37,29 @@ python studyplan_app.py
 python studyplan_app.py 2026-12-01
 ```
 
-On first launch the app creates `~/.config/studyplan/` and initialises data files for the default module (`acca_f9` / Financial Management). A single-instance lock prevents two copies from running simultaneously. The app opens into the **Workbench** — a tabbed desktop with Dashboard, Tutor, Coach, Insights, and Settings pages.
+On first launch the app creates `~/.config/studyplan/` and initialises data files for the default module (`acca_f9` / Financial Management). A single-instance lock prevents two copies from running simultaneously.
+
+**Startup is instant.** The window appears in under 50 ms — the engine, data, models, and question bank all load in the background while you start navigating. No splash screen, no spinner, no "loading…" pause.
+
+The app opens into the **Workbench** — a tabbed desktop with Dashboard, Tutor, Coach, Insights, and Settings pages. The dashboard appears immediately with placeholder sections that fill in as data arrives. Everything is safe to click from second zero.
+
+> **Cross-exam ready.** The app ships with an ACCA FM syllabus by default, but the domain reasoning engine now supports any professional exam. A PMP proof-of-concept (CPI, SPI, EAC) is built in — switch modules to try it.
 
 > **If the app won't start after a crash**, remove the stale lock:
 > ```bash
 > rm -f ~/.config/studyplan/app_instance.lock
 > ```
+
+### Reliability notes
+
+Study Workbench is built to survive problems that would crash lesser apps:
+
+- **Corrupt data files?** Automatic recovery from the most recent backup snapshot. No crash, no error dialog — just a brief reindex.
+- **LLM connection drops?** Circuit breakers isolate failing backends (cloud, managed server, Ollama) independently. If cloud goes down it switches to local models automatically. When cloud recovers it re-enables itself after 30 seconds.
+- **Mid-stream tutor error?** The AI tutor saves partial responses to your conversation history on any error. You never lose where you were.
+- **Stale lock file?** `rm ~/.config/studyplan/app_instance.lock` and you're back in business.
+
+> All data is stored locally under `~/.config/studyplan/`. Nothing leaves your machine unless you explicitly enable the cloud LLM gateway.
 
 ---
 

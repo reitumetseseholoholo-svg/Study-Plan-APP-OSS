@@ -346,19 +346,19 @@ def match_learner_steps(
     return matches
 
 
+from studyplan.domain_reasoning.diagnostics import classify_step_errors
+
+
 def compute_step_error_tags(
     step_matches: list[dict[str, Any]],
 ) -> list[str]:
     """Generate error tags from step match results.
 
-    Returns tags like ``step_pv_year_1_mismatch`` for each
-    step where the learner value does not match.
+    Uses the formal ``ErrorPattern`` taxonomy from
+    ``studyplan.domain_reasoning.diagnostics`` to produce semantic tags
+    (e.g. ``sign_error``, ``wrong_discount_rate``) instead of generic
+    ``step_{id}_mismatch`` strings.
+
+    Falls back to generic ``step_{id}_mismatch`` for unrecognised steps.
     """
-    tags: list[str] = []
-    for m in step_matches:
-        step_id = str(m.get("step_id", "") or "")
-        if not step_id:
-            continue
-        if not m.get("match", False):
-            tags.append(f"step_{step_id}_mismatch")
-    return tags
+    return classify_step_errors(step_matches)

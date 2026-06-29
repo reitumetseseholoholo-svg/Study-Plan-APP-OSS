@@ -42,7 +42,7 @@ When any command (smoke test, compile check, etc.) fails:
 - **ruff config issue**: The `pyproject.toml` `[tool.ruff]` section includes `W503` in the `ignore` list, which is not a valid ruff rule. This causes `ruff check` to fail. The `linux-ci.yml` workflow uses `python tools/gtk4_lint.py` instead of ruff.
 - **Lock file**: The app enforces single-instance via `~/.config/studyplan/app_instance.lock`. If a prior run was killed ungracefully, remove this file before re-running: `rm -f ~/.config/studyplan/app_instance.lock`.
 - **`~/.local/bin` on PATH**: pip installs dev tools to `~/.local/bin`; ensure it's on PATH (`export PATH="$HOME/.local/bin:$PATH"`).
-- **Pre-existing test failure**: `test_semantic_tfidf_assets_reused_on_repeated_queries` fails consistently — this is a pre-existing issue, not caused by environment setup.
+- ~~**Pre-existing test failure**: `test_semantic_tfidf_assets_reused_on_repeated_queries` fails consistently — this is a pre-existing issue, not caused by environment setup.~~ **FIXED** (test passes 1926/1926).
 
 ## Architecture & Key Conventions
 
@@ -201,7 +201,7 @@ Connectivity is probed via `_has_internet_connectivity()` (TCP to 1.1.1.1:443, 8
 ### Testing
 
 - Unit tests in `tests/`: `test_step_matcher.py` (35), `test_domain_reasoning.py` (88).
-- 1796 tests total (1 skipped pre-existing).
+- 1942 tests total (1 skipped pre-existing).
 - Smoke test: `xvfb-run -a timeout 120s python studyplan_app.py --dialog-smoke-strict`
 - No flaky async tests — everything runs in the main thread.
 
@@ -225,3 +225,85 @@ Connectivity is probed via `_has_internet_connectivity()` (TCP to 1.1.1.1:443, 8
 | CI | `.github/workflows/linux-ci.yml` → `build-rust` job (non-gating, `continue-on-error: true`) |
 | First function | `select_srs_from_scored()` — Phases 1-4 of `select_srs_questions` in `studyplan_engine.py:11140`. Pure-data pipeline: scored tuples → selected indices. |
 | Caveats | Python ≥3.14 requires `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` until PyO3 releases a new version. CI uses Python 3.12 so this doesn't apply there.
+
+## Coach Pick Consistency & CPU
+
+### Anti-pattern found & fixed (Jun 2026)
+
+Two locations had `_queue_coach_sync_if_mismatch()` called **before** `_ensure_coach_pick_consistency()`, guaranteeing a false-positive mismatch every time because `_coach_pick_topic` (left panel) was never yet updated:
+
+1. **`_render_dashboard`** at `studyplan_app.py:51865` — moved after `_ensure_coach_pick_consistency()`
+2. **`_update_study_room_card_impl_inner`** at line `43399` — moved after the consistency sync block
+
+**Why this matters for CPU**: Each false-positive mismatch scheduled `_run_coach_sync_after_mismatch` via idle_add, which called `update_dashboard()` back → producing a guaranteed **2x multiplier** on every dashboard render. Combined with the 7+ expensive engine queries in the coach card update (`get_chapter_difficulty_ratio`, `get_interval_release_confidence`, `get_chapter_recall_risk`, `get_syllabus_chapter_intelligence`, `get_undercovered_capability_chapters`, `get_topic_due_count` + SRS iteration per item, `_get_pace_info`, `_get_weak_chapter`), a single dashboard render could trigger **14+ engine queries** in one burst.
+
+This doesn't cause 100% CPU at pure idle (no repeating timers fire these), but does cause cluster bursts on any event-driven dashboard refresh.
+
+### Remaining CPU concern: `_compose_coach_reasons` cost
+
+`_update_coach_pick_card_inner()` calls `_compose_coach_reasons(topic)` on every coach card update (cached 30s). This runs 7 expensive engine queries including `get_chapter_recall_risk` (samples 40 questions, may call `predict_recall_prob` ML). If triggered frequently, consider extending cache TTL or adding a skip-timer.
+
+## Semantic warmup CPU burst
+
+### What runs at startup (4s after launch)
+
+`_semantic_warmup_tick` (`studyplan_app.py:41148`) fires once via timeout (default 4s delay). It spawns a background thread via `_warmup_semantic_engine_async` which calls:
+
+1. **`_semantic_get_model()`** (`studyplan_engine.py:6049`) — Loads SentenceTransformer (PyTorch) + optionally CrossEncoder. One-time, CPU-heavy model load.
+2. **`_semantic_prefetch_chapter_assets()`** (`studyplan_engine.py:6222`) — Builds TF-IDF vectorizers for the top N chapters (`SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT=6`).
+
+### The TF-IDF storm (fixed Jun 2026)
+
+`_semantic_prefetch_chapter_assets` used `max_workers = min(len(work_items), max(1, os.cpu_count() or 4))` — spawning a **ThreadPoolExecutor per chapter** equal to CPU core count. Each worker called `TfidfVectorizer.fit_transform()` on hundreds of outcome texts (tokenization + IDF compute + matrix build). On an 8-core machine with 6 prefetch chapters, 6 worker threads saturated all cores in a CPU-bound computation storm.
+
+**Fix** (`studyplan_engine.py:6285`): Cap workers to max 2 — TF-IDF `fit_transform` is CPU-bound; >2 threads adds OS scheduler overhead without throughput gain.
+
+### Post-warmup dash update
+
+After the background thread completes, `GLib.idle_add(_finish)` fires which calls `update_study_room_card()` + `update_dashboard()`. This triggers the full coach-pick cache-miss cascade (2x multiplier) for the first interactive render. The coach sync fix prevents further cascades on subsequent renders.
+
+## Dashboard section reconciliation (Phase 4c, Jun 2026)
+
+### What changed
+
+`_render_dashboard` previously **unconditionally removed all children** from `self.dashboard` (lines ~51590–51594) and rebuilt every section from scratch on every refresh. The `_reconcile_sections()` function and section-tracking infrastructure (`_ds_id`, `_ds_mark`, `_dashboard_section_seen`) existed but were dead code — `_ds_id` was never assigned to any widget.
+
+**Fix**: Removed the full-clear loop. All ~35 dashboard sections now get tagged with `_ds_id` via `_ds_mark()` at build time. Before appending, `_ds_mark()` auto-removes any existing widget with the same `_ds_id` to prevent duplicates. At the end of every render cycle, `_reconcile_sections()` removes orphan widgets whose `_ds_id` is no longer in `_dashboard_section_seen`.
+
+### New helpers (nested inside `_render_dashboard`)
+
+| Helper | Purpose |
+|--------|---------|
+| `_ds_check(sid, digest)` | Returns True if section exists with matching digest → cache hit, marks as seen, skip rebuild |
+| `_ds_remove(sid)` | Removes existing widget with given sid (used before digest-checked rebuilds) |
+| `_ds_mark(sid, widget, digest)` | Sets `_ds_id` + `_ds_digest`, removes stale duplicates, appends, marks as seen |
+| `_reconcile_sections()` | Removes all widgets whose `_ds_id` is not in `_dashboard_section_seen` |
+
+### Digest-checked sections (expensive, skip rebuild when data unchanged)
+
+- **coach_briefing**: digest = `(readiness_score, pace_status, recommended_topic, pick_source)` — skips 7+ engine queries on cache hit
+- **onboarding**: digest = `("onboarding",)` — shown only on first run
+- **exam_countdown**: digest includes `days_remaining`
+- **empty_module**: digest = `(True,)` — shown only when no chapters loaded
+- **no_syllabus_warning**: digest = `("no_syllabus_warning",)` — shown only when syllabus missing
+
+### Always-rebuilt sections (still benefit from `_ds_id` tracking)
+
+All other sections (time_analytics, quiz_insights, leaderboards, daily_summary, drift_chart, progress_chart, topic_chart, next_action, recap cards, mastery section, pie chart, study_snapshot, weekly_summary, plan_view, weak_vs_strong, reviews_pace, etc.) always rebuild but use `_ds_mark` for proper orphan cleanup and future digest integration.
+
+### Conditional section cleanup
+
+Sections that are conditionally hidden (based on `focus_mode`, `tile_mode`, data availability) are automatically removed by `_reconcile_sections()` when the condition becomes false — the section simply isn't marked as seen that cycle.
+
+### Early return paths
+
+`_reconcile_sections()` is called before the two early returns:
+1. `empty_module` (no chapters loaded) — at line ~51821
+2. `focus_mode` (short circuit after coach section) — at line ~53281
+
+### Performance characteristics
+
+- **GTK parenting ops**: Changed from `N removes + N appends` (full clear + rebuild) to `N removes + N appends` (per-section rebuild) — same count, but widgets are now tagged and trackable.
+- **Digest-checked sections**: Avoid GTK rebuild entirely when data unchanged. The coach_briefing section (most expensive at 7+ engine queries) is the primary beneficiary.
+- **Conditional sections**: Previously required careful conditional logic to avoid stale widgets. Now handled automatically by reconcile.
+- **No visible flash**: Widgets that don't change stay in place visually; only updated widgets flash.

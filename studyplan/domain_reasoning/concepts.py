@@ -404,17 +404,37 @@ STRUCTURE_TYPE_CONCEPTS = build_structure_type_concepts(STRUCTURE_TYPE_CONCEPTS)
 def detect_concepts(
     question: str,
     detected_formulas: list[str] | None = None,
+    domain: str | None = None,
 ) -> list[str]:
     """Map a question to deterministic concept IDs.
 
     Accepts optional pre-computed formula names from
-    ``numerical_solver.detect_formulas``.
+    ``numerical_solver.detect_formulas``.  If *domain* is provided
+    (e.g. ``"pmp"``), the detection is routed to that domain's formula
+    mapping; otherwise the default ACCA FM mapping is used.
     """
+    # Route to domain-specific mapping if requested
+    if domain is not None:
+        from studyplan.domain_reasoning.domain_registry import get_registry
+
+        reg = get_registry(domain)
+        # Use the domain's own pattern-based detection; the numerical
+        # solver's _FORMULA_SIGNATURES only covers ACCA FM formulas.
+        domain_formulas = reg.detect_formulas(question)
+        seen: set[str] = set()
+        result: list[str] = []
+        for formula in domain_formulas:
+            cid = reg.formula_to_concept.get(formula)
+            if cid and cid not in seen:
+                seen.add(cid)
+                result.append(cid)
+        return result
+
+    # Default: ACCA FM mapping
     if detected_formulas is None:
         from studyplan.numerical_solver import detect_formulas as _df
 
         detected_formulas = _df(question)
-
     seen: set[str] = set()
     result: list[str] = []
     for formula in detected_formulas:
@@ -423,3 +443,58 @@ def detect_concepts(
             seen.add(cid)
             result.append(cid)
     return result
+
+
+# ---------------------------------------------------------------------------
+# ACCA FM domain registry (built from existing globals)
+# ---------------------------------------------------------------------------
+
+
+def _build_acca_registry() -> DomainRegistry:
+    """Build the ACCA FM DomainRegistry from the existing global dicts."""
+    from studyplan.domain_reasoning.domain_registry import DomainRegistry
+    from studyplan.domain_reasoning.templates import TEMPLATE_REGISTRY
+
+    reg = DomainRegistry(prefix="fm")
+    reg.concepts.update(BUILTIN_CONCEPTS)
+    reg.templates.update(TEMPLATE_REGISTRY)
+    reg.formula_to_concept.update(_FORMULA_TO_CONCEPT)
+    reg.structure_types.update({k: list(v) for k, v in STRUCTURE_TYPE_CONCEPTS.items()})
+    # ACCA FM label aliases for step matcher normalisation
+    reg.label_aliases.update(
+        {
+            "net present value": "npv",
+            "present value": "pv",
+            "cost of equity": "cost_equity",
+            "cost of debt": "cost_debt",
+            "weight of equity": "weight_equity",
+            "asset beta": "asset_beta",
+            "equity beta": "equity_beta",
+            "profitability index": "profitability_index",
+            "equivalent annual cost": "equivalent_annual_cost",
+            "discounted payback": "discounted_payback",
+            "perpetuity npv": "perpetuity_npv",
+            "cost of preference": "cost_of_preference",
+            "earning yield": "earning_yield",
+            "asset turnover": "asset_turnover",
+            "quick ratio": "quick_ratio",
+            "dividend growth": "dividend_growth_rate",
+            "inventory holding": "inventory_days",
+            "inventory days": "inventory_days",
+            "receivable collection": "receivables_days",
+            "receivable days": "receivables_days",
+            "payable payment": "payables_days",
+            "payable days": "payables_days",
+        }
+    )
+    reg.rebuild_slot_groups()
+    return reg
+
+
+# Build and register the ACCA FM domain at import time
+from studyplan.domain_reasoning.domain_registry import (
+    DomainRegistry,
+    register_domain,
+)
+
+register_domain(_build_acca_registry())

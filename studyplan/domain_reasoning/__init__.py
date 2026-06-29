@@ -26,6 +26,9 @@ from studyplan.domain_reasoning.diagnostics import (
     QuestionDiagnostic,
     merge_concept_results,
     format_error_summary,
+    ErrorPattern,
+    classify_step_errors,
+    classify_step_id_error,
 )
 
 from studyplan.domain_reasoning.evaluator import (
@@ -58,6 +61,9 @@ from studyplan.domain_reasoning.auto_declare import (
     register_proposal,
     _default_question_filter,
 )
+
+# Load domain registries (ACCA FM, PMP, etc.)
+from studyplan.domain_reasoning import domains  # noqa: F401
 
 from studyplan.domain_reasoning.concept_types import (
     RuleChainTemplate,
@@ -92,6 +98,9 @@ __all__ = [
     "reason_question",
     "merge_concept_results",
     "format_error_summary",
+    "ErrorPattern",
+    "classify_step_errors",
+    "classify_step_id_error",
     "declare_concept",
     "declare_formula",
     "declare_formula_chain",

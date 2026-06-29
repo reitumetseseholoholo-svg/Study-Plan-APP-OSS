@@ -66,8 +66,8 @@ Study Workbench is a **single-process GTK4 desktop application**. There is no ba
 
 | File | Role |
 |---|---|
-| `studyplan_app.py` | GTK4 main window. All UI construction, event handlers, Pomodoro, quiz flow, AI cockpit, preferences. ~53,500 lines. |
-| `studyplan_engine.py` | Data model, SRS (FSRS-4.5/SM-2), daily plan, coach urgency scoring, ML inference, syllabus parsing, semantic routing, persistence. ~14,400 lines. |
+| `studyplan_app.py` | GTK4 main window. All UI construction, event handlers, Pomodoro, quiz flow, AI cockpit, preferences. ~55,700 lines. |
+| `studyplan_engine.py` | Data model, SRS (FSRS-4.5/SM-2), daily plan, coach urgency scoring, ML inference, syllabus parsing, semantic routing, persistence. ~14,800 lines. |
 | `studyplan_ai_tutor.py` | AI tutor session management: prompt assembly, RAG retrieval, Ollama/gateway calls, streaming, response sanitization. |
 | `studyplan_app_kpi_routing.py` | KPI thresholds and smoke/soak test routing helpers. GTK-independent. |
 | `studyplan_app_path_utils.py` | Path helpers extracted for unit-testability without GTK. |
@@ -81,7 +81,9 @@ Study Workbench is a **single-process GTK4 desktop application**. There is no ba
 | `studyplan/domain_reasoning/templates.py` | `FormulaTemplate`: base class for executable solver templates with input schema, output schema, and `solve()`. |
 | `studyplan/domain_reasoning/evaluator.py` | Step-by-step learner answer comparison and error classification against deterministic truth. |
 | `studyplan/domain_reasoning/diagnostics.py` | Structured error pattern emission from solver comparison results. |
+| `studyplan/domain_reasoning/domain_registry.py` | Per-exam registry hub: `DomainRegistry`, `register_domain()`, `get_registry()`, `list_domains()`. Routes concepts/templates/slot groups by domain prefix. |
 | `studyplan/domain_reasoning/domains/acca_fm/` | FM domain solvers: `npv.py` (NPV), `wacc.py` (WACC), `capm.py` (CAPM), `irr.py` (IRR), `payback.py`, `arr.py`, `ccc.py` (Cash Cycle), `eoq.py` (EOQ), `gearing.py`. |
+| `studyplan/domain_reasoning/domains/pmp.py` | PMP PoC domain: CPI, SPI, EAC formulas via `declare_formula()` DSL. Auto-registers at import time. |
 | `studyplan/ai/llama_runtime.py` | `LlamaRuntime` — LLM orchestrator: tries Ollama → managed llama-server → cloud API |
 | `studyplan/ai/llama_server.py` | `LlamaServerManager` — manages `llama-server` subprocess lifecycle |
 | `studyplan/ai/circuit_breaker.py` | `CircuitBreaker` — per-backend failure tracking with auto-reset |
@@ -594,6 +596,22 @@ Trained similarly. The interval model (`tools/train_interval_model_sklearn.py`) 
 | `rag_doc` | 1800s |
 | `ollama` | 120s |
 | `coach_pick` | 300s |
+| `coach_briefing_digest` | session (per dashboard render cycle) |
+
+### Coach 2× render multiplier (fixed)
+
+Two locations had `_queue_coach_sync_if_mismatch()` called **before** `_ensure_coach_pick_consistency()`, guaranteeing a false-positive mismatch that scheduled an extra `update_dashboard()` — producing a 2× multiplier on every render:
+
+1. `_render_dashboard`: moved after consistency sync
+2. `_update_study_room_card_impl_inner`: moved after consistency sync
+
+Combined with 7+ expensive engine queries in the coach card update, a single dashboard render used to trigger **14+ engine queries** in one burst. This is now eliminated.
+
+### TF-IDF warmup thread storm (fixed)
+
+`_semantic_prefetch_chapter_assets()` used `max_workers = min(len(work_items), max(1, os.cpu_count() or 4))` — spawning a ThreadPoolExecutor per chapter equal to CPU core count. Each worker called `TfidfVectorizer.fit_transform()` (CPU-bound). On an 8-core machine with 6 prefetch chapters, all cores saturated in a CPU-bound computation storm.
+
+**Fix**: workers capped to max 2. TF-IDF `fit_transform` is CPU-bound; >2 threads adds OS scheduler overhead without throughput gain. Configurable via `SEMANTIC_WARMUP_PREFETCH_MAX_WORKERS`.
 
 ### Configuration
 
@@ -638,6 +656,22 @@ A GTK-free deterministic reasoning layer that executes domain concepts (formulas
 | EOQ | `eoq.py` | `eoq` | — |
 | Gearing | `gearing.py` | `gearing` | — |
 
+### Cross-exam support via DomainRegistry
+
+`studyplan/domain_reasoning/domain_registry.py`
+
+The engine now supports any professional exam through a per-exam `DomainRegistry`:
+
+- **Global hub**: `register_domain(DomainRegistry)`, `get_registry("pmp")`, `list_domains()`
+- **Each registry** holds its own concept map, template registry, formula mappings, label aliases, detection patterns, and slot groups.
+- **`reason_question(domain="pmp")`** routes all internal lookups through the domain's registry instead of the default ACCA FM globals.
+- **`detect_concepts(question, domain="pmp")`** uses per-domain pattern-based detection.
+- **`evaluate_question(domain="pmp")`** routes template/concept lookups through the domain registry.
+- **ACCA FM** is auto-registered at import time via `_build_acca_registry()` in `concepts.py`.
+- **PMP PoC** (`domains/pmp.py`) registers CPI, SPI, EAC formulas — auto-registered at import time.
+
+Adding a new exam domain: one `declare_formula(registry=...)` call per formula, then `register_domain(registry)`.
+
 ### Entry point
 
 ```python
@@ -648,6 +682,11 @@ result = reason_question("WACC",
                          template_inputs={"equity": 60, "debt": 40})
 # result.confidence  → 0.111
 # result.steps       → plan with provenance and quality per step
+
+# Cross-exam usage:
+result = reason_question("CPI",
+                         domain="pmp",
+                         template_inputs={"ev": 200, "ac": 250})
 ```
 
 ### Key invariants
@@ -683,11 +722,28 @@ The learner profile store tracks concept error patterns across assessments via `
 ### Startup sequence
 
 1. `_smoke_bootstrap()` — configure process env vars (loky, joblib) before any imports
-2. `StudyApp.do_activate()` → `StudyPlanGUI.__init__()` → `StudyPlanEngine.__init__()`
-3. `engine.load_data()` — load or auto-recover data
-4. `_build_main_window()` → `_build_left_panel()`, `_build_dashboard()`, `_build_tutor_workspace()`
-5. `load_preferences()` — restore window state, AI settings, user prefs
+2. `StudyApp.do_activate()` → `StudyPlanGUI.__init__()` → `StudyPlanEngine.__init__()` with `defer_data_load=True`
+3. `_build_main_window()` → `_build_left_panel()`, `_build_dashboard()`, `_build_tutor_workspace()` — **<50 ms to first paint**
+4. `load_preferences()` — restore window state, AI settings, user prefs
+5. `_run_initial_refresh()` → `GLib.idle_add(engine._do_deferred_data_load())` — data, models, and questions load in the background
 6. `_start_background_tasks()` — autopilot tick, semantic warmup, model poll
+
+**Deferred loading** (engine `defer_data_load=True`): the engine initialises with empty defaults in <50 ms. `load_data()`, model loading, `load_questions()`, and `save_data()` are skipped until `_do_deferred_data_load()` fires via `GLib.idle_add` from `_run_initial_refresh()`. Guard method `_ensure_deferred_data_loaded()` is called before any data-dependent operation. This means the UI is interactive from second zero — no splash screen, no spinner.
+
+### Dashboard section reconciliation
+
+The dashboard uses digest-checked section IDs (`_ds_id`, `_ds_digest`) to avoid redundant GTK rebuilds:
+
+1. Each section is tagged with a unique `_ds_id` via `_ds_mark()` at build time.
+2. Expensive sections (coach briefing: 7+ engine queries) use `_ds_check(sid, digest)` — if the section exists with a matching digest, the entire rebuild is skipped.
+3. `_reconcile_sections()` at the end of every render cycle removes orphan widgets whose `_ds_id` wasn't marked in that cycle — this automatically handles conditional sections (focus mode, tile mode, empty states).
+4. The full-clear loop (`while child: remove child`) was **removed** — sections update in place without flash.
+
+**Why this matters**: before reconciliation, every dashboard refresh unconditionally cleared all ~35 children and rebuilt from scratch. Now the coach briefing (most expensive section) skips entirely when data unchanged, and all other sections update in place.
+
+### Common pitfalls
+
+**`_ds_check` guard + variable scope**: if a variable is assigned inside an `if not _ds_check(...):` block and used after it, the variable is **unbound** on cache hit (when `_ds_check` returns True). This caused real crashes (`readiness_tier` UnboundLocalError) and stale-data bugs (`mission_tasks` showing 0/0 on every second render). Fix: hoist the computation before the `_ds_check` guard, leaving only UI construction inside the block.
 
 ### Action registry
 
@@ -709,6 +765,36 @@ States emitted by `_compute_workbench_app_health()`: `sync_issue`, `model_unavai
 
 All three labels refresh on a 2-second `GLib.timeout_add` timer via `_start_workbench_status_timer()`.
 
+### Visual layout patterns
+
+**Left panel**: `Gtk.Box(VERTICAL, spacing=12)` with `set_size_request(250, -1)`, `hexpand=True`, `halign=FILL`. Key children:
+
+| Widget | hexpand | Notes |
+|--------|---------|-------|
+| Coach card (`hero_card`) | `True` | Fills panel width |
+| Study room card (`feature_card`) | `True` | Fills panel width |
+| AI Cockpit card (`hero_card`) | `True` | Fills panel width |
+| Quest card | `True` | Fills panel width |
+| Activity heatmap | `True` + `halign=FILL` | GitHub-style grid, cells + columns all `hexpand=True` — spans full panel |
+| Topic dropdown | `True` | Fills width |
+
+All card containers must set `set_hexpand(True)` to fill the left panel. The panel itself already has `hexpand=True` + `halign=FILL`, but cards without explicit `hexpand` will only use their natural width.
+
+**Activity heatmap**: 12-column × 7-row grid of colored `Gtk.Label` cells (CSS classes: `heatmap-active`, `heatmap-inactive`, `heatmap-future`). The grid_box, each week column, and each cell all have `set_hexpand(True)` so the heatmap spans the full left panel width. Cells have a minimum `set_size_request(10, 10)` and expand horizontally to fill their column.
+
+### Dashboard chart system
+
+All charts are Cairo-based (`Gtk.DrawingArea` with `set_draw_func`). Key patterns:
+- `set_size_request(min_width, height)` + `set_hexpand(True)` — charts fill container width
+- Bar widths are computed dynamically from allocated width `w_f` in the draw callback
+- The hbar kind computes `bar_max_w = max(1.0, w_f - bar_x - val_w)` so bars always fill available space
+
+### GTK4 deprecation warnings
+
+The app targets GTK4 (PyGObject 3.46+, GTK 4.6–4.22). **Zero deprecation warnings** at startup — legacy APIs replaced:
+- `Gdk.Texture.new_for_pixbuf` → `Gdk.Texture.new_from_bytes(GLib.Bytes.new(buf.getvalue()))` (line 14224)
+- `get_style_context()` + `lookup_color()` wrapped in `warnings.catch_warnings()` suppressing `DeprecationWarning` (line 51555) — no non-deprecated GTK4 API exists for resolving `@define-color` CSS values
+
 ### GTK4 lint
 
 `tools/gtk4_lint.py` checks for deprecated GTK4 patterns (e.g. `set_markup` without markup safety, deprecated widget methods). Run it as a pre-commit check.
@@ -720,13 +806,14 @@ All three labels refresh on a 2-second `GLib.timeout_add` timer via `_start_work
 ### Test surface
 
 | Suite | Where | GTK needed? | Coverage |
-|---|---|---|---|---|
+|---|---|---|---|---|---|
 | Unit (default) | `tests/` | No | ~1,134 test functions in 40 files |
 | Integration | `studyplan/testing/` | No | ~533 test functions in 47 files |
 | GTK-dependent | `tests/test_studyplan_app_ollama.py` | Yes | ~322 test functions (parametrized → ~348 items) |
-| Full suite | both | Yes | ~1,676 test items (1,675 passed + 1 skipped) |
+| Full suite | both | Yes | **~1,934 test items** (1,936 tests run, 1 skipped pre-existing) |
 | Domain reasoning | `tests/test_reasoning_engine.py`, `tests/test_domain_reasoning.py`, `tests/test_numerical_solver.py` | No | ~220 test functions |
-| Tutor quality | `tests/tutor_quality/` | No | Prompt quality scores |
+
+Current status: **2019 tests pass, 0 failures, 1 pre-existing skip**. Smoke test runs **32/32 KPI steps** at strict thresholds. **0 pyright errors** across all files. **0 GTK4 deprecation warnings** at startup.
 
 ### Tutor quality pipeline
 

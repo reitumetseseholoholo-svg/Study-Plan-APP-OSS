@@ -30,6 +30,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import lru_cache
 from typing import Any
 
 from studyplan.domain_reasoning.concepts import (
@@ -73,9 +74,12 @@ _INPUT_QUALITY: dict[str, float] = {
 # ---------------------------------------------------------------------------
 
 
-def _build_slot_groups() -> dict[str, list[str]]:
+def _build_slot_groups(
+    concept_map: dict[str, Any] | None = None,
+) -> dict[str, list[str]]:
     groups: dict[str, list[str]] = {}
-    for cid, meta in BUILTIN_CONCEPTS.items():
+    source = concept_map if concept_map is not None else BUILTIN_CONCEPTS
+    for cid, meta in source.items():
         for slot in meta.output_slots:
             groups.setdefault(slot, []).append(cid)
     return groups
@@ -84,15 +88,21 @@ def _build_slot_groups() -> dict[str, list[str]]:
 _OUTPUT_SLOT_GROUPS: dict[str, list[str]] = _build_slot_groups()
 
 
-def _find_alternatives(concept_id: str) -> list[str]:
+def _find_alternatives(
+    concept_id: str,
+    concept_map: dict[str, Any] | None = None,
+    slot_groups: dict[str, list[str]] | None = None,
+) -> list[str]:
     """Concepts producing the same output slots, excluding *concept_id* itself."""
-    meta = BUILTIN_CONCEPTS.get(concept_id)
+    source = concept_map if concept_map is not None else BUILTIN_CONCEPTS
+    groups = slot_groups or _OUTPUT_SLOT_GROUPS
+    meta = source.get(concept_id)
     if not meta:
         return []
     result: list[str] = []
     seen: set[str] = set()
     for slot in meta.output_slots:
-        for alt_id in _OUTPUT_SLOT_GROUPS.get(slot, ()):
+        for alt_id in groups.get(slot, ()):
             if alt_id != concept_id and alt_id not in seen:
                 seen.add(alt_id)
                 result.append(alt_id)
@@ -204,12 +214,25 @@ class ReasoningTrace:
 # ---------------------------------------------------------------------------
 
 
-def _get_expected_param_keys(concept_id: str) -> set[str] | None:
+@lru_cache(maxsize=128)
+def _get_expected_param_keys(
+    concept_id: str,
+    formula_decls: dict[str, Any] | None = None,
+) -> set[str] | None:
     """Return the set of parameter names a concept's solver expects.
 
-    Uses the formula candidate function's first return dict as a schema.
-    Returns ``None`` if the concept has no candidate function.
+    If *formula_decls* is provided (a dict of concept_id → FormulaDecl),
+    reads ``param_names`` directly from the declaration.  Otherwise uses
+    the formula candidate function's first return dict as a schema.
+    Returns ``None`` if no candidate is available.
     """
+    # Fast path: read from FormulaDecl param_names
+    if formula_decls is not None:
+        decl = formula_decls.get(concept_id)
+        if decl is not None and hasattr(decl, "param_names") and decl.param_names:
+            return set(decl.param_names)
+        return None
+
     from studyplan.numerical_solver import _FORMULA_CANDIDATES
 
     # -- Build a synthetic number pool rich enough to trigger every
@@ -303,8 +326,6 @@ def _get_expected_param_keys(concept_id: str) -> set[str] | None:
         return None
 
     if formula == "irr":
-        # IRR candidate takes a single list; it internally separates
-        # non-percent values, so pass the whole pool.
         param_sets = candidate_fn(_pool)
     elif formula == "eoq":
         param_sets = candidate_fn(
@@ -435,6 +456,8 @@ def _plug_input_gaps(
     explicit_ref: str | None = None,
     explicit_inputs: dict[str, Any] | None = None,
     max_iter: int = 5,
+    slot_groups: dict[str, list[str]] | None = None,
+    template_registry: dict[str, Any] | None = None,
 ) -> list[PlanStep]:
     """Auto-discover missing sub-goals and insert them into the plan.
 
@@ -463,14 +486,16 @@ def _plug_input_gaps(
                 i += 1
                 continue
 
+            _slot_groups = slot_groups or _OUTPUT_SLOT_GROUPS
+            _treg = template_registry or TEMPLATE_REGISTRY
             for param in missing:
-                providers = _OUTPUT_SLOT_GROUPS.get(param, [])
+                providers = _slot_groups.get(param, [])
                 for provider_id in providers:
                     if provider_id == step.concept_id or provider_id in existing_ids:
                         continue
 
                     p_meta = concept_map.get(provider_id)
-                    if not p_meta or p_meta.template_ref not in TEMPLATE_REGISTRY:
+                    if not p_meta or p_meta.template_ref not in _treg:
                         continue
 
                     p_expected = _get_expected_param_keys(provider_id)
@@ -544,6 +569,8 @@ def _compile_plan(
     givens: dict[str, Any],
     explicit_ref: str | None = None,
     explicit_inputs: dict[str, Any] | None = None,
+    template_registry: dict[str, Any] | None = None,
+    slot_groups: dict[str, list[str]] | None = None,
 ) -> list[PlanStep]:
     """Build an ordered execution plan from target concept + question text."""
     dep_order = _resolve_dependency_chain(target_id, concept_map)
@@ -552,12 +579,13 @@ def _compile_plan(
     # Intermediates start with givens, grow as plan steps succeed
     intermed: dict[str, Any] = dict(givens)
 
+    _treg = template_registry if template_registry is not None else TEMPLATE_REGISTRY
     for cid in dep_order:
         meta = concept_map.get(cid)
         if meta is None:
             continue
         tref = meta.template_ref
-        if tref not in TEMPLATE_REGISTRY:
+        if tref not in _treg:
             continue
 
         # If this dependency's output slots are already provided as
@@ -607,6 +635,8 @@ def _compile_plan(
         givens,
         explicit_ref=explicit_ref,
         explicit_inputs=explicit_inputs,
+        template_registry=_treg if template_registry is not None else None,
+        slot_groups=slot_groups if slot_groups is not None else None,
     )
 
     return plan
@@ -620,11 +650,22 @@ def _compile_plan(
 def _try_run_template(
     template_ref: str,
     ctx: dict[str, Any],
+    template_registry: dict[str, Any] | None = None,
 ) -> tuple[bool, dict[str, Any] | None, float]:
-    """Run one template, returning ``(success, raw_result, duration_ms)``."""
+    """Run one template, returning ``(success, raw_result, duration_ms)``.
+
+    If *template_registry* is provided, the template is looked up there;
+    otherwise the global ``TEMPLATE_REGISTRY`` is used.
+    """
     t0 = time.perf_counter()
     try:
-        raw = run_template(template_ref, ctx)
+        if template_registry is not None:
+            tpl = template_registry.get(template_ref)
+            if tpl is None:
+                return False, None, (time.perf_counter() - t0) * 1000
+            raw = tpl.solve(ctx)
+        else:
+            raw = run_template(template_ref, ctx)
         duration = (time.perf_counter() - t0) * 1000
         if raw is not None and not raw.get("is_nan", True):
             return True, raw, duration
@@ -637,6 +678,9 @@ def _try_run_template(
 def _execute_plan(
     plan: list[PlanStep],
     givens: dict[str, Any],
+    concept_map: dict[str, Any] | None = None,
+    template_registry: dict[str, Any] | None = None,
+    slot_groups: dict[str, list[str]] | None = None,
 ) -> tuple[list[ExecutionRecord], dict[str, Any]]:
     """Execute *plan* in order, forwarding intermediate results downstream.
 
@@ -650,6 +694,9 @@ def _execute_plan(
     """
     execution: list[ExecutionRecord] = []
     intermed: dict[str, Any] = {}
+    _cmap = concept_map if concept_map is not None else BUILTIN_CONCEPTS
+    _treg = template_registry if template_registry is not None else TEMPLATE_REGISTRY
+    _sgroups = slot_groups or _OUTPUT_SLOT_GROUPS
 
     for step in plan:
         if step.skipped:
@@ -676,7 +723,7 @@ def _execute_plan(
                 ctx[k] = v
 
         # --- try the original step ---
-        success, raw, duration = _try_run_template(step.template_ref, ctx)
+        success, raw, duration = _try_run_template(step.template_ref, ctx, template_registry=_treg)
         quality = _compute_input_source_quality(step.expected_params, step.input_sources)
 
         if success:
@@ -698,12 +745,12 @@ def _execute_plan(
             continue
 
         # --- original failed → try alternatives (multi-path) ---
-        alts = _find_alternatives(step.concept_id)
+        alts = _find_alternatives(step.concept_id, concept_map=_cmap, slot_groups=_sgroups)
         fb_record: ExecutionRecord | None = None
 
         for alt_id in alts:
-            alt_meta = BUILTIN_CONCEPTS.get(alt_id)
-            if not alt_meta or alt_meta.template_ref not in TEMPLATE_REGISTRY:
+            alt_meta = _cmap.get(alt_id)
+            if not alt_meta or alt_meta.template_ref not in _treg:
                 continue
 
             # Fresh inputs for the alternative (no ctx from the failed step)
@@ -723,6 +770,7 @@ def _execute_plan(
             fb_success, fb_raw, fb_duration = _try_run_template(
                 alt_meta.template_ref,
                 alt_ctx,
+                template_registry=_treg,
             )
             fb_quality = _compute_input_source_quality(alt_expected, alt_sources)
 
@@ -794,6 +842,7 @@ def _compute_confidence(execution: list[ExecutionRecord]) -> float:
 def reason_question(
     question: str,
     *,
+    domain: str | None = None,
     options: list[str] | None = None,
     correct: str | None = None,
     learner_answer: str | None = None,
@@ -808,6 +857,8 @@ def reason_question(
     ----------
     question : str
         The question text.
+    domain : str | None
+        Exam domain prefix (e.g. ``"fm"``, ``"pmp"``).  Defaults to ACCA FM.
     options : list[str] | None
         Answer options for multiple choice (passed to diagnostic layer).
     correct : str | None
@@ -826,13 +877,27 @@ def reason_question(
     ReasoningTrace
         Structured trace with plan, execution records, diagnostics.
     """
+    # Resolve domain registry (defaults to ACCA FM globals)
+    if domain is not None:
+        from studyplan.domain_reasoning.domain_registry import get_registry
+
+        reg = get_registry(domain)
+        _concepts = reg.concepts
+        _templates = reg.templates
+        _slot_groups = reg._slot_groups or _build_slot_groups(_concepts)
+    else:
+        reg = None
+        _concepts = BUILTIN_CONCEPTS
+        _templates = TEMPLATE_REGISTRY
+        _slot_groups = _OUTPUT_SLOT_GROUPS
+
     result = ReasoningTrace(question=question)
 
     if not question:
         return result
 
     # 1. Detect concepts
-    concept_ids = detect_concepts(question)
+    concept_ids = detect_concepts(question, domain=domain)
     result.concept_ids = list(concept_ids)
 
     # 2. Pick target concept
@@ -850,18 +915,26 @@ def reason_question(
     # 4. Compile plan
     plan = _compile_plan(
         target_id,
-        BUILTIN_CONCEPTS,
+        _concepts,
         question,
         givens,
         explicit_ref=template_ref,
         explicit_inputs=template_inputs,
+        template_registry=_templates,
+        slot_groups=_slot_groups,
     )
     result.plan = plan
     if not plan:
         return result
 
     # 5. Execute plan
-    execution, intermed = _execute_plan(plan, givens)
+    execution, intermed = _execute_plan(
+        plan,
+        givens,
+        concept_map=_concepts,
+        template_registry=_templates,
+        slot_groups=_slot_groups,
+    )
     result.execution = execution
 
     # 6. Extract final result
@@ -878,6 +951,7 @@ def reason_question(
 
     diag = evaluate_question(
         question,
+        domain=domain,
         options=options,
         correct=correct,
         template_ref=template_ref,

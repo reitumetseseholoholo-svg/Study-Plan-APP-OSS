@@ -623,6 +623,7 @@ def declare_concept(
     structure_types: list[str] | tuple[str, ...] | None = None,
     custom_candidate_fn: Callable[..., list[dict[str, Any]]] | None = None,
     multi_step_template: Any | None = None,
+    registry: dict[str, FormulaDecl] | None = None,
 ) -> FormulaDecl:
     """Declare a domain concept.
 
@@ -662,6 +663,7 @@ def declare_concept(
             structure_types=structure_types,
             custom_candidate_fn=custom_candidate_fn,
             multi_step_template=multi_step_template,
+            registry=registry,
         )
 
     if concept_type == CONCEPT_TYPE_RULE_CHAIN:
@@ -732,6 +734,7 @@ def declare_formula(
     structure_types: list[str] | tuple[str, ...] | None = None,
     custom_candidate_fn: Callable[..., list[dict[str, Any]]] | None = None,
     multi_step_template: Any | None = None,
+    registry: dict[str, FormulaDecl] | None = None,
 ) -> FormulaDecl:
     """Declare an expression-based formula concept.
 
@@ -755,6 +758,7 @@ def declare_formula(
         structure_types=structure_types,
         custom_candidate_fn=custom_candidate_fn,
         multi_step_template=multi_step_template,
+        registry=registry,
     )
 
 
@@ -780,6 +784,7 @@ def _declare_expression_concept(
     structure_types: list[str] | tuple[str, ...] | None = None,
     custom_candidate_fn: Callable[..., list[dict[str, Any]]] | None = None,
     multi_step_template: Any | None = None,
+    registry: dict[str, FormulaDecl] | None = None,
 ) -> FormulaDecl:
     """Build and register an expression-type concept."""
     global _last_priority
@@ -825,6 +830,7 @@ def _declare_expression_concept(
     else:
         from studyplan.domain_reasoning.concept_types.expression_concept import make_expression_template
 
+        assert expression is not None, f"Expression concept {concept_id} has no expression string"
         template = make_expression_template(concept_id, expression, pnames)
 
     # -- Metadata defaults --
@@ -855,7 +861,8 @@ def _declare_expression_concept(
         chapter_refs=chaps,
         structure_types=stypes,
     )
-    _registry[concept_id] = decl
+    target = registry if registry is not None else _registry
+    target[concept_id] = decl
     return decl
 
 
@@ -879,13 +886,9 @@ def _declare_rule_chain_concept(
 
     label = label or concept_id
 
-    from studyplan.domain_reasoning.concept_types.rule_concept import (
-        make_rule_template,
-        _make_rule_chain_candidate_fn,
-    )
+    from studyplan.domain_reasoning.concept_types.rule_concept import make_rule_template
 
     template = make_rule_template(concept_id, config)
-    _make_rule_chain_candidate_fn(config.steps, template)
 
     compiled_patterns: list[re.Pattern] = []
     if patterns:
@@ -1074,7 +1077,7 @@ def declare_formula_chain(
     _last_priority += 1
     priority = _last_priority
 
-    formula_name = concept_id.replace("fm.", "", 1) if concept_id.startswith("fm.") else concept_id
+    formula_name = concept_id.split(".", 1)[1] if "." in concept_id else concept_id
 
     if not steps:
         raise ValueError("At least one step is required for a formula chain")
