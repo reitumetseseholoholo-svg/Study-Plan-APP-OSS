@@ -46,9 +46,18 @@ def select_srs_from_scored(
             risk.append(item[7])
             gap_bonus.append(item[8])
         return _rs_select_srs(
-            idxs, due, overdue, in_cooldown, recent, is_new,
-            retention, risk, gap_bonus,
-            count, n_questions, recent_set,
+            idxs,
+            due,
+            overdue,
+            in_cooldown,
+            recent,
+            is_new,
+            retention,
+            risk,
+            gap_bonus,
+            count,
+            n_questions,
+            recent_set,
         )
     return _select_srs_from_scored_py(scored, count, n_questions, recent_set)
 
@@ -109,14 +118,22 @@ def batch_score_srs(
     """
     if _HAS_RUST and _rs_batch_score is not None:
         return _rs_batch_score(
-            has_fsrs_due, fsrs_due_days_since,
-            has_last_review, days_since_review, sm2_interval,
-            has_fsrs_stability, fsrs_stability,
+            has_fsrs_due,
+            fsrs_due_days_since,
+            has_last_review,
+            days_since_review,
+            sm2_interval,
+            has_fsrs_stability,
+            fsrs_stability,
         )
     return _batch_score_srs_py(
-        has_fsrs_due, fsrs_due_days_since,
-        has_last_review, days_since_review, sm2_interval,
-        has_fsrs_stability, fsrs_stability,
+        has_fsrs_due,
+        fsrs_due_days_since,
+        has_last_review,
+        days_since_review,
+        sm2_interval,
+        has_fsrs_stability,
+        fsrs_stability,
     )
 
 

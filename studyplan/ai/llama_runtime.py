@@ -291,7 +291,8 @@ class LlamaRuntime:
             )
 
         first = attempts[0]
-        if self.server.is_running and self.server.current_model == first.name:
+        running, current_model_name = self.server.running_model
+        if running and current_model_name == first.name:
             return RuntimeStatus(
                 backend="llama_server",
                 model_name=first.name,
@@ -496,7 +497,7 @@ def _get_ollama_ram_budget_bytes() -> int:
         if int(getattr(Config, "LLAMA_CPP_RAM_BUDGET_MB", 0) or 0) > 0:
             return int(Config.LLAMA_CPP_RAM_BUDGET_MB) * 1024 * 1024
     except Exception:
-        pass
+        log.warning("Config import failed for LLAMA_CPP_RAM_BUDGET_MB; using auto-detection")
     # Priority 2: legacy env var (backward compat)
     try:
         env_mb = os.environ.get("STUDYPLAN_OLLAMA_RAM_BUDGET_MB", "").strip()

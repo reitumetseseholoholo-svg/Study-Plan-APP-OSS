@@ -7,6 +7,8 @@ import traceback
 from logging.handlers import RotatingFileHandler
 from typing import Any, Callable
 
+log = logging.getLogger(__name__)
+
 _LOG_RECORD_BUILTIN_ATTRS = frozenset(
     {
         "args",
@@ -129,7 +131,7 @@ def safe_json_diagnostics() -> dict[str, Any]:
 
         payload["config_home"] = str(getattr(Config, "CONFIG_HOME", ""))
     except Exception:
-        pass
+        log.warning("Config import failed in diagnostics; config_home omitted")
     return payload
 
 
@@ -149,7 +151,7 @@ class CaptureAndLog:
 
     def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
         if exc_type is not None:
-            self._log.warning(self._msg, exc_info=(exc_type, exc_val, exc_tb))
+            self._log.warning(self._msg, exc_info=True)
         return True
 
 

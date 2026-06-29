@@ -421,14 +421,14 @@ def detect_concepts(
         # Use the domain's own pattern-based detection; the numerical
         # solver's _FORMULA_SIGNATURES only covers ACCA FM formulas.
         domain_formulas = reg.detect_formulas(question)
-        seen: set[str] = set()
-        result: list[str] = []
+        _dseen: set[str] = set()
+        _dres: list[str] = []
         for formula in domain_formulas:
             cid = reg.formula_to_concept.get(formula)
-            if cid and cid not in seen:
-                seen.add(cid)
-                result.append(cid)
-        return result
+            if cid and cid not in _dseen:
+                _dseen.add(cid)
+                _dres.append(cid)
+        return _dres
 
     # Default: ACCA FM mapping
     if detected_formulas is None:

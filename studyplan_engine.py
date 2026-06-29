@@ -18,11 +18,14 @@ import math
 import os
 import random
 import re
+import signal
 import sys
 import tempfile
 import threading
 import time
 from typing import Callable, Dict, Any, List, Union, Set, Tuple, cast
+
+log = logging.getLogger(__name__)
 from collections import OrderedDict
 from studyplan.config import Config as StudyPlanConfig
 from studyplan.cognitive_state import CognitiveState
@@ -31,6 +34,7 @@ from studyplan.persistence_layer import PersistenceLayer
 from studyplan.rs.srs_select import batch_score_srs, select_srs_from_scored
 from studyplan.numerical_solver import verify_numerical_answer
 from studyplan.domain_reasoning import detect_concepts as _domain_detect_concepts
+from studyplan.domain_reasoning import evaluate_question as _domain_evaluate_question
 from studyplan.domain_reasoning import reason_question as _domain_reason_question
 from studyplan.question_quality import (
     assess_question_quality_extended,
@@ -55,6 +59,27 @@ from studyplan.performance_integration import profile_operation
 from studyplan.cython.cosine import cosine_similarity as _cosine_sim
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Domain reasoning timeout (signal-based, main-thread only)
+# ---------------------------------------------------------------------------
+_REASON_TIMEOUT_SECONDS = 10
+_REASON_SIGNAL_SETUP = False
+
+
+def _reason_timeout_handler(signum: int, frame: object) -> None:
+    logger.warning("_reason_timeout_handler: SIGALRM fired, raising TimeoutError")
+    raise TimeoutError("Domain reasoning timed out")
+
+
+def _ensure_reason_signal_setup() -> None:
+    global _REASON_SIGNAL_SETUP
+    if not _REASON_SIGNAL_SETUP:
+        try:
+            signal.signal(signal.SIGALRM, _reason_timeout_handler)
+        except (ValueError, RuntimeError):
+            pass  # Not in main thread; timeout disabled
+        _REASON_SIGNAL_SETUP = True
 
 
 class StudyPlanEngine:
@@ -83,7 +108,8 @@ class StudyPlanEngine:
     SEMANTIC_ROUTE_BUDGET_MS = 120.0
     SEMANTIC_ROUTE_FAIL_STREAK_LIMIT = 3
     SEMANTIC_ROUTE_CIRCUIT_SECONDS = 180.0
-    SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT = 6
+    SEMANTIC_WARMUP_PREFETCH_CHAPTER_LIMIT = 3
+    SEMANTIC_WARMUP_MAX_OUTCOMES_PER_CHAPTER = 200
     SEMANTIC_CANONICAL_ALIASES: Dict[str, str] = {
         "fs analysis": "financial statement analysis",
         "fsa": "financial statement analysis",
@@ -3143,6 +3169,28 @@ class StudyPlanEngine:
                         [num_issue],
                         source="numerical_audit",
                     )
+            # Domain reasoning validation: detect concept-level truth mismatches
+            # (e.g. wrong formula, computation that contradicts stated correct answer).
+            for idx, row in enumerate(items):
+                if not isinstance(row, dict):
+                    continue
+                if any(i == idx for i, _ in poor):
+                    continue
+                verdict = self._domain_validate_question(
+                    str(row.get("question", "") or ""),
+                    list(row.get("options", []) or []),
+                    str(row.get("correct", "") or ""),
+                    explanation=str(row.get("explanation", "") or "") or None,
+                )
+                if verdict.get("is_failing"):
+                    reason = verdict["reasons"][0]
+                    poor.append((idx, reason))
+                    self._append_question_quality_quarantine(
+                        chapter,
+                        row,
+                        [reason],
+                        source="domain_validation",
+                    )
             if not poor:
                 continue
             by_chapter = meta.setdefault(str(chapter), {})
@@ -3444,8 +3492,8 @@ class StudyPlanEngine:
         self._save_question_quality_meta(remapped_meta)
         try:
             self.save_data()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("save_data failed after prune_bank for %s: %s", chapter_key, e)
         return True
 
     def auto_clean_flagged_questions_preserve_srs(self) -> Dict[str, Any]:
@@ -3509,8 +3557,8 @@ class StudyPlanEngine:
         self._save_question_quality_meta(remapped_meta)
         try:
             self.save_data()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("save_data failed after bulk prune: %s", e)
         return {
             "changed": True,
             "removed_total": int(prune_result.get("removed_total", 0) or 0),
@@ -4082,7 +4130,7 @@ class StudyPlanEngine:
         except Exception as e:
             self._load_failed = True
             self._load_error = str(e) or type(e).__name__
-            print(f"Unexpected error loading data: {e}")
+            logger.warning("Unexpected error loading data: %s", e)
         if not hasattr(self, "cognitive_state") or self.cognitive_state is None:
             self.cognitive_state = self._load_or_build_cognitive_state()
             self._cognitive_state_lock = bind_cognitive_state_lock(self.cognitive_state, threading.RLock())
@@ -4136,10 +4184,13 @@ class StudyPlanEngine:
             self._initial_load_in_progress = False
         self._migrate_question_stats_to_qid()
         self._load_syllabus_import_cache_disk()
+        # Mark deferred load done BEFORE save_data to prevent recursive
+        # re-entry via _ensure_deferred_data_loaded().
+        self._deferred_load_done = True
         try:
             self.save_data(_skip_cog_persist=True)
         except Exception as exc:
-            print(f"Initial save skipped: {exc}")
+            logger.warning("Initial save skipped: %s", exc)
 
     def _ensure_deferred_data_loaded(self) -> None:
         """Ensure deferred data load has completed; triggers immediately if not.
@@ -4157,13 +4208,14 @@ class StudyPlanEngine:
         """Run the deferred data I/O (called from idle callback after window paints)."""
         if getattr(self, "_deferred_load_done", False):
             return
-        self._deferred_load_done = True
         self._deferred_load_error = None
         try:
             self._load_sync()
         except Exception as e:
             self._deferred_load_error = str(e) or type(e).__name__
             self._load_error = self._deferred_load_error
+        else:
+            self._deferred_load_done = True
 
     def _parse_date(self, value):
         """Parse a date from iso string/datetime/date; return date or None."""
@@ -4320,8 +4372,10 @@ class StudyPlanEngine:
     def _coerce_exam_date(self, raw):
         """Return a date or None for exam_date."""
         parsed = self._parse_date(raw)
-        if raw not in (None, parsed):
-            self.data_health["exam_date_fixed"] += 1
+        if raw is not None:
+            raw_str = str(raw) if not isinstance(raw, str) else raw
+            if parsed is None or raw_str != parsed.isoformat():
+                self.data_health["exam_date_fixed"] += 1
         return parsed
 
     def _coerce_pomodoro_log(self, raw):
@@ -5852,34 +5906,36 @@ class StudyPlanEngine:
         }
 
     def _semantic_cache_get(self, key: str) -> Dict[str, Any] | None:
-        try:
-            value = self._semantic_match_cache.get(key)
-        except Exception:
-            return None
-        if value is None:
-            return None
-        if isinstance(value, str):
-            # Backward compatibility with older in-memory cache shapes.
-            value = {"outcome_id": value, "method": "fallback", "score": 1.0}
-        try:
-            self._semantic_match_cache.move_to_end(key)
-        except Exception:
-            return value
-        return value if isinstance(value, dict) else None
+        with self._semantic_chapter_assets_lock:
+            try:
+                value = self._semantic_match_cache.get(key)
+            except Exception:
+                return None
+            if value is None:
+                return None
+            if isinstance(value, str):
+                # Backward compatibility with older in-memory cache shapes.
+                value = {"outcome_id": value, "method": "fallback", "score": 1.0}
+            try:
+                self._semantic_match_cache.move_to_end(key)
+            except Exception:
+                return value
+            return value if isinstance(value, dict) else None
 
     def _semantic_cache_set(self, key: str, outcome_id: str, method: str, score: float) -> None:
-        try:
-            self._semantic_match_cache[key] = {
-                "outcome_id": str(outcome_id or "").strip(),
-                "method": str(method or "fallback").strip().lower(),
-                "score": max(0.0, min(1.0, float(score))),
-            }
-            self._semantic_match_cache.move_to_end(key)
-            limit = int(self.SEMANTIC_CACHE_MAX)
-            while len(self._semantic_match_cache) > max(1, limit):
-                self._semantic_match_cache.popitem(last=False)
-        except Exception:
-            return
+        with self._semantic_chapter_assets_lock:
+            try:
+                self._semantic_match_cache[key] = {
+                    "outcome_id": str(outcome_id or "").strip(),
+                    "method": str(method or "fallback").strip().lower(),
+                    "score": max(0.0, min(1.0, float(score))),
+                }
+                self._semantic_match_cache.move_to_end(key)
+                limit = int(self.SEMANTIC_CACHE_MAX)
+                while len(self._semantic_match_cache) > max(1, limit):
+                    self._semantic_match_cache.popitem(last=False)
+            except Exception:
+                return
 
     def _semantic_invalidate_chapter_assets(self, chapter: str | None = None) -> None:
         """Invalidate semantic chapter assets and related route caches."""
@@ -6024,12 +6080,14 @@ class StudyPlanEngine:
         }
 
     def _semantic_reset_runtime_state(self, clear_shared: bool = False) -> None:
-        self._semantic_model = None
-        self._semantic_model_state = "unloaded"
-        self._semantic_block_reason = None
-        self._semantic_reranker = None
-        self._semantic_reranker_state = "unloaded"
-        self._semantic_reranker_block_reason = None
+        with self._semantic_lock:
+            self._semantic_model = None
+            self._semantic_model_state = "unloaded"
+            self._semantic_block_reason = None
+        with self._semantic_rerank_lock:
+            self._semantic_reranker = None
+            self._semantic_reranker_state = "unloaded"
+            self._semantic_reranker_block_reason = None
         self._semantic_failure_streak = 0
         self._semantic_circuit_until_ts = 0.0
         self._semantic_circuit_reason = ""
@@ -6059,21 +6117,23 @@ class StudyPlanEngine:
         ).strip()
         if not model_name:
             model_name = self.SEMANTIC_MODEL_NAME
-        shared = self._SEMANTIC_SHARED_MODELS.get(model_name)
-        if shared is not None:
-            self._semantic_model = shared
-            self._semantic_model_state = "ready"
-            self._semantic_block_reason = None
-            return self._semantic_model
-        with self._semantic_lock:
-            if self._semantic_model is not None:
-                return self._semantic_model
+        with self._SEMANTIC_SHARED_MODEL_LOCK:
             shared = self._SEMANTIC_SHARED_MODELS.get(model_name)
             if shared is not None:
                 self._semantic_model = shared
                 self._semantic_model_state = "ready"
                 self._semantic_block_reason = None
                 return self._semantic_model
+        with self._semantic_lock:
+            if self._semantic_model is not None:
+                return self._semantic_model
+            with self._SEMANTIC_SHARED_MODEL_LOCK:
+                shared = self._SEMANTIC_SHARED_MODELS.get(model_name)
+                if shared is not None:
+                    self._semantic_model = shared
+                    self._semantic_model_state = "ready"
+                    self._semantic_block_reason = None
+                    return self._semantic_model
             self._configure_semantic_runtime_env()
             try:
                 from sentence_transformers import SentenceTransformer  # type: ignore
@@ -6137,21 +6197,23 @@ class StudyPlanEngine:
         ).strip()
         if not model_name:
             model_name = self.SEMANTIC_RERANK_MODEL_NAME
-        shared = self._SEMANTIC_SHARED_RERANKERS.get(model_name)
-        if shared is not None:
-            self._semantic_reranker = shared
-            self._semantic_reranker_state = "ready"
-            self._semantic_reranker_block_reason = None
-            return self._semantic_reranker
-        with self._semantic_rerank_lock:
-            if self._semantic_reranker is not None:
-                return self._semantic_reranker
+        with self._SEMANTIC_SHARED_RERANK_LOCK:
             shared = self._SEMANTIC_SHARED_RERANKERS.get(model_name)
             if shared is not None:
                 self._semantic_reranker = shared
                 self._semantic_reranker_state = "ready"
                 self._semantic_reranker_block_reason = None
                 return self._semantic_reranker
+        with self._semantic_rerank_lock:
+            if self._semantic_reranker is not None:
+                return self._semantic_reranker
+            with self._SEMANTIC_SHARED_RERANK_LOCK:
+                shared = self._SEMANTIC_SHARED_RERANKERS.get(model_name)
+                if shared is not None:
+                    self._semantic_reranker = shared
+                    self._semantic_reranker_state = "ready"
+                    self._semantic_reranker_block_reason = None
+                    return self._semantic_reranker
             self._configure_semantic_runtime_env()
             try:
                 from sentence_transformers import CrossEncoder  # type: ignore
@@ -6269,11 +6331,14 @@ class StudyPlanEngine:
         scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
         # Prepare work items: (chapter, lookup, ordered_ids, normalized) for top chapters
         work_items: List[Tuple[str, Dict[str, Dict[str, Any]], List[str], List[str]]] = []
+        max_outcomes = int(getattr(self, "SEMANTIC_WARMUP_MAX_OUTCOMES_PER_CHAPTER", 200) or 200)
         for _score, chapter in scored[:max_chapters]:
             lookup = self._chapter_outcome_lookup(chapter)
             ordered_ids = sorted(lookup.keys())
             if not ordered_ids:
                 continue
+            if len(ordered_ids) > max_outcomes:
+                ordered_ids = ordered_ids[:max_outcomes]
             outcome_texts = [str((lookup.get(oid) or {}).get("text", "")).strip() for oid in ordered_ids]
             normalized = [(self._semantic_normalize_text(chapter, txt) or txt) for txt in outcome_texts]
             work_items.append((chapter, lookup, ordered_ids, normalized))
@@ -6282,7 +6347,9 @@ class StudyPlanEngine:
             return 0
 
         # Build chapter assets in parallel (TF-IDF is CPU-bound per chapter)
-        max_workers = min(len(work_items), max(1, (os.cpu_count() or 4)))
+        # Cap at 2 workers: CPU-bound fit_transform doesn't benefit from more,
+        # and higher counts saturate all cores competing with the GTK main thread.
+        max_workers = min(len(work_items), max(1, (os.cpu_count() or 4)), 2)
         built = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
@@ -6302,8 +6369,8 @@ class StudyPlanEngine:
                 except Exception:
                     result = None
                 with self._semantic_chapter_assets_lock:
-                    self._semantic_perf_stats["tfidf_asset_misses"] = (
-                        float(self._semantic_perf_stats.get("tfidf_asset_misses", 0.0) or 0.0) + 1.0
+                    self._semantic_perf_stats["tfidf_asset_attempts"] = (
+                        float(self._semantic_perf_stats.get("tfidf_asset_attempts", 0.0) or 0.0) + 1.0
                     )
                     if isinstance(result, dict):
                         existing = self._semantic_chapter_match_assets.get(chapter_key)
@@ -6318,14 +6385,15 @@ class StudyPlanEngine:
     @profile_operation("warmup_semantic_model")
     def warmup_semantic_model(self, force: bool = False) -> Dict[str, Any]:
         started = time.perf_counter()
-        # Re-entrant guard: prevent concurrent warmup (model download / TF-IDF build).
-        if getattr(self, "_semantic_warmup_in_progress", False):
-            return self.get_semantic_status()
-        self._semantic_warmup_in_progress = True
+        with self._semantic_lock:
+            if getattr(self, "_semantic_warmup_in_progress", False):
+                return self.get_semantic_status()
+            self._semantic_warmup_in_progress = True
         try:
             return self._warmup_semantic_model_impl(force, started)
         finally:
-            self._semantic_warmup_in_progress = False
+            with self._semantic_lock:
+                self._semantic_warmup_in_progress = False
 
     def _warmup_semantic_model_impl(self, force: bool, started: float) -> Dict[str, Any]:
         if bool(force):
@@ -8122,7 +8190,7 @@ class StudyPlanEngine:
                 if idx_entry is None:
                     continue
                 if qid_entry is None:
-                    stats_by_ch[qid] = idx_entry
+                    stats_by_ch[qid] = dict(idx_entry)
                 else:
                     try:
                         idx_attempts = int(idx_entry.get("attempts", 0) or 0)
@@ -8133,7 +8201,7 @@ class StudyPlanEngine:
                     except Exception:
                         qid_attempts = 0
                     if idx_attempts > qid_attempts:
-                        stats_by_ch[qid] = idx_entry
+                        stats_by_ch[qid] = dict(idx_entry)
 
     def _normalize_chapter_keys(self) -> None:
         """Normalize chapter key casing/aliases across stored dictionaries."""
@@ -8486,24 +8554,24 @@ class StudyPlanEngine:
                 and len(raw_question_keys) > len(self.CHAPTERS)
             ):
                 self.CHAPTERS = raw_question_keys
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to assign CHAPTERS from question keys: %s", e)
 
         total_added = sum(len(q) for q in questions_from_json.values())
-        print(f"Total questions from JSON: {total_added}")
+        logger.info("Total questions from JSON: %d", total_added)
 
         # Step 3: Sync SRS data with merged questions, then remove any tombstoned rows.
         self.sync_srs_with_questions()
         try:
             self._prune_removed_questions_from_bank(persist=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to prune removed questions: %s", e)
 
         # Step 4: Quarantine poor-quality questions (see explanation in options, similar questions)
         try:
             self.apply_question_quality_quarantine()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to apply question quality quarantine: %s", e)
 
         # Debug output
         self._print_question_summary()
@@ -8794,8 +8862,8 @@ class StudyPlanEngine:
         self._semantic_invalidate_chapter_assets(chapter)
         try:
             self.save_data()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("save_data failed after link_question_outcome: %s", e)
 
     def _note_low_confidence_chapter_match(self, title: str, chapter: str, similarity: float) -> None:
         """Log low-confidence chapter matching once per unique mapping and cap noisy output."""
@@ -9142,17 +9210,24 @@ class StudyPlanEngine:
 
         # Domain-reasoning verification: use the full reasoning engine to
         # check numerical consistency when heuristic detection was inconclusive.
+        # Skip during bulk JSON load — the quarantine pass (apply_question_quality_quarantine)
+        # catches the same issues via _domain_validate_question.
         domain_template_ref = None
-        if not num_issue:
+        if source != "json_load" and not num_issue:
             try:
                 _detected = _domain_detect_concepts(str(question))
                 if _detected:
-                    _trace = _domain_reason_question(
-                        str(question),
-                        options=[str(o) for o in options],
-                        correct=str(correct),
-                        explanation=str(explanation) if explanation else None,
-                    )
+                    _ensure_reason_signal_setup()
+                    signal.alarm(_REASON_TIMEOUT_SECONDS)
+                    try:
+                        _trace = _domain_reason_question(
+                            str(question),
+                            options=[str(o) for o in options],
+                            correct=str(correct),
+                            explanation=str(explanation) if explanation else None,
+                        )
+                    finally:
+                        signal.alarm(0)
                     if getattr(_trace, "has_result", False) and getattr(_trace, "confidence", 0.0) > 0.5:
                         _truth = getattr(_trace, "final_result", None)
                         _correct_parsed = None
@@ -9180,6 +9255,12 @@ class StudyPlanEngine:
                             _tc = getattr(_trace, "target_concept_id", None)
                             if _tc:
                                 domain_template_ref = str(_tc)
+            except TimeoutError:
+                logger.warning(
+                    "Domain reasoning timed out for question: chapter=%s q=%.60s",
+                    chapter,
+                    str(question if isinstance(question, str) else question.get("question", question))[:60],
+                )
             except Exception:
                 pass
 
@@ -11082,7 +11163,7 @@ class StudyPlanEngine:
         """Select question based on lowest retention probability (most forgotten)."""
         questions = self.QUESTIONS.get(chapter, [])
         if not questions:
-            return 0
+            return None
 
         today = datetime.date.today()
         srs_list = self.srs_data.get(chapter, [])
@@ -11098,9 +11179,7 @@ class StudyPlanEngine:
 
         # Pick most forgotten overdue question
         if not retention_scores:
-            # Fallback: no questions could be scored (e.g. all probability
-            # calculations raised); return the first question as a safe default.
-            return 0
+            return None
         return min(retention_scores, key=lambda x: x[1])[0]
 
     def _estimate_question_miss_risk(self, chapter: str, idx: int) -> float:
@@ -11242,9 +11321,13 @@ class StudyPlanEngine:
                 batch_has_stability.append(0)
 
         batch_overdue, batch_retention = batch_score_srs(
-            batch_has_fsrs_due, batch_fsrs_due_days,
-            batch_has_review, batch_days_since, batch_interval,
-            batch_has_stability, batch_stability,
+            batch_has_fsrs_due,
+            batch_fsrs_due_days,
+            batch_has_review,
+            batch_days_since,
+            batch_interval,
+            batch_has_stability,
+            batch_stability,
         )
 
         scored = []
@@ -11286,7 +11369,10 @@ class StudyPlanEngine:
 
         # Use shared selector (Rust-accelerated if available, pure-Python fallback)
         selected = select_srs_from_scored(
-            scored, count, len(questions), list(recent_set),
+            scored,
+            count,
+            len(questions),
+            list(recent_set),
         )
 
         # Safety net: fill any remaining slots with random
@@ -11294,7 +11380,7 @@ class StudyPlanEngine:
         if len(selected) < target:
             remaining = [i for i in range(len(questions)) if i not in selected]
             random.shuffle(remaining)
-            selected.extend(remaining[:(target - len(selected))])
+            selected.extend(remaining[: (target - len(selected))])
 
         return selected
 
@@ -12168,7 +12254,7 @@ class StudyPlanEngine:
         if qid:
             idx_key = str(question_index)
             if idx_key != key:
-                stats_by_ch[idx_key] = stats_by_ch[key]
+                stats_by_ch[idx_key] = dict(stats_by_ch[key])
 
     def get_error_counts(self, chapter: str | None = None) -> dict[str, int]:
         """Return counts of error tags."""
@@ -12330,7 +12416,7 @@ class StudyPlanEngine:
             else:
                 self._update_srs_fsrs(srs, chapter, question_index, is_correct)
         except Exception as e:
-            print(f"Error updating SRS for question {question_index} in chapter {chapter}: {e}", file=sys.stderr)
+            log.warning("Error updating SRS for question %d in chapter %s: %s", question_index, chapter, e)
 
     def _update_srs_fsrs(self, srs: dict, chapter: str, question_index: int, is_correct: bool) -> None:
         """Update a single SRS item using the FSRS-4.5 algorithm."""
@@ -12347,7 +12433,7 @@ class StudyPlanEngine:
                     self.must_review[chapter].pop(str(question_index), None)
         except Exception as e:
             # Degrade gracefully to SM-2 on any FSRS error.
-            print(f"FSRS update failed, falling back to SM-2: {e}", file=sys.stderr)
+            log.warning("FSRS update failed, falling back to SM-2: %s", e)
             self._update_srs_sm2(srs, chapter, question_index, is_correct)
 
     def _update_srs_sm2(self, srs: dict, chapter: str, question_index: int, is_correct: bool) -> None:
@@ -13015,16 +13101,16 @@ class StudyPlanEngine:
                     due_date = self._parse_date(due)
                     if due_date and due_date <= today:
                         return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("is_urgent: due_map check failed for %s: %s", chapter, e)
 
         try:
             srs_list = self.srs_data.get(chapter, [])
             overdue = sum(1 for srs in srs_list if self.is_overdue(srs, today))
             if overdue >= max(1, int(len(srs_list) * 0.3)):
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("is_urgent: SRS overdue check failed for %s: %s", chapter, e)
 
         return False
 
@@ -14299,6 +14385,49 @@ class StudyPlanEngine:
             return _domain_detect_concepts(str(question or ""))
         except Exception:
             return []
+
+    def _domain_validate_question(
+        self,
+        question: str,
+        options: list[str],
+        correct: str,
+        *,
+        explanation: str | None = None,
+    ) -> dict:
+        """Run domain reasoning validation and return a quality verdict.
+
+        Calls ``evaluate_question()`` and extracts actionable signals
+        for the quarantine pipeline.
+
+        Returns a dict with keys:
+        - ``is_failing``: True if the question has a deterministic truth mismatch
+        - ``reasons``: list of failure reason strings (e.g. ``"domain_numerical_mismatch:npv"``)
+        - ``concept_id``: primary concept detected (or None)
+        - ``confidence``: diagnostic confidence (0.0-1.0)
+
+        Never raises — failures degrade to a safe verdict.
+        """
+        try:
+            diag = _domain_evaluate_question(
+                str(question or ""),
+                options=list(options) if options else None,
+                correct=str(correct) if correct else None,
+                explanation=str(explanation) if explanation else None,
+            )
+            if not diag.has_deterministic_truth or diag.diagnostic_confidence < 0.3:
+                return {"is_failing": False, "reasons": [], "concept_id": None, "confidence": 0.0}
+            if not diag.all_error_tags:
+                return {
+                    "is_failing": False,
+                    "reasons": [],
+                    "concept_id": diag.primary_concept_id,
+                    "confidence": diag.diagnostic_confidence,
+                }
+            cid = diag.primary_concept_id or "unknown"
+            reasons = [f"domain_numerical_mismatch:{cid}"]
+            return {"is_failing": True, "reasons": reasons, "concept_id": cid, "confidence": diag.diagnostic_confidence}
+        except Exception:
+            return {"is_failing": False, "reasons": [], "concept_id": None, "confidence": 0.0}
 
     def domain_reason_question(
         self,

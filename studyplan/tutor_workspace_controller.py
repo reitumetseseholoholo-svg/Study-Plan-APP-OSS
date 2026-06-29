@@ -36,8 +36,8 @@ class TutorWorkspaceController:
         if callable(stream):
             try:
                 s = stream()
-                s.follow_live = True
-                s.follow_manual_override = False
+                s.follow_live = True  # type: ignore[attr-defined]
+                s.follow_manual_override = False  # type: ignore[attr-defined]
             except Exception:
                 state["follow_live"] = True
                 state["follow_manual_override"] = False

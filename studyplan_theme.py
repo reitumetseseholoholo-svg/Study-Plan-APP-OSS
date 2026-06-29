@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import gi  # type: ignore[import-untyped]
+
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gtk, Gdk  # type: ignore[reportAttributeAccessIssue,import-untyped]
@@ -252,7 +253,9 @@ window.tile .section-title {
     border: 2px solid alpha(@theme_fg_color, 0.46);
     border-radius: 12px;
     padding: 14px;
-    box-shadow: 0 1px 0 alpha(@theme_fg_color, 0.10), 0 8px 22px alpha(@theme_fg_color, 0.14);
+    box-shadow:
+        0 1px 3px alpha(@theme_fg_color, 0.08),
+        0 4px 12px alpha(@theme_fg_color, 0.06);
     margin-top: 6px;
     margin-bottom: 6px;
     transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
@@ -267,8 +270,8 @@ window.tile .section-title {
     border-color: alpha(@theme_selected_bg_color, 0.96);
     box-shadow:
         0 0 0 1px alpha(@theme_selected_bg_color, 0.48),
-        0 10px 28px alpha(@theme_selected_bg_color, 0.26),
-        0 3px 8px alpha(@theme_fg_color, 0.12);
+        0 6px 20px alpha(@theme_selected_bg_color, 0.18),
+        0 2px 6px alpha(@theme_fg_color, 0.10);
 }
 
 .chart-card {
@@ -1177,12 +1180,20 @@ label.today-focus-chip {
     margin-bottom: 4px;
 }
 
-paned > separator {
+paned.horizontal > separator {
     min-height: 4px;
     min-width: 4px;
     background: alpha(@theme_fg_color, 0.06);
     border: none;
     margin: 2px 0;
+}
+
+paned.vertical > separator {
+    min-height: 4px;
+    min-width: 4px;
+    background: alpha(@theme_fg_color, 0.06);
+    border: none;
+    margin: 0 2px;
 }
 
 paned > separator:hover {
@@ -1313,6 +1324,7 @@ COACH_THEME_CSS = """
 @define-color coach_card #212d43;
 @define-color coach_border #647fb3;
 @define-color coach_border_strong #9bb8ef;
+@define-color app_accent #8bafff;
 @define-color coach_text #e8edf7;
 @define-color coach_muted #e4edff;
 @define-color coach_accent #4fd1c5;
@@ -1557,9 +1569,8 @@ window.tile .section-title {
     border-radius: 13px;
     padding: 12px;
     box-shadow:
-        0 1px 0 rgba(179, 198, 232, 0.09),
-        0 6px 20px rgba(0, 0, 0, 0.46),
-        0 2px 5px rgba(0, 0, 0, 0.24);
+        0 1px 3px rgba(0, 0, 0, 0.24),
+        0 4px 12px rgba(0, 0, 0, 0.18);
     margin-top: 6px;
     margin-bottom: 6px;
     border-color: #6986be;
@@ -1581,8 +1592,8 @@ window.tile .section-title {
     background: #263653;
     box-shadow:
         0 0 0 1px rgba(139, 175, 255, 0.52),
-        0 10px 28px rgba(139, 175, 255, 0.24),
-        0 3px 8px rgba(0, 0, 0, 0.36);
+        0 6px 20px rgba(139, 175, 255, 0.16),
+        0 2px 6px rgba(0, 0, 0, 0.28);
     background-image:
         linear-gradient(
         to bottom,
@@ -2518,12 +2529,20 @@ label.today-focus-chip {
     margin-bottom: 4px;
 }
 
-paned > separator {
+paned.horizontal > separator {
     min-height: 4px;
     min-width: 4px;
     background: rgba(139, 175, 255, 0.08);
     border: none;
     margin: 2px 0;
+}
+
+paned.vertical > separator {
+    min-height: 4px;
+    min-width: 4px;
+    background: rgba(139, 175, 255, 0.08);
+    border: none;
+    margin: 0 2px;
 }
 
 paned > separator:hover {
@@ -3287,13 +3306,76 @@ window.study-window .workbench-text {{
     font-family: "Iosevka Aile", "JetBrains Mono NL", "Noto Sans Mono", "Symbols Nerd Font Mono", monospace;
 }}
 
+/* ── About dialog ── */
+window.aboutdialog {{
+    background: {surface["card"]};
+    border-radius: 14px;
+}}
+window.aboutdialog .dialog-vbox {{
+    padding: 6px;
+}}
+
+/* ── Section titles with accent underline ── */
+window.study-window .section-title {{
+    padding-bottom: 2px;
+}}
+window.study-window .section-title::after {{
+    content: "";
+    display: block;
+    width: 28px;
+    height: 2px;
+    background: alpha({color["accent"]}, 0.50);
+    border-radius: 1px;
+    margin-top: 3px;
+}}
+
+/* ── Card entrance subtle animation ── */
+window.study-window .card {{
+    transition: all 180ms ease-out, box-shadow 200ms ease, background 150ms ease;
+}}
+
+/* ── Enhanced badge pulse ── */
+window.study-window .badge {{
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 660;
+    letter-spacing: 0.2px;
+    background: alpha({color["accent"]}, 0.14);
+    border: 1px solid alpha({color["accent"]}, 0.30);
+}}
+window.study-window .badge.status-warn {{
+    background: alpha(#f5a623, 0.15);
+    border-color: alpha(#f5a623, 0.35);
+    color: #f5a623;
+}}
+
+/* ── Coach card polish ── */
+window.study-window .coach-card {{
+    border-left: 3px solid alpha({color["accent"]}, 0.50);
+}}
+
+/* ── Metric / KPI lines ── */
+window.study-window .kpi-line {{
+    font-weight: 660;
+    letter-spacing: 0.1px;
+}}
+
+/* ── Tooltip subtle enhancement ── */
+window.study-window tooltip {{
+    font-size: 12px;
+    box-shadow: 0 2px 8px alpha({color["text"]}, 0.12);
+}}
+
 {motion_css}
 """
 
 
 def _compose_theme_css(use_system: bool) -> str:
     base_css = SYSTEM_THEME_CSS if use_system else COACH_THEME_CSS
-    base_text = base_css.decode("utf-8", errors="replace") if isinstance(base_css, (bytes, bytearray)) else str(base_css)
+    base_text = (
+        base_css.decode("utf-8", errors="replace") if isinstance(base_css, (bytes, bytearray)) else str(base_css)
+    )
     if not bool(_THEME_RUNTIME_OPTIONS.get("modern_enabled", False)):
         return base_text
     return base_text + "\n" + _build_modern_overlay_css(use_system)

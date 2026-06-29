@@ -27,11 +27,11 @@ def demo_performance_profiling():
         # Simulate mean calculation
         alpha, beta = 2.0 + i * 0.01, 2.0 + i * 0.01
         denom = alpha + beta
-        alpha / denom if denom > 0 else 0.5
+        _ = alpha / denom if denom > 0 else 0.5
 
         # Simulate variance calculation
         if alpha > 0 and beta > 0:
-            (alpha * beta) / ((alpha + beta) ** 2 * (alpha + beta + 1.0))
+            _ = (alpha * beta) / ((alpha + beta) ** 2 * (alpha + beta + 1.0))
 
     end_time = time.perf_counter()
     calculation_time = end_time - start_time
@@ -167,7 +167,7 @@ def demo_optimization_components():
     start_time = time.perf_counter()
     for i in range(100):
         # Simulate individual calculation
-        sum(range(i + 1)) / (i + 1) if i > 0 else 0
+        _ = sum(range(i + 1)) / (i + 1) if i > 0 else 0
     individual_time = time.perf_counter() - start_time
 
     # Simulate batch processing
@@ -176,7 +176,7 @@ def demo_optimization_components():
     import random
 
     data = [random.random() for _ in range(100)]
-    sum(data) / len(data)
+    _ = sum(data) / len(data)
     batch_time = time.perf_counter() - start_time
 
     improvement = ((individual_time - batch_time) / individual_time * 100) if individual_time > 0 else 0

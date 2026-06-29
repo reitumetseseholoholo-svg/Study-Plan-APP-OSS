@@ -3303,7 +3303,7 @@ def test_validate_generated_gap_questions_strict_gate():
             str(row.get("correct", "")).strip().lower(),
         ),
     )
-    dummy = types.SimpleNamespace(engine=engine)
+    dummy = types.SimpleNamespace(engine=engine, _check_distractor_coverage=lambda ch, opts, corr: {})
     valid, reasons = StudyPlanGUI._validate_generated_gap_questions(
         dummy,
         "Topic A",
@@ -3336,7 +3336,9 @@ def test_validate_generated_gap_questions_non_strict_allows_shorter_rows():
             str(row.get("correct", "")).strip().lower(),
         ),
     )
-    dummy = types.SimpleNamespace(engine=engine, ai_tutor_gap_autosave_strict_gate=False)
+    dummy = types.SimpleNamespace(
+        engine=engine, ai_tutor_gap_autosave_strict_gate=False, _check_distractor_coverage=lambda ch, opts, corr: {}
+    )
     sample = [
         {
             "question": "CAPM?",
@@ -3622,6 +3624,7 @@ def test_generate_gap_drill_questions_failover_uses_second_model():
         _validate_generated_gap_questions=lambda ch, q, **kw: ([valid_row] if q else [], []),
         _save_generated_gap_questions=lambda ch, rows: (len(rows), False),
         _record_ai_tutor_autopilot_metrics=lambda *_args, **_kw: None,
+        _domain_correct_generated_questions=lambda ch, qs: qs,
         _ai_tutor_autopilot_stats={},
     )
 
@@ -3658,6 +3661,7 @@ def test_generate_gap_drill_questions_shows_storage_error_when_save_fails():
         _save_generated_gap_questions=lambda ch, rows: (0, True),
         _record_ai_tutor_autopilot_metrics=lambda *_args, **_kw: None,
         _append_gap_question_quarantine=lambda *_args, **_kw: None,
+        _domain_correct_generated_questions=lambda ch, qs: qs,
         _ai_tutor_autopilot_stats={},
     )
     ok, msg = StudyPlanGUI._generate_gap_drill_questions(dummy, "Topic A", snapshot={})
@@ -3692,6 +3696,7 @@ def test_generate_gap_drill_questions_surfaces_validation_reasons():
         ),
         _append_gap_question_quarantine=lambda *_args, **_kw: None,
         _record_ai_tutor_autopilot_metrics=lambda *_args, **_kw: None,
+        _domain_correct_generated_questions=lambda ch, qs: qs,
         _ai_tutor_autopilot_stats={},
     )
     dummy._format_gap_question_reject_summary = types.MethodType(
@@ -3735,6 +3740,7 @@ def test_generate_gap_drill_questions_rejects_stale_workflow_token_before_save()
         _save_generated_gap_questions=lambda *_args, **_kw: (_ for _ in ()).throw(AssertionError("should not save")),
         _compose_ollama_recovery_status=lambda *args, **kwargs: "recovery",
         _compose_ollama_guardrail_status=lambda *args, **kwargs: "guardrail",
+        _domain_correct_generated_questions=lambda ch, qs: qs,
     )
     dummy._workflow_token_is_current = types.MethodType(StudyPlanGUI._workflow_token_is_current, dummy)
 
@@ -5285,6 +5291,7 @@ def test_build_section_c_generation_prompt_includes_intelligence_payload():
         "recent_section_c_avg_pct": 71.0,
         "recent_section_c_weakest_criterion": "Evaluation and recommendation",
     }
+    dummy._build_concept_generation_context = lambda topic, cids: []
     prompt = StudyPlanGUI._build_section_c_generation_prompt(
         dummy,
         "Topic A",
@@ -5507,6 +5514,7 @@ def test_generate_section_c_question_fr_retries_when_exhibits_lack_tables():
         _parse_generated_section_c_question=_parse,
         _is_fr_financial_reporting_module=lambda: True,
         _upsert_section_c_question=lambda chapter, row, persist=True: row,
+        _domain_verify_section_c_question=lambda ch, q: q,
     )
 
     row, warn = StudyPlanGUI._generate_section_c_question(dummy, "Topic A", snapshot={})
@@ -5561,6 +5569,7 @@ def test_generate_section_c_question_fr_keeps_initial_result_when_retry_has_no_d
         _parse_generated_section_c_question=_parse,
         _is_fr_financial_reporting_module=lambda: True,
         _upsert_section_c_question=lambda chapter, row, persist=True: row,
+        _domain_verify_section_c_question=lambda ch, q: q,
     )
 
     row, warn = StudyPlanGUI._generate_section_c_question(dummy, "Topic A", snapshot={})
@@ -6920,7 +6929,7 @@ def test_start_stop_core_housekeeping_timers_registers_and_cleans_sources(monkey
 
     StudyPlanGUI._start_core_housekeeping_timers(dummy)
 
-    assert [row[0] for row in timer_calls] == [60000, 4000, 5000, 7200000]
+    assert [row[0] for row in timer_calls] == [60000, 10000, 5000, 7200000]
     assert registered == [101, 102, 103, 104]
     assert int(dummy._auto_train_timer_id) == 101
     assert int(dummy._semantic_warmup_timer_id) == 102
