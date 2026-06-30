@@ -2333,6 +2333,7 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         self._focus_tracking_warning_shown = False
         self._last_idle_seconds = None
         self._last_idle_source = None
+        self._last_input_event_at = time.monotonic()
         self._hypridle_state_path = HYPRIDLE_STATE_PATH
         self._hypridle_supported = bool(shutil.which("hypridle"))
         self._pomodoro_active_state_path = POMODORO_ACTIVE_STATE_PATH
@@ -3535,6 +3536,26 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
         # Defer the heavier dashboard build until GTK is idle so the window paints quickly.
         GLib.idle_add(self._run_initial_refresh)
         GLib.idle_add(self._maybe_show_first_run)
+
+        # Track input events for GTK-native idle detection
+        try:
+            _key_ctrl = Gtk.EventControllerKey()
+            _key_ctrl.connect("key-pressed", self._on_input_event)
+            self.add_controller(_key_ctrl)
+        except Exception:
+            pass
+        try:
+            _motion_ctrl = Gtk.EventControllerMotion()
+            _motion_ctrl.connect("motion", self._on_input_event)
+            self.add_controller(_motion_ctrl)
+        except Exception:
+            pass
+        try:
+            _click_gesture = Gtk.GestureClick()
+            _click_gesture.connect("pressed", self._on_input_event)
+            self.add_controller(_click_gesture)
+        except Exception:
+            pass
 
         # Autosave on close
         self.connect("close-request", self.on_close_request)
@@ -28429,9 +28450,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             last = float(getattr(self, "_ai_tutor_global_coaching_last_at", 0.0) or 0.0)
             if (now - last) < float(AI_TUTOR_AUTOPILOT_COACHING_CHECKIN_SECONDS):
                 return True
-            quiet = float(getattr(self, "_ai_tutor_global_quiet_until", 0.0) or 0.0)
-            if quiet > now:
-                return True
         except Exception:
             return True
 
@@ -28741,12 +28759,6 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             now_val = float(now_ts if now_ts is not None else time.monotonic())
         except Exception:
             now_val = float(time.monotonic())
-        try:
-            quiet_until = float(getattr(self, "_ai_tutor_global_quiet_until", 0.0) or 0.0)
-        except Exception:
-            quiet_until = 0.0
-        if quiet_until > now_val:
-            return False, "quiet_window", event_sig
         try:
             last_decision_at = float(getattr(self, "_ai_tutor_global_last_decision_at", 0.0) or 0.0)
         except Exception:
@@ -39308,7 +39320,25 @@ class StudyPlanGUI(Gtk.ApplicationWindow):
             self._log_optional_subprocess_failure("loginctl.show-user", exc, details=os.environ.get("USER", ""))
         return None
 
+    def _on_input_event(self, *_args: Any) -> None:
+        self._last_input_event_at = time.monotonic()
+
+    def _get_idle_seconds_input(self) -> float | None:
+        last = getattr(self, "_last_input_event_at", None)
+        if last is None:
+            return None
+        elapsed = time.monotonic() - last
+        if elapsed <= 30:
+            return 0.0
+        if self.props.is_active:
+            return elapsed
+        return None
+
     def _get_idle_seconds(self) -> float | None:
+        idle_seconds = self._get_idle_seconds_input()
+        if idle_seconds is not None:
+            self._last_idle_source = "input"
+            return idle_seconds
         idle_seconds = self._get_idle_seconds_hypridle()
         if idle_seconds is not None:
             self._last_idle_source = "hypridle"

@@ -3134,7 +3134,7 @@ def test_should_request_global_ai_tutor_decision_respects_quiet_window():
     dummy._ai_tutor_global_last_event_sig = sig
     should2, reason2, _sig2 = StudyPlanGUI._should_request_global_ai_tutor_decision(dummy, snapshot, now_ts=200.0)
     assert should2 is False
-    assert reason2 == "quiet_window"
+    assert reason2 == "no_material_change"
 
 
 def test_ai_tutor_autopilot_diagnostic_summary_exposes_quiet_and_last_reason():
@@ -8472,7 +8472,7 @@ class TestCoachingCheckinTimer:
             StudyPlanGUI._global_ai_tutor_coaching_tick(dummy)
         assert len(dummy._notifications_sent) == 0
 
-    def test_coaching_tick_respects_quiet_window(self):
+    def test_coaching_tick_fires_regardless_of_quiet_window(self):
         dummy, _fg = _make_coaching_dummy()
         dummy._ai_tutor_global_quiet_until = float("inf")
         import unittest.mock as _mock
@@ -8480,7 +8480,8 @@ class TestCoachingCheckinTimer:
 
         with _mock.patch.object(_appmod, "GLib", _fg):
             StudyPlanGUI._global_ai_tutor_coaching_tick(dummy)
-        assert len(dummy._notifications_sent) == 0
+        assert len(dummy._notifications_sent) == 1
+        assert dummy._notifications_sent[0][0] == "Coach"
 
     def test_coaching_tick_falls_back_when_llm_model_missing(self):
         dummy, _fg = _make_coaching_dummy()
