@@ -352,3 +352,294 @@ class TestGapGenerationPromptWithContext:
         prompt = StudyPlanGUI._build_section_c_generation_prompt(dummy, "investment_appraisal", snapshot=snapshot)
         assert "concept_formulas" in prompt
         assert "fm.npv" in prompt
+
+
+# ===================================================================
+# _recover_partial_questions (partial JSON recovery)
+# ===================================================================
+
+
+class TestRecoverPartialQuestions:
+    def test_extracts_individual_objects_from_malformed_json(self):
+        text = """Here are some questions:
+        {"question": "Q1?", "options": ["A","B","C","D"], "correct": "A", "explanation": "E1."}
+        some garbage text
+        {"question": "Q2?", "options": ["W","X","Y","Z"], "correct": "Z", "explanation": "E2."}
+        """
+        result = StudyPlanGUI._recover_partial_questions(text)
+        assert len(result) == 2
+        assert result[0]["question"] == "Q1?"
+        assert result[1]["question"] == "Q2?"
+
+    def test_empty_text_returns_empty_list(self):
+        assert StudyPlanGUI._recover_partial_questions("") == []
+
+    def test_no_valid_object_returns_empty(self):
+        assert StudyPlanGUI._recover_partial_questions("Just some random text without braces") == []
+
+    def test_skips_objects_without_question_key(self):
+        text = '{"foo": "bar"} {"question": "Q?", "options": ["A","B","C","D"], "correct": "A", "explanation": "E."}'
+        result = StudyPlanGUI._recover_partial_questions(text)
+        assert len(result) == 1
+        assert result[0]["question"] == "Q?"
+
+    def test_deeply_nested_braces_dont_confuse_depth_tracking(self):
+        text = '{"question": "Q?", "options": ["A","B","C","D"], "correct": "A", "explanation": "Nested {like this}"}'
+        result = StudyPlanGUI._recover_partial_questions(text)
+        assert len(result) == 1
+        assert result[0]["question"] == "Q?"
+
+
+# ===================================================================
+# _tag_question_metadata
+# ===================================================================
+
+
+class TestTagQuestionMetadata:
+    def test_adds_difficulty_and_concept_ids(self):
+        dummy = types.SimpleNamespace()
+        question = {
+            "question": "Calculate the net present value given cashflows of $10k.",
+            "options": ["$12,500", "$11,000", "$13,200", "$14,800"],
+            "correct": "$12,500",
+            "explanation": "NPV is the sum of discounted cashflows.",
+        }
+        tagged = StudyPlanGUI._tag_question_metadata(dummy, question, "investment_appraisal")
+        assert "_difficulty" in tagged
+        assert tagged["_difficulty"] in ("easy", "medium", "hard")
+        assert "_concept_ids" in tagged
+        assert isinstance(tagged["_concept_ids"], list)
+        assert "_learning_stage" in tagged
+
+    def test_non_formula_question_gets_recall_stage(self):
+        dummy = types.SimpleNamespace()
+        question = {
+            "question": "What is a share?",
+            "options": ["Equity", "Debt", "Cash", "Asset"],
+            "correct": "Equity",
+            "explanation": "A share represents equity ownership.",
+        }
+        tagged = StudyPlanGUI._tag_question_metadata(dummy, question, "Topic A")
+        assert tagged["_learning_stage"] == "recall"
+        assert tagged["_difficulty"] == "medium"
+
+    def test_analysis_question_gets_analysis_stage(self):
+        dummy = types.SimpleNamespace()
+        question = {
+            "question": "Compare the advantages of NPV over IRR for project appraisal.",
+            "options": ["Option A", "Option B", "Option C", "Option D"],
+            "correct": "Option A",
+            "explanation": "NPV handles non-conventional cashflows better.",
+        }
+        tagged = StudyPlanGUI._tag_question_metadata(dummy, question, "investment_appraisal")
+        assert tagged["_learning_stage"] == "analysis"
+
+    def test_calculation_question_gets_application_stage(self):
+        dummy = types.SimpleNamespace()
+        question = {
+            "question": "Compute the WACC using the CAPM formula.",
+            "options": ["10.5%", "11.2%", "9.8%", "12.1%"],
+            "correct": "10.5%",
+            "explanation": "WACC = Ke*E/(E+D) + Kd*(1-T)*D/(E+D).",
+        }
+        tagged = StudyPlanGUI._tag_question_metadata(dummy, question, "cost_of_capital")
+        assert tagged["_learning_stage"] == "application"
+
+    def test_survives_domain_reasoning_import_failure(self, monkeypatch):
+        dummy = types.SimpleNamespace()
+        question = {
+            "question": "Some question without domain concepts.",
+            "options": ["A", "B", "C", "D"],
+            "correct": "A",
+            "explanation": "Explanation.",
+        }
+        monkeypatch.setattr("studyplan.domain_reasoning.concepts.BUILTIN_CONCEPTS", {})
+        tagged = StudyPlanGUI._tag_question_metadata(dummy, question, "Topic A")
+        assert tagged["_concept_ids"] == []
+        assert tagged["_difficulty"] == "medium"
+
+
+# ===================================================================
+# _record_generation_rejection / rejection history persistence
+# ===================================================================
+
+
+class TestGenerationRejectionHistory:
+    def test_records_and_loads_rejection_history(self, tmp_path, monkeypatch):
+        import os
+        from studyplan_app import Config
+
+        config_home = str(tmp_path / ".config" / "studyplan")
+        monkeypatch.setattr(Config, "CONFIG_HOME", config_home)
+        path = os.path.join(config_home, "generation_rejection_history.json")
+
+        dummy = types.SimpleNamespace()
+        dummy._generation_rejection_history_path = path
+        dummy._generation_rejection_history = {}
+        dummy._save_generation_rejection_history = types.MethodType(
+            StudyPlanGUI._save_generation_rejection_history, dummy
+        )
+        StudyPlanGUI._record_generation_rejection(
+            dummy, ["question_too_short", "options_not_four", "question_too_short"]
+        )
+        assert dummy._generation_rejection_history.get("question_too_short") == 2
+        assert dummy._generation_rejection_history.get("options_not_four") == 1
+
+        # Load from disk in a new instance
+        dummy2 = types.SimpleNamespace()
+        dummy2._generation_rejection_history_path = path
+        StudyPlanGUI._load_generation_rejection_history(dummy2)
+        assert dummy2._generation_rejection_history.get("question_too_short") == 2
+
+    def test_empty_history_when_file_missing(self):
+        dummy = types.SimpleNamespace()
+        dummy._generation_rejection_history_path = "/nonexistent/path.json"
+        dummy._generation_rejection_history = {}
+        StudyPlanGUI._load_generation_rejection_history(dummy)
+        assert dummy._generation_rejection_history == {}
+
+    def test_records_without_side_effects_when_path_not_set(self):
+        dummy = types.SimpleNamespace()
+        dummy._generation_rejection_history_path = ""
+        dummy._generation_rejection_history = {}
+        StudyPlanGUI._record_generation_rejection(dummy, ["reason_a"])
+
+    def test_clear_increments_existing_counters(self):
+        dummy = types.SimpleNamespace()
+        dummy._generation_rejection_history_path = ""
+        dummy._generation_rejection_history = {"existing_reason": 5}
+        StudyPlanGUI._record_generation_rejection(dummy, ["existing_reason", "new_reason"])
+        assert dummy._generation_rejection_history.get("existing_reason") == 6
+        assert dummy._generation_rejection_history.get("new_reason") == 1
+
+
+# ===================================================================
+# Prompt injection: validation feedback loop
+# ===================================================================
+
+
+class TestGapPromptWithRejectionHistory:
+    def _make_prompt_dummy(self, rejection_history=None):
+        dummy = types.SimpleNamespace(
+            module_title="FM",
+            module_id="acca_fm",
+            current_topic="Topic A",
+            _ai_tutor_autopilot_stats={},
+            _generation_rejection_history=rejection_history or {},
+        )
+        dummy._build_concept_generation_context = types.MethodType(
+            StudyPlanGUI._build_concept_generation_context, dummy
+        )
+        return dummy
+
+    def test_rejection_history_injected_when_present(self):
+        dummy = self._make_prompt_dummy(rejection_history={"question_too_short": 3, "options_not_four": 1})
+        snapshot = {
+            "weak_concept_ids_top": [],
+            "weak_topics_top3": [],
+            "risk_snapshot_top3": [],
+            "learning_context": "",
+            "concept_error_summary": [],
+        }
+        prompt = StudyPlanGUI._build_gap_generation_prompt(
+            dummy, "investment_appraisal", AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS, snapshot=snapshot
+        )
+        assert "question_too_short" in prompt
+        assert "3 time(s)" in prompt
+        assert "validation failures" in prompt
+
+    def test_rejection_history_absent_when_empty(self):
+        dummy = self._make_prompt_dummy(rejection_history={})
+        snapshot = {
+            "weak_concept_ids_top": [],
+            "weak_topics_top3": [],
+            "risk_snapshot_top3": [],
+            "learning_context": "",
+            "concept_error_summary": [],
+        }
+        prompt = StudyPlanGUI._build_gap_generation_prompt(
+            dummy, "investment_appraisal", AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS, snapshot=snapshot
+        )
+        assert "validation failures" not in prompt
+
+    def test_top_5_rejections_only(self):
+        dummy = self._make_prompt_dummy(
+            rejection_history={
+                "r1": 10,
+                "r2": 9,
+                "r3": 8,
+                "r4": 7,
+                "r5": 6,
+                "r6": 5,
+            }
+        )
+        snapshot = {
+            "weak_concept_ids_top": [],
+            "weak_topics_top3": [],
+            "risk_snapshot_top3": [],
+            "learning_context": "",
+            "concept_error_summary": [],
+        }
+        prompt = StudyPlanGUI._build_gap_generation_prompt(
+            dummy, "investment_appraisal", AI_TUTOR_GAP_GENERATION_DEFAULT_QUESTIONS, snapshot=snapshot
+        )
+        assert "r1" in prompt
+        assert "r6" not in prompt  # only top 5
+
+
+# ===================================================================
+# _save_generated_gap_questions — metadata tagging integration
+# ===================================================================
+
+
+class TestSaveGeneratedGapQuestionsTagsMetadata:
+    def test_tagged_rows_passed_to_engine_add(self, monkeypatch):
+        engine = types.SimpleNamespace(
+            CHAPTERS=["Topic A"],
+            QUESTIONS={},
+            _add_questions_with_stats=lambda chapter, rows: (len(rows), {}),
+            save_questions=lambda: None,
+            save_data=lambda: None,
+        )
+        dummy = types.SimpleNamespace(
+            engine=engine,
+            _generation_rejection_history={},
+            _generation_rejection_history_path="",
+        )
+        dummy._tag_question_metadata = types.MethodType(StudyPlanGUI._tag_question_metadata, dummy)
+        questions = [
+            {
+                "question": "Calculate the WACC given cost of equity 10% and debt 5%.",
+                "options": ["8.2%", "7.5%", "9.1%", "6.8%"],
+                "correct": "8.2%",
+                "explanation": "WACC = weighted average of 8.2%.",
+            }
+        ]
+        added, failed = StudyPlanGUI._save_generated_gap_questions(dummy, "Topic A", questions)
+        assert added == 1
+        assert failed is False
+
+
+# ===================================================================
+# formula discovery TS persistence
+# ===================================================================
+
+
+class TestFormulaDiscoveryTsPersistence:
+    def test_load_returns_zero_when_missing(self, tmp_path, monkeypatch):
+        from studyplan_app import Config
+
+        monkeypatch.setattr(Config, "CONFIG_HOME", str(tmp_path / ".config" / "studyplan"))
+        ts = StudyPlanGUI._load_formula_discovery_ts(None)
+        assert ts == 0.0
+
+    def test_save_then_load_roundtrip(self, tmp_path, monkeypatch):
+        from studyplan_app import Config
+
+        config_home = str(tmp_path / ".config" / "studyplan")
+        monkeypatch.setattr(Config, "CONFIG_HOME", config_home)
+        dummy = types.SimpleNamespace()
+        dummy._last_formula_discovery_ts = 1234567.89
+        StudyPlanGUI._save_formula_discovery_ts(dummy)
+        loaded = StudyPlanGUI._load_formula_discovery_ts(None)
+        assert loaded == 1234567.89

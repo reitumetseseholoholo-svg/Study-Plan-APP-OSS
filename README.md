@@ -22,6 +22,7 @@ Most exam prep tools are one-size-fits-all web apps that treat you like a passiv
 ```bash
 python studyplan_app.py                    # launch — <50 ms to first paint
 python studyplan_app.py 2026-12-01         # with exam date
+python studyplan_app.py --perf-stats       # dump profiler report on close
 STUDYPLAN_MODULE_TITLE="Your Module" python studyplan_app.py
 ```
 
@@ -29,17 +30,25 @@ STUDYPLAN_MODULE_TITLE="Your Module" python studyplan_app.py
 
 ## What's new (June 2026)
 
-This app has been battle-hardened through **11 bug fixes**, **performance surgery**, **UI polish**, and **cross-exam domain support** to make it the smoothest exam prep experience on desktop:
+This app has been battle-hardened through **11 bug fixes**, **performance surgery**, **UI polish**, **cross-exam domain support**, and **6 new dashboard insight cards** to make it the smoothest exam prep experience on desktop:
 
+- **Daily Recommended Plan** — priority-ordered checklist on the dashboard: must-review due today > overdue SRS > weak chapters (<40% competence) > due within 3 days. Hides when exam date or syllabus is unset.
+- **Error Pattern Analysis** — surfaces your 10 weakest syllabus outcomes (accuracy <75%, attempts ≥2) with severity-colored badges. Outcome text resolved from the syllabus for actionable review targeting.
+- **Focus Detective** — compares per-topic study time (14-day window) against competence. Flags under-studied weak topics and over-studied strong topics so you can rebalance your effort.
+- **Auto-Summarizer** — per-chapter "Generate" button that calls your local LLM to produce a concise chapter summary. Stored per-chapter, refreshes the dashboard card when done.
+- **Progress Predictions** — projects your finish date from 14-day daily study average vs. remaining minutes needed. Shows exam countdown and required daily pace.
+- **Knowledge Graph** — Cairo-rendered DAG of chapter prerequisites, colored by competence (red <40%, yellow 40–70%, green >70%). Topological layout with curved bezier edges and arrowheads.
 - **Cross-exam DomainRegistry** — the domain reasoning layer now supports any professional exam (ACCA, PMP, CFA, CPA, BAR, etc.) via a per-exam ``DomainRegistry``. ``reason_question(domain="pmp")`` works end-to-end with CPI, SPI, and EAC formulas. Adding a new exam is one ``declare_formula()`` call per formula.
 - **Blazing fast startup** — deferred loading means the window appears in <50 ms; data, models, and questions load in the background. No more staring at a blank window.
 - **Butter-smooth dashboard** — section reconciliation with tagged separators means charts and widgets are cached with digest-based change detection. No flash, no flicker, no redundant rebuilds. Separators no longer accumulate on refresh.
 - **Rock-solid coach consistency** — the Coach Pick stays pinned once selected and doesn't flip-flop on every refresh. The coach briefing caches its 7+ engine queries with a digest key and skips them entirely when nothing changed.
 - **AI tutor that doesn't lose your conversation** — mid-stream errors now preserve partial responses in your history. No more "where was I?"
-- **Silent operation** — zero GTK4 deprecation warnings. Zero pyright errors. Zero flaky tests. **2019 tests** pass, **smoke test** runs 32/32 KPI steps at strict thresholds.
+- **Silent operation** — zero GTK4 deprecation warnings. Zero pyright errors. Zero flaky tests. **2058 tests** pass, **smoke test** runs 32/32 KPI steps at strict thresholds.
 - **CPU-friendly** — the startup semantic warmup no longer spawns a thread per CPU core (capped to 2 workers for TF-IDF). The coach 2× render multiplier is eliminated. No unnecessary CPU bursts at idle.
 - **Full-width heatmap** — the GitHub-style activity grid now spans the entire left panel. Every card fills its container.
 - **Data integrity** — shared-reference bugs in question stats are fixed. Your data can't be silently corrupted through in-place mutation. The exam date parser no longer reports false-positive format corrections.
+- **Domain reasoning durability** — 4 internal fixes: removed dead comma-replace in step matcher, documented intentional tolerance variance between intermediate steps and final answers, threaded original question text through multi-path fallback for better alternative detection, and replaced a silent ``except Exception: pass`` with a logged warning so template bugs no longer vanish silently.
+- **Profiler report** — ``--perf-stats`` CLI flag surfaces real-time performance data at shutdown. Per-operation avg/p95/max latencies, error counts, alerts, and optimization recommendations — no more guessing which operations are slow.
 
 ---
 
@@ -90,6 +99,12 @@ Rate-limited to 6 actions per 10 minutes. Runs focus sessions, quizzes, drills, 
 
 ### 📊 Dashboard & Insights
 - Coach briefing with readiness score, pace, mission checklist
+- **Daily Recommended Plan** — priority-ordered checklist: due today > overdue > weak chapters > due this week
+- **Error Pattern Analysis** — weakest syllabus outcomes with severity badges
+- **Focus Detective** — flags under-studied weak topics and over-studied strong topics
+- **Auto-Summarizer** — per-chapter LLM-generated summaries
+- **Progress Predictions** — projected finish date vs required daily pace
+- **Knowledge Graph** — Cairo-rendered prerequisite DAG colored by competence
 - Progress Over Time chart, Per-Topic Snapshot, Study Snapshot stats
 - Weak vs Strong areas, Reviews Due Today, Leech Alerts
 - Weekly Summary, Study Hub, Data Health
@@ -173,7 +188,7 @@ All native modules have pure-Python fallbacks with `try/except ImportError` — 
 ## Testing
 
 ```bash
-pytest -q                    # 2019 tests, 0 regressions (1 pre-existing skip)
+pytest -q                    # 2058 tests, 0 regressions (1 pre-existing skip)
 python -m py_compile studyplan_app.py studyplan_ai_tutor.py studyplan_engine.py
 pyright studyplan_app.py studyplan_ai_tutor.py studyplan_engine.py studyplan tests
 ```
@@ -228,7 +243,7 @@ xvfb-run -a timeout 300s python studyplan_app.py --dialog-smoke-strict
 
 | File/Dir | Lines | Role |
 |----------|-------|------|
-| `studyplan_app.py` | ~55,700 | GTK4 UI — dashboard, quiz flow, Pomodoro, AI Cockpit, preferences |
+| `studyplan_app.py` | ~56,700 | GTK4 UI — dashboard, quiz flow, Pomodoro, AI Cockpit, preferences |
 | `studyplan_engine.py` | ~14,800 | Data model, SRS, daily plan, coach, ML inference, syllabus parsing |
 | `studyplan_ai_tutor.py` | ~10,000 | Tutor session management, RAG retrieval, prompt assembly, streaming |
 | `studyplan_app_kpi_routing.py` | ~600 | KPI thresholds and smoke/soak routing (GTK-independent) |
@@ -241,7 +256,7 @@ xvfb-run -a timeout 300s python studyplan_app.py --dialog-smoke-strict
 | `studyplan/` | lib | Config, contracts, coach FSM, cognitive state, AI routing, persistence |
 | `modules/*.json` | data | Built-in module configs (ACCA F6–F9) + question banks |
 | `tools/` | — | ML training scripts, GTK4 linter, tutor quality pipeline |
-| `tests/` | — | 2019 tests (including 220 domain-reasoning tests) |
+| `tests/` | — | 2058 tests (including 220 domain-reasoning tests) |
 
 ---
 
@@ -283,4 +298,4 @@ xvfb-run -a timeout 300s python studyplan_app.py --dialog-smoke-strict
 
 ---
 
-*Built with GTK4, PyO3, Cython, and a lot of coffee. Module-agnostic, local-first, free, and battle-hardened through 2019 tests, 32-step KPI smoke gates, and zero deprecation warnings.*
+*Built with GTK4, PyO3, Cython, and a lot of coffee. Module-agnostic, local-first, free, and battle-hardened through 2058 tests, 32-step KPI smoke gates, and zero deprecation warnings.*

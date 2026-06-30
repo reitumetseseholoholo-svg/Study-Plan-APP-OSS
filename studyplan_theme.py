@@ -330,8 +330,8 @@ window.tile .section-title {
 }
 
 .dashboard-stack > .card {
-    margin-top: 4px;
-    margin-bottom: 8px;
+    margin-top: 6px;
+    margin-bottom: 12px;
 }
 
 .error {
@@ -642,10 +642,14 @@ window.tile .section-title {
 .quiz-content {
     margin-top: 4px;
     margin-bottom: 4px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: alpha(@theme_fg_color, 0.03);
+    border: 1px solid alpha(@theme_fg_color, 0.08);
 }
 
 .quiz-dialog {
-    min-width: 640px;
+    min-width: 720px;
 }
 
 .quiz-feedback {
@@ -731,11 +735,31 @@ window.tile .section-title {
     margin-top: 3px;
 }
 
+.quiz-domain {
+    margin-top: 6px;
+    margin-bottom: 8px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: alpha(@theme_selected_bg_color, 0.07);
+    border: 1px solid alpha(@theme_fg_color, 0.12);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.50;
+}
 
-
+.quiz-domain .domain-concept {
+    background: alpha(@theme_selected_bg_color, 0.10);
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: 11px;
+    font-weight: 600;
+}
 
 .rule {
-    color: alpha(@theme_fg_color, 0.24);
+    margin-top: 5px;
+    margin-bottom: 5px;
+    background: alpha(@theme_fg_color, 0.18);
+    min-height: 1px;
 }
 
 .section-expander > title {
@@ -977,6 +1001,16 @@ window.tile .section-title {
     border-top: 1px solid alpha(@theme_fg_color, 0.10);
     background: alpha(@theme_selected_bg_color, 0.055);
     color: alpha(@theme_fg_color, 0.78);
+}
+
+.coach-label {
+    font-family: "IBM Plex Sans", "Cantarell", "Noto Sans", sans-serif;
+    font-size: 11px;
+    font-style: italic;
+    font-weight: 400;
+    padding: 3px 8px 3px 16px;
+    min-height: 20px;
+    color: alpha(@theme_fg_color, 0.60);
 }
 
 .workbench-title {
@@ -1657,8 +1691,8 @@ window.tile .section-title {
 }
 
 .dashboard-stack > .card {
-    margin-top: 4px;
-    margin-bottom: 8px;
+    margin-top: 6px;
+    margin-bottom: 12px;
 }
 
 .error {
@@ -1976,10 +2010,14 @@ window.tile .section-title {
 .quiz-content {
     margin-top: 4px;
     margin-bottom: 4px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: #1a2538;
+    border: 1px solid #3a4a64;
 }
 
 .quiz-dialog {
-    min-width: 640px;
+    min-width: 720px;
 }
 
 .quiz-feedback {
@@ -2069,11 +2107,31 @@ window.tile .section-title {
     margin-top: 3px;
 }
 
+.quiz-domain {
+    margin-top: 6px;
+    margin-bottom: 8px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: alpha(@theme_selected_bg_color, 0.07);
+    border: 1px solid alpha(@theme_fg_color, 0.12);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.50;
+}
 
-
+.quiz-domain .domain-concept {
+    background: alpha(@theme_selected_bg_color, 0.10);
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: 11px;
+    font-weight: 600;
+}
 
 .rule {
-    color: #4d5d79;
+    margin-top: 5px;
+    margin-bottom: 5px;
+    background: #4d5d79;
+    min-height: 1px;
 }
 
 .section-expander > title {
@@ -2317,6 +2375,15 @@ window.tile .section-title {
     border-top: 1px solid rgba(93, 119, 170, 0.48);
     background: #131c2e;
     color: #b8cadf;
+}
+
+.coach-label {
+    font-size: 11px;
+    font-style: italic;
+    font-weight: 400;
+    padding: 3px 8px 3px 16px;
+    min-height: 20px;
+    color: #889bb0;
 }
 
 .workbench-title {

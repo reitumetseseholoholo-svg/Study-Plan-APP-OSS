@@ -24,7 +24,7 @@ import math
 import re
 from typing import Any
 
-_STEP_TOLERANCE = 0.02  # 2% relative tolerance for step value comparison
+_STEP_TOLERANCE = 0.02  # 2% relative tolerance for intermediate step matching (wider than final-answer tolerance in evaluator._value_matches which uses 0.005 — intermediate steps have more rounding variance)
 _LABEL_SIMILARITY_MIN = 0.15  # minimum similarity score to consider a match
 
 
@@ -140,10 +140,8 @@ def _extract_from_line(
 def _parse_number(s: str) -> float | None:
     """Parse a number from a string, handling common notation."""
     s = s.strip()
-    # Remove currency symbols and percentage signs
+    # Remove currency symbols, percentage signs, and thousands separators
     s = s.replace(",", "").replace("%", "").replace("$", "").replace("\u00a3", "").replace("\u20ac", "")
-    # Handle "1,000.50" → "1000.50"
-    s = s.replace(",", ".")
     # If there are multiple dots, keep only the last one
     if s.count(".") > 1:
         parts = s.split(".")

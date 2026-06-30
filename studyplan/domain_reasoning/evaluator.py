@@ -7,6 +7,7 @@ input extraction, and diagnostic output.
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
@@ -31,6 +32,8 @@ from studyplan.domain_reasoning.diagnostics import (
     StepEvaluation,
     merge_concept_results,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 def evaluate_question(
@@ -163,7 +166,8 @@ def _evaluate_single_concept(
         return None
     try:
         truth = template.solve(inputs)
-    except Exception:
+    except Exception as exc:
+        _logger.warning("template.solve(%s) failed: %s", concept_id, exc)
         return None
     if not truth or truth.get("is_nan", False):
         return None

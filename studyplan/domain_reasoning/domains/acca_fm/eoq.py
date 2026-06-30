@@ -20,12 +20,13 @@ class EoqTemplate(FormulaTemplate):
         result = self._solver(d, o, h)
 
         numerator = 2 * d * o
+        dividend_val = numerator / h if abs(h) > 1e-15 else float("inf")
         steps: list[dict[str, Any]] = [
             {"step_id": "two_d_o", "description": "2 × D × O", "value": numerator, "formula": f"2*{d}*{o}"},
             {
                 "step_id": "dividend",
                 "description": "(2 × D × O) / H",
-                "value": numerator / h,
+                "value": dividend_val,
                 "formula": f"{numerator}/{h}",
             },
             {

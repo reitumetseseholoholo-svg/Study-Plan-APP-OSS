@@ -7178,6 +7178,8 @@ def test_on_close_request_uses_runtime_shutdown_and_non_blocking_recap_notificat
     dummy = types.SimpleNamespace(
         _closing_from_recap=False,
         _shutdown_core_runtime=lambda finalize_timers=True: calls.__setitem__("shutdown", calls["shutdown"] + 1),
+        _perf_stats_mode=False,
+        _perf_profiler=None,
         _build_daily_recap_text=lambda: (
             "Daily Recap • 2026-03-06\nPomodoros: 3\nQuiz questions: 18  •  Quiz sessions: 2\nDaily plan: 2/3 completed"
         ),
@@ -8329,3 +8331,209 @@ def test_global_ai_tutor_autopilot_tick_worker_exception_is_logged(caplog):
     assert any("autopilot tick worker failed" in r.message for r in caplog.records), (
         "background worker exception must produce a warning log record"
     )
+
+
+# ===================================================================
+# Coaching check-in timer (autopilot vocal presence)
+# ===================================================================
+
+
+def _make_coaching_dummy(*, enabled=True, nudges_enabled=True, llm_enabled=True, paused=False):
+    """Build a SimpleNamespace with all attrs needed by the coaching timer."""
+    notifications_sent = []
+    registered = []
+    removed = []
+
+    class _FakeGLib:
+        PRIORITY_LOW = 300
+
+        @staticmethod
+        def timeout_add_seconds(interval, cb):
+            registered.append((interval, cb))
+            return 99
+
+        @staticmethod
+        def idle_add(cb, priority=300):
+            cb()
+            return 0
+
+    dummy = types.SimpleNamespace(
+        ai_tutor_autopilot_enabled=enabled,
+        ai_tutor_nudges_enabled=nudges_enabled,
+        local_llm_enabled=llm_enabled,
+        ai_tutor_autopilot_paused=paused,
+        module_title="FM",
+        _ai_tutor_global_coaching_id=77,
+        _ai_tutor_global_coaching_last_at=0.0,
+        _ai_tutor_global_quiet_until=0.0,
+        _remove_glib_source=lambda sid: removed.append(sid),
+        _register_glib_source=lambda sid: registered.append(sid),
+        _select_local_llm_model=lambda purpose=None: ("test-model", ""),
+        _ollama_generate_text=lambda model, prompt, **kw: ("Keep going, you are making steady progress!", None),
+        _build_ai_tutor_autopilot_snapshot=lambda: {
+            "current_topic": "investment_appraisal",
+            "focus_trend_14d": {"integrity_pct": 75},
+        },
+        engine=types.SimpleNamespace(
+            _get_student_bio=lambda: {"study": {"total_minutes": 30}},
+        ),
+        send_notification=lambda title, message: notifications_sent.append((title, message)),
+        _start_managed_background_thread=lambda target: (
+            target() or True  # run synchronously so tests don't need threads
+        ),
+        _registered=registered,
+        _removed=removed,
+        _notifications_sent=notifications_sent,
+    )
+    dummy._global_ai_tutor_coaching_tick = types.MethodType(StudyPlanGUI._global_ai_tutor_coaching_tick, dummy)
+    dummy._next_coaching_category = types.MethodType(StudyPlanGUI._next_coaching_category, dummy)
+    dummy._record_coaching_message = types.MethodType(StudyPlanGUI._record_coaching_message, dummy)
+    dummy._recent_coaching_messages = types.MethodType(StudyPlanGUI._recent_coaching_messages, dummy)
+    dummy._build_coaching_fallback = types.MethodType(StudyPlanGUI._build_coaching_fallback, dummy)
+    return dummy, _FakeGLib
+
+
+class TestCoachingCheckinTimer:
+    """Tests for _restart_ai_tutor_coaching_timer and _global_ai_tutor_coaching_tick."""
+
+    def test_coaching_timer_removes_old_source(self):
+        dummy, _fg = _make_coaching_dummy()
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._restart_ai_tutor_coaching_timer(dummy)
+        assert 77 in dummy._removed
+
+    def test_coaching_timer_registers_new_source_when_enabled(self):
+        dummy, _fg = _make_coaching_dummy()
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._restart_ai_tutor_coaching_timer(dummy)
+        assert dummy._ai_tutor_global_coaching_id == 99
+        assert 99 in dummy._registered
+
+    def test_coaching_timer_skips_when_autopilot_disabled(self):
+        dummy, _fg = _make_coaching_dummy(enabled=False)
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._restart_ai_tutor_coaching_timer(dummy)
+        assert dummy._ai_tutor_global_coaching_id == 0
+
+    def test_coaching_timer_starts_even_without_llm(self):
+        dummy, _fg = _make_coaching_dummy(llm_enabled=False)
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._restart_ai_tutor_coaching_timer(dummy)
+        assert dummy._ai_tutor_global_coaching_id != 0
+
+    def test_coaching_tick_sends_notification_with_llm_message(self):
+        dummy, _fg = _make_coaching_dummy()
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._global_ai_tutor_coaching_tick(dummy)
+        assert len(dummy._notifications_sent) == 1
+        title, message = dummy._notifications_sent[0]
+        assert title == "Coach"
+        assert len(message) >= 10
+
+    def test_coaching_tick_skips_when_autopilot_disabled(self):
+        dummy, _fg = _make_coaching_dummy(enabled=False)
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._global_ai_tutor_coaching_tick(dummy)
+        assert len(dummy._notifications_sent) == 0
+
+    def test_coaching_tick_skips_when_nudges_disabled(self):
+        dummy, _fg = _make_coaching_dummy(nudges_enabled=False)
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._global_ai_tutor_coaching_tick(dummy)
+        assert len(dummy._notifications_sent) == 0
+
+    def test_coaching_tick_skips_when_paused(self):
+        dummy, _fg = _make_coaching_dummy(paused=True)
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._global_ai_tutor_coaching_tick(dummy)
+        assert len(dummy._notifications_sent) == 0
+
+    def test_coaching_tick_respects_quiet_window(self):
+        dummy, _fg = _make_coaching_dummy()
+        dummy._ai_tutor_global_quiet_until = float("inf")
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._global_ai_tutor_coaching_tick(dummy)
+        assert len(dummy._notifications_sent) == 0
+
+    def test_coaching_tick_falls_back_when_llm_model_missing(self):
+        dummy, _fg = _make_coaching_dummy()
+        dummy._select_local_llm_model = lambda purpose=None: (None, "no model")
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._global_ai_tutor_coaching_tick(dummy)
+        assert len(dummy._notifications_sent) == 1
+        assert dummy._notifications_sent[0][0] == "Coach"
+        assert len(dummy._notifications_sent[0][1]) > 5
+
+    def test_coaching_tick_falls_back_on_llm_error(self):
+        dummy, _fg = _make_coaching_dummy()
+        dummy._ollama_generate_text = lambda model, prompt, **kw: ("", "llm error")
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._global_ai_tutor_coaching_tick(dummy)
+        assert len(dummy._notifications_sent) == 1
+        assert dummy._notifications_sent[0][0] == "Coach"
+        assert len(dummy._notifications_sent[0][1]) > 5
+
+    def test_coaching_tick_falls_back_on_short_llm_response(self):
+        dummy, _fg = _make_coaching_dummy()
+        dummy._ollama_generate_text = lambda model, prompt, **kw: ("Hi", None)
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._global_ai_tutor_coaching_tick(dummy)
+        assert len(dummy._notifications_sent) == 1
+        assert dummy._notifications_sent[0][0] == "Coach"
+        assert len(dummy._notifications_sent[0][1]) > 5
+
+    def test_coaching_tick_records_last_at_timestamp(self):
+        dummy, _fg = _make_coaching_dummy()
+        dummy._ai_tutor_global_coaching_last_at = 0.0
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._global_ai_tutor_coaching_tick(dummy)
+        assert dummy._ai_tutor_global_coaching_last_at > 0.0
+
+    def test_coaching_tick_skips_when_recently_fired(self):
+        dummy, _fg = _make_coaching_dummy()
+        dummy._ai_tutor_global_coaching_last_at = float("inf")
+        import unittest.mock as _mock
+        import studyplan_app as _appmod
+
+        with _mock.patch.object(_appmod, "GLib", _fg):
+            StudyPlanGUI._global_ai_tutor_coaching_tick(dummy)
+        assert len(dummy._notifications_sent) == 0

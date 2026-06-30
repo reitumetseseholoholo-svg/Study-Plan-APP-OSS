@@ -678,6 +678,8 @@ def _try_run_template(
 def _execute_plan(
     plan: list[PlanStep],
     givens: dict[str, Any],
+    *,
+    question: str = "",
     concept_map: dict[str, Any] | None = None,
     template_registry: dict[str, Any] | None = None,
     slot_groups: dict[str, list[str]] | None = None,
@@ -756,7 +758,7 @@ def _execute_plan(
             # Fresh inputs for the alternative (no ctx from the failed step)
             alt_inputs, alt_sources = _build_inputs_with_sources(
                 alt_id,
-                "",
+                question,
                 None,
                 None,
                 intermed,
@@ -931,6 +933,7 @@ def reason_question(
     execution, intermed = _execute_plan(
         plan,
         givens,
+        question=question,
         concept_map=_concepts,
         template_registry=_templates,
         slot_groups=_slot_groups,

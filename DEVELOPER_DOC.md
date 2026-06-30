@@ -66,7 +66,7 @@ Study Workbench is a **single-process GTK4 desktop application**. There is no ba
 
 | File | Role |
 |---|---|
-| `studyplan_app.py` | GTK4 main window. All UI construction, event handlers, Pomodoro, quiz flow, AI cockpit, preferences. ~55,700 lines. |
+| `studyplan_app.py` | GTK4 main window. All UI construction, event handlers, Pomodoro, quiz flow, AI cockpit, preferences. ~56,700 lines. |
 | `studyplan_engine.py` | Data model, SRS (FSRS-4.5/SM-2), daily plan, coach urgency scoring, ML inference, syllabus parsing, semantic routing, persistence. ~14,800 lines. |
 | `studyplan_ai_tutor.py` | AI tutor session management: prompt assembly, RAG retrieval, Ollama/gateway calls, streaming, response sanitization. |
 | `studyplan_app_kpi_routing.py` | KPI thresholds and smoke/soak test routing helpers. GTK-independent. |
@@ -613,6 +613,35 @@ Combined with 7+ expensive engine queries in the coach card update, a single das
 
 **Fix**: workers capped to max 2. TF-IDF `fit_transform` is CPU-bound; >2 threads adds OS scheduler overhead without throughput gain. Configurable via `SEMANTIC_WARMUP_PREFETCH_MAX_WORKERS`.
 
+### Profiler report (`--perf-stats`)
+
+The `PerformanceProfiler` (studyplan/components/performance/profiler.py) collects timing data for any operation instrumented via `_perf_record()` or `profiler.profile_operation()`. Data is collected at runtime but **not displayed** unless the `--perf-stats` CLI flag is passed:
+
+```bash
+python studyplan_app.py --perf-stats
+```
+
+When the window closes, a formatted report is printed to stdout containing:
+- **Per-operation stats**: call count, avg/median/p95/p99/min/max durations, success rate, error count
+- **Alerts**: operations exceeding their configured threshold (severity: warning/error/critical)
+- **Recommendations**: auto-generated suggestions (high latency → cache, low success rate → investigate errors)
+
+**Currently instrumented call sites** (studyplan_app.py):
+- `coach_pick_update` — `_update_coach_pick_card` timing
+- `study_room_update` — `_update_study_room_card` timing
+- `daily_plan_render` — `_render_dashboard` daily plan section timing
+
+Add new instrumentation anywhere via:
+```python
+self._perf_record("my_operation", duration_ms)
+```
+or wrap a function:
+```python
+result = self._perf_profiler.profile_operation("my_operation", my_func, arg1, arg2)
+```
+
+The profiler is initialized at startup by `_initialize_performance_services()` (line 2721). If the integration module is unavailable, `_perf_profiler`, `_perf_cache`, and `_perf_middleware` are `None` and all calls are no-ops.
+
 ### Configuration
 
 ```
@@ -689,6 +718,13 @@ result = reason_question("CPI",
                          template_inputs={"ev": 200, "ac": 250})
 ```
 
+### Known fixes (Jun 2026 audit)
+
+1. **Dead code in `_parse_number`** (`step_matcher.py:144-146`): line 146 replaced commas with dots, but line 144 already stripped all commas — dead code since March 2024. Removed.
+2. **Tolerance variance documented** (`step_matcher.py:27` vs `evaluator.py:253`): step matcher uses 2% relative tolerance (`_STEP_TOLERANCE`), evaluator uses 0.5% (`abs(ref) * 0.005`). Intentionally different — intermediate steps have more rounding variance than final answers. Comment added to prevent future confusion.
+3. **Empty question in multi-path fallback** (`reasoning_engine.py:757`): fallback path passed `""` instead of the original question text to `_build_inputs_with_sources`, depriving alternative concepts of number extraction from the question. Fixed by threading `question` through `_execute_plan`.
+4. **Silent `except Exception: pass`** (`evaluator.py:165-168`): `template.solve()` exceptions were swallowed silently, masking bugs in Jinja2 templates (undefined variables, type errors). Now logged via `_logger.warning()` with concept ID.
+
 ### Key invariants
 
 - Domain templates override `solve()` with positional args; solver param names do NOT match input dict keys. Candidate-function probing is the primary key-detection method.
@@ -740,6 +776,18 @@ The dashboard uses digest-checked section IDs (`_ds_id`, `_ds_digest`) to avoid 
 4. The full-clear loop (`while child: remove child`) was **removed** — sections update in place without flash.
 
 **Why this matters**: before reconciliation, every dashboard refresh unconditionally cleared all ~35 children and rebuilt from scratch. Now the coach briefing (most expensive section) skips entirely when data unchanged, and all other sections update in place.
+
+### Dashboard card order (6 new insight cards)
+
+The dashboard render order after the chart block is: Plan View → **Daily Plan** → **Error Patterns** → **Focus Detective** → **Study Guide** → **Progress Predictions** → **Knowledge Graph** → Study Snapshot → Weekly Summary → Mastery Snapshot → Weak vs Strong → Reviews & Pace → Reviews Due Today → Leech Alerts → Study Hub → Data Health → Activity Chart.
+
+New cards use `_ds_mark()` for reconciliation and follow the existing pattern for conditional visibility:
+- **Daily Plan** (`daily_plan`): hidden when exam date or module availability is not set.
+- **Error Patterns** (`error_patterns`): hidden when no weak outcomes found.
+- **Focus Detective** (`focus_detective`): hidden when no per-topic time data available.
+- **Study Guide** (`study_guide`): always shown; per-chapter "Generate" buttons call `_generate_ai_chapter_summary()` via `_start_managed_background_thread`.
+- **Progress Predictions** (`progress_predictions`): hidden when exam date not set or no study history.
+- **Knowledge Graph** (`knowledge_graph`): always shown; Cairo DAG with `engine.CHAPTER_FLOW` edges.
 
 ### Common pitfalls
 
@@ -810,10 +858,10 @@ The app targets GTK4 (PyGObject 3.46+, GTK 4.6–4.22). **Zero deprecation warni
 | Unit (default) | `tests/` | No | ~1,134 test functions in 40 files |
 | Integration | `studyplan/testing/` | No | ~533 test functions in 47 files |
 | GTK-dependent | `tests/test_studyplan_app_ollama.py` | Yes | ~322 test functions (parametrized → ~348 items) |
-| Full suite | both | Yes | **~1,934 test items** (1,936 tests run, 1 skipped pre-existing) |
+| Full suite | both | Yes | **~2,058 test items** (2,059 tests run, 1 skipped pre-existing) |
 | Domain reasoning | `tests/test_reasoning_engine.py`, `tests/test_domain_reasoning.py`, `tests/test_numerical_solver.py` | No | ~220 test functions |
 
-Current status: **2019 tests pass, 0 failures, 1 pre-existing skip**. Smoke test runs **32/32 KPI steps** at strict thresholds. **0 pyright errors** across all files. **0 GTK4 deprecation warnings** at startup.
+Current status: **2058 tests pass, 0 failures, 1 pre-existing skip**. Smoke test runs **32/32 KPI steps** at strict thresholds. **0 pyright errors** across all files. **0 GTK4 deprecation warnings** at startup.
 
 ### Tutor quality pipeline
 

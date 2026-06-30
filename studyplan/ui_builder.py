@@ -63,7 +63,7 @@ class UIBuilder:
 
         return lbl
 
-    def section_title(self, text: str, *, max_width_chars: int = 120) -> Gtk.Label:
+    def section_title(self, text: str, *, max_width_chars: int = 400) -> Gtk.Label:
         """Create a section title label with ellipsizing."""
         return self.label(
             text,
