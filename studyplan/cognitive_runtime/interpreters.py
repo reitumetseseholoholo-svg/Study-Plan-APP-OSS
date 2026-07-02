@@ -156,3 +156,173 @@ class ComputationStepEvaluator(TraceInterpreter):
                 }
             )
         return results
+
+
+# ---------------------------------------------------------------------------
+# Classification interpreters
+# ---------------------------------------------------------------------------
+
+
+class ClassificationResultInterpreter(TraceInterpreter):
+    """Read a ClassificationProcess trace → standard result dict.
+
+    Produces the same shape as ``ClassificationTemplate.solve()``::
+
+        {concept_id, result, inputs, is_nan, steps, classification_path}
+    """
+
+    def interpret(
+        self,
+        trace: ExecutionTrace,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        result = None
+        is_nan = True
+        inputs: dict[str, Any] = {}
+        steps: list[dict[str, Any]] = []
+        classification_path: list[str] = []
+
+        for event in trace.events:
+            if event.type == "initialize":
+                inputs = event.payload.get("state", {}).get("inputs", {})
+            elif event.type == "step":
+                t = event.payload.get("transition", {})
+                result = t.get("result")
+                is_nan = t.get("is_nan", True)
+                steps = t.get("steps", [])
+                classification_path = t.get("classification_path", [])
+
+        return {
+            "concept_id": kwargs.get("concept_id", ""),
+            "result": result,
+            "inputs": dict(inputs),
+            "is_nan": is_nan,
+            "steps": list(steps),
+            "classification_path": list(classification_path),
+        }
+
+
+class ClassificationStepEvaluator(TraceInterpreter):
+    """Read a ClassificationProcess trace + learner steps → evaluations.
+
+    Produces the same output as ``ClassificationTemplate.evaluate_steps()``.
+    """
+
+    def interpret(
+        self,
+        trace: ExecutionTrace,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        truth_result = None
+        for event in trace.events:
+            if event.type == "step":
+                truth_result = event.payload.get("transition", {}).get("result")
+
+        results: list[dict[str, Any]] = []
+        learner_steps = kwargs.get("learner_steps", [])
+        for step in learner_steps:
+            step_val = step.get("value")
+            match = False
+            if step_val is not None and truth_result is not None:
+                match = step_val == truth_result
+            results.append(
+                {
+                    "step_id": step.get("step_id", ""),
+                    "expected": truth_result,
+                    "actual": step_val,
+                    "match": match,
+                }
+            )
+        return results
+
+
+# ---------------------------------------------------------------------------
+# Evaluation interpreters
+# ---------------------------------------------------------------------------
+
+
+class EvaluationResultInterpreter(TraceInterpreter):
+    """Read an EvaluationProcess trace → standard result dict.
+
+    Produces the same shape as ``EvaluationTemplate.solve()``::
+
+        {concept_id, judgment, scores, ranked, confidence,
+         justification, contributions, entropy, result, inputs, is_nan}
+    """
+
+    def interpret(
+        self,
+        trace: ExecutionTrace,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        judgment = None
+        scores = {}
+        ranked: list = []
+        confidence = 0.0
+        justification: list = []
+        contributions: list = []
+        entropy = 0.0
+        is_nan = False
+        inputs: dict[str, Any] = {}
+
+        for event in trace.events:
+            if event.type == "initialize":
+                inputs = event.payload.get("state", {}).get("inputs", {})
+            elif event.type == "step":
+                t = event.payload.get("transition", {})
+                judgment = t.get("judgment")
+                scores = t.get("scores", {})
+                ranked = t.get("ranked", [])
+                confidence = t.get("confidence", 0.0)
+                justification = t.get("justification", [])
+                contributions = t.get("contributions", [])
+                entropy = t.get("entropy", 0.0)
+                is_nan = t.get("is_nan", False)
+
+        return {
+            "concept_id": kwargs.get("concept_id", ""),
+            "judgment": judgment,
+            "scores": scores,
+            "ranked": ranked,
+            "confidence": confidence,
+            "justification": justification,
+            "contributions": contributions,
+            "entropy": entropy,
+            "result": {"judgment": judgment, "confidence": confidence},
+            "inputs": dict(inputs),
+            "is_nan": is_nan,
+        }
+
+
+class EvaluationStepEvaluator(TraceInterpreter):
+    """Read an EvaluationProcess trace + learner steps → evaluations.
+
+    Produces the same output as ``EvaluationTemplate.evaluate_steps()``.
+    """
+
+    def interpret(
+        self,
+        trace: ExecutionTrace,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        truth_judgment = None
+        for event in trace.events:
+            if event.type == "step":
+                truth_judgment = event.payload.get("transition", {}).get("judgment")
+
+        results: list[dict[str, Any]] = []
+        learner_steps = kwargs.get("learner_steps", [])
+        for step in learner_steps:
+            step_val = step.get("judgment") or step.get("value")
+            match = False
+            if isinstance(step_val, str) and isinstance(truth_judgment, str):
+                match = step_val.strip().lower() == truth_judgment.strip().lower()
+            results.append(
+                {
+                    "step_id": step.get("step_id", ""),
+                    "expected": truth_judgment,
+                    "actual": step_val,
+                    "match": match,
+                }
+            )
+        return results

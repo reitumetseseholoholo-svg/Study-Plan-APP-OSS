@@ -13,9 +13,15 @@ from studyplan.domain_reasoning import declare_formula
 from studyplan.cognitive_runtime import (
     CognitiveRuntime,
     ComputationProcess,
+    ClassificationProcess,
+    EvaluationProcess,
     ComputationResultInterpreter,
     ComputationErrorInterpreter,
     ComputationStepEvaluator,
+    ClassificationResultInterpreter,
+    ClassificationStepEvaluator,
+    EvaluationResultInterpreter,
+    EvaluationStepEvaluator,
 )
 
 
@@ -249,3 +255,246 @@ def test_process_is_stateless():
 
     assert abs(r1["result"] - 909.09) < 0.1
     assert abs(r2["result"] - 1652.89) < 0.1
+
+
+# =========================================================================
+# Classification identity tests
+# =========================================================================
+
+
+def _make_classification_tree():
+    """Build a simple classification tree for testing."""
+    from studyplan.domain_reasoning.concept_types.classification_concept import (
+        ClassificationNode,
+        Branch,
+        ClassificationConfig,
+        ClassificationTemplate,
+    )
+
+    tree = ClassificationNode(
+        question="Is the amount material?",
+        branches=[
+            Branch(condition="amount > 1000", result="material"),
+            Branch(condition="True", result="immaterial"),
+        ],
+    )
+    config = ClassificationConfig(tree=tree, output_slot="materiality")
+    return ClassificationTemplate("test.class_materiality", config)
+
+
+def test_runtime_classification_identity_solve():
+    """ClassificationProcess + interpreter produce identical result to template."""
+    template = _make_classification_tree()
+    inputs = {"amount": 5000.0}
+
+    # Old path
+    old_result = template.solve(inputs)
+
+    # New path
+    runtime = CognitiveRuntime()
+    process = ClassificationProcess(template)
+    trace = runtime.execute(process, inputs)
+    interpreter = ClassificationResultInterpreter()
+
+    # Need concept_id since our interpreter doesn't store it
+    new_result = interpreter.interpret(trace, concept_id=template.concept_id)
+
+    assert old_result["result"] == new_result["result"]
+    assert old_result["is_nan"] == new_result["is_nan"]
+    assert old_result["classification_path"] == new_result["classification_path"]
+    assert len(old_result["steps"]) == len(new_result["steps"])
+
+
+def test_runtime_classification_identity_no_match():
+    """When no branch matches, result is None and is_nan is True."""
+    from studyplan.domain_reasoning.concept_types.classification_concept import (
+        ClassificationNode,
+        Branch,
+        ClassificationConfig,
+        ClassificationTemplate,
+    )
+
+    # Tree with no catch-all — won't match
+    tree = ClassificationNode(
+        question="Is it urgent?",
+        branches=[
+            Branch(condition="urgency > 100", result="urgent"),
+        ],
+    )
+    config = ClassificationConfig(tree=tree)
+    template = ClassificationTemplate("test.urgency", config)
+    inputs = {"urgency": 10.0}
+
+    old_result = template.solve(inputs)
+
+    runtime = CognitiveRuntime()
+    process = ClassificationProcess(template)
+    trace = runtime.execute(process, inputs)
+    interpreter = ClassificationResultInterpreter()
+    new_result = interpreter.interpret(trace, concept_id=template.concept_id)
+
+    assert old_result["result"] is None
+    assert new_result["result"] is None
+    assert old_result["is_nan"] is True
+    assert new_result["is_nan"] is True
+
+
+def test_runtime_classification_evaluate_steps():
+    """Classification step evaluator matches template behavior."""
+    template = _make_classification_tree()
+    inputs = {"amount": 5000.0}
+    truth = template.solve(inputs)
+
+    learner_steps = [
+        {"step_id": "materiality", "value": "material"},
+        {"step_id": "wrong", "value": "immaterial"},
+    ]
+
+    old_evals = template.evaluate_steps(learner_steps, truth)
+
+    runtime = CognitiveRuntime()
+    process = ClassificationProcess(template)
+    trace = runtime.execute(process, inputs)
+    evaluator = ClassificationStepEvaluator()
+    new_evals = evaluator.interpret(trace, learner_steps=learner_steps)
+
+    assert len(old_evals) == len(new_evals)
+    for o, n in zip(old_evals, new_evals, strict=True):
+        assert o["match"] == n["match"]
+
+
+# =========================================================================
+# Evaluation identity tests
+# =========================================================================
+
+
+def _make_evaluation_template():
+    """Build a simple evaluation template for testing."""
+    from studyplan.domain_reasoning.process import (
+        EvaluationConfig,
+        EvaluationCriterion,
+        EvaluationTemplate,
+    )
+
+    config = EvaluationConfig(
+        criteria=[
+            EvaluationCriterion(id="cost", weight=0.6),
+            EvaluationCriterion(id="quality", weight=0.4),
+        ],
+        candidates=["option_a", "option_b"],
+    )
+    return EvaluationTemplate("test.eval_identity", config)
+
+
+def test_runtime_evaluation_identity_solve():
+    """EvaluationProcess + interpreter produce identical result to template."""
+    template = _make_evaluation_template()
+    inputs = {
+        "cost": {"option_a": 0.8, "option_b": 0.2},
+        "quality": {"option_a": 0.3, "option_b": 0.7},
+    }
+
+    old_result = template.solve(inputs)
+
+    runtime = CognitiveRuntime()
+    process = EvaluationProcess(template)
+    trace = runtime.execute(process, inputs)
+    interpreter = EvaluationResultInterpreter()
+    new_result = interpreter.interpret(trace, concept_id=template.concept_id)
+
+    assert old_result["judgment"] == new_result["judgment"]
+    assert old_result["confidence"] == new_result["confidence"]
+    assert old_result["entropy"] == new_result["entropy"]
+    assert old_result["scores"] == new_result["scores"]
+    # Check ranked order
+    assert old_result["ranked"][0][0] == new_result["ranked"][0][0]
+    assert abs(old_result["ranked"][0][1] - new_result["ranked"][0][1]) < 1e-9
+    # Check justification
+    assert len(old_result["justification"]) == len(new_result["justification"])
+
+
+def test_runtime_evaluation_evaluate_steps():
+    """Evaluation step evaluator matches template behavior."""
+    template = _make_evaluation_template()
+    inputs = {
+        "cost": {"option_a": 0.8, "option_b": 0.2},
+        "quality": {"option_a": 0.3, "option_b": 0.7},
+    }
+    truth = template.solve(inputs)
+
+    learner_steps = [
+        {"step_id": "final", "judgment": "option_a"},
+        {"step_id": "wrong", "judgment": "option_b"},
+    ]
+
+    old_evals = template.evaluate_steps(learner_steps, truth)
+
+    runtime = CognitiveRuntime()
+    process = EvaluationProcess(template)
+    trace = runtime.execute(process, inputs)
+    evaluator = EvaluationStepEvaluator()
+    new_evals = evaluator.interpret(trace, learner_steps=learner_steps)
+
+    assert len(old_evals) == len(new_evals)
+    for o, n in zip(old_evals, new_evals, strict=True):
+        assert o["match"] == n["match"]
+        assert o["step_id"] == n["step_id"]
+
+
+def test_runtime_all_algebras_same_substrate():
+    """All three algebra types execute on the same runtime with same trace shape."""
+    runtime = CognitiveRuntime()
+
+    # Computation
+    solver, expr = _get_solver_and_expr(NPV_CONCEPT)
+    t1 = runtime.execute(
+        ComputationProcess(NPV_CONCEPT, solver, expr),
+        {"cash_flow": 1000.0, "rate": 0.10, "years": 1.0},
+    )
+
+    # Classification
+    t2 = runtime.execute(
+        ClassificationProcess(_make_classification_tree()),
+        {"amount": 5000.0},
+    )
+
+    # Evaluation
+    t3 = runtime.execute(
+        EvaluationProcess(_make_evaluation_template()),
+        {"cost": {"option_a": 0.8, "option_b": 0.2}, "quality": {"option_a": 0.3, "option_b": 0.7}},
+    )
+
+    # All traces have the same structure: init → step → terminate
+    for trace in [t1, t2, t3]:
+        assert len(trace) == 3
+        assert trace.events[0].type == "initialize"
+        assert trace.events[1].type == "step"
+        assert trace.events[2].type == "terminate"
+
+
+def test_runtime_trace_sufficiency():
+    """A single trace can feed multiple independent interpreters."""
+    template = _make_evaluation_template()
+    inputs = {
+        "cost": {"option_a": 0.8, "option_b": 0.2},
+        "quality": {"option_a": 0.3, "option_b": 0.7},
+    }
+
+    runtime = CognitiveRuntime()
+    process = EvaluationProcess(template)
+    trace = runtime.execute(process, inputs)
+
+    # Two interpreters, same trace
+    result_interp = EvaluationResultInterpreter()
+    step_interp = EvaluationStepEvaluator()
+
+    result = result_interp.interpret(trace, concept_id=template.concept_id)
+    evals = step_interp.interpret(
+        trace,
+        learner_steps=[
+            {"step_id": "final", "judgment": "option_a"},
+        ],
+    )
+
+    assert result["judgment"] == "option_a"
+    assert evals[0]["match"] is True
