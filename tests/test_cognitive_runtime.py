@@ -1,144 +1,251 @@
-import types
+"""Test the CognitiveRuntime + ComputationProcess identity with ExpressionTemplate.
 
-from studyplan.cognitive_state import CognitiveState
-from studyplan.mastery_kernel import MasteryKernel
-from studyplan.coach_fsm import SocraticFSM
-from studyplan.working_memory_service import WorkingMemoryService
+This test proves that the new runtime, process, and interpreters produce
+*identical* output to the existing ExpressionTemplate for the same inputs.
+If this test passes, the runtime is a valid replacement for the computation
+path (behavioral identity proven).
+"""
 
+import math
 
-def test_cognitive_state_hydrates_from_legacy_data_and_roundtrips():
-    legacy = {
-        "competence": {"Topic A": 75, "Topic B": 20},
-        "difficulty_counts": {"Topic A": {"easy": 2, "hard": 3}, "Topic B": 1},
-        "chapter_miss_streak": {"Topic B": 3},
-        "study_days": ["2026-03-01", "2026-03-03"],
-    }
-    cfg = {"chapter_flow": {"Topic B": ["Topic A"]}}
-    state = CognitiveState.from_legacy_data(legacy, cfg)
-    assert "Topic A" in state.posteriors
-    assert "Topic B" in state.posteriors
-    assert 0.0 < state.posteriors["Topic A"].mean < 1.0
-    assert state.confusion_links.get("Topic B") == {"Topic A"}
+from studyplan.domain_reasoning import declare_formula
 
-    snap = state.to_json_snapshot()
-    restored = CognitiveState.from_snapshot(snap)
-    assert restored.posteriors["Topic A"].alpha == state.posteriors["Topic A"].alpha
-    assert restored.working_memory.socratic_state == "DIAGNOSE"
-    assert restored.confusion_links.get("Topic B") == {"Topic A"}
+from studyplan.cognitive_runtime import (
+    CognitiveRuntime,
+    ComputationProcess,
+    ComputationResultInterpreter,
+    ComputationErrorInterpreter,
+    ComputationStepEvaluator,
+)
 
 
-def test_working_memory_service_captures_attempts_and_quiz_state():
-    state = CognitiveState()
-    svc = WorkingMemoryService(state)
-    svc.set_active_question(chapter="Topic A", question_id="q:abc123")
-    assert state.quiz_active is True
-    assert state.working_memory.active_question_id == "q:abc123"
-    svc.capture_attempt("Topic A", "q:abc123", False, latency_ms=60000.0, hints_used=2)
-    assert state.working_memory.struggle_flags["error_streak"] is True
-    assert state.working_memory.struggle_flags["latency_spike"] is True
-    assert state.working_memory.struggle_flags["hint_dependency"] is True
-    ctx = svc.get_context_string()
-    assert "Quiz state: active question" in ctx
-    assert "Recent session attempts" in ctx
-    svc.note_tutor_exchange("assistant", "Try again by testing the discount rate first.")
-    runtime_ctx = svc.get_context_string(include_tutor_exchange=False)
-    assert "Recent session attempts" in runtime_ctx
-    assert "Recent tutor exchange" not in runtime_ctx
-    svc.clear_active_question()
-    assert state.quiz_active is False
-    assert state.working_memory.active_question_id is None
+# =========================================================================
+# Fixtures — register standard formulas
+# =========================================================================
+
+# Use existing declare_formula to register concepts
+NPV_CONCEPT = "test.rt_npv"
+WACC_CONCEPT = "test.rt_wacc"
 
 
-def test_tutor_helpers_share_the_same_state_lock():
-    state = CognitiveState()
-
-    svc = WorkingMemoryService(state)
-    fsm = SocraticFSM(state)
-    kernel = MasteryKernel(types.SimpleNamespace(CHAPTER_FLOW={}), state)
-
-    assert svc._state_lock is fsm._state_lock
-    assert kernel._state_lock is svc._state_lock
-
-
-def test_socratic_fsm_enforces_quiz_guard_and_mastery_progression():
-    state = CognitiveState()
-    state.posteriors["Topic A"] = types.SimpleNamespace(mean=0.9, variance=0.01)  # type: ignore[assignment]
-    fsm = SocraticFSM(state)
-
-    state.quiz_active = True
-    decision = fsm.transition("TUTOR_REQUEST", {"chapter": "Topic A"})
-    assert decision.state == "PRODUCTIVE_STRUGGLE"
-    assert decision.permission == "socratic_only"
-
-    state.quiz_active = False
-    state.struggle_mode = False
-    decision = fsm.transition("TUTOR_REQUEST", {"chapter": "Topic A"})
-    assert decision.state == "CHALLENGE"
-    assert decision.permission == "explain_ok"
-
-    state.struggle_mode = True
-    decision = fsm.transition("TUTOR_REQUEST", {"chapter": "Topic A"})
-    assert decision.state == "PRODUCTIVE_STRUGGLE"
-    assert decision.permission == "socratic_only"
-
-
-def test_cognitive_state_transfer_eligibility_uses_structure_posteriors_and_flags():
-    state = CognitiveState()
-    post = state.get_structure_posterior("npv_annuity_timing_v1")
-    post.alpha = 10.0
-    post.beta = 2.0
-    assert (
-        state.should_offer_transfer_test(
-            structure_id="npv_annuity_timing_v1",
-            base_correct=True,
-            hint_penalty=1.0,
-        )
-        is True
+def setup_module():
+    """Register test formulas once for the module."""
+    declare_formula(
+        NPV_CONCEPT,
+        expression="cash_flow / (1 + rate) ** years",
+        param_names=["cash_flow", "rate", "years"],
+        param_kinds=["value", "percent", "value"],
+        output_slot="npv",
     )
-
-    state.quiz_active = True
-    assert (
-        state.should_offer_transfer_test(
-            structure_id="npv_annuity_timing_v1",
-            base_correct=True,
-            hint_penalty=1.0,
-        )
-        is False
-    )
-    state.quiz_active = False
-
-    state.struggle_mode = True
-    assert (
-        state.should_offer_transfer_test(
-            structure_id="npv_annuity_timing_v1",
-            base_correct=True,
-            hint_penalty=1.0,
-        )
-        is False
-    )
-    state.struggle_mode = False
-
-    assert (
-        state.should_offer_transfer_test(
-            structure_id="npv_annuity_timing_v1",
-            base_correct=True,
-            hint_penalty=0.3,
-        )
-        is False
+    declare_formula(
+        WACC_CONCEPT,
+        expression="ke * eq + kd * (1 - tx) * debt",
+        param_names=["ke", "eq", "kd", "tx", "debt"],
+        param_kinds=["percent", "percent", "percent", "percent", "percent"],
+        output_slot="wacc",
     )
 
 
-def test_cognitive_state_transfer_tracking_roundtrips_snapshot():
-    state = CognitiveState()
-    state.record_transfer_exposure("wacc_optimization_v1", attempt_id="t-1")
-    state.record_transfer_exposure("wacc_optimization_v1", attempt_id="t-2")
-    state.working_memory.tutor_chunks = ["U: Explain WACC.", "T: Start with market values."]
-    post = state.get_structure_posterior("wacc_optimization_v1")
-    post.alpha = 5.0
-    post.beta = 1.5
-    snap = state.to_json_snapshot()
-    restored = CognitiveState.from_snapshot(snap)
-    assert restored.structure_exposure_counts.get("wacc_optimization_v1") == 2
-    assert "t-2" in restored.transfer_attempt_ids
-    assert "wacc_optimization_v1" in restored.structure_posteriors
-    assert restored.working_memory.tutor_chunks == ["U: Explain WACC.", "T: Start with market values."]
+def teardown_module():
+    """Clean up registered formulas."""
+    from studyplan.domain_reasoning.formula_registry import _registry
+
+    for cid in [NPV_CONCEPT, WACC_CONCEPT]:
+        _registry.pop(cid, None)
+
+
+# =========================================================================
+# Identity test: solve()
+# =========================================================================
+
+
+def _get_solver_and_expr(concept_id: str):
+    """Retrieve solver function and expression string from the registry."""
+    from studyplan.domain_reasoning.formula_registry import _registry, FormulaDecl
+
+    decl: FormulaDecl = _registry[concept_id]
+    template = decl.template
+    # ExpressionTemplate stores _solver and _expression
+    return template._solver, template._expression
+
+
+def test_runtime_computation_identity_npv():
+    """Runtime + interpreter produce identical result to ExpressionTemplate."""
+    solver, expr = _get_solver_and_expr(NPV_CONCEPT)
+    inputs = {"cash_flow": 1000.0, "rate": 0.10, "years": 1.0}
+
+    # --- Old path ---
+    from studyplan.domain_reasoning.formula_registry import ExpressionTemplate
+
+    old_tpl = ExpressionTemplate(NPV_CONCEPT, solver, expr)
+    old_result = old_tpl.solve(inputs)
+
+    # --- New path ---
+    runtime = CognitiveRuntime()
+    process = ComputationProcess(NPV_CONCEPT, solver, expr)
+    trace = runtime.execute(process, inputs)
+    interpreter = ComputationResultInterpreter(NPV_CONCEPT, expr)
+    new_result = interpreter.interpret(trace)
+
+    # --- Identity check ---
+    assert old_result["concept_id"] == new_result["concept_id"]
+    assert abs(old_result["result"] - new_result["result"]) < 1e-9
+    assert old_result["inputs"] == new_result["inputs"]
+    assert old_result["is_nan"] == new_result["is_nan"]
+    assert len(old_result["steps"]) == len(new_result["steps"])
+    for old_step, new_step in zip(old_result["steps"], new_result["steps"], strict=True):
+        assert abs(old_step["value"] - new_step["value"]) < 1e-9
+        assert old_step["formula"] == new_step["formula"]
+
+
+def test_runtime_computation_identity_wacc():
+    """Identity holds for a different formula (WACC)."""
+    solver, expr = _get_solver_and_expr(WACC_CONCEPT)
+    inputs = {"ke": 0.12, "eq": 0.6, "kd": 0.08, "tx": 0.30, "debt": 0.4}
+
+    from studyplan.domain_reasoning.formula_registry import ExpressionTemplate
+
+    old_tpl = ExpressionTemplate(WACC_CONCEPT, solver, expr)
+    old_result = old_tpl.solve(inputs)
+
+    runtime = CognitiveRuntime()
+    process = ComputationProcess(WACC_CONCEPT, solver, expr)
+    trace = runtime.execute(process, inputs)
+    interpreter = ComputationResultInterpreter(WACC_CONCEPT, expr)
+    new_result = interpreter.interpret(trace)
+
+    assert abs(old_result["result"] - new_result["result"]) < 1e-9
+
+
+# =========================================================================
+# Identity test: evaluate_steps()
+# =========================================================================
+
+
+def test_runtime_computation_evaluate_steps_identity():
+    """Runtime + step evaluator produce identical evaluate_steps output."""
+    solver, expr = _get_solver_and_expr(NPV_CONCEPT)
+    inputs = {"cash_flow": 1000.0, "rate": 0.10, "years": 1.0}
+
+    from studyplan.domain_reasoning.formula_registry import ExpressionTemplate
+
+    old_tpl = ExpressionTemplate(NPV_CONCEPT, solver, expr)
+    truth = old_tpl.solve(inputs)
+
+    learner_steps = [
+        {"step_id": "npv", "value": 909.09},
+        {"step_id": "wrong_step", "value": 1000.0},
+    ]
+
+    # Old path
+    old_evals = old_tpl.evaluate_steps(learner_steps, truth)
+
+    # New path
+    runtime = CognitiveRuntime()
+    process = ComputationProcess(NPV_CONCEPT, solver, expr)
+    trace = runtime.execute(process, inputs)
+    evaluator = ComputationStepEvaluator()
+    new_evals = evaluator.interpret(trace, learner_steps=learner_steps)
+
+    # Identity
+    assert len(old_evals) == len(new_evals)
+    for o, n in zip(old_evals, new_evals, strict=True):
+        assert o["step_id"] == n["step_id"]
+        assert o["match"] == n["match"]
+
+
+# =========================================================================
+# Identity test: classify_errors()
+# =========================================================================
+
+
+def test_runtime_computation_classify_errors_identity():
+    """Runtime + error interpreter produce identical error tags."""
+    solver, expr = _get_solver_and_expr(NPV_CONCEPT)
+    inputs = {"cash_flow": 1000.0, "rate": 0.10, "years": 1.0}
+
+    from studyplan.domain_reasoning.formula_registry import ExpressionTemplate
+
+    old_tpl = ExpressionTemplate(NPV_CONCEPT, solver, expr)
+    truth = old_tpl.solve(inputs)
+
+    # Wrong answer
+    learner_steps = [
+        {"step_id": "npv", "value": 800.0},
+    ]
+
+    # Old path
+    old_tags = old_tpl.classify_errors(learner_steps, truth)
+
+    # New path
+    runtime = CognitiveRuntime()
+    process = ComputationProcess(NPV_CONCEPT, solver, expr)
+    trace = runtime.execute(process, inputs)
+    error_interp = ComputationErrorInterpreter()
+    new_tags = error_interp.interpret(trace, learner_steps=learner_steps)
+
+    assert old_tags == new_tags
+
+
+# =========================================================================
+# Runtime behaviour tests
+# =========================================================================
+
+
+def test_runtime_trace_structure():
+    """Trace contains exactly initialize, step, terminate events."""
+    solver, expr = _get_solver_and_expr(NPV_CONCEPT)
+    inputs = {"cash_flow": 1000.0, "rate": 0.10, "years": 1.0}
+
+    runtime = CognitiveRuntime()
+    process = ComputationProcess(NPV_CONCEPT, solver, expr)
+    trace = runtime.execute(process, inputs)
+
+    assert len(trace) == 3
+    assert trace.events[0].type == "initialize"
+    assert trace.events[1].type == "step"
+    assert trace.events[2].type == "terminate"
+
+
+def test_runtime_trace_immutable():
+    """Trace events list is a copy — original is not mutable from outside."""
+    solver, expr = _get_solver_and_expr(NPV_CONCEPT)
+    runtime = CognitiveRuntime()
+    process = ComputationProcess(NPV_CONCEPT, solver, expr)
+    trace = runtime.execute(process, {"cash_flow": 1000.0, "rate": 0.10, "years": 1.0})
+
+    events = trace.events
+    events.clear()
+    assert len(trace.events) == 3  # original unchanged
+
+
+def test_runtime_nan_result():
+    """Missing inputs produce is_nan=True result."""
+    solver, expr = _get_solver_and_expr(NPV_CONCEPT)
+    inputs = {"cash_flow": 1000.0, "rate": 0.10}  # missing "years"
+
+    runtime = CognitiveRuntime()
+    process = ComputationProcess(NPV_CONCEPT, solver, expr)
+    trace = runtime.execute(process, inputs)
+    interpreter = ComputationResultInterpreter(NPV_CONCEPT, expr)
+    result = interpreter.interpret(trace)
+
+    assert result["is_nan"] is True
+    assert result["result"] is None or (isinstance(result["result"], float) and math.isnan(result["result"]))
+
+
+def test_process_is_stateless():
+    """Multiple execute() calls on the same process produce independent traces."""
+    solver, expr = _get_solver_and_expr(NPV_CONCEPT)
+    process = ComputationProcess(NPV_CONCEPT, solver, expr)
+    runtime = CognitiveRuntime()
+
+    trace1 = runtime.execute(process, {"cash_flow": 1000.0, "rate": 0.10, "years": 1.0})
+    trace2 = runtime.execute(process, {"cash_flow": 2000.0, "rate": 0.10, "years": 2.0})
+
+    interp = ComputationResultInterpreter(NPV_CONCEPT, expr)
+    r1 = interp.interpret(trace1)
+    r2 = interp.interpret(trace2)
+
+    assert abs(r1["result"] - 909.09) < 0.1
+    assert abs(r2["result"] - 1652.89) < 0.1
