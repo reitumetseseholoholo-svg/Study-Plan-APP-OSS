@@ -11,8 +11,15 @@ from .logging_config import get_logger
 logger = get_logger(__name__)
 
 
-COGNITIVE_STATE_SCHEMA_VERSION = 1
+COGNITIVE_STATE_SCHEMA_VERSION = 2
 INTERVENTION_LEVELS = ("none", "light", "strong")
+
+# Concept cognition constants
+CONCEPT_DECAY_HALF_LIFE_DAYS = 14.0
+CONCEPT_TRANSFER_FRACTION = 0.1
+CONCEPT_MIN_EVIDENCE_WEIGHT = 0.3
+CONCEPT_COLD_START_ALPHA = 2.0
+CONCEPT_COLD_START_BETA = 2.0
 
 
 @dataclass
@@ -143,6 +150,10 @@ class CognitiveState:
     last_persist_ok: bool | None = None
     last_persist_error: str | None = None
 
+    # concept-scoped cognitive state (schema v2)
+    concept_posteriors: dict[str, CompetencyPosterior] = field(default_factory=dict)
+    concept_exposure_counts: dict[str, int] = field(default_factory=dict)
+
     # recovery / degradation state
     class Mode(str, Enum):
         NORMAL = "normal"
@@ -168,6 +179,8 @@ class CognitiveState:
             "struggle_mode": bool(self.struggle_mode),
             "mode": str(getattr(self.mode, "value", self.mode) or self.Mode.NORMAL.value),
             "recovery_hints": {str(k): str(v) for k, v in dict(self.recovery_hints or {}).items() if str(k).strip()},
+            "concept_posteriors": {k: asdict(v) for k, v in self.concept_posteriors.items()},
+            "concept_exposure_counts": {k: int(v) for k, v in self.concept_exposure_counts.items()},
             "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
         }
         return payload
@@ -248,6 +261,27 @@ class CognitiveState:
         recovery_hints = payload.get("recovery_hints")
         if isinstance(recovery_hints, dict):
             state.recovery_hints = {str(k): str(v) for k, v in recovery_hints.items() if str(k).strip()}
+
+        # concept-scoped posteriors (schema v2+)
+        concept_posteriors = payload.get("concept_posteriors")
+        if isinstance(concept_posteriors, dict):
+            for key, value in concept_posteriors.items():
+                name = str(key or "").strip()
+                if not name:
+                    continue
+                state.concept_posteriors[name] = CompetencyPosterior.from_payload(value)
+        concept_exposure_counts = payload.get("concept_exposure_counts")
+        if isinstance(concept_exposure_counts, dict):
+            for key, value in concept_exposure_counts.items():
+                name = str(key or "").strip()
+                if not name:
+                    continue
+                try:
+                    count = int(value)
+                except Exception:
+                    continue
+                state.concept_exposure_counts[name] = max(0, count)
+
         return state
 
     @classmethod
@@ -411,6 +445,184 @@ class CognitiveState:
             if len(self.transfer_attempt_ids) > 200:
                 self.transfer_attempt_ids[:] = self.transfer_attempt_ids[-200:]
 
+    # ------------------------------------------------------------------
+    # Concept-scoped cognitive state (schema v2+)
+    # ------------------------------------------------------------------
+
+    def get_concept_posterior(self, concept_id: str) -> CompetencyPosterior:
+        key = str(concept_id or "").strip()
+        if not key:
+            return CompetencyPosterior(alpha=CONCEPT_COLD_START_ALPHA, beta=CONCEPT_COLD_START_BETA)
+        if key not in self.concept_posteriors:
+            self.concept_posteriors[key] = CompetencyPosterior(
+                alpha=CONCEPT_COLD_START_ALPHA, beta=CONCEPT_COLD_START_BETA
+            )
+        return self.concept_posteriors[key]
+
+    def _apply_concept_decay(self, concept_id: str, posterior: CompetencyPosterior) -> None:
+        obs = posterior.last_observation
+        if not obs:
+            return
+        try:
+            last = _dt.datetime.fromisoformat(obs)
+            if last.tzinfo is not None:
+                now = _dt.datetime.now(_dt.timezone.utc)
+            else:
+                now = _dt.datetime.now()
+            days = max(0.0, (now - last).total_seconds() / 86400.0)
+        except Exception:
+            return
+        if days <= 0.5:
+            return
+        decay = 2.0 ** (-days / CONCEPT_DECAY_HALF_LIFE_DAYS)
+        posterior.alpha = max(CONCEPT_COLD_START_ALPHA * 0.5, posterior.alpha * decay)
+        posterior.beta = max(CONCEPT_COLD_START_BETA * 0.5, posterior.beta * decay)
+
+    def update_concept_posteriors(
+        self,
+        concept_ids: list[str],
+        correct: bool,
+        hints_used: int = 0,
+        score_ratio: float = 1.0,
+        *,
+        concept_dependents: dict[str, set[str]] | None = None,
+    ) -> None:
+        if not concept_ids:
+            return
+        try:
+            hints = max(0, int(hints_used or 0))
+        except Exception:
+            hints = 0
+        evidence_weight = max(CONCEPT_MIN_EVIDENCE_WEIGHT, 1.0 - hints * 0.3)
+
+        now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+
+        for cid in concept_ids:
+            cid = str(cid or "").strip()
+            if not cid:
+                continue
+            posterior = self.get_concept_posterior(cid)
+
+            self._apply_concept_decay(cid, posterior)
+
+            if correct and score_ratio >= 0.9:
+                posterior.alpha = float(posterior.alpha) + evidence_weight
+            elif correct and score_ratio > 0.0:
+                partial = evidence_weight * score_ratio
+                posterior.alpha = float(posterior.alpha) + partial
+                posterior.beta = float(posterior.beta) + max(0.1, evidence_weight - partial)
+            elif correct:
+                posterior.alpha = float(posterior.alpha) + evidence_weight * 0.5
+                posterior.beta = float(posterior.beta) + evidence_weight * 0.5
+            else:
+                posterior.beta = float(posterior.beta) + evidence_weight
+
+            posterior.last_observation = now_iso
+
+            self.concept_exposure_counts[cid] = int(self.concept_exposure_counts.get(cid, 0) or 0) + 1
+
+            self._transfer_concept_update(cid, correct, evidence_weight, concept_dependents, now_iso)
+
+    def _transfer_concept_update(
+        self,
+        concept_id: str,
+        correct: bool,
+        evidence_weight: float,
+        concept_dependents: dict[str, set[str]] | None,
+        now_iso: str,
+    ) -> None:
+        if not concept_dependents:
+            return
+        dependents = concept_dependents.get(concept_id)
+        if not dependents:
+            return
+        delta = evidence_weight if correct else -evidence_weight * 0.5
+        if delta >= 0:
+            alpha_nudge = delta * CONCEPT_TRANSFER_FRACTION
+            beta_nudge = 0.0
+        else:
+            alpha_nudge = 0.0
+            beta_nudge = -delta * CONCEPT_TRANSFER_FRACTION
+        for dep_id in dependents:
+            dep_id = str(dep_id or "").strip()
+            if not dep_id:
+                continue
+            dep = self.get_concept_posterior(dep_id)
+            if alpha_nudge > 0:
+                dep.alpha = float(dep.alpha) + alpha_nudge
+            if beta_nudge > 0:
+                dep.beta = float(dep.beta) + beta_nudge
+            dep.last_observation = now_iso
+
+    def get_concept_derived_competence_for_chapter(
+        self,
+        chapter: str,
+        *,
+        chapter_concepts: dict[str, list[str]] | None = None,
+    ) -> float:
+        if not chapter_concepts:
+            return 50.0
+        cids = chapter_concepts.get(chapter)
+        if not cids:
+            return 50.0
+        total_weight = 0.0
+        weighted_sum = 0.0
+        for cid in cids:
+            posterior = self.concept_posteriors.get(cid)
+            if posterior is None:
+                continue
+            exposure = float(self.concept_exposure_counts.get(cid, 0) or 0)
+            weight = min(1.0, exposure / 3.0) + 0.5
+            total_weight += weight
+            weighted_sum += posterior.mean * weight
+        if total_weight <= 0:
+            return 50.0
+        return max(0.0, min(100.0, (weighted_sum / total_weight) * 100.0))
+
+    def get_concept_prerequisite_gaps(
+        self,
+        *,
+        concept_dependencies: dict[str, tuple[str, ...]] | None = None,
+    ) -> list[tuple[str, str, float]]:
+        gaps: list[tuple[str, str, float]] = []
+        if not concept_dependencies:
+            return gaps
+        for cid, deps in concept_dependencies.items():
+            if not deps:
+                continue
+            posterior = self.concept_posteriors.get(cid)
+            if posterior is None:
+                continue
+            dep_mean = posterior.mean
+            for dep_cid in deps:
+                dep_posterior = self.concept_posteriors.get(dep_cid)
+                if dep_posterior is None:
+                    continue
+                if dep_posterior.mean < 0.5 and dep_mean < 0.6:
+                    gaps.append((cid, dep_cid, round(dep_posterior.mean, 3)))
+        return gaps
+
+    def get_concept_blocked_set(
+        self,
+        *,
+        concept_dependencies: dict[str, tuple[str, ...]] | None = None,
+    ) -> set[str]:
+        blocked: set[str] = set()
+        if not concept_dependencies:
+            return blocked
+        for cid, deps in concept_dependencies.items():
+            if not deps:
+                continue
+            posterior = self.concept_posteriors.get(cid)
+            if posterior is None or posterior.mean >= 0.6:
+                continue
+            for dep_cid in deps:
+                dep_posterior = self.concept_posteriors.get(dep_cid)
+                if dep_posterior is None or dep_posterior.mean < 0.5:
+                    blocked.add(cid)
+                    break
+        return blocked
+
 
 class CognitiveStateValidator:
     @staticmethod
@@ -421,6 +633,11 @@ class CognitiveStateValidator:
             m = posterior.mean
             if not (0.0 <= m <= 1.0):
                 errors.append(f"Topic '{topic}' mean={m} outside [0,1]")
+        # concept posterior means in 0..1
+        for cid, posterior in state.concept_posteriors.items():
+            m = posterior.mean
+            if not (0.0 <= m <= 1.0):
+                errors.append(f"Concept '{cid}' mean={m} outside [0,1]")
         # struggle flags bool
         for flag_name, flag_val in state.working_memory.struggle_flags.items():
             if not isinstance(flag_val, bool):
@@ -431,6 +648,10 @@ class CognitiveStateValidator:
         # mode validity
         if state.mode not in CognitiveState.Mode:
             errors.append(f"Unknown mode {state.mode}")
+        # concept exposure counts non-negative
+        for cid, cnt in state.concept_exposure_counts.items():
+            if not isinstance(cnt, int) or cnt < 0:
+                errors.append(f"Concept '{cid}' exposure count {cnt} invalid")
         return (len(errors) == 0, errors)
 
     @classmethod

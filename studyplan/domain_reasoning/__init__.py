@@ -79,6 +79,19 @@ from studyplan.domain_reasoning.concept_types import (
     ClassificationConfig,
 )
 
+from studyplan.domain_reasoning.process import (
+    ProcessTemplate,
+    DiagnosticConfig,
+    DiagnosticTemplate,
+    ProcessHypothesis,
+    ProcessFeature,
+    ProcessAction,
+    EvaluationConfig,
+    EvaluationCriterion,
+    EvaluationTemplate,
+    declare_process,
+)
+
 __all__ = [
     "ConceptMetadata",
     "ConceptTemplate",
@@ -125,4 +138,14 @@ __all__ = [
     "ClassificationNode",
     "Branch",
     "ClassificationConfig",
+    "ProcessTemplate",
+    "DiagnosticConfig",
+    "DiagnosticTemplate",
+    "ProcessHypothesis",
+    "ProcessFeature",
+    "ProcessAction",
+    "EvaluationConfig",
+    "EvaluationCriterion",
+    "EvaluationTemplate",
+    "declare_process",
 ]

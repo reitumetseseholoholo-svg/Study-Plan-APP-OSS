@@ -1,5 +1,90 @@
 # AGENTS.md
 
+## CCI Research Protocol — binding instructions
+
+When asked to do any task, I MUST follow the CCI Research Protocol
+(`docs/specification/RESEARCH_PROTOCOL.md`) word for word:
+- Start with the Essentialist Question: "What phenomenon does this code exist to preserve?"
+- Collect observations across ALL six orthogonal scans before abstracting
+- Generalize before falsifying (Rule 4 — most important)
+- Every abstraction must be earned, never invented
+- Classify findings into evidence classes, assign to correct architectural layer
+- Add predictions, compression scores, and falsification conditions
+- Never optimize for fewer lines; optimize for fewer architectural concepts
+- The protocol is frozen — no amendments until 3+ independent domains analyzed
+
+## Session tracking (Jul 2026)
+
+### Done
+- Step 2: Provenance wired into Intelligent Tutor — `build_provenance_context()` in `studyplan_ai_tutor.py:1195`, provenance data reaches LLM prompt via `_generate()` at `studyplan_app.py:8589`
+- Step 6: CCI-provenance trace bridge — `studyplan/trace_bridge.py` (embed, extract, correlate, unified_trace_view); 26 tests
+- Step 4: FastDomainCompiler pattern expansion — `ParametricSpec` with `{i}` template substitution in `fast_compiler.py`; 20 tests
+- Step 1: Interactive Debugger (Layer 6) — `DebugExecutor` with `ExecutionSnapshot`, `Breakpoint`, `StepController`, `step_through()` generator; 28 tests in `studyplan/provenance/lab/debugger.py`
+- **Formula Bridge** (`studyplan/provenance/formula_bridge.py`): Auto-compiles `FormulaDecl` from DSL registry into provenance `DomainSpecs` for `FastDomainCompiler`. 22 tests.
+- **DomainRegistry — Universal Domain Compiler** (`studyplan/provenance/domain_registry.py`): Live concept→ViewState map with auto-compile on registration. 30 tests.
+- **Music Theory Domain (18 tests)** — 5th domain (humanities), validates universality.
+- **Identity System v2** (`studyplan/provenance/lab/compilation/identity_v2.py`): ProvenanceWeightedIdentity, SemanticEquivalenceScorer, GlobalIdentityRegistry, ConflictAwareMerger. 27 tests.
+- **PDF Frontend** (`studyplan/provenance/lab/compilation/pdf_plugin.py`): Third frontend on the RAG pipeline. 28 tests.
+- **RuntimeIndex** (`studyplan/provenance/runtime_index.py`): Immutable, shareable execution image. Construction Experiment H-RT-01 — 5 predictions confirmed.
+- **Compilation Workspace** (`studyplan/provenance/lab/compilation_workspace.py`): GTK compiler IDE — source panel, pipeline view, semantic diff, identity review with Merge/Keep/Compare/Provenance/Dependency buttons. Wired into `studyplan_app.py` as "Compiler" tab (`_build_compiler_workspace_page`, `_refresh_compiler_workspace_page`). Instrumented with investigation events and review decision emission.
+- **`compiler.*` event taxonomy** added to EventBus (`studyplan/provenance/learning/events.py`): 10 event types across three categories:
+  - **Lifecycle**: `source_imported`, `compilation_started`, `extraction_completed`, `ambiguity_detected`, `publish_completed`
+  - **Investigation**: `review_opened`, `provenance_viewed`, `dependency_graph_viewed`, `candidate_compared`
+  - **Decision**: `merge_candidate`, `review_decision` (with latency, evidence, confidence), `review_abandoned`
+- **Compiler Bridge** (`studyplan/provenance/learning/compiler_bridge.py`): `get_compiler_bus()` / `set_compiler_bus()` singleton — mirrors `LearningIntegrator` pattern.
+- **Stopword filtering** in workspace: `STOPWORDS` frozenset filters noise concepts from review panel.
+- **Class E — Epistemic Evidence** added to `RESEARCH_PROTOCOL.md`: Evidence about *how justified belief changes during knowledge engineering* — decision latency, evidence consulted, confidence delta. Justified under Constitutional Amendment I condition 1 (existing protocol cannot explain this evidence). Distinguishes investigation events from decision events.
+- **T-PC-01 confidence propagation** (Jul 2026): `build_provenance_context()` accepts optional `assumption_confidence` dict → renders `name [score]`. LLM experiment confirmed: WITH confidence → model calibrates response (mentions "confidence" 6×, uses bracket notation, adds badges like ✅ Well-established); WITHOUT confidence → generic table, no calibration. Principle promoted to Supported.
+- **CI-B-01 Compiler→Integrator Bridge**: `CompilationWorkspace.get_alias_map()` exposes GIR's `_local_to_canonical`, pushed to `ProvenanceIntegrator` after every `compile_all()`. Normalizes artifact names in `capture_trace()` and `tutor_context()`. 8 tests pass.
+- **Default confidence in tutor prompts** (Jul 2026): `ProvenanceIntegrator.tutor_context()` auto-computes per-assumption confidence from ViewState transform depth via BFS. Direct assumptions = 0.95, decay 0.10 per backward hop, floor 0.50. Both app call sites (`_generate()`, `_build_ai_tutor_context_prompt()`). Dead `_confidence_map` wiring removed.
+- **H-OP-01 Optimization Protocol** (Jul 2026): Protocol analysis of 13 observations across 6 orthogonal scans. Corrected root cause: **no stable computation identity boundary** — work units lack content-addressed keys. Three predictions: P-CP-01 (label index + persist GIR, 8:1 compression), P-CP-02 (equivalence class index, adjunct to P-CP-01), P-CP-03 (subgraph invalidation tracking, 4:1, deferred). Pass fusion rejected as premature (< 2× at current CIR sizes). Documented in `docs/architecture.md§Optimization Protocol`.
+
+### Key Decisions
+- **Investigation ≠ Decision**: `compiler.*` events separate *how* knowledge engineers investigate (provenance_viewed, dependency_graph_viewed, candidate_compared) from *what* they decide (review_decision, review_abandoned). Two reviewers with identical decisions but different investigation paths produce different event histories.
+- **Class E is not UX telemetry**: Measures "what evidence caused uncertainty to decrease," not engagement/clicks/retention.
+- **Falsifiable test of observability**: After a month of FM study through the Workbench, do `compiler.*` events produce engineering decisions that couldn't exist without them? If events are ignored, the taxonomy is too fine-grained.
+- **Protocol amendment justified**: Class E added under Constitutional Amendment I condition 1 — human confidence/hesitation data cannot be classified by existing evidence classes A–D.
+- **Root cause depth (H-OP-01)**: The optimization problem is not "no cache" — it's "no stable computation identity boundary." Content-addressed identity keys (type, label) enable amortized O(1) resolution over time, eliminating both global recomputation and O(N) linear scans at the root. This is why P-CP-01 alone compresses 8/13 observations and why pass fusion is premature at current graph sizes.
+- **Weights driven by experiment (not intuition)**: Default policy weights are now (0.55, 0.30, 0.10, 0.05) — derived from sensitivity analysis. Confusion dominates (0.2475 mean influence), leverage is strong (0.0750), collapse and stability are weak in marginal value but retained for edge cases. The sensitivity analysis itself confirmed the protocol is working: it identified dead weight, and the reweighting is a falsifiable improvement.
+
+### Cognitive Control Layer — Phase 3 (Jul 2026)
+- **Four-layer architecture complete**: CIR (truth) → Event Bus (observation) → Projection (inference) → Controller (control)
+- Every layer is a *pure function* over the layers below it — the entire stack is replayable and falsifiable
+- **Key files**:
+  - `studyplan/provenance/cognition/controller.py` — `CognitivePolicyEngine`, `CognitiveController`, `ForwardModel`, `Intervention`, `ActionType` (6 action types)
+  - `studyplan/provenance/cognition/experiment.py` — `CognitiveExperiment` with sensitivity analysis, ablation study, counterfactual experiment
+  - `studyplan/provenance/cognition/outcome.py` — `PredictionOutcome`, `PredictionOutcomeComparator`, `compute_closed_loop_outcomes`
+  - `tools/run_cognition_experiments.py` — interactive experiment runner (run `python tools/run_cognition_experiments.py --verbose`)
+- **86 tests** covering controller (30), outcome/comparator (32), experiment (24) — all pass
+- **Default weights** (evidence-based): confusion=0.55, leverage=0.30, collapse=0.10, stability=0.05
+  - Derived from sensitivity analysis: confusion dominates (0.2475 mean influence), leverage is strong (0.0750), collapse/stability are weak in marginal value but retained for edge cases of isolated uncertainty and decaying familiarity
+  - Ablation study confirms ALL signals are alive when isolated (each changes ranking on removal)
+- **Closed-loop action outcomes**: `action_taken`/`action_outcome` events (cognition.*), `PredictionOutcomeComparator` compares ForwardModel predictions vs observed deltas, `compute_closed_loop_outcomes()` re-projects bus before/after each action
+- **UI polish**: Cognitive State card added to Compiler tab — health dot (color-coded by score severity), event count, next best action, top-3 intervention rankings with rationale, calibration confidence display
+
+### Learning System — Phase 3.5 (Jul 2026)
+- **ForwardModel is now calibratable**: `update_from_outcome()` adjusts delta estimates toward empirically observed values using signed-error delta rule: `delta[k] += lr × (observed[k] − predicted[k])`
+- **Per-action-type confidence**: Tracks update count per ActionType → `calibration_confidence` property (min(1.0, count/10))
+- **Auto-calibration in workspace**: `_update_cognitive_panel()` processes unprocessed `action_outcome` events from `compute_closed_loop_outcomes()` and feeds them to ForwardModel — zero manual intervention needed
+- **Convergence proven**: Repeated outcomes with lr=0.5 converge to <0.01 error within 10 iterations
+- **12 calibration tests** covering: delta adjustment, convergence, signed errors, action isolation, confidence tracking, reset, unknown type, modulation independence, end-to-end comparator integration
+
+### Test status
+- **3810 pass / 0 failures / 1 skip** = 3811 total
+- 118 compilation tests, 35 event bus tests, 98 cognition tests (54 base + 32 outcome + 12 calibration) — all pass
+- 2 new event types: `cognition.action_taken`, `cognition.action_outcome`
+- ForwardModel `update_from_outcome()` — 12 tests proving convergence, calibration confidence, modulation independence
+
+### Critical Context
+- **Compilation Workspace** at `studyplan/provenance/lab/compilation_workspace.py` — standalone module with GTK page builder, full pipeline (extract → validate → passes → merge → review), identity review with 3 investigation buttons (Provenance/Dependency/Compare) + 2 decision buttons (Merge/Keep). Now includes Cognitive State card with health indicator and intervention recommendations.
+- **Wired into app**: Compiler tab registered in `_build_workbench_shell`, `_workbench_aliases`, `_refresh_workbench_page` dispatch map, and stability repair path.
+- **Event bus pattern**: `get_compiler_bus()` returns singleton `EventBus`; workspace calls `self._bus.emit(...)` at each stage; bus gracefully degrades if None.
+- **PredictionOutcome closes the loop**: `PredictionOutcomeComparator.compare()` takes intervention + pre/post projections → produces observed deltas, prediction error, success flag. `compute_closed_loop_outcomes()` scans bus history for action_taken events and auto-computes outcomes.
+- **ForwardModel now learns**: `update_from_outcome()` adjusts deltas via signed-error delta rule. Auto-calibrated in workspace from action_outcome bus events. Convergence proven in 12 tests.
+- **Architecture milestone**: System has crossed from "self-evaluating" to "self-improving" — a deterministic cognitive system with a closed-loop evaluation signal plus a parameter update rule over its own policy decisions.
+
+## Critical Context (Phase 4+)
+
 ## Cursor Cloud specific instructions
 
 This is a Python GTK4 desktop application (Study Workbench) — a single-process desktop app, not a web service. No external databases or Docker containers are required. It is module-agnostic (load any professional syllabus) and combines SRS, coach, AI tutor, Pomodoro, and semi-autonomous autopilot into a tabbed workbench UI.
@@ -40,6 +125,63 @@ When any command (smoke test, compile check, etc.) fails:
 - **`python` must be available**: The system may only have `python3`; create a symlink with `sudo ln -sf /usr/bin/python3 /usr/bin/python` if needed.
 - **Smoke test is slow (~3.5 min)**: On this hardware the smoke test takes ~210s. Use `timeout 300s` or the `--smoke-fast` flag if available.
 - **ruff config issue**: The `pyproject.toml` `[tool.ruff]` section includes `W503` in the `ignore` list, which is not a valid ruff rule. This causes `ruff check` to fail. The `linux-ci.yml` workflow uses `python tools/gtk4_lint.py` instead of ruff.
+
+## Algebra Ontology (Phase 4, frozen Jul 2026)
+
+### Four-layer architecture
+
+```
+Level 0: Execution protocol  (initialize → step → finished → result)
+Level 1: Ontology            (S, M, I, C, Φ)
+Level 2: Metric              (similarity over ontology coordinates)
+Level 3: Estimator           (trace → ontology coordinates)
+```
+
+### A = (S, M, I, C, Φ)
+
+- **S** = State space (topology, dimensionality, admissible values, locality)
+- **M** = Operator algebra (admissible transformations S→S, characterized by intrinsic algebraic properties — reversibility, locality, monotonicity, topology/value/branching mutation — not operator names)
+- **I** = Logical invariants (predicates that hold at every reachable state)
+- **C** = Conserved quantities (scalars/structures preserved by every M)
+- **Φ** = Completion semantics (semantic fixed point of computation)
+
+**Status**: S, I, C, Φ are frozen. M is provisional — can be refined within the operator property space, but new coordinates require the evolution rule.
+
+### Ontology evolution rule
+
+A new coordinate may be introduced only if: (1) unexplained residual persists across multiple algebras, (2) cannot be eliminated by refining existing coordinate, (3) is independently observable, (4) improves held-out predictions.
+
+### Validation
+
+Ontology predicts human similarity rankings with ρ = 0.774 (p = 0.0007, n=15 pairs). The CSP–GG residual was resolved by refining M's internal property space rather than adding a coordinate.
+
+### Phase 4C-E1: Residual clustering (Jul 2026)
+
+**Script**: `tools/algebra_residual_analysis.py e1`
+
+**Question**: Are residuals systematic (missing coordinate) or concentrated (M refinement)?
+
+**Result**: Not systematic. All large residuals involve Justification (J) but with **opposite polarity** — J is simultaneously undersimilar to GG (+0.17) and oversimilar to CSP (−0.13). This polarity mismatch rules out a missing coordinate and implicates M's operator property space for support/retract. Non-J pairs have mean |R| = 0.026 (essentially noise).
+
+**Recommendation**: Proceed to E2 (property augmentation) — test whether adding an inferential or semantic-domain property to the operator vectors resolves both residuals simultaneously.
+
+### Phase 4C-E2: Property augmentation (Jul 2026)
+
+**Script**: `tools/algebra_residual_analysis.py e2`
+
+**Question**: Does adding a candidate property to the operator vectors resolve both GG-J and CSP-J simultaneously?
+
+**Result**: Marginal improvement only. The best candidate (`inferential`) reduces total |R| by 5.5% (0.298 → 0.281). GG-J improves from +0.173 to +0.148, but CSP-J worsens from −0.125 to −0.133. The improvement is too small to justify modifying the operator property space.
+
+**Implication**: The residual does NOT reside in M alone. Operators inherit semantic properties from their S context (expand on goal-graph vs support on belief-graph), which a fixed 10-dimensional operator vector cannot capture. This supports the "semantic domain = metadata on S" hypothesis.
+
+### Key files
+
+| File | Role |
+|------|------|
+| `docs/algebra_atlas.md` | Full ontology specification (551 lines, 30 sections) |
+| `tools/algebra_experiments.py` | Experiment harness — 9 Phase 2 experiments |
+| `tools/algebra_observatory.py` | Observatory v2 — confidence distributions, coherence metric, blind trace API |
 - **Lock file**: The app enforces single-instance via `~/.config/studyplan/app_instance.lock`. If a prior run was killed ungracefully, remove this file before re-running: `rm -f ~/.config/studyplan/app_instance.lock`.
 - **`~/.local/bin` on PATH**: pip installs dev tools to `~/.local/bin`; ensure it's on PATH (`export PATH="$HOME/.local/bin:$PATH"`).
 - ~~**Pre-existing test failure**: `test_semantic_tfidf_assets_reused_on_repeated_queries` fails consistently — this is a pre-existing issue, not caused by environment setup.~~ **FIXED** (test passes 1926/1926).
@@ -327,3 +469,97 @@ Run `ruff check .` from repo root (not `ruff .` or `ruff check`).
 ## detect_concepts variable redeclaration
 
 `detect_concepts` in `studyplan/domain_reasoning/concepts.py` has two code paths (domain and ACCA FM fallback) that both declare `seen`/`result`. The domain path uses `_dseen`/`_dres` to avoid redeclaration warnings from static analysis tools.
+
+## P0 — Provenance Completeness (Jul 2026)
+
+**Experiment**: Does constraint inheritance reduce to provenance traversal?
+
+**Result**: **Confirmed.** `collect_inherited_constraints()` (`studyplan/provenance/kernel/primitives.py:10`) is a generic BFS that follows output→input edges and unions constraints. It contains zero domain-specific knowledge. It works identically for FM and PostgreSQL:
+
+- `collect_inherited_constraints(WACC_posttax)` → CAPM's `market_efficiency`, `diversified_investor`, WACC's `constant_capital_structure`, and 4+ inherited consumption constraints
+- `collect_inherited_constraints(plan_tree_geqo)` → `("activation", "join_count > 12")` from the GEQO generator
+- `collect_inherited_constraints(nestedloop_node)` → `("condition", "cost(nested_loop) < cost(hash_join)")` from the decision mapping
+- `collect_inherited_constraints(Rf)` → empty (base artifact, no ancestors)
+
+**Headline**: The failures occurred at the composition layer, not the ontology layer. All three FM gaps reclassified:
+
+| Gap | Initial classification | After protocol | Action |
+|-----|----------------------|----------------|--------|
+| Multi-input T (WACC needs 4 inputs) | Ontology failure | Encoding failure (composition API, not ontology) | Deferred — wait for >1 FM example pushing same pressure |
+| Closed EvaluationContext | Ontology failure | Implementation debt | Fixed (regimes open-ended) |
+| Assumption propagation | Possible new primitive | Provenance query | **Provenance completeness** pattern promoted to kernel |
+
+**Implication**: Tutor("What assumptions did I just make?") = Kernel(`collect_inherited_constraints(current_artifact)`) — no new ontology needed. The same code path serves Tutor, Debugger, and Lab.
+
+**Two kinds of provenance discovered**: Execution provenance (graph reachability — "what does this depend on?") and validity provenance (constraint collection — "what must be true for this to be valid?"). Both are query strategies over one graph.
+
+**Key files**: `studyplan/provenance/kernel/primitives.py` (collect_inherited_constraints), `studyplan/provenance/kernel/test_p0_provenance_completeness.py` (10 tests).
+
+**Test status**: 10/10 pass on standalone, 2880/2880 full suite.
+
+## P1 — ArtifactStore Protocol (Phase II, Jul 2026)
+
+**Hypothesis**: ViewState is a complete snapshot — serialization captures all algebra-relevant state. A persistent store can be a pure IO layer with zero kernel changes.
+
+**Predictions**: ViewState immutable, algebra APIs unchanged, cross-session queries work, no ontology changes, tutor code becomes simpler.
+
+**Experiment**: Implement the smallest ArtifactStore — directory of JSON files, keyed by content_hash, zero in-memory cache, zero indexing, zero schema versioning.
+
+**Results**: All 5 predictions **confirmed**. Zero falsifications (no domain-specific workarounds, no kernel imports beyond types, no schema migration).
+
+**Key evidence**:
+- `save(pg_vs) → load(key) → projection/loaded_vs` produces identical results to original
+- `content_hash` preserved across serialization
+- Same store works for PG optimizer and FM WACC domains
+- Recursive serialization is purely structural (dataclass fields → dict, frozenset → list). Only one type of impedance: JSON converts tuples to lists, requiring list→tuple conversion on reconstruction for hashable fields (metadata, constraints). This is JSON's limitation, not ViewState's.
+
+**Unexpected discovery**: Python's `dataclasses.asdict` does not recurse into `frozenset` members. Had to write `_to_json_compat()` — a structural recursive converter with zero domain knowledge.
+
+**Implication**: The kernel has a clean architectural boundary. Storage is a decorator, not an intrinsic capability. The same store pattern can back Tutor, Debugger, Lab from a single code path.
+
+**Key files**: `studyplan/provenance/experiments/experiment_artifact_store.py` (experiment protocol + store implementation), `studyplan/provenance/kernel/test_p1_artifact_store.py` (12 tests).
+
+**Test status**: 12/12 pass on standalone, 2892/2892 full suite.
+
+### Phase II protocol (Construction experiments)
+
+The research protocol has graduated from discovery to construction. Every implementation decision is now a hypothesis:
+
+| Phase | Question | Output |
+|-------|----------|--------|
+| Discovery (Phase I) | What architecture exists? | PV phase diagram, frozen schema v3 |
+| Construction (Phase II) | What is the minimal implementation that satisfies the architecture? | Auditable code with research lineage |
+
+Every new component requires: hypothesis → predictions → experiment → evidence → decision. Nothing bypasses evidence — not even implementation.
+
+**Construction experiment types**:
+- **Discovery**: What is true? (Output: architecture)
+- **Construction**: Is this implementation minimal? (Output: code)
+
+**Next candidate**: Multi-input composition. Hypothesis: unary transformations compress all observed domains (LLVM, PostgreSQL, GUI, FM WACC). Deferred until second FM example (NPV) pushes the same pressure.
+
+## Identity System v2 — Semantic Normalization Layer (Jul 2026)
+
+**Problem**: Identity resolution was per-build (transient DSU). Cross-source merging (FM+Notes) worked via string equality, but would break when PDF textbooks, exam marking schemes, or multi-author corpora are added.
+
+**Solution**: Four-component identity system mirroring LLVM's global value numbering + canonicalization:
+
+| Component | File | Role |
+|-----------|------|------|
+| `ProvenanceWeightedIdentity` | `identity_v2.py:25` | Identity with confidence, source_trust, lineage, effective_confidence |
+| `SemanticEquivalenceScorer` | `identity_v2.py:95` | Weighted similarity (label 0.40 + type 0.25 + context 0.20 + provenance 0.15) |
+| `GlobalIdentityRegistry` | `identity_v2.py:265` | Persistent identity graph across compilations — register/resolve/get_equivalence_class |
+| `ConflictAwareMerger` | `identity_v2.py:340` | Wraps CIRMerger with GIR for principled identity resolution |
+
+**Scoring calibration** (threshold=0.6):
+- Same label + same type → 0.65 → merge ✓ (no context needed)
+- Same label + compatible type → 0.575 → no merge (needs context)
+- Same label + compatible type + context overlap → 0.775 → merge ✓
+
+**Key design decisions**:
+- Cross-type identities (formula vs concept) do NOT merge without contextual overlap — prevents over-merging
+- `GlobalIdentityRegistry._find_best_match()` uses scorer.equivalence_threshold — no hardcoded cutoffs
+- `register()` uses `_resolve_type_conflict()` with priority order: formula > principle > method > theorem > concept
+- `ConflictAwareMerger._rewrite_fragments()` rewrites all fragment IDs to canonical before structural merge
+
+**Test status**: 90 compilation tests pass (63 old + 27 new). 3658 total / 1 skip.

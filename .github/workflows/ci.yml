@@ -7,6 +7,7 @@ on:
       - "studyplan/**/*.py"
       - "tests/**/*.py"
       - "studyplan/testing/**/*.py"
+      - "studyplan/provenance/**/*.py"
       - "studyplan_app.py"
       - "studyplan_ai_tutor.py"
       - "studyplan_engine.py"
@@ -22,6 +23,7 @@ on:
       - "studyplan/**/*.py"
       - "tests/**/*.py"
       - "studyplan/testing/**/*.py"
+      - "studyplan/provenance/**/*.py"
       - "studyplan_app.py"
       - "studyplan_ai_tutor.py"
       - "studyplan_engine.py"
@@ -63,7 +65,7 @@ jobs:
 
       - name: Lint with ruff
         run: |
-          ruff check studyplan/ tests/ studyplan/testing/
+          ruff check studyplan/ tests/ studyplan/testing/ studyplan/provenance/
 
       - name: Type check with pyright
         run: |
@@ -71,11 +73,11 @@ jobs:
 
       - name: Run pytest (core + integration)
         run: |
-          pytest tests/ studyplan/testing/ -q --tb=short
+          pytest tests/ studyplan/testing/ studyplan/provenance/ -q --tb=short
 
       - name: Check test coverage
         run: |
-          pytest tests/ --cov=studyplan --cov-report=term-missing --cov-fail-under=40
+          pytest tests/ studyplan/provenance/ --cov=studyplan --cov-report=term-missing --cov-fail-under=40
 
   security-scan:
     runs-on: ubuntu-latest

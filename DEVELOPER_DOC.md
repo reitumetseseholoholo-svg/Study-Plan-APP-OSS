@@ -25,8 +25,10 @@ This document covers the application architecture, key subsystems, internal desi
 16. [Testing Architecture](#testing-architecture)
 17. [CI Workflow](#ci-workflow)
 18. [Domain Reasoning Engine](#domain-reasoning-engine)
-19. [Configuration Reference](#configuration-reference)
-20. [Deployment](#deployment)
+19. [CCI Research Protocol & Algebra Ontology](#cci-research-protocol--algebra-ontology)
+20. [Provenance Kernel](#provenance-kernel)
+21. [Configuration Reference](#configuration-reference)
+22. [Deployment](#deployment)
 
 ---
 
@@ -66,9 +68,9 @@ Study Workbench is a **single-process GTK4 desktop application**. There is no ba
 
 | File | Role |
 |---|---|
-| `studyplan_app.py` | GTK4 main window. All UI construction, event handlers, Pomodoro, quiz flow, AI cockpit, preferences. ~56,700 lines. |
-| `studyplan_engine.py` | Data model, SRS (FSRS-4.5/SM-2), daily plan, coach urgency scoring, ML inference, syllabus parsing, semantic routing, persistence. ~14,800 lines. |
-| `studyplan_ai_tutor.py` | AI tutor session management: prompt assembly, RAG retrieval, Ollama/gateway calls, streaming, response sanitization. |
+| `studyplan_app.py` | GTK4 main window. All UI construction, event handlers, Pomodoro, quiz flow, AI cockpit, preferences. ~58,100 lines. |
+| `studyplan_engine.py` | Data model, SRS (FSRS-4.5/SM-2), daily plan, coach urgency scoring, ML inference, syllabus parsing, semantic routing, persistence. ~14,900 lines. |
+| `studyplan_ai_tutor.py` | AI tutor session management: prompt assembly, RAG retrieval, Ollama/gateway calls, streaming, response sanitization. ~3,700 lines. |
 | `studyplan_app_kpi_routing.py` | KPI thresholds and smoke/soak test routing helpers. GTK-independent. |
 | `studyplan_app_path_utils.py` | Path helpers extracted for unit-testability without GTK. |
 | `studyplan_ui_runtime.py` | UI state at startup (module title, exam date, etc.). GTK-independent. |
@@ -95,6 +97,12 @@ Study Workbench is a **single-process GTK4 desktop application**. There is no ba
 | `studyplan/ai/model_routing.py` | Per-purpose model routing configuration |
 | `studyplan/ai/prompt_design.py` | Prompt template management (3Es design) |
 | `studyplan/ai/tutor_prompt_layers.py` | Base tutor identity and coach identity lines |
+| `studyplan/provenance/kernel/primitives.py` | Provenance kernel — `collect_inherited_constraints`, ViewState algebra, artifact abstractions |
+| `studyplan/provenance/experiments/` | Construction experiments (P0 provenance completeness, P1 ArtifactStore protocol) |
+| `tools/algebra_observatory.py` | Algebra observatory v2 — confidence distributions, coherence metric, 7-algebra scorer |
+| `tools/algebra_experiments.py` | Experiment harness — Phase 2 discovery experiments |
+| `tools/algebra_residual_analysis.py` | Residual clustering (E1) and property augmentation (E2) |
+| `tests/test_architectural_invariants.py` | 14 architectural invariant tests + P7 provenance algebra principle tests |
 
 ### Key design invariants
 
@@ -164,6 +172,28 @@ All user progress, SRS data, and questions are stored under `~/.config/studyplan
 Set `STUDYPLAN_SRS_ALGORITHM=sm2` (or `legacy`) to use the original SM-2 scheduler. The engine delegates via `_update_srs_fsrs` / `_update_srs_sm2` split at `engine.update_srs()`.
 
 FSRS and SM-2 keys coexist in the SRS dict so data files remain forward-compatible. When FSRS is active, `is_overdue`, `get_due_today_by_chapter`, `get_retention_probability`, and `select_due_review_questions` prefer FSRS fields (`fsrs_due`, `fsrs_stability`) when available.
+
+### Rust/PyO3 acceleration
+
+`studyplan/rs/srs_select.py` transparently accelerates heavy SRS operations:
+- `select_srs_from_scored(union_of_scored, ...)` — Phases 1–4 of `select_srs_questions` (scored tuples → selected indices); falls back to `_select_srs_from_scored_py()`
+- `batch_score_srs(items, ...)` — batch overdue/retention scoring; falls back to `_batch_score_srs_py()`
+
+The Rust path is auto-detected at import time (`from studyplan_rs import ...`). Pure-Python fallbacks are always available — no hard dependency on a Rust toolchain. See `studyplan/rs/` for the Cargo project.
+
+### Provenance Validation (PV03)
+
+The SRS engine was the target of Prospective Validation cycle PV03 (14 predictions,
+10✔, 1◐, 3✘, 5★). Key findings:
+- SRS is a **state manager**, not an execution-trace system — it violates I1 (Lifecycle),
+  I2 (Trace Immutability), and I5 (Process Statelessness) by design
+- Dual-language acceleration (Python + Rust/PyO3) was an unexpected discovery (★1)
+- Three-phase selection pipeline (★2) and algorithmic dualism via env var (★3) are
+  patterns outside CCI's scope
+- The refuted principles delineate the boundary between **data-integrity systems**
+  (SRS) and **execution-integrity systems** (CCI algebra processes)
+
+See `docs/specification/predictions/pv03_predictions.md` for the full record.
 
 ---
 
@@ -751,6 +781,145 @@ The learner profile store tracks concept error patterns across assessments via `
 
 ---
 
+## CCI Research Protocol & Algebra Ontology
+
+The CCI Research Protocol (`docs/specification/RESEARCH_PROTOCOL.md`, 801 lines, frozen)
+investigates the **computational algebra ontology** — a characterisation of cognitive
+processes in terms of state topology, dynamics, invariants, conserved quantities,
+and completion semantics.
+
+### The ontology: A = (S, M, I, C, Φ)
+
+Every algebra is defined by five axes:
+
+| Axis | Question | Example |
+|------|----------|---------|
+| **S** — State space | What shape is the state? | Tree, distribution, constraint graph |
+| **M** — Operator algebra | What transformations are admissible? | Traverse, reweight, propagate |
+| **I** — Logical invariants | What holds at every reachable state? | Exactly one active path, Σp = 1 |
+| **C** — Conserved quantities | What is preserved by every M? | Probability mass, justification closure |
+| **Φ** — Completion semantics | What is the fixed point? | Most probable path, equilibrium distribution |
+
+### 7 known algebras
+
+| # | Algebra | State | Operator | Conserved quantity |
+|---|---------|-------|----------|-------------------|
+| 0 | Computation (reference) | Stack frame | Step | Call/return balance |
+| 1 | Classification | Distribution | Condition | Probability mass (Σp = 1) |
+| 2 | Diagnosis | Bayesian net | Propagation | Total belief (ΣBelief = 1) |
+| 3 | Evaluation | Comparison tree | Traversal | Exactly one active path |
+| 4 | CSP | Constraint graph | Constraint propagation | Equivalence closure |
+| 5 | GrowingGraph | Directed graph | Extend with fidelity | Coherence (maximum minimal) |
+| 6 | Justification | Proof tree | support/retract | Justification closure |
+| **7** | **Provenance Query** | **ViewState** | **dispatch (project/filter/map/join)** | **Plan fidelity** |
+
+### 8 mutation operators
+
+| # | Operator | Properties | Used by |
+|---|----------|-----------|---------|
+| 1 | condition | branching | Classification |
+| 2 | propagate | non-local, monotonic, value mutation | Diagnosis |
+| 3 | traverse | non-local | Evaluation |
+| 4 | constraint_propagate | reversible, non-local, monotonic | CSP |
+| 5 | extend | generative, branch mutation | GrowingGraph |
+| 6 | support / retract | reversible, value mutation | Justification |
+| 7 | infer | reversible, value mutation, monotonic | Justification |
+| **8** | **dispatch** | **reversible, value mutation, non-local** | **Provenance Query** |
+
+Dispatch is the only meta-operator: it does not transform state directly but
+selects and applies sub-operators from a fixed plan.
+
+### 14 architectural principles
+
+Principles I1–I14 govern all algebra implementations. Each has a three-layer
+maturity classification (Cross-Domain / Execution-Runtime / CCI-Specific):
+
+| Principle | Verified? | Core statement |
+|-----------|-----------|----------------|
+| I1 Lifecycle | 2✔ 1✘ | Every algebra has a lifecycle |
+| I2 Trace Immutability | 1✔ 1◐ 1✘ | Traces are append-only after creation |
+| I3 Causal Provenance | 3✘ | Every state points to its predecessor |
+| I4 Agnosticism | 3✔ | Algebra is interpreter-independent |
+| I5 Statelessness | 2✔ 1✘ | Each step is a pure function of input |
+| I6 Independence | 3✔ | Result encodes answer, not internals |
+| I7 Validity | 3✔ | Failure produces `None`/`[]`, not crash |
+| I8 Hashing | 3✔ | State identified by hash, not reference |
+| I9 Partitioning | 2✔ 1◐ | State split into inputs/control/output |
+| I10 Step Return | 3✘ | Each step returns `(result, next_state)` |
+| I11 Dual Protocol | 3✘ | Process + Executor protocols |
+| I12 Constructor Divergence | 2◐ 1✔ | Constructor and step shapes differ |
+| I13 Event Iteration | 3✔ | Event loop delegates step iteration |
+| I14 Comparison Envelope | 3✔ | Comparison never reaches into state |
+
+PV03 refutations (I1, I2, I5) are principled: these principles govern
+*execution-trace systems* but not *data-integrity systems* (state managers
+like the SRS engine).
+
+### Key files
+
+| File | Role |
+|------|------|
+| `docs/specification/RESEARCH_PROTOCOL.md` | Frozen 801-line protocol |
+| `docs/specification/CCI_SPEC.md` | Full specification with 14 principles |
+| `docs/algebra_atlas.md` | 795-line algebra ontology with 7 algebras |
+| `tools/algebra_observatory.py` | 7-algebra classifier (confidence, coherence) |
+| `tools/algebra_experiments.py` | 9 Phase 2 experiments |
+| `tools/algebra_residual_analysis.py` | Residual clustering (E1/E2) |
+| `tests/test_architectural_invariants.py` | Principle tests + P7 provenance tests |
+
+---
+
+## Provenance Kernel
+
+`studyplan/provenance/kernel/primitives.py`
+
+The provenance kernel provides generic graph reachability and constraint
+collection over artifact dependency graphs. It contains zero domain-specific
+knowledge — it works identically for FM financial concepts (WACC → CAPM
+constraint propagation) and PostgreSQL query plans (GEQO → plan tree
+constraint inheritance).
+
+### Core primitives
+
+| Primitive | Signature | Purpose |
+|-----------|-----------|---------|
+| `collect_inherited_constraints(artifact)` | `Artifact → set[Constraint]` | BFS over output→input edges, unions constraints |
+| `ViewState` | dataclass | Immutable algebra snapshot: metadata, state, constraints |
+| `serialize(artifact)` | `Artifact → dict` | Recursive JSON-compatible converter |
+| `deserialize(data, artifact_type)` | `dict → Artifact` | Structural reconstruction |
+
+### Provenance Completeness (P0, confirmed)
+
+Constraint inheritance reduces to generic BFS — no new ontology needed. Two
+kinds of provenance discovered:
+- **Execution provenance**: graph reachability ("what does this depend on?")
+- **Validity provenance**: constraint collection ("what must be true for this to be valid?")
+
+Both are query strategies over one graph. The same code path serves Tutor,
+Debugger, and Lab.
+
+### ArtifactStore Protocol (P1, confirmed)
+
+Minimal persistent store: directory of JSON files, keyed by `content_hash`,
+zero in-memory cache, zero indexing, zero schema versioning. All algebra-relevant
+state is captured by ViewState serialization. Storage is a pure IO layer —
+no kernel changes needed.
+
+### Construction experiments
+
+Every new component follows Phase II protocol: hypothesis → predictions →
+experiment → evidence → decision. Nothing bypasses evidence.
+
+### Key files
+
+| File | Role |
+|------|------|
+| `studyplan/provenance/kernel/primitives.py` | Core: ViewState, collect_inherited_constraints |
+| `studyplan/provenance/kernel/test_p0_provenance_completeness.py` | 10 P0 tests |
+| `studyplan/provenance/kernel/test_p1_artifact_store.py` | 12 P1 tests (1 pre-existing fail) |
+
+---
+
 ## GTK4 Application Architecture
 
 `StudyPlanGUI` (a `Gtk.ApplicationWindow`) is constructed by `StudyApp.do_activate()`. The class is large by necessity — GTK4 requires widget construction and callback wiring in the same scope.
@@ -854,14 +1023,16 @@ The app targets GTK4 (PyGObject 3.46+, GTK 4.6–4.22). **Zero deprecation warni
 ### Test surface
 
 | Suite | Where | GTK needed? | Coverage |
-|---|---|---|---|---|---|
+|---|---|---|---|---|
 | Unit (default) | `tests/` | No | ~1,134 test functions in 40 files |
 | Integration | `studyplan/testing/` | No | ~533 test functions in 47 files |
 | GTK-dependent | `tests/test_studyplan_app_ollama.py` | Yes | ~322 test functions (parametrized → ~348 items) |
-| Full suite | both | Yes | **~2,058 test items** (2,059 tests run, 1 skipped pre-existing) |
+| Full suite | both | Yes | **~2,969 test items** (2,971 tests run, 1 skipped pre-existing, 1 pre-existing fail) |
 | Domain reasoning | `tests/test_reasoning_engine.py`, `tests/test_domain_reasoning.py`, `tests/test_numerical_solver.py` | No | ~220 test functions |
+| Provenance kernel | `studyplan/provenance/kernel/` | No | 22 test functions (P0 + P1) |
+| Architectural invariants | `tests/test_architectural_invariants.py` | No | 17 test functions (I1–I14 + 3 P7) |
 
-Current status: **2058 tests pass, 0 failures, 1 pre-existing skip**. Smoke test runs **32/32 KPI steps** at strict thresholds. **0 pyright errors** across all files. **0 GTK4 deprecation warnings** at startup.
+Current status: **2969 tests pass, 1 pre-existing fail (falsification tracker), 1 pre-existing skip**. Smoke test runs **32/32 KPI steps** at strict thresholds. **0 pyright errors** across all files. **0 GTK4 deprecation warnings** at startup.
 
 ### Tutor quality pipeline
 

@@ -159,6 +159,10 @@ def infer_tutor_prompt_mode_hint(user_prompt: str) -> str:
         return "revision_planner"
     if any(token in text for token in ("why am i wrong", "mistake", "error", "keep getting", "where am i going wrong")):
         return "error_clinic"
+    if any(
+        token in text for token in ("assumption", "assumptions", "assume", "underlying assumption", "what must be true")
+    ):
+        return "assumption_query"
     return "teach"
 
 
@@ -205,6 +209,17 @@ def _build_tutor_mode_guidance(mode_hint: str) -> list[str]:
             [
                 "- Use error-clinic mode: diagnose why the learner is missing marks, then prescribe corrective drills.",
                 "- Name the likely misconception and test the corrected understanding immediately.",
+            ]
+        )
+    elif mode == "assumption_query":
+        lines.extend(
+            [
+                "- Use assumption-query mode: the provenance context block below is the authoritative, exhaustive answer.",
+                "- The assumptions list is kernel-verified (single-graph query discipline) — structurally proven, not LLM-generated.",
+                "- Do NOT add assumptions not listed in the provenance context block.",
+                "- Do NOT omit any listed assumption.",
+                "- For each assumption: (1) what it means in context, (2) why it matters for validity, (3) what happens if violated, (4) exam relevance.",
+                "- If the provenance context block is empty or missing, state 'Provenance data not available for this topic' — do not fabricate assumptions.",
             ]
         )
     else:
@@ -1022,6 +1037,8 @@ def build_ai_tutor_context_prompt_details(
     exam_technique_only: bool = False,
     student_context_line: str | None = None,
     confidence_guidance_line: str | None = None,
+    provenance_context: str | None = None,
+    learning_context: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     cleaned_history: list[dict[str, str]] = []
     for msg in list(history or []):
@@ -1094,6 +1111,12 @@ def build_ai_tutor_context_prompt_details(
     if syllabus_scope_instruction and syllabus_scope_instruction.strip():
         lines.append("Syllabus scope (strict — do not use non-examinable content):")
         lines.append(syllabus_scope_instruction.strip())
+        lines.append("")
+    if provenance_context and provenance_context.strip():
+        lines.append(provenance_context.strip())
+        lines.append("")
+    if learning_context and learning_context.strip():
+        lines.append(learning_context.strip())
         lines.append("")
     lines.append(
         "Syllabus-derived context (outcomes, scope, importance) is for guiding what to teach and priority only; "
@@ -1175,6 +1198,57 @@ def build_ai_tutor_context_prompt_details(
     return prompt, meta
 
 
+def build_provenance_context(data: dict[str, Any] | None, mode_hint: str = "") -> str:
+    """Format provenance trace data into a prompt-section string for the tutor.
+
+    Takes the result dict from ExecutionContext.inherited_assumptions_fast()
+    and formats it as a structured context block. Returns empty string if
+    data is None or empty.
+
+    When mode_hint is 'assumption_query', adds a stronger framing header
+    marking the data as kernel-verified ground truth.
+
+    Confidence (T-PC-01): If data contains assumption_confidence dict
+    {name → float}, each assumption is rendered with its confidence
+    score in brackets, e.g. "market_efficiency [0.95]".  Absent means
+    all assumptions are unweighted (current behavior preserved).
+    """
+    if not data:
+        return ""
+    topic = data.get("artifact", "")
+    assumptions = data.get("assumptions", [])
+    consumes = data.get("consumes", [])
+    dep_path = data.get("dependency_path", [])
+    total = data.get("total_constraints", 0)
+    conf = data.get("assumption_confidence", None)
+    if not topic and not assumptions:
+        return ""
+    if str(mode_hint or "").strip().lower() == "assumption_query":
+        lines = ["Kernel-verified provenance (exhaustive — single-graph query discipline):"]
+    else:
+        lines = ["Provenance context (domain model — structurally verified):"]
+    lines.append(f"  Topic: {topic}")
+    if assumptions:
+        if conf and isinstance(conf, dict):
+            parts = []
+            for a in assumptions:
+                c = conf.get(a)
+                if c is not None:
+                    parts.append(f"{a} [{c}]")
+                else:
+                    parts.append(a)
+        else:
+            parts = list(assumptions)
+        lines.append(f"  Assumptions ({len(parts)}): {'; '.join(parts)}")
+    if consumes:
+        lines.append(f"  Inputs consumed: {'; '.join(consumes)}")
+    if dep_path:
+        lines.append(f"  Dependency path: {' → '.join(dep_path)}")
+    lines.append(f"  Constraint count: {total}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def build_ai_tutor_context_prompt(
     history: list[dict[str, str]],
     user_prompt: str,
@@ -1182,6 +1256,7 @@ def build_ai_tutor_context_prompt(
     chapter: str,
     syllabus_scope_instruction: str | None = None,
     module_id: str | None = None,
+    provenance_context: str | None = None,
 ) -> str:
     prompt, _meta = build_ai_tutor_context_prompt_details(
         history=history,
@@ -1190,6 +1265,7 @@ def build_ai_tutor_context_prompt(
         chapter=chapter,
         syllabus_scope_instruction=syllabus_scope_instruction,
         module_id=module_id,
+        provenance_context=provenance_context,
     )
     return prompt
 
@@ -3050,9 +3126,13 @@ class AITutorDialogController:
                 autopilot_stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
                 eff_topic = _app_effective_tutor_topic(app)
                 credited = str(credited_model or "").strip() or str(model_name or "").strip()
+                actual_model_val = str(
+                    inf_snap[1] if isinstance(inf_snap, (tuple, list)) and len(inf_snap) > 1 else "" or ""
+                ).strip()
                 payload = {
                     "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "model": credited,
+                    "actual_model": actual_model_val,
                     "outcome": str(outcome or "").strip().lower(),
                     "error_class": str(error_class or "").strip().lower(),
                     "purpose": PURPOSE_TUTOR_POPUP,
@@ -3131,6 +3211,7 @@ class AITutorDialogController:
                     "ctx_dropped_sections_count": int(max(0, context_dropped_sections)),
                     "ctx_horizon_days": int(max(1, context_horizon_days)),
                     "context_condensed_turns": int(condensed_count),
+                    "pedagogical_mode": str(prompt_meta.get("pedagogical_mode", "") or "").strip(),
                 }
                 try:
                     app._record_ai_tutor_telemetry(payload, persist=True)
