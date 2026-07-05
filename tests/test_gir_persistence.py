@@ -6,15 +6,15 @@ import sys
 def _make_stub_modules():
     mods = {}
     mods["studyplan.provenance.cir"] = ModuleType("studyplan.provenance.cir")
-    mods["studyplan.provenance.cir"].CognitiveIR = object
+    mods["studyplan.provenance.cir"].__dict__["CognitiveIR"] = object
 
     mods["studyplan.provenance.cir.container"] = ModuleType("studyplan.provenance.cir.container")
-    mods["studyplan.provenance.cir.container"].validate_ir = lambda ir: SimpleNamespace(
+    mods["studyplan.provenance.cir.container"].__dict__["validate_ir"] = lambda ir: SimpleNamespace(
         valid=True, errors=[], warnings=[]
     )
 
     mods["studyplan.provenance.cir.passes"] = ModuleType("studyplan.provenance.cir.passes")
-    mods["studyplan.provenance.cir.passes"].run_passes = lambda ir: ir
+    mods["studyplan.provenance.cir.passes"].__dict__["run_passes"] = lambda ir: ir
 
     # Minimal compilation plugin stubs
     comp_mod = ModuleType("studyplan.provenance.lab.compilation")
@@ -31,10 +31,10 @@ def _make_stub_modules():
             self.last_report = {"merged": True}
             return IR(fragments)
 
-    comp_mod.CIRMerger = CIRMerger
-    comp_mod.PDFFrontendPlugin = lambda: None
-    comp_mod.NotesFrontendPlugin = lambda: None
-    comp_mod.FMKnowledgeBasePlugin = lambda: None
+    comp_mod.__dict__["CIRMerger"] = CIRMerger
+    comp_mod.__dict__["PDFFrontendPlugin"] = lambda: None
+    comp_mod.__dict__["NotesFrontendPlugin"] = lambda: None
+    comp_mod.__dict__["FMKnowledgeBasePlugin"] = lambda: None
     mods["studyplan.provenance.lab.compilation"] = comp_mod
 
     # Identity v2 stubs
@@ -58,21 +58,21 @@ def _make_stub_modules():
         def resolve(self, mid):
             return None
 
-    id_mod.GlobalIdentityRegistry = GlobalIdentityRegistry
-    id_mod.SemanticEquivalenceScorer = lambda: None
-    id_mod.ProvenanceWeightedIdentity = SimpleNamespace
-    id_mod.make_weighted = lambda *a, **k: SimpleNamespace()
+    id_mod.__dict__["GlobalIdentityRegistry"] = GlobalIdentityRegistry
+    id_mod.__dict__["SemanticEquivalenceScorer"] = lambda: None
+    id_mod.__dict__["ProvenanceWeightedIdentity"] = SimpleNamespace
+    id_mod.__dict__["make_weighted"] = lambda *a, **k: SimpleNamespace()
     mods["studyplan.provenance.lab.compilation.identity_v2"] = id_mod
 
     mods["studyplan.provenance.lab.compilation.fragment"] = ModuleType("studyplan.provenance.lab.compilation.fragment")
-    mods["studyplan.provenance.lab.compilation.fragment"].CIRFragment = object
+    mods["studyplan.provenance.lab.compilation.fragment"].__dict__["CIRFragment"] = object
 
     # Other support stubs
     mods["studyplan.provenance.learning.compiler_bridge"] = ModuleType("studyplan.provenance.learning.compiler_bridge")
-    mods["studyplan.provenance.learning.compiler_bridge"].get_compiler_bus = lambda: SimpleNamespace(history=lambda: [])
+    mods["studyplan.provenance.learning.compiler_bridge"].__dict__["get_compiler_bus"] = lambda: SimpleNamespace(history=lambda: [])
 
     mods["studyplan.provenance.kernel.performance"] = ModuleType("studyplan.provenance.kernel.performance")
-    mods["studyplan.provenance.kernel.performance"].get_performance_registry = lambda: SimpleNamespace()
+    mods["studyplan.provenance.kernel.performance"].__dict__["get_performance_registry"] = lambda: SimpleNamespace()
 
     mods["studyplan.provenance.learning.events"] = ModuleType("studyplan.provenance.learning.events")
     for name in [
@@ -89,30 +89,30 @@ def _make_stub_modules():
         "candidate_compared",
         "review_abandoned",
     ]:
-        setattr(mods["studyplan.provenance.learning.events"], name, lambda *a, **k: None)
+        mods["studyplan.provenance.learning.events"].__dict__[name] = (lambda *a, **k: None)
 
     mods["studyplan.provenance.learning.cognitive_projection"] = ModuleType(
         "studyplan.provenance.learning.cognitive_projection"
     )
-    mods["studyplan.provenance.learning.cognitive_projection"].CognitiveProjectionEngine = lambda: SimpleNamespace(
+    mods["studyplan.provenance.learning.cognitive_projection"].__dict__["CognitiveProjectionEngine"] = lambda: SimpleNamespace(
         project=lambda events: SimpleNamespace(event_count=0)
     )
-    mods["studyplan.provenance.learning.cognitive_projection"].CognitiveProjection = SimpleNamespace
+    mods["studyplan.provenance.learning.cognitive_projection"].__dict__["CognitiveProjection"] = SimpleNamespace
 
     mods["studyplan.provenance.cognition.controller"] = ModuleType("studyplan.provenance.cognition.controller")
-    mods["studyplan.provenance.cognition.controller"].CognitiveController = lambda: SimpleNamespace(
+    mods["studyplan.provenance.cognition.controller"].__dict__["CognitiveController"] = lambda: SimpleNamespace(
         evaluate=lambda proj, dependency_graph=None: SimpleNamespace(is_empty=True, best=None, interventions=[])
     )
-    mods["studyplan.provenance.cognition.controller"].ForwardModel = lambda *a, **k: SimpleNamespace(
+    mods["studyplan.provenance.cognition.controller"].__dict__["ForwardModel"] = lambda *a, **k: SimpleNamespace(
         calibration_confidence={}
     )
-    mods["studyplan.provenance.cognition.controller"].InterventionRanking = SimpleNamespace
+    mods["studyplan.provenance.cognition.controller"].__dict__["InterventionRanking"] = SimpleNamespace
 
     mods["studyplan.provenance.cognition.outcome"] = ModuleType("studyplan.provenance.cognition.outcome")
-    mods["studyplan.provenance.cognition.outcome"].compute_closed_loop_outcomes = lambda events: []
+    mods["studyplan.provenance.cognition.outcome"].__dict__["compute_closed_loop_outcomes"] = lambda events: []
 
     mods["studyplan.provenance.lab.integration"] = ModuleType("studyplan.provenance.lab.integration")
-    mods["studyplan.provenance.lab.integration"].push_identity_aliases = lambda *a, **k: None
+    mods["studyplan.provenance.lab.integration"].__dict__["push_identity_aliases"] = lambda *a, **k: None
 
     # Register into sys.modules
     for name, mod in mods.items():
