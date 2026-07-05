@@ -33,9 +33,12 @@ from studyplan.mastery_kernel import MasteryKernel
 from studyplan.persistence_layer import PersistenceLayer
 from studyplan.rs.srs_select import batch_score_srs, select_srs_from_scored
 from studyplan.numerical_solver import verify_numerical_answer
-from studyplan.domain_reasoning import detect_concepts as _domain_detect_concepts
-from studyplan.domain_reasoning import evaluate_question as _domain_evaluate_question
-from studyplan.domain_reasoning import reason_question as _domain_reason_question
+from studyplan.domain_reasoning import (
+    BUILTIN_CONCEPTS as _BUILTIN_CONCEPTS,
+    detect_concepts as _domain_detect_concepts,
+    evaluate_question as _domain_evaluate_question,
+    reason_question as _domain_reason_question,
+)
 from studyplan.question_quality import (
     assess_question_quality_extended,
     generated_question_rejection_reasons,
@@ -4251,7 +4254,7 @@ class StudyPlanEngine:
         return cleaned
 
     def _coerce_srs_item(self, raw):
-        """Normalize a single SRS item dict."""
+        """Normalize a single SRS item dict, preserving FSRS fields."""
         if not isinstance(raw, dict):
             raw = {}
             self.data_health["srs_fixed"] += 1
@@ -4276,6 +4279,19 @@ class StudyPlanEngine:
         fingerprint = str(raw.get("question_key", "") or "").strip()
         if fingerprint:
             entry["question_key"] = fingerprint
+        for fsrs_key in (
+            "fsrs_stability",
+            "fsrs_difficulty",
+            "fsrs_reps",
+            "fsrs_lapses",
+            "fsrs_last_review",
+            "fsrs_due",
+            "stability",
+            "difficulty",
+        ):
+            val = raw.get(fsrs_key)
+            if val is not None:
+                entry[fsrs_key] = val
         return entry
 
     def _question_count_hints_from_questions_file(self) -> Dict[str, int]:
@@ -5025,6 +5041,10 @@ class StudyPlanEngine:
         return None
 
     def _count_question_samples(self) -> int:
+        cached = getattr(self, "_cached_sample_count", None)
+        cached_ts = getattr(self, "_cached_sample_count_ts", 0.0)
+        if cached is not None and time.monotonic() - cached_ts < 2.0:
+            return cached
         total = 0
         for stats_by_ch in self.question_stats.values():
             if not isinstance(stats_by_ch, dict):
@@ -5041,6 +5061,8 @@ class StudyPlanEngine:
                     attempts = 0
                 if attempts > 0:
                     total += 1
+        self._cached_sample_count = total
+        self._cached_sample_count_ts = time.monotonic()
         return total
 
     def _chapter_question_sample_count(self, chapter: str) -> int:
@@ -13699,9 +13721,14 @@ class StudyPlanEngine:
         """Apply persisted payload onto current engine state, then normalize."""
         if not isinstance(data, dict):
             raise ValueError("Invalid data payload: expected JSON object")
-        self.competence = {**data.get("competence", self.competence)}
-        self.pomodoro_log = {**data.get("pomodoro_log", self.pomodoro_log)}
-        self.srs_data = {**data.get("srs_data", self.srs_data or {ch: [] for ch in self.CHAPTERS})}
+        competence_val = data.get("competence")
+        self.competence = {**(competence_val if isinstance(competence_val, dict) else self.competence)}
+        pomodoro_val = data.get("pomodoro_log")
+        self.pomodoro_log = {**(pomodoro_val if isinstance(pomodoro_val, dict) else self.pomodoro_log)}
+        raw_srs = data.get("srs_data")
+        self.srs_data = {
+            **(raw_srs if isinstance(raw_srs, dict) else self.srs_data or {ch: [] for ch in self.CHAPTERS})
+        }
         self.study_days = data.get("study_days", self.study_days)
         self.exam_date = data.get("exam_date")
         self.must_review = data.get("must_review", self.must_review)
@@ -14386,6 +14413,71 @@ class StudyPlanEngine:
         except Exception:
             return []
 
+    # -----------------------------------------------------------------------
+    # Concept cognition (schema v2+)
+    # -----------------------------------------------------------------------
+
+    def _build_concept_dependents(self) -> dict[str, set[str]]:
+        """Build reverse dependency map: concept_id → set of concepts that depend on it."""
+        deps: dict[str, set[str]] = {}
+        for cid, meta in (_BUILTIN_CONCEPTS or {}).items():
+            for dep in meta.dependencies or ():
+                if dep not in deps:
+                    deps[dep] = set()
+                deps[dep].add(cid)
+        return deps
+
+    def _build_chapter_concepts(self) -> dict[str, list[str]]:
+        """Build chapter → list of concept IDs from BUILTIN_CONCEPTS chapter_refs."""
+        chapters: dict[str, list[str]] = {}
+        for cid, meta in (_BUILTIN_CONCEPTS or {}).items():
+            for ch in meta.chapter_refs or ():
+                if ch not in chapters:
+                    chapters[ch] = []
+                chapters[ch].append(cid)
+        return chapters
+
+    def _get_concept_dependents(self) -> dict[str, set[str]]:
+        if not hasattr(self, "_cached_concept_dependents") or self._cached_concept_dependents is None:
+            self._cached_concept_dependents = self._build_concept_dependents()
+        return self._cached_concept_dependents
+
+    def _get_chapter_concepts(self) -> dict[str, list[str]]:
+        if not hasattr(self, "_cached_chapter_concepts") or self._cached_chapter_concepts is None:
+            self._cached_chapter_concepts = self._build_chapter_concepts()
+        return self._cached_chapter_concepts
+
+    def update_concept_cognition(
+        self,
+        concept_ids: list[str],
+        correct: bool,
+        hints_used: int = 0,
+        score_ratio: float = 1.0,
+    ) -> None:
+        state = getattr(self, "cognitive_state", None)
+        if not isinstance(state, CognitiveState):
+            return
+        if not concept_ids:
+            return
+        try:
+            dependents = self._get_concept_dependents()
+            state.update_concept_posteriors(
+                concept_ids,
+                correct=bool(correct),
+                hints_used=int(hints_used or 0),
+                score_ratio=float(score_ratio),
+                concept_dependents=dependents,
+            )
+        except Exception:
+            logger.debug("update_concept_cognition failed", exc_info=True)
+
+    def get_concept_derived_competence(self, chapter: str) -> float:
+        state = getattr(self, "cognitive_state", None)
+        if not isinstance(state, CognitiveState):
+            return float(self.competence.get(chapter, 0) or 0) if hasattr(self, "competence") else 50.0
+        chapter_concepts = self._get_chapter_concepts()
+        return state.get_concept_derived_competence_for_chapter(chapter, chapter_concepts=chapter_concepts)
+
     def _domain_validate_question(
         self,
         question: str,
@@ -14466,15 +14558,27 @@ class StudyPlanEngine:
             return {"question": str(question or ""), "has_result": False, "trace_summary": "error"}
 
     def record_progress_snapshot(self, when: datetime.date | None = None) -> None:
-        """Record a daily snapshot of overall mastery and total minutes."""
+        """Record a daily snapshot of overall mastery and total minutes.
+
+        Overall mastery is recomputed at most once per day to avoid
+        scanning all chapters' SRS entries on every save_data() call.
+        """
         if when is None:
             when = datetime.date.today()
         if not isinstance(when, datetime.date):
             return
-        try:
-            overall_mastery = float(self.get_overall_mastery())
-        except Exception:
-            overall_mastery = 0.0
+        same_day = getattr(self, "_cached_mastery_day", None) == when
+        if same_day and getattr(self, "_cached_mastery_day_pomodoro", None) == self.pomodoro_log.get("total_minutes"):
+            return
+        if same_day:
+            overall_mastery = float(getattr(self, "_cached_mastery_value", 0.0))
+        else:
+            try:
+                overall_mastery = float(self.get_overall_mastery())
+            except Exception:
+                overall_mastery = 0.0
+            self._cached_mastery_value = overall_mastery
+            self._cached_mastery_day = when
         try:
             total_minutes = float(self.pomodoro_log.get("total_minutes", 0) or 0)
         except Exception:

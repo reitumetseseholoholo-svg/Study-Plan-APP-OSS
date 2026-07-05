@@ -28,10 +28,17 @@ STUDYPLAN_MODULE_TITLE="Your Module" python studyplan_app.py
 
 ---
 
-## What's new (June 2026)
+## What's new (July 2026)
 
-This app has been battle-hardened through **11 bug fixes**, **performance surgery**, **UI polish**, **cross-exam domain support**, and **6 new dashboard insight cards** to make it the smoothest exam prep experience on desktop:
+This app has been battle-hardened through **11 bug fixes**, **performance surgery**, **UI polish**, **cross-exam domain support**, **6 new dashboard insight cards**, and **phase 4 algebra-ontology research** to make it the smoothest exam prep experience on desktop:
 
+- **Algebra Ontology (Phase 4)** — the CCI Research Protocol discovered 7 computational algebras (Classification, Diagnosis, Evaluation, CSP, GrowingGraph, Justification, Provenance Query) characterizing how cognitive processes transform state. Full specification in `docs/algebra_atlas.md` and `docs/specification/CCI_SPEC.md`.
+- **Provenance Completeness (P0)** — constraint inheritance reduces to generic BFS over output→input edges. `collect_inherited_constraints(artifact)` works identically for FM financial concepts and PostgreSQL query plans — zero domain-specific knowledge. Proven as a kernel primitive.
+- **ArtifactStore Protocol (P1)** — minimal persistent store (directory of JSON files, content-hash keyed) with zero in-memory cache. All algebra-relevant state captured by ViewState serialization. No ontology changes needed — storage is a pure IO decorator.
+- **Prospective Validation PV03** — 14 blind predictions scored against the SRS scheduling engine: 10 confirmed, 1 partial, 3 refuted. Refuted principles (Lifecycle, Immutability, Statelessness) delineate CCI's boundary: it governs execution-integrity systems, not data-integrity systems.
+- **Prospective Validation PV02** — 14 predictions confirmed against the Bevy ECS game engine (100% agreement), demonstrating the ontology generalizes beyond ACCA.
+- **7th algebra formalized** — Provenance Query (linear_plan + dispatch + plan_fidelity) discovered and principle-tested. Query verbs required as discriminant — stable keys alone falsely classify bare computation.
+- **2969 tests pass** (1 pre-existing skip, 1 pre-existing falsification tracker failure). Zero pyright errors. Zero GTK4 deprecation warnings.
 - **Daily Recommended Plan** — priority-ordered checklist on the dashboard: must-review due today > overdue SRS > weak chapters (<40% competence) > due within 3 days. Hides when exam date or syllabus is unset.
 - **Error Pattern Analysis** — surfaces your 10 weakest syllabus outcomes (accuracy <75%, attempts ≥2) with severity-colored badges. Outcome text resolved from the syllabus for actionable review targeting.
 - **Focus Detective** — compares per-topic study time (14-day window) against competence. Flags under-studied weak topics and over-studied strong topics so you can rebalance your effort.
@@ -43,7 +50,6 @@ This app has been battle-hardened through **11 bug fixes**, **performance surger
 - **Butter-smooth dashboard** — section reconciliation with tagged separators means charts and widgets are cached with digest-based change detection. No flash, no flicker, no redundant rebuilds. Separators no longer accumulate on refresh.
 - **Rock-solid coach consistency** — the Coach Pick stays pinned once selected and doesn't flip-flop on every refresh. The coach briefing caches its 7+ engine queries with a digest key and skips them entirely when nothing changed.
 - **AI tutor that doesn't lose your conversation** — mid-stream errors now preserve partial responses in your history. No more "where was I?"
-- **Silent operation** — zero GTK4 deprecation warnings. Zero pyright errors. Zero flaky tests. **2058 tests** pass, **smoke test** runs 32/32 KPI steps at strict thresholds.
 - **CPU-friendly** — the startup semantic warmup no longer spawns a thread per CPU core (capped to 2 workers for TF-IDF). The coach 2× render multiplier is eliminated. No unnecessary CPU bursts at idle.
 - **Full-width heatmap** — the GitHub-style activity grid now spans the entire left panel. Every card fills its container.
 - **Data integrity** — shared-reference bugs in question stats are fixed. Your data can't be silently corrupted through in-place mutation. The exam date parser no longer reports false-positive format corrections.
@@ -188,7 +194,7 @@ All native modules have pure-Python fallbacks with `try/except ImportError` — 
 ## Testing
 
 ```bash
-pytest -q                    # 2058 tests, 0 regressions (1 pre-existing skip)
+pytest -q                    # 2969 tests, 0 regressions (1 pre-existing skip, 1 pre-existing fail)
 python -m py_compile studyplan_app.py studyplan_ai_tutor.py studyplan_engine.py
 pyright studyplan_app.py studyplan_ai_tutor.py studyplan_engine.py studyplan tests
 ```
@@ -243,9 +249,9 @@ xvfb-run -a timeout 300s python studyplan_app.py --dialog-smoke-strict
 
 | File/Dir | Lines | Role |
 |----------|-------|------|
-| `studyplan_app.py` | ~56,700 | GTK4 UI — dashboard, quiz flow, Pomodoro, AI Cockpit, preferences |
-| `studyplan_engine.py` | ~14,800 | Data model, SRS, daily plan, coach, ML inference, syllabus parsing |
-| `studyplan_ai_tutor.py` | ~10,000 | Tutor session management, RAG retrieval, prompt assembly, streaming |
+| `studyplan_app.py` | ~58,100 | GTK4 UI — dashboard, quiz flow, Pomodoro, AI Cockpit, preferences |
+| `studyplan_engine.py` | ~14,900 | Data model, SRS, daily plan, coach, ML inference, syllabus parsing |
+| `studyplan_ai_tutor.py` | ~3,700 | Tutor session management, RAG retrieval, prompt assembly, streaming |
 | `studyplan_app_kpi_routing.py` | ~600 | KPI thresholds and smoke/soak routing (GTK-independent) |
 | `studyplan_app_path_utils.py` | ~200 | Path helpers for unit-testability without GTK |
 | `studyplan/rs/` | Rust | PyO3-accelerated SRS selection (`select_srs_from_scored`, `batch_score_srs`) |
@@ -255,8 +261,10 @@ xvfb-run -a timeout 300s python studyplan_app.py --dialog-smoke-strict
 | `studyplan/fsrs.py` | 558 | FSRS-4.5 scheduler with PyO3-ready pure math |
 | `studyplan/` | lib | Config, contracts, coach FSM, cognitive state, AI routing, persistence |
 | `modules/*.json` | data | Built-in module configs (ACCA F6–F9) + question banks |
-| `tools/` | — | ML training scripts, GTK4 linter, tutor quality pipeline |
-| `tests/` | — | 2058 tests (including 220 domain-reasoning tests) |
+| `tools/` | — | ML training scripts, GTK4 linter, tutor quality pipeline, algebra experiments |
+| `tests/` | — | 2969 tests (including provenance kernel, architectural invariants, domain-reasoning) |
+| `docs/algebra_atlas.md` | 795 | Algebra ontology — 7 computational algebras with S/M/I/C/Φ tables |
+| `docs/specification/` | — | CCI Research Protocol, predictions, open questions, anomalies, laws |
 
 ---
 
@@ -266,6 +274,10 @@ xvfb-run -a timeout 300s python studyplan_app.py --dialog-smoke-strict
 - [`DEVELOPER_DOC.md`](DEVELOPER_DOC.md) — architecture, internals, extension guide
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute
 - [`AGENTS.md`](AGENTS.md) — AI assistant context (architecture notes, conventions, pitfalls) — **essential reading for any developer** touching the dashboard, GTK4 patterns, or coach pipeline
+- [`docs/specification/RESEARCH_PROTOCOL.md`](docs/specification/RESEARCH_PROTOCOL.md) — CCI Research Protocol (frozen, 801 lines)
+- [`docs/specification/CCI_SPEC.md`](docs/specification/CCI_SPEC.md) — CCI specification: 14 principles, three-layer hierarchy, PV results
+- [`docs/algebra_atlas.md`](docs/algebra_atlas.md) — algebra ontology: 7 algebras with S/M/I/C/Φ tables
+- [`docs/specification/predictions/README.md`](docs/specification/predictions/README.md) — Prospective Validation cycle record (PV01–PV03)
 - [`docs/LLM_TELEMETRY_SCHEMA.md`](docs/LLM_TELEMETRY_SCHEMA.md) — LLM telemetry fields + golden prompts
 - [`tests/tutor_quality/README.md`](tests/tutor_quality/README.md) — tutor quality tooling
 - [`scripts/README_module_chapters.md`](scripts/README_module_chapters.md) — module chapter tooling
@@ -298,4 +310,4 @@ xvfb-run -a timeout 300s python studyplan_app.py --dialog-smoke-strict
 
 ---
 
-*Built with GTK4, PyO3, Cython, and a lot of coffee. Module-agnostic, local-first, free, and battle-hardened through 2058 tests, 32-step KPI smoke gates, and zero deprecation warnings.*
+*Built with GTK4, PyO3, Cython, and a lot of coffee. Module-agnostic, local-first, free, and battle-hardened through 2969 tests, 32-step KPI smoke gates, and zero deprecation warnings.*

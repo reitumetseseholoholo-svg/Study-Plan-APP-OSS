@@ -1280,8 +1280,9 @@ class TestClassificationTemplate:
         t = self.make_entity_template()
         r = t.solve({"incorp": 0.0, "partnership": 1.0})
         path = r.get("classification_path", [])
-        assert len(path) == 1
+        assert len(path) == 2
         assert "incorporated" in path[0].lower()
+        assert "partnership" in path[1].lower()
 
     def test_result_is_not_nan(self):
         t = self.make_entity_template()

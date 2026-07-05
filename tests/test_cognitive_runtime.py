@@ -10,11 +10,8 @@ import math
 
 from studyplan.domain_reasoning import declare_formula
 
-from studyplan.cognitive_runtime import (
+from studyplan.cci import (
     CognitiveRuntime,
-    ComputationProcess,
-    ClassificationProcess,
-    EvaluationProcess,
     ComputationResultInterpreter,
     ComputationErrorInterpreter,
     ComputationStepEvaluator,
@@ -22,6 +19,11 @@ from studyplan.cognitive_runtime import (
     ClassificationStepEvaluator,
     EvaluationResultInterpreter,
     EvaluationStepEvaluator,
+)
+from studyplan.frontends.finance import (
+    ComputationProcess,
+    ClassificationProcess,
+    EvaluationProcess,
 )
 
 
@@ -498,3 +500,124 @@ def test_runtime_trace_sufficiency():
 
     assert result["judgment"] == "option_a"
     assert evals[0]["match"] is True
+
+
+# =========================================================================
+# Causal provenance — state hash chain verification
+# =========================================================================
+
+
+def test_causal_provenance_computation():
+    """Each event in a computation trace carries deterministic state hashes
+    forming an unbroken causal chain::
+
+        init → step → terminate
+
+    The reconstructor derives exactly 2 causal edges from hash matching.
+    """
+    solver, expr = _get_solver_and_expr(NPV_CONCEPT)
+    inputs = {"cash_flow": 1000.0, "rate": 0.10, "years": 1.0}
+
+    runtime = CognitiveRuntime()
+    process = ComputationProcess(NPV_CONCEPT, solver, expr)
+    trace = runtime.execute(process, inputs)
+
+    from studyplan.cci.reconstructor import CanonicalTraceReconstructor
+
+    graph = CanonicalTraceReconstructor().reconstruct(trace)
+
+    # Every event must have provenance fields
+    for event in trace.events:
+        assert event.transition_id, f"Missing transition_id on {event.type}"
+        assert event.state_hash_before, f"Missing state_hash_before on {event.type}"
+        assert event.state_hash_after, f"Missing state_hash_after on {event.type}"
+
+    # Causal chain: init→step, step→terminate
+    assert len(graph.causal_edges) == 2, (
+        f"Expected 2 causal edges (init→step, step→terminate), got {len(graph.causal_edges)}"
+    )
+
+    # First causal edge: from init to step
+    assert graph.causal_edges[0]["from"] == graph.nodes[0]["id"]
+    assert graph.causal_edges[0]["to"] == graph.nodes[1]["id"]
+
+    # Second: from step to terminate
+    assert graph.causal_edges[1]["from"] == graph.nodes[1]["id"]
+    assert graph.causal_edges[1]["to"] == graph.nodes[2]["id"]
+
+    # Temporal edges should match
+    assert len(graph.temporal_edges) == 2  # 3 nodes → 2 temporal edges
+    assert len(graph.nodes) == 3
+
+
+def test_causal_provenance_classification():
+    """Classification trace also forms an unbroken causal chain."""
+    from studyplan.domain_reasoning.concept_types.classification_concept import (
+        ClassificationNode,
+        Branch,
+        ClassificationConfig,
+        ClassificationTemplate,
+    )
+
+    tree = ClassificationNode(
+        question="Test?",
+        branches=[Branch(condition="x > 0", result="positive"), Branch(condition="True", result="non_positive")],
+    )
+    config = ClassificationConfig(tree=tree, output_slot="result")
+    template = ClassificationTemplate("causal.test", config, version="1.0.0")
+    inputs = {"x": 10}
+
+    runtime = CognitiveRuntime()
+    process = ClassificationProcess(template)
+    trace = runtime.execute(process, inputs)
+
+    from studyplan.cci.reconstructor import CanonicalTraceReconstructor
+
+    graph = CanonicalTraceReconstructor().reconstruct(trace)
+
+    # Three events: init, step, terminate
+    for event in trace.events:
+        assert event.transition_id
+        assert event.state_hash_before
+        assert event.state_hash_after
+
+    assert len(graph.causal_edges) == 2
+    assert len(graph.nodes) == 3
+
+    # Collapse point should reference the result
+    assert len(graph.collapse_points) >= 1
+    assert graph.collapse_points[0]["label"] is not None
+
+
+def test_causal_provenance_unique_hashes():
+    """Different inputs produce different state hashes."""
+    solver, expr = _get_solver_and_expr(NPV_CONCEPT)
+
+    runtime = CognitiveRuntime()
+    process = ComputationProcess(NPV_CONCEPT, solver, expr)
+
+    t1 = runtime.execute(process, {"cash_flow": 100.0, "rate": 0.10, "years": 1.0})
+    t2 = runtime.execute(process, {"cash_flow": 200.0, "rate": 0.10, "years": 1.0})
+
+    # state_hash_after for the terminate event should differ
+    h1 = t1.events[-1].state_hash_after
+    h2 = t2.events[-1].state_hash_after
+    assert h1 != h2, "Different inputs must produce different state hashes"
+
+
+def test_is_linearly_representable_computation():
+    """Computation traces are always linearly representable (single path)."""
+    solver, expr = _get_solver_and_expr(NPV_CONCEPT)
+    inputs = {"cash_flow": 1000.0, "rate": 0.10, "years": 1.0}
+
+    runtime = CognitiveRuntime()
+    process = ComputationProcess(NPV_CONCEPT, solver, expr)
+    trace = runtime.execute(process, inputs)
+
+    from studyplan.cci.reconstructor import (
+        CanonicalTraceReconstructor,
+        is_linearly_representable,
+    )
+
+    graph = CanonicalTraceReconstructor().reconstruct(trace)
+    assert is_linearly_representable(graph), "Single-step computation must be linearly representable"

@@ -225,3 +225,54 @@ class CognitiveRuntime(ABC):
 4. If runtime interface changes are required, all existing algebras must
    be updated in the same commit.
 5. Falsification criteria must be added for every new abstraction.
+
+---
+
+## Legacy Deletion Checklists
+
+Before deleting any legacy template class, ALL items in the corresponding
+checklist must pass for ≥2 independent input sets.
+
+### ExpressionTemplate Safe Deletion
+
+``ExpressionTemplate`` (``studyplan/domain_reasoning/formula_registry.py``)
+is the first collapse target because computation is the simplest algebra
+and has the least semantic drift risk.
+
+#### Preconditions
+
+- [ ] ``tests/test_computation_equivalence.py`` passes at 100% — this is
+      the specification oracle.  Every test runs both
+      ``ExpressionTemplate`` and ``CognitiveRuntime → ComputationProcess
+      → interpreter``, asserting byte-level identity for all three public
+      methods (``solve``, ``evaluate_steps``, ``classify_errors``).
+- [ ] ``tests/test_cognitive_runtime.py`` computation identity tests pass
+      (proves the runtime + process + interpreter contract is stable).
+- [ ] All legacy tests that import ``ExpressionTemplate`` are updated to
+      use the runtime path OR are deleted.
+- [ ] ``declare_formula`` (the sole production entry point) delegates to
+      the runtime path, not to ``ExpressionTemplate``.
+- [ ] The adapter function ``legacy_computation_adapter(inputs) →
+      {concept_id, result, inputs, is_nan, steps}`` is verified in
+      production for ≥50 random input sets across ≥3 distinct formulas.
+- [ ] ``grep -r "ExpressionTemplate"`` returns only:
+      - the definition in ``formula_registry.py`` (to be deleted)
+      - the equivalence harness (to be updated to remove import of
+        the now-deleted class)
+      - the adapter function (to be removed afterward)
+- [ ] Performance benchmark: runtime path is within ±10% of legacy path
+      for 1000 repeated calls (no regression from the trace allocation).
+
+#### Deletion procedure
+
+1. Remove ``ExpressionTemplate`` class definition from ``formula_registry.py``.
+2. Remove all imports of ``ExpressionTemplate`` outside of
+   ``test_computation_equivalence.py``.
+3. In ``test_computation_equivalence.py``, replace ``ExpressionTemplate``
+   imports with direct solver calls (since ``declare_formula`` now uses
+   the runtime, the template intermediary is gone).
+4. Remove the adapter function (no longer needed — runtime is the only path).
+5. Run ``pytest -q tests/test_computation_equivalence.py`` — should still
+   pass (tests now compare runtime vs runtime via different constructors,
+   confirming the runtime path is self-consistent).
+6. Run full test suite — 0 new failures.

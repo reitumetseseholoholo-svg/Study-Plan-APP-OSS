@@ -1929,6 +1929,151 @@ def test_record_ai_tutor_telemetry_sanitizes_values_and_caps_history():
     assert [row["latency_ms"] for row in dummy._ai_tutor_telemetry_events] == [101, 102, 103]
 
 
+def test_telemetry_pedagogical_mode_preserved_through_record():
+    """pedagogical_mode should survive sanitize+record round-trip untouched."""
+    dummy = types.SimpleNamespace(
+        _ai_tutor_telemetry_events=[],
+        _ai_tutor_telemetry_max=100,
+    )
+    dummy._sanitize_ai_tutor_telemetry_event = types.MethodType(StudyPlanGUI._sanitize_ai_tutor_telemetry_event, dummy)
+    dummy._record_ai_tutor_telemetry = types.MethodType(StudyPlanGUI._record_ai_tutor_telemetry, dummy)
+    for mode in ("teach", "practice", "revision", "exam_technique", "freeform"):
+        cleaned = StudyPlanGUI._record_ai_tutor_telemetry(
+            dummy,
+            {
+                "outcome": "success",
+                "latency_ms": 100,
+                "prompt_chars": 50,
+                "response_chars": 100,
+                "purpose": "tutor_embedded",
+                "pedagogical_mode": mode,
+            },
+            persist=True,
+        )
+        assert cleaned is not None
+        assert str(cleaned.get("pedagogical_mode", "")) == mode, f"pedagogical_mode={mode!r} lost after record"
+
+
+def test_telemetry_generation_ms_ge_stream_ms():
+    """generation_ms must always be >= stream_ms (embedded path semantic guarantee)."""
+    gen_ms = 10000
+    first_token_ms = 2000
+    stream_ms = int(max(0, gen_ms - first_token_ms))
+    assert stream_ms < gen_ms, "stream_ms should be less than generation_ms with positive first_token_ms"
+    assert stream_ms == 8000
+
+    gen_ms = 5000
+    first_token_ms = 0
+    stream_ms = int(max(0, gen_ms - first_token_ms))
+    assert stream_ms == gen_ms, "stream_ms == generation_ms when first_token_ms == 0"
+
+    gen_ms = 3000
+    first_token_ms = 3500
+    stream_ms = int(max(0, gen_ms - first_token_ms))
+    assert stream_ms == 0, "stream_ms should floor at 0"
+
+
+def test_telemetry_rag_field_names():
+    """Telemetry payload uses 'rag_snippets', not 'rag_chunks' (schema doc accuracy)."""
+    dummy = types.SimpleNamespace(
+        _ai_tutor_telemetry_events=[],
+        _ai_tutor_telemetry_max=100,
+    )
+    dummy._sanitize_ai_tutor_telemetry_event = types.MethodType(StudyPlanGUI._sanitize_ai_tutor_telemetry_event, dummy)
+    dummy._record_ai_tutor_telemetry = types.MethodType(StudyPlanGUI._record_ai_tutor_telemetry, dummy)
+    cleaned = StudyPlanGUI._record_ai_tutor_telemetry(
+        dummy,
+        {
+            "outcome": "success",
+            "latency_ms": 100,
+            "prompt_chars": 50,
+            "response_chars": 100,
+            "purpose": "tutor_embedded",
+            "rag_snippets": 3,
+            "rag_sources": 2,
+        },
+        persist=True,
+    )
+    assert cleaned is not None
+    assert cleaned.get("rag_snippets") == 3
+    assert cleaned.get("rag_sources") == 2
+    assert "rag_chunks" not in cleaned, "rag_chunks is a stale name — use rag_snippets"
+
+
+def test_telemetry_field_registry_required_field_missing():
+    """validate_telemetry_payload catches missing required fields."""
+    from studyplan.ai.llm_telemetry import validate_telemetry_payload
+
+    payload = {"outcome": "success", "latency_ms": 100}
+    msgs = validate_telemetry_payload(payload, path="embedded")
+    missing_model = any("required field 'model' missing" in m for m in msgs)
+    missing_generation = any("required field 'generation_ms' missing" in m for m in msgs)
+    assert missing_model, f"should flag missing 'model': {msgs}"
+    assert missing_generation, f"should flag missing 'generation_ms': {msgs}"
+
+
+def test_telemetry_field_registry_invariant_holds():
+    """validate_telemetry_payload catches generation_ms < stream_ms."""
+    from studyplan.ai.llm_telemetry import validate_telemetry_payload
+
+    payload = {
+        "model": "test",
+        "outcome": "success",
+        "latency_ms": 10000,
+        "prompt_chars": 100,
+        "response_chars": 200,
+        "generation_ms": 5000,
+        "stream_ms": 6000,
+    }
+    msgs = validate_telemetry_payload(payload, path="embedded")
+    invariant_violated = any("invariant violated: generation_ms" in m for m in msgs)
+    assert invariant_violated, f"should flag generation_ms (5000) < stream_ms (6000): {msgs}"
+
+
+def test_telemetry_field_registry_valid_payload():
+    """validate_telemetry_payload passes a correct payload."""
+    from studyplan.ai.llm_telemetry import validate_telemetry_payload
+
+    payload = {
+        "model": "test-model",
+        "outcome": "success",
+        "purpose": "tutor_embedded",
+        "latency_ms": 10000,
+        "prompt_chars": 100,
+        "response_chars": 200,
+        "generation_ms": 8000,
+        "stream_ms": 6000,
+    }
+    msgs = validate_telemetry_payload(payload, path="embedded")
+    assert len(msgs) == 0, f"valid payload should produce no messages: {msgs}"
+
+
+def test_telemetry_actual_model_preserved_through_sanitizer():
+    """actual_model field survives sanitize+record round-trip."""
+    dummy = types.SimpleNamespace(
+        _ai_tutor_telemetry_events=[],
+        _ai_tutor_telemetry_max=100,
+    )
+    dummy._sanitize_ai_tutor_telemetry_event = types.MethodType(StudyPlanGUI._sanitize_ai_tutor_telemetry_event, dummy)
+    dummy._record_ai_tutor_telemetry = types.MethodType(StudyPlanGUI._record_ai_tutor_telemetry, dummy)
+    cleaned = StudyPlanGUI._record_ai_tutor_telemetry(
+        dummy,
+        {
+            "outcome": "success",
+            "latency_ms": 100,
+            "prompt_chars": 50,
+            "response_chars": 100,
+            "purpose": "tutor_embedded",
+            "model": "llama3.1:8b",
+            "actual_model": "llama3.1:70b",
+        },
+        persist=True,
+    )
+    assert cleaned is not None
+    assert cleaned.get("actual_model") == "llama3.1:70b"
+    assert cleaned.get("model") == "llama3.1:8b"
+
+
 def test_summarize_ai_tutor_telemetry_computes_rates_and_error_breakdown():
     dummy = types.SimpleNamespace(
         _ai_tutor_telemetry_events=[
@@ -2545,6 +2690,10 @@ def test_refresh_workbench_page_routes_through_safe_render_section():
         _refresh_settings_workspace_page=lambda *args, **kwargs: calls.append(
             ("refresh", f"settings:{kwargs.get('force', False)}")
         ),
+        _refresh_compiler_workspace_page=lambda *args, **kwargs: calls.append(
+            ("refresh", f"compiler:{kwargs.get('force', False)}")
+        ),
+        _refresh_kernel_observatory_page=lambda: calls.append(("refresh", "observatory")),
         _refresh_workbench_shell_status=lambda: calls.append(("refresh", "shell")),
         _set_workbench_refresh_fallback=lambda _page, _report: calls.append(("fallback", "workbench")),
     )
@@ -6916,10 +7065,12 @@ def test_start_stop_core_housekeeping_timers_registers_and_cleans_sources(monkey
 
     dummy = types.SimpleNamespace(
         _core_runtime_shutdown=False,
+        _workbench_status_timer_id=0,
         _auto_train_timer_id=0,
         _semantic_warmup_timer_id=0,
         _window_poll_timer_id=0,
         _daily_question_generation_timer_id=0,
+        _refresh_workbench_shell_status=lambda: True,
         _auto_train_ml_tick=lambda: True,
         _semantic_warmup_tick=lambda: False,
         _poll_window_size=lambda: True,
@@ -6929,16 +7080,18 @@ def test_start_stop_core_housekeeping_timers_registers_and_cleans_sources(monkey
 
     StudyPlanGUI._start_core_housekeeping_timers(dummy)
 
-    assert [row[0] for row in timer_calls] == [60000, 10000, 5000, 7200000]
-    assert registered == [101, 102, 103, 104]
-    assert int(dummy._auto_train_timer_id) == 101
-    assert int(dummy._semantic_warmup_timer_id) == 102
-    assert int(dummy._window_poll_timer_id) == 103
-    assert int(dummy._daily_question_generation_timer_id) == 104
+    assert [row[0] for row in timer_calls] == [5000, 60000, 10000, 5000, 7200000]
+    assert registered == [101, 102, 103, 104, 105]
+    assert int(dummy._workbench_status_timer_id) == 101
+    assert int(dummy._auto_train_timer_id) == 102
+    assert int(dummy._semantic_warmup_timer_id) == 103
+    assert int(dummy._window_poll_timer_id) == 104
+    assert int(dummy._daily_question_generation_timer_id) == 105
 
     StudyPlanGUI._stop_core_housekeeping_timers(dummy)
 
-    assert removed == [101, 102, 103, 104]
+    assert removed == [101, 102, 103, 104, 105]
+    assert int(dummy._workbench_status_timer_id) == 0
     assert int(dummy._auto_train_timer_id) == 0
     assert int(dummy._semantic_warmup_timer_id) == 0
     assert int(dummy._window_poll_timer_id) == 0
@@ -6966,10 +7119,12 @@ def test_start_core_housekeeping_timers_skips_semantic_and_auto_train_in_smoke_m
         _core_runtime_shutdown=False,
         _dialog_smoke_mode=False,
         _smoke_mode_bootstrap=True,
+        _workbench_status_timer_id=0,
         _auto_train_timer_id=0,
         _semantic_warmup_timer_id=0,
         _window_poll_timer_id=0,
         _daily_question_generation_timer_id=0,
+        _refresh_workbench_shell_status=lambda: True,
         _auto_train_ml_tick=lambda: True,
         _semantic_warmup_tick=lambda: False,
         _poll_window_size=lambda: True,
@@ -6979,12 +7134,13 @@ def test_start_core_housekeeping_timers_skips_semantic_and_auto_train_in_smoke_m
 
     StudyPlanGUI._start_core_housekeeping_timers(dummy)
 
-    assert [row[0] for row in timer_calls] == [5000, 7200000]
-    assert registered == [201, 202]
+    assert [row[0] for row in timer_calls] == [5000, 5000, 7200000]
+    assert registered == [201, 202, 203]
+    assert int(dummy._workbench_status_timer_id) == 201
     assert int(dummy._auto_train_timer_id) == 0
     assert int(dummy._semantic_warmup_timer_id) == 0
-    assert int(dummy._window_poll_timer_id) == 201
-    assert int(dummy._daily_question_generation_timer_id) == 202
+    assert int(dummy._window_poll_timer_id) == 202
+    assert int(dummy._daily_question_generation_timer_id) == 203
     assert loky_diag_labels == ["semantic_warmup_skipped"]
 
 
@@ -7587,6 +7743,8 @@ def _make_accept_dummy(*, last_action_offset: float = 0.0, executed_topic: str =
     dummy._clear_ai_tutor_pending_suggestion = lambda: None
     dummy.send_notification = lambda *_a, **_kw: None
     dummy._refresh_ai_tutor_autopilot_surface = lambda: None
+    dummy._finish_accept_suggestion = types.MethodType(StudyPlanGUI._finish_accept_suggestion, dummy)
+    dummy._start_managed_background_thread = lambda *a, **kw: None
 
     def _record_metrics(updates, persist=False):
         metrics_calls.append(dict(updates or {}))
@@ -8260,7 +8418,7 @@ def _make_restart_dummy(*, enabled=True, tick_seconds=45):
 def test_restart_ai_tutor_global_autopilot_timer_resets_state_fields():
     dummy = _make_restart_dummy(enabled=True)
     assert dummy._ai_tutor_global_autopilot_busy is False
-    assert dummy._ai_tutor_global_last_event_sig == ""
+    assert dummy._ai_tutor_global_last_event_sig == "old_sig"
     assert dummy._ai_tutor_global_last_decision_at == 0.0
     assert dummy._ai_tutor_global_quiet_until == 0.0
 

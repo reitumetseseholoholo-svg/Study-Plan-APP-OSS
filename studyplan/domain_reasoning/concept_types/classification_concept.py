@@ -104,7 +104,7 @@ class ClassificationTemplate:
                     "value": result,
                 }
             ],
-            "classification_path": [p.get("question", "") for p in path],
+            "classification_path": [p.get("question") or p.get("matched_condition", "") for p in path],
         }
 
     def evaluate_steps(
@@ -209,6 +209,7 @@ class ClassificationTemplate:
         for child in children:
             cond = child.condition
             if isinstance(cond, bool) and cond:
+                path.append({"step_id": "decision", "value": child.result, "matched_condition": str(cond)})
                 if child.result is not None:
                     return child.result
                 if child.children:
@@ -217,6 +218,13 @@ class ClassificationTemplate:
             try:
                 cond_val = _eval_rule_expression(cond, ctx)
                 if bool(cond_val):
+                    path.append(
+                        {
+                            "step_id": "decision",
+                            "value": child.result,
+                            "matched_condition": cond,
+                        }
+                    )
                     if child.result is not None:
                         return child.result
                     if child.children:
