@@ -74,7 +74,21 @@ ignore = ["E501"]
 # Module name with uppercase violates PEP8 but matches domain convention
 "studyplan/learning_Science.py" = ["N999"]
 [tool.pyright]
-include = ["studyplan", "studyplan_app.py", "studyplan_engine.py"]
+include = [
+    "studyplan",
+    "studyplan_app.py",
+    "studyplan_engine.py",
+    "studyplan_ai_tutor.py",
+    "studyplan_app_kpi_routing.py",
+    "studyplan_app_path_utils.py",
+    "studyplan_app_runtime_helpers.py",
+    "studyplan_ui_runtime.py",
+    "studyplan_ui_state_store.py",
+    "studyplan_file_safety.py",
+    "studyplan_theme.py",
+    "tests",
+    "studyplan/testing",
+]
 exclude = [
     "**/.git",
     "**/.hg",
@@ -84,16 +98,15 @@ exclude = [
     "**/build",
     "**/dist",
     "**/node_modules",
-    "studyplan/ui",
-    "studyplan/testing",
-    "studyplan/ui_builder.py",
-    "studyplan/ui_mixin.py",
-    "tests",
 ]
 typeCheckingMode = "basic"
 reportPrivateImportUsage = false
+reportMissingTypeStubs = false
+reportUnknownParameterType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "studyplan/testing"]
+testpaths = ["tests", "studyplan/testing", "studyplan/provenance"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"

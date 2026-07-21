@@ -2863,7 +2863,21 @@ def test_question_outcome_ids_prefers_semantic_mapping(engine_no_io, monkeypatch
         }
     }
 
-    monkeypatch.setattr(eng, "_semantic_best_outcome_id", lambda *_args, **_kwargs: outcome_id)
+    # Need at least one question so resolve_question_outcomes doesn't bail early
+    eng.QUESTIONS[chapter] = [
+        {
+            "question": "What is financial management?",
+            "options": ["A", "B", "C", "D"],
+            "correct": "A",
+            "explanation": "",
+        }
+    ]
+
+    monkeypatch.setattr(
+        eng,
+        "_semantic_best_outcome_match",
+        lambda *_args, **_kwargs: {"outcome_id": outcome_id, "score": 1.0, "method": "model"},
+    )
     resolved = eng._question_outcome_ids(chapter, 0)
     assert resolved == [outcome_id]
 
@@ -2991,6 +3005,16 @@ def test_resolve_question_outcomes_exposes_semantic_metadata(engine_no_io, monke
             ],
         }
     }
+
+    # Need at least one question so resolve_question_outcomes doesn't bail early
+    eng.QUESTIONS[chapter] = [
+        {
+            "question": "What is financial management?",
+            "options": ["A", "B", "C", "D"],
+            "correct": "A",
+            "explanation": "",
+        }
+    ]
 
     monkeypatch.setattr(
         eng,

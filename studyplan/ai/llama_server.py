@@ -70,10 +70,12 @@ class LlamaServerManager:
     _idle_watcher_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _memory_guard_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _stderr_lines: deque[str] = field(default_factory=lambda: deque(maxlen=200), init=False, repr=False)
+    _stderr_lines_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _stderr_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _binary_available: bool | None = field(default=None, init=False, repr=False)
     _binary_missing_logged: bool = field(default=False, init=False, repr=False)
     _stop_event: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _finalizing: bool = field(default=False, init=False, repr=False)
 
     @property
     def endpoint(self) -> str:
@@ -90,20 +92,31 @@ class LlamaServerManager:
 
     @property
     def current_model(self) -> str:
-        return self._current_model_name
+        with self._lock:
+            return self._current_model_name
 
     @property
     def startup_latency_ms(self) -> int:
-        return self._startup_latency_ms
+        with self._lock:
+            return self._startup_latency_ms
+
+    @property
+    def running_model(self) -> tuple[bool, str]:
+        """Atomically return (is_running, current_model_name) under one lock acquisition."""
+        with self._lock:
+            running = self._process is not None and self._process.poll() is None
+            return running, self._current_model_name
 
     @property
     def binary_available(self) -> bool:
-        cached = self._binary_available
+        with self._lock:
+            cached = self._binary_available
         if isinstance(cached, bool):
             return cached
         binary = str(self.config.binary or "").strip()
         available = bool(binary) and bool(shutil.which(binary))
-        self._binary_available = bool(available)
+        with self._lock:
+            self._binary_available = bool(available)
         return bool(available)
 
     def ensure_running(
@@ -122,6 +135,9 @@ class LlamaServerManager:
         Optional launch overrides apply only when starting (or restarting) the process.
         """
         with self._lock:
+            if self._finalizing:
+                log.info("llama-server finalizing previous process; cannot start yet")
+                return False
             if self._process and self._process.poll() is None:
                 if self._current_model_path == model_path:
                     if self._health_check_unlocked():
@@ -154,14 +170,16 @@ class LlamaServerManager:
             self._last_activity_mono = time.monotonic()
 
     def status(self) -> dict[str, Any]:
-        return {
-            "running": self.is_running,
-            "model": self._current_model_name,
-            "model_path": self._current_model_path,
-            "endpoint": self.endpoint,
-            "pid": self._process.pid if self._process else None,
-            "startup_latency_ms": self._startup_latency_ms,
-        }
+        with self._lock:
+            running = self._process is not None and self._process.poll() is None
+            return {
+                "running": running,
+                "model": self._current_model_name,
+                "model_path": self._current_model_path,
+                "endpoint": self.endpoint,
+                "pid": self._process.pid if self._process else None,
+                "startup_latency_ms": self._startup_latency_ms,
+            }
 
     # ------------------------------------------------------------------
     # Internal
@@ -317,9 +335,13 @@ class LlamaServerManager:
                 self._process = None
                 self._current_model_path = ""
                 self._current_model_name = ""
+                self._finalizing = True
                 to_finalize = proc
             if to_finalize is not None:
                 self._finalize_subprocess(to_finalize)
+                self._cleanup_stderr_thread_unlocked()
+                with self._lock:
+                    self._finalizing = False
 
     def _idle_watcher_loop(self) -> None:
         poll = float(self.config.idle_poll_interval_seconds or 10.0)
@@ -344,9 +366,13 @@ class LlamaServerManager:
                 self._process = None
                 self._current_model_path = ""
                 self._current_model_name = ""
+                self._finalizing = True
                 to_finalize = proc
             if to_finalize is not None:
                 self._finalize_subprocess(to_finalize)
+                self._cleanup_stderr_thread_unlocked()
+                with self._lock:
+                    self._finalizing = False
 
     def _stop_unlocked(self) -> None:
         proc = self._process
@@ -362,12 +388,20 @@ class LlamaServerManager:
             return
 
         self._finalize_subprocess(proc)
+        self._cleanup_stderr_thread_unlocked()
 
     def _join_background_threads(self) -> None:
-        for attr in ("_memory_guard_thread", "_idle_watcher_thread"):
+        for attr in ("_memory_guard_thread", "_idle_watcher_thread", "_stderr_thread"):
             t = getattr(self, attr, None)
             if t is not None and t.is_alive():
                 t.join(timeout=3.0)
+
+    def _cleanup_stderr_thread_unlocked(self) -> None:
+        t = self._stderr_thread
+        if t is not None:
+            if t.is_alive():
+                t.join(timeout=1.0)
+            self._stderr_thread = None
 
     def _finalize_subprocess(self, proc: subprocess.Popen[bytes]) -> None:
         log.info("Stopping llama-server (pid=%d)", proc.pid)
@@ -420,10 +454,11 @@ class LlamaServerManager:
             return False
 
     def _dump_stderr(self) -> None:
-        try:
-            lines = list(self._stderr_lines)
-        except Exception:
-            lines = []
+        with self._stderr_lines_lock:
+            try:
+                lines = list(self._stderr_lines)
+            except Exception:
+                lines = []
         if not lines:
             return
         snippet = "\n".join(lines[-50:])
@@ -450,12 +485,14 @@ class LlamaServerManager:
                     while b"\n" in buf:
                         line, buf = buf.split(b"\n", 1)
                         text = line.decode("utf-8", errors="replace").rstrip("\r")
-                        self._stderr_lines.append(text)
+                        with self._stderr_lines_lock:
+                            self._stderr_lines.append(text)
                     if len(buf) > 65536:
                         text = buf[-65536:].decode("utf-8", errors="replace")
                         for part in text.splitlines()[-5:]:
                             if part:
-                                self._stderr_lines.append(part)
+                                with self._stderr_lines_lock:
+                                    self._stderr_lines.append(part)
                         buf = b""
             except Exception:
                 return

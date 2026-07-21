@@ -172,6 +172,7 @@ class TestLlamaCppPrecedence:
             fake_server = MagicMock(spec=LlamaServerManager)
             fake_server.is_running = True
             fake_server.current_model = "tiny-1b-q4.gguf"
+            fake_server.running_model = (True, "tiny-1b-q4.gguf")
             fake_server.endpoint = "http://127.0.0.1:8090"
             fake_server.startup_latency_ms = 0
             fake_server.ensure_running.return_value = True
@@ -202,6 +203,7 @@ class TestLlamaCppPrecedence:
             fake_server = MagicMock(spec=LlamaServerManager)
             fake_server.is_running = False
             fake_server.current_model = ""
+            fake_server.running_model = (False, "")
             fake_server.endpoint = ""
             fake_server.startup_latency_ms = 0
             fake_server.ensure_running.return_value = False
@@ -234,6 +236,7 @@ class TestLlamaCppPrecedence:
             fake_server = MagicMock(spec=LlamaServerManager)
             fake_server.is_running = False
             fake_server.current_model = ""
+            fake_server.running_model = (False, "")
             fake_server.endpoint = ""
             fake_server.startup_latency_ms = 0
             fake_server.ensure_running.return_value = True

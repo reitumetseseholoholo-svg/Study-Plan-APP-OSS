@@ -111,13 +111,24 @@ def _resolved_llama_server_extra_args() -> list[str]:
 
 # Module-level probe cache so non-GUI code paths (Ollama fallback,
 # services) don't hammer the network on every call.
+# Shared by app._has_internet_connectivity and llama_runtime._online_mode.
 _probe_cache: dict[str, float | bool] = {}
-_PROBE_CACHE_TTL_SECONDS = 30.0
+_PROBE_CACHE_TTL_SECONDS = 10.0  # responsive offline detection
 _PROBE_TIMEOUT_SECONDS = 2.0
 _PROBE_TARGETS: list[tuple[str, int]] = [
     ("1.1.1.1", 443),
     ("8.8.8.8", 53),
 ]
+
+
+def set_connectivity_online(online: bool, *, ttl: float | None = None) -> None:
+    """Update the shared probe cache so all consumers see the same state.
+
+    Called by ``app._has_internet_connectivity`` after its own probe
+    to keep the module-level cache in sync.
+    """
+    _probe_cache["online"] = bool(online)
+    _probe_cache["expires_at"] = time.monotonic() + (ttl if ttl is not None else _PROBE_CACHE_TTL_SECONDS)
 
 
 def _probe_internet() -> bool:
@@ -135,8 +146,7 @@ def _probe_internet() -> bool:
                 break
         except Exception:
             continue
-    _probe_cache["online"] = online
-    _probe_cache["expires_at"] = now + _PROBE_CACHE_TTL_SECONDS
+    set_connectivity_online(online)
     return online
 
 

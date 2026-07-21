@@ -36,3 +36,10 @@ docs/
 !docs/
 docs/*
 !docs/LLM_TELEMETRY_SCHEMA.md
+
+# Rust build artifacts (studyplan/rs/ — PyO3 crate)
+studyplan/rs/target/
+
+# Generated Cython extensions (compiled from .pyx)
+studyplan/cython/*.c
+studyplan/cython/*.so

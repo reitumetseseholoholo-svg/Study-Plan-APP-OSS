@@ -25,8 +25,10 @@ This document covers the application architecture, key subsystems, internal desi
 16. [Testing Architecture](#testing-architecture)
 17. [CI Workflow](#ci-workflow)
 18. [Domain Reasoning Engine](#domain-reasoning-engine)
-19. [Configuration Reference](#configuration-reference)
-20. [Deployment](#deployment)
+19. [CCI Research Protocol & Algebra Ontology](#cci-research-protocol--algebra-ontology)
+20. [Provenance Kernel](#provenance-kernel)
+21. [Configuration Reference](#configuration-reference)
+22. [Deployment](#deployment)
 
 ---
 
@@ -66,9 +68,9 @@ Study Workbench is a **single-process GTK4 desktop application**. There is no ba
 
 | File | Role |
 |---|---|
-| `studyplan_app.py` | GTK4 main window. All UI construction, event handlers, Pomodoro, quiz flow, AI cockpit, preferences. ~53,500 lines. |
-| `studyplan_engine.py` | Data model, SRS (FSRS-4.5/SM-2), daily plan, coach urgency scoring, ML inference, syllabus parsing, semantic routing, persistence. ~14,400 lines. |
-| `studyplan_ai_tutor.py` | AI tutor session management: prompt assembly, RAG retrieval, Ollama/gateway calls, streaming, response sanitization. |
+| `studyplan_app.py` | GTK4 main window. All UI construction, event handlers, Pomodoro, quiz flow, AI cockpit, preferences. ~58,100 lines. |
+| `studyplan_engine.py` | Data model, SRS (FSRS-4.5/SM-2), daily plan, coach urgency scoring, ML inference, syllabus parsing, semantic routing, persistence. ~14,900 lines. |
+| `studyplan_ai_tutor.py` | AI tutor session management: prompt assembly, RAG retrieval, Ollama/gateway calls, streaming, response sanitization. ~3,700 lines. |
 | `studyplan_app_kpi_routing.py` | KPI thresholds and smoke/soak test routing helpers. GTK-independent. |
 | `studyplan_app_path_utils.py` | Path helpers extracted for unit-testability without GTK. |
 | `studyplan_ui_runtime.py` | UI state at startup (module title, exam date, etc.). GTK-independent. |
@@ -81,7 +83,9 @@ Study Workbench is a **single-process GTK4 desktop application**. There is no ba
 | `studyplan/domain_reasoning/templates.py` | `FormulaTemplate`: base class for executable solver templates with input schema, output schema, and `solve()`. |
 | `studyplan/domain_reasoning/evaluator.py` | Step-by-step learner answer comparison and error classification against deterministic truth. |
 | `studyplan/domain_reasoning/diagnostics.py` | Structured error pattern emission from solver comparison results. |
+| `studyplan/domain_reasoning/domain_registry.py` | Per-exam registry hub: `DomainRegistry`, `register_domain()`, `get_registry()`, `list_domains()`. Routes concepts/templates/slot groups by domain prefix. |
 | `studyplan/domain_reasoning/domains/acca_fm/` | FM domain solvers: `npv.py` (NPV), `wacc.py` (WACC), `capm.py` (CAPM), `irr.py` (IRR), `payback.py`, `arr.py`, `ccc.py` (Cash Cycle), `eoq.py` (EOQ), `gearing.py`. |
+| `studyplan/domain_reasoning/domains/pmp.py` | PMP PoC domain: CPI, SPI, EAC formulas via `declare_formula()` DSL. Auto-registers at import time. |
 | `studyplan/ai/llama_runtime.py` | `LlamaRuntime` — LLM orchestrator: tries Ollama → managed llama-server → cloud API |
 | `studyplan/ai/llama_server.py` | `LlamaServerManager` — manages `llama-server` subprocess lifecycle |
 | `studyplan/ai/circuit_breaker.py` | `CircuitBreaker` — per-backend failure tracking with auto-reset |
@@ -93,6 +97,12 @@ Study Workbench is a **single-process GTK4 desktop application**. There is no ba
 | `studyplan/ai/model_routing.py` | Per-purpose model routing configuration |
 | `studyplan/ai/prompt_design.py` | Prompt template management (3Es design) |
 | `studyplan/ai/tutor_prompt_layers.py` | Base tutor identity and coach identity lines |
+| `studyplan/provenance/kernel/primitives.py` | Provenance kernel — `collect_inherited_constraints`, ViewState algebra, artifact abstractions |
+| `studyplan/provenance/experiments/` | Construction experiments (P0 provenance completeness, P1 ArtifactStore protocol) |
+| `tools/algebra_observatory.py` | Algebra observatory v2 — confidence distributions, coherence metric, 7-algebra scorer |
+| `tools/algebra_experiments.py` | Experiment harness — Phase 2 discovery experiments |
+| `tools/algebra_residual_analysis.py` | Residual clustering (E1) and property augmentation (E2) |
+| `tests/test_architectural_invariants.py` | 14 architectural invariant tests + P7 provenance algebra principle tests |
 
 ### Key design invariants
 
@@ -162,6 +172,28 @@ All user progress, SRS data, and questions are stored under `~/.config/studyplan
 Set `STUDYPLAN_SRS_ALGORITHM=sm2` (or `legacy`) to use the original SM-2 scheduler. The engine delegates via `_update_srs_fsrs` / `_update_srs_sm2` split at `engine.update_srs()`.
 
 FSRS and SM-2 keys coexist in the SRS dict so data files remain forward-compatible. When FSRS is active, `is_overdue`, `get_due_today_by_chapter`, `get_retention_probability`, and `select_due_review_questions` prefer FSRS fields (`fsrs_due`, `fsrs_stability`) when available.
+
+### Rust/PyO3 acceleration
+
+`studyplan/rs/srs_select.py` transparently accelerates heavy SRS operations:
+- `select_srs_from_scored(union_of_scored, ...)` — Phases 1–4 of `select_srs_questions` (scored tuples → selected indices); falls back to `_select_srs_from_scored_py()`
+- `batch_score_srs(items, ...)` — batch overdue/retention scoring; falls back to `_batch_score_srs_py()`
+
+The Rust path is auto-detected at import time (`from studyplan_rs import ...`). Pure-Python fallbacks are always available — no hard dependency on a Rust toolchain. See `studyplan/rs/` for the Cargo project.
+
+### Provenance Validation (PV03)
+
+The SRS engine was the target of Prospective Validation cycle PV03 (14 predictions,
+10✔, 1◐, 3✘, 5★). Key findings:
+- SRS is a **state manager**, not an execution-trace system — it violates I1 (Lifecycle),
+  I2 (Trace Immutability), and I5 (Process Statelessness) by design
+- Dual-language acceleration (Python + Rust/PyO3) was an unexpected discovery (★1)
+- Three-phase selection pipeline (★2) and algorithmic dualism via env var (★3) are
+  patterns outside CCI's scope
+- The refuted principles delineate the boundary between **data-integrity systems**
+  (SRS) and **execution-integrity systems** (CCI algebra processes)
+
+See `docs/specification/predictions/pv03_predictions.md` for the full record.
 
 ---
 
@@ -594,6 +626,51 @@ Trained similarly. The interval model (`tools/train_interval_model_sklearn.py`) 
 | `rag_doc` | 1800s |
 | `ollama` | 120s |
 | `coach_pick` | 300s |
+| `coach_briefing_digest` | session (per dashboard render cycle) |
+
+### Coach 2× render multiplier (fixed)
+
+Two locations had `_queue_coach_sync_if_mismatch()` called **before** `_ensure_coach_pick_consistency()`, guaranteeing a false-positive mismatch that scheduled an extra `update_dashboard()` — producing a 2× multiplier on every render:
+
+1. `_render_dashboard`: moved after consistency sync
+2. `_update_study_room_card_impl_inner`: moved after consistency sync
+
+Combined with 7+ expensive engine queries in the coach card update, a single dashboard render used to trigger **14+ engine queries** in one burst. This is now eliminated.
+
+### TF-IDF warmup thread storm (fixed)
+
+`_semantic_prefetch_chapter_assets()` used `max_workers = min(len(work_items), max(1, os.cpu_count() or 4))` — spawning a ThreadPoolExecutor per chapter equal to CPU core count. Each worker called `TfidfVectorizer.fit_transform()` (CPU-bound). On an 8-core machine with 6 prefetch chapters, all cores saturated in a CPU-bound computation storm.
+
+**Fix**: workers capped to max 2. TF-IDF `fit_transform` is CPU-bound; >2 threads adds OS scheduler overhead without throughput gain. Configurable via `SEMANTIC_WARMUP_PREFETCH_MAX_WORKERS`.
+
+### Profiler report (`--perf-stats`)
+
+The `PerformanceProfiler` (studyplan/components/performance/profiler.py) collects timing data for any operation instrumented via `_perf_record()` or `profiler.profile_operation()`. Data is collected at runtime but **not displayed** unless the `--perf-stats` CLI flag is passed:
+
+```bash
+python studyplan_app.py --perf-stats
+```
+
+When the window closes, a formatted report is printed to stdout containing:
+- **Per-operation stats**: call count, avg/median/p95/p99/min/max durations, success rate, error count
+- **Alerts**: operations exceeding their configured threshold (severity: warning/error/critical)
+- **Recommendations**: auto-generated suggestions (high latency → cache, low success rate → investigate errors)
+
+**Currently instrumented call sites** (studyplan_app.py):
+- `coach_pick_update` — `_update_coach_pick_card` timing
+- `study_room_update` — `_update_study_room_card` timing
+- `daily_plan_render` — `_render_dashboard` daily plan section timing
+
+Add new instrumentation anywhere via:
+```python
+self._perf_record("my_operation", duration_ms)
+```
+or wrap a function:
+```python
+result = self._perf_profiler.profile_operation("my_operation", my_func, arg1, arg2)
+```
+
+The profiler is initialized at startup by `_initialize_performance_services()` (line 2721). If the integration module is unavailable, `_perf_profiler`, `_perf_cache`, and `_perf_middleware` are `None` and all calls are no-ops.
 
 ### Configuration
 
@@ -638,6 +715,22 @@ A GTK-free deterministic reasoning layer that executes domain concepts (formulas
 | EOQ | `eoq.py` | `eoq` | — |
 | Gearing | `gearing.py` | `gearing` | — |
 
+### Cross-exam support via DomainRegistry
+
+`studyplan/domain_reasoning/domain_registry.py`
+
+The engine now supports any professional exam through a per-exam `DomainRegistry`:
+
+- **Global hub**: `register_domain(DomainRegistry)`, `get_registry("pmp")`, `list_domains()`
+- **Each registry** holds its own concept map, template registry, formula mappings, label aliases, detection patterns, and slot groups.
+- **`reason_question(domain="pmp")`** routes all internal lookups through the domain's registry instead of the default ACCA FM globals.
+- **`detect_concepts(question, domain="pmp")`** uses per-domain pattern-based detection.
+- **`evaluate_question(domain="pmp")`** routes template/concept lookups through the domain registry.
+- **ACCA FM** is auto-registered at import time via `_build_acca_registry()` in `concepts.py`.
+- **PMP PoC** (`domains/pmp.py`) registers CPI, SPI, EAC formulas — auto-registered at import time.
+
+Adding a new exam domain: one `declare_formula(registry=...)` call per formula, then `register_domain(registry)`.
+
 ### Entry point
 
 ```python
@@ -648,7 +741,19 @@ result = reason_question("WACC",
                          template_inputs={"equity": 60, "debt": 40})
 # result.confidence  → 0.111
 # result.steps       → plan with provenance and quality per step
+
+# Cross-exam usage:
+result = reason_question("CPI",
+                         domain="pmp",
+                         template_inputs={"ev": 200, "ac": 250})
 ```
+
+### Known fixes (Jun 2026 audit)
+
+1. **Dead code in `_parse_number`** (`step_matcher.py:144-146`): line 146 replaced commas with dots, but line 144 already stripped all commas — dead code since March 2024. Removed.
+2. **Tolerance variance documented** (`step_matcher.py:27` vs `evaluator.py:253`): step matcher uses 2% relative tolerance (`_STEP_TOLERANCE`), evaluator uses 0.5% (`abs(ref) * 0.005`). Intentionally different — intermediate steps have more rounding variance than final answers. Comment added to prevent future confusion.
+3. **Empty question in multi-path fallback** (`reasoning_engine.py:757`): fallback path passed `""` instead of the original question text to `_build_inputs_with_sources`, depriving alternative concepts of number extraction from the question. Fixed by threading `question` through `_execute_plan`.
+4. **Silent `except Exception: pass`** (`evaluator.py:165-168`): `template.solve()` exceptions were swallowed silently, masking bugs in Jinja2 templates (undefined variables, type errors). Now logged via `_logger.warning()` with concept ID.
 
 ### Key invariants
 
@@ -676,6 +781,145 @@ The learner profile store tracks concept error patterns across assessments via `
 
 ---
 
+## CCI Research Protocol & Algebra Ontology
+
+The CCI Research Protocol (`docs/specification/RESEARCH_PROTOCOL.md`, 801 lines, frozen)
+investigates the **computational algebra ontology** — a characterisation of cognitive
+processes in terms of state topology, dynamics, invariants, conserved quantities,
+and completion semantics.
+
+### The ontology: A = (S, M, I, C, Φ)
+
+Every algebra is defined by five axes:
+
+| Axis | Question | Example |
+|------|----------|---------|
+| **S** — State space | What shape is the state? | Tree, distribution, constraint graph |
+| **M** — Operator algebra | What transformations are admissible? | Traverse, reweight, propagate |
+| **I** — Logical invariants | What holds at every reachable state? | Exactly one active path, Σp = 1 |
+| **C** — Conserved quantities | What is preserved by every M? | Probability mass, justification closure |
+| **Φ** — Completion semantics | What is the fixed point? | Most probable path, equilibrium distribution |
+
+### 7 known algebras
+
+| # | Algebra | State | Operator | Conserved quantity |
+|---|---------|-------|----------|-------------------|
+| 0 | Computation (reference) | Stack frame | Step | Call/return balance |
+| 1 | Classification | Distribution | Condition | Probability mass (Σp = 1) |
+| 2 | Diagnosis | Bayesian net | Propagation | Total belief (ΣBelief = 1) |
+| 3 | Evaluation | Comparison tree | Traversal | Exactly one active path |
+| 4 | CSP | Constraint graph | Constraint propagation | Equivalence closure |
+| 5 | GrowingGraph | Directed graph | Extend with fidelity | Coherence (maximum minimal) |
+| 6 | Justification | Proof tree | support/retract | Justification closure |
+| **7** | **Provenance Query** | **ViewState** | **dispatch (project/filter/map/join)** | **Plan fidelity** |
+
+### 8 mutation operators
+
+| # | Operator | Properties | Used by |
+|---|----------|-----------|---------|
+| 1 | condition | branching | Classification |
+| 2 | propagate | non-local, monotonic, value mutation | Diagnosis |
+| 3 | traverse | non-local | Evaluation |
+| 4 | constraint_propagate | reversible, non-local, monotonic | CSP |
+| 5 | extend | generative, branch mutation | GrowingGraph |
+| 6 | support / retract | reversible, value mutation | Justification |
+| 7 | infer | reversible, value mutation, monotonic | Justification |
+| **8** | **dispatch** | **reversible, value mutation, non-local** | **Provenance Query** |
+
+Dispatch is the only meta-operator: it does not transform state directly but
+selects and applies sub-operators from a fixed plan.
+
+### 14 architectural principles
+
+Principles I1–I14 govern all algebra implementations. Each has a three-layer
+maturity classification (Cross-Domain / Execution-Runtime / CCI-Specific):
+
+| Principle | Verified? | Core statement |
+|-----------|-----------|----------------|
+| I1 Lifecycle | 2✔ 1✘ | Every algebra has a lifecycle |
+| I2 Trace Immutability | 1✔ 1◐ 1✘ | Traces are append-only after creation |
+| I3 Causal Provenance | 3✘ | Every state points to its predecessor |
+| I4 Agnosticism | 3✔ | Algebra is interpreter-independent |
+| I5 Statelessness | 2✔ 1✘ | Each step is a pure function of input |
+| I6 Independence | 3✔ | Result encodes answer, not internals |
+| I7 Validity | 3✔ | Failure produces `None`/`[]`, not crash |
+| I8 Hashing | 3✔ | State identified by hash, not reference |
+| I9 Partitioning | 2✔ 1◐ | State split into inputs/control/output |
+| I10 Step Return | 3✘ | Each step returns `(result, next_state)` |
+| I11 Dual Protocol | 3✘ | Process + Executor protocols |
+| I12 Constructor Divergence | 2◐ 1✔ | Constructor and step shapes differ |
+| I13 Event Iteration | 3✔ | Event loop delegates step iteration |
+| I14 Comparison Envelope | 3✔ | Comparison never reaches into state |
+
+PV03 refutations (I1, I2, I5) are principled: these principles govern
+*execution-trace systems* but not *data-integrity systems* (state managers
+like the SRS engine).
+
+### Key files
+
+| File | Role |
+|------|------|
+| `docs/specification/RESEARCH_PROTOCOL.md` | Frozen 801-line protocol |
+| `docs/specification/CCI_SPEC.md` | Full specification with 14 principles |
+| `docs/algebra_atlas.md` | 795-line algebra ontology with 7 algebras |
+| `tools/algebra_observatory.py` | 7-algebra classifier (confidence, coherence) |
+| `tools/algebra_experiments.py` | 9 Phase 2 experiments |
+| `tools/algebra_residual_analysis.py` | Residual clustering (E1/E2) |
+| `tests/test_architectural_invariants.py` | Principle tests + P7 provenance tests |
+
+---
+
+## Provenance Kernel
+
+`studyplan/provenance/kernel/primitives.py`
+
+The provenance kernel provides generic graph reachability and constraint
+collection over artifact dependency graphs. It contains zero domain-specific
+knowledge — it works identically for FM financial concepts (WACC → CAPM
+constraint propagation) and PostgreSQL query plans (GEQO → plan tree
+constraint inheritance).
+
+### Core primitives
+
+| Primitive | Signature | Purpose |
+|-----------|-----------|---------|
+| `collect_inherited_constraints(artifact)` | `Artifact → set[Constraint]` | BFS over output→input edges, unions constraints |
+| `ViewState` | dataclass | Immutable algebra snapshot: metadata, state, constraints |
+| `serialize(artifact)` | `Artifact → dict` | Recursive JSON-compatible converter |
+| `deserialize(data, artifact_type)` | `dict → Artifact` | Structural reconstruction |
+
+### Provenance Completeness (P0, confirmed)
+
+Constraint inheritance reduces to generic BFS — no new ontology needed. Two
+kinds of provenance discovered:
+- **Execution provenance**: graph reachability ("what does this depend on?")
+- **Validity provenance**: constraint collection ("what must be true for this to be valid?")
+
+Both are query strategies over one graph. The same code path serves Tutor,
+Debugger, and Lab.
+
+### ArtifactStore Protocol (P1, confirmed)
+
+Minimal persistent store: directory of JSON files, keyed by `content_hash`,
+zero in-memory cache, zero indexing, zero schema versioning. All algebra-relevant
+state is captured by ViewState serialization. Storage is a pure IO layer —
+no kernel changes needed.
+
+### Construction experiments
+
+Every new component follows Phase II protocol: hypothesis → predictions →
+experiment → evidence → decision. Nothing bypasses evidence.
+
+### Key files
+
+| File | Role |
+|------|------|
+| `studyplan/provenance/kernel/primitives.py` | Core: ViewState, collect_inherited_constraints |
+| `studyplan/provenance/kernel/test_p0_provenance_completeness.py` | 10 P0 tests |
+| `studyplan/provenance/kernel/test_p1_artifact_store.py` | 12 P1 tests (1 pre-existing fail) |
+
+---
+
 ## GTK4 Application Architecture
 
 `StudyPlanGUI` (a `Gtk.ApplicationWindow`) is constructed by `StudyApp.do_activate()`. The class is large by necessity — GTK4 requires widget construction and callback wiring in the same scope.
@@ -683,11 +927,40 @@ The learner profile store tracks concept error patterns across assessments via `
 ### Startup sequence
 
 1. `_smoke_bootstrap()` — configure process env vars (loky, joblib) before any imports
-2. `StudyApp.do_activate()` → `StudyPlanGUI.__init__()` → `StudyPlanEngine.__init__()`
-3. `engine.load_data()` — load or auto-recover data
-4. `_build_main_window()` → `_build_left_panel()`, `_build_dashboard()`, `_build_tutor_workspace()`
-5. `load_preferences()` — restore window state, AI settings, user prefs
+2. `StudyApp.do_activate()` → `StudyPlanGUI.__init__()` → `StudyPlanEngine.__init__()` with `defer_data_load=True`
+3. `_build_main_window()` → `_build_left_panel()`, `_build_dashboard()`, `_build_tutor_workspace()` — **<50 ms to first paint**
+4. `load_preferences()` — restore window state, AI settings, user prefs
+5. `_run_initial_refresh()` → `GLib.idle_add(engine._do_deferred_data_load())` — data, models, and questions load in the background
 6. `_start_background_tasks()` — autopilot tick, semantic warmup, model poll
+
+**Deferred loading** (engine `defer_data_load=True`): the engine initialises with empty defaults in <50 ms. `load_data()`, model loading, `load_questions()`, and `save_data()` are skipped until `_do_deferred_data_load()` fires via `GLib.idle_add` from `_run_initial_refresh()`. Guard method `_ensure_deferred_data_loaded()` is called before any data-dependent operation. This means the UI is interactive from second zero — no splash screen, no spinner.
+
+### Dashboard section reconciliation
+
+The dashboard uses digest-checked section IDs (`_ds_id`, `_ds_digest`) to avoid redundant GTK rebuilds:
+
+1. Each section is tagged with a unique `_ds_id` via `_ds_mark()` at build time.
+2. Expensive sections (coach briefing: 7+ engine queries) use `_ds_check(sid, digest)` — if the section exists with a matching digest, the entire rebuild is skipped.
+3. `_reconcile_sections()` at the end of every render cycle removes orphan widgets whose `_ds_id` wasn't marked in that cycle — this automatically handles conditional sections (focus mode, tile mode, empty states).
+4. The full-clear loop (`while child: remove child`) was **removed** — sections update in place without flash.
+
+**Why this matters**: before reconciliation, every dashboard refresh unconditionally cleared all ~35 children and rebuilt from scratch. Now the coach briefing (most expensive section) skips entirely when data unchanged, and all other sections update in place.
+
+### Dashboard card order (6 new insight cards)
+
+The dashboard render order after the chart block is: Plan View → **Daily Plan** → **Error Patterns** → **Focus Detective** → **Study Guide** → **Progress Predictions** → **Knowledge Graph** → Study Snapshot → Weekly Summary → Mastery Snapshot → Weak vs Strong → Reviews & Pace → Reviews Due Today → Leech Alerts → Study Hub → Data Health → Activity Chart.
+
+New cards use `_ds_mark()` for reconciliation and follow the existing pattern for conditional visibility:
+- **Daily Plan** (`daily_plan`): hidden when exam date or module availability is not set.
+- **Error Patterns** (`error_patterns`): hidden when no weak outcomes found.
+- **Focus Detective** (`focus_detective`): hidden when no per-topic time data available.
+- **Study Guide** (`study_guide`): always shown; per-chapter "Generate" buttons call `_generate_ai_chapter_summary()` via `_start_managed_background_thread`.
+- **Progress Predictions** (`progress_predictions`): hidden when exam date not set or no study history.
+- **Knowledge Graph** (`knowledge_graph`): always shown; Cairo DAG with `engine.CHAPTER_FLOW` edges.
+
+### Common pitfalls
+
+**`_ds_check` guard + variable scope**: if a variable is assigned inside an `if not _ds_check(...):` block and used after it, the variable is **unbound** on cache hit (when `_ds_check` returns True). This caused real crashes (`readiness_tier` UnboundLocalError) and stale-data bugs (`mission_tasks` showing 0/0 on every second render). Fix: hoist the computation before the `_ds_check` guard, leaving only UI construction inside the block.
 
 ### Action registry
 
@@ -709,6 +982,36 @@ States emitted by `_compute_workbench_app_health()`: `sync_issue`, `model_unavai
 
 All three labels refresh on a 2-second `GLib.timeout_add` timer via `_start_workbench_status_timer()`.
 
+### Visual layout patterns
+
+**Left panel**: `Gtk.Box(VERTICAL, spacing=12)` with `set_size_request(250, -1)`, `hexpand=True`, `halign=FILL`. Key children:
+
+| Widget | hexpand | Notes |
+|--------|---------|-------|
+| Coach card (`hero_card`) | `True` | Fills panel width |
+| Study room card (`feature_card`) | `True` | Fills panel width |
+| AI Cockpit card (`hero_card`) | `True` | Fills panel width |
+| Quest card | `True` | Fills panel width |
+| Activity heatmap | `True` + `halign=FILL` | GitHub-style grid, cells + columns all `hexpand=True` — spans full panel |
+| Topic dropdown | `True` | Fills width |
+
+All card containers must set `set_hexpand(True)` to fill the left panel. The panel itself already has `hexpand=True` + `halign=FILL`, but cards without explicit `hexpand` will only use their natural width.
+
+**Activity heatmap**: 12-column × 7-row grid of colored `Gtk.Label` cells (CSS classes: `heatmap-active`, `heatmap-inactive`, `heatmap-future`). The grid_box, each week column, and each cell all have `set_hexpand(True)` so the heatmap spans the full left panel width. Cells have a minimum `set_size_request(10, 10)` and expand horizontally to fill their column.
+
+### Dashboard chart system
+
+All charts are Cairo-based (`Gtk.DrawingArea` with `set_draw_func`). Key patterns:
+- `set_size_request(min_width, height)` + `set_hexpand(True)` — charts fill container width
+- Bar widths are computed dynamically from allocated width `w_f` in the draw callback
+- The hbar kind computes `bar_max_w = max(1.0, w_f - bar_x - val_w)` so bars always fill available space
+
+### GTK4 deprecation warnings
+
+The app targets GTK4 (PyGObject 3.46+, GTK 4.6–4.22). **Zero deprecation warnings** at startup — legacy APIs replaced:
+- `Gdk.Texture.new_for_pixbuf` → `Gdk.Texture.new_from_bytes(GLib.Bytes.new(buf.getvalue()))` (line 14224)
+- `get_style_context()` + `lookup_color()` wrapped in `warnings.catch_warnings()` suppressing `DeprecationWarning` (line 51555) — no non-deprecated GTK4 API exists for resolving `@define-color` CSS values
+
 ### GTK4 lint
 
 `tools/gtk4_lint.py` checks for deprecated GTK4 patterns (e.g. `set_markup` without markup safety, deprecated widget methods). Run it as a pre-commit check.
@@ -724,9 +1027,12 @@ All three labels refresh on a 2-second `GLib.timeout_add` timer via `_start_work
 | Unit (default) | `tests/` | No | ~1,134 test functions in 40 files |
 | Integration | `studyplan/testing/` | No | ~533 test functions in 47 files |
 | GTK-dependent | `tests/test_studyplan_app_ollama.py` | Yes | ~322 test functions (parametrized → ~348 items) |
-| Full suite | both | Yes | ~1,676 test items (1,675 passed + 1 skipped) |
+| Full suite | both | Yes | **~2,969 test items** (2,971 tests run, 1 skipped pre-existing, 1 pre-existing fail) |
 | Domain reasoning | `tests/test_reasoning_engine.py`, `tests/test_domain_reasoning.py`, `tests/test_numerical_solver.py` | No | ~220 test functions |
-| Tutor quality | `tests/tutor_quality/` | No | Prompt quality scores |
+| Provenance kernel | `studyplan/provenance/kernel/` | No | 22 test functions (P0 + P1) |
+| Architectural invariants | `tests/test_architectural_invariants.py` | No | 17 test functions (I1–I14 + 3 P7) |
+
+Current status: **2969 tests pass, 1 pre-existing fail (falsification tracker), 1 pre-existing skip**. Smoke test runs **32/32 KPI steps** at strict thresholds. **0 pyright errors** across all files. **0 GTK4 deprecation warnings** at startup.
 
 ### Tutor quality pipeline
 

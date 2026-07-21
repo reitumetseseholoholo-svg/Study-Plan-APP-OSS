@@ -7,7 +7,90 @@ upward into learner profile, tutor context, and autopilot evidence.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
+
+
+# ---------------------------------------------------------------------------
+# Error Pattern Taxonomy (Phase 4d)
+# ---------------------------------------------------------------------------
+
+
+class ErrorPattern(Enum):
+    """Standardised error pattern taxonomy for step-level diagnosis.
+
+    Each member maps to a stable tag string consumed by the AI tutor
+    and the diagnostic summary pipeline.
+    """
+
+    OFF_BY_ONE = "step_off_by_one"
+    WRONG_FORMULA = "wrong_formula"
+    SIGN_ERROR = "sign_error"
+    UNIT_ERROR = "unit_error"
+    WRONG_INPUT = "wrong_input"
+    ORDER_ERROR = "order_error"
+    COMPOUND_ERROR = "compound_error"
+    TAX_NEGLECT = "tax_neglect"
+    WRONG_DISCOUNT_RATE = "wrong_discount_rate"
+
+
+# ---------------------------------------------------------------------------
+# Step-Error Classifier
+# ---------------------------------------------------------------------------
+
+_STEP_PATTERN_MAP: list[tuple[str, ErrorPattern]] = [
+    ("sign", ErrorPattern.SIGN_ERROR),
+    ("rate", ErrorPattern.WRONG_DISCOUNT_RATE),
+    ("discount", ErrorPattern.WRONG_DISCOUNT_RATE),
+    ("unit", ErrorPattern.UNIT_ERROR),
+    ("tax", ErrorPattern.TAX_NEGLECT),
+    ("compound", ErrorPattern.COMPOUND_ERROR),
+    ("order", ErrorPattern.ORDER_ERROR),
+    ("off_by_one", ErrorPattern.OFF_BY_ONE),
+    ("wrong_formula", ErrorPattern.WRONG_FORMULA),
+    ("wrong_input", ErrorPattern.WRONG_INPUT),
+]
+
+
+def classify_step_id_error(step_id: str) -> ErrorPattern | None:
+    """Map a step ID to a semantic error pattern based on known keywords."""
+    if not step_id:
+        return None
+    step_lower = step_id.lower().replace("_", " ").replace("-", " ")
+    for keyword, pattern in _STEP_PATTERN_MAP:
+        if keyword in step_lower:
+            return pattern
+    # Fallback: detect common formula-step patterns
+    if step_lower.startswith("pv ") or step_lower.startswith("fv "):
+        return ErrorPattern.WRONG_INPUT
+    return None
+
+
+def classify_step_errors(
+    step_matches: list[dict[str, Any]],
+    *,
+    truth: dict[str, Any] | None = None,
+) -> list[str]:
+    """Generate error tags from step-match results using the formal taxonomy.
+
+    Returns tags like ``sign_error``, ``wrong_discount_rate``, etc.
+    Falls back to generic ``step_{id}_mismatch`` for unrecognised steps.
+    """
+    tags: list[str] = []
+    for m in step_matches:
+        step_id = str(m.get("step_id", "") or "")
+        if not step_id:
+            continue
+        if m.get("match", False):
+            continue
+        pattern = classify_step_id_error(step_id)
+        if pattern is not None:
+            tag = str(pattern.value)
+            if tag not in tags:
+                tags.append(tag)
+        else:
+            tags.append(f"step_{step_id}_mismatch")
+    return tags
 
 
 @dataclass

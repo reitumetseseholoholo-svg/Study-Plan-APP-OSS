@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import logging
 import math
 import os
 import re
@@ -22,6 +23,8 @@ from studyplan.services import get_module_display_code, get_syllabus_scope_instr
 
 if TYPE_CHECKING:  # pragma: no cover - reserved for future editor hints
     pass
+
+log = logging.getLogger(__name__)
 
 
 def _app_effective_tutor_topic(app: Any) -> str:
@@ -156,6 +159,10 @@ def infer_tutor_prompt_mode_hint(user_prompt: str) -> str:
         return "revision_planner"
     if any(token in text for token in ("why am i wrong", "mistake", "error", "keep getting", "where am i going wrong")):
         return "error_clinic"
+    if any(
+        token in text for token in ("assumption", "assumptions", "assume", "underlying assumption", "what must be true")
+    ):
+        return "assumption_query"
     return "teach"
 
 
@@ -202,6 +209,17 @@ def _build_tutor_mode_guidance(mode_hint: str) -> list[str]:
             [
                 "- Use error-clinic mode: diagnose why the learner is missing marks, then prescribe corrective drills.",
                 "- Name the likely misconception and test the corrected understanding immediately.",
+            ]
+        )
+    elif mode == "assumption_query":
+        lines.extend(
+            [
+                "- Use assumption-query mode: the provenance context block below is the authoritative, exhaustive answer.",
+                "- The assumptions list is kernel-verified (single-graph query discipline) — structurally proven, not LLM-generated.",
+                "- Do NOT add assumptions not listed in the provenance context block.",
+                "- Do NOT omit any listed assumption.",
+                "- For each assumption: (1) what it means in context, (2) why it matters for validity, (3) what happens if violated, (4) exam relevance.",
+                "- If the provenance context block is empty or missing, state 'Provenance data not available for this topic' — do not fabricate assumptions.",
             ]
         )
     else:
@@ -1019,6 +1037,8 @@ def build_ai_tutor_context_prompt_details(
     exam_technique_only: bool = False,
     student_context_line: str | None = None,
     confidence_guidance_line: str | None = None,
+    provenance_context: str | None = None,
+    learning_context: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     cleaned_history: list[dict[str, str]] = []
     for msg in list(history or []):
@@ -1091,6 +1111,12 @@ def build_ai_tutor_context_prompt_details(
     if syllabus_scope_instruction and syllabus_scope_instruction.strip():
         lines.append("Syllabus scope (strict — do not use non-examinable content):")
         lines.append(syllabus_scope_instruction.strip())
+        lines.append("")
+    if provenance_context and provenance_context.strip():
+        lines.append(provenance_context.strip())
+        lines.append("")
+    if learning_context and learning_context.strip():
+        lines.append(learning_context.strip())
         lines.append("")
     lines.append(
         "Syllabus-derived context (outcomes, scope, importance) is for guiding what to teach and priority only; "
@@ -1172,6 +1198,57 @@ def build_ai_tutor_context_prompt_details(
     return prompt, meta
 
 
+def build_provenance_context(data: dict[str, Any] | None, mode_hint: str = "") -> str:
+    """Format provenance trace data into a prompt-section string for the tutor.
+
+    Takes the result dict from ExecutionContext.inherited_assumptions_fast()
+    and formats it as a structured context block. Returns empty string if
+    data is None or empty.
+
+    When mode_hint is 'assumption_query', adds a stronger framing header
+    marking the data as kernel-verified ground truth.
+
+    Confidence (T-PC-01): If data contains assumption_confidence dict
+    {name → float}, each assumption is rendered with its confidence
+    score in brackets, e.g. "market_efficiency [0.95]".  Absent means
+    all assumptions are unweighted (current behavior preserved).
+    """
+    if not data:
+        return ""
+    topic = data.get("artifact", "")
+    assumptions = data.get("assumptions", [])
+    consumes = data.get("consumes", [])
+    dep_path = data.get("dependency_path", [])
+    total = data.get("total_constraints", 0)
+    conf = data.get("assumption_confidence", None)
+    if not topic and not assumptions:
+        return ""
+    if str(mode_hint or "").strip().lower() == "assumption_query":
+        lines = ["Kernel-verified provenance (exhaustive — single-graph query discipline):"]
+    else:
+        lines = ["Provenance context (domain model — structurally verified):"]
+    lines.append(f"  Topic: {topic}")
+    if assumptions:
+        if conf and isinstance(conf, dict):
+            parts = []
+            for a in assumptions:
+                c = conf.get(a)
+                if c is not None:
+                    parts.append(f"{a} [{c}]")
+                else:
+                    parts.append(a)
+        else:
+            parts = list(assumptions)
+        lines.append(f"  Assumptions ({len(parts)}): {'; '.join(parts)}")
+    if consumes:
+        lines.append(f"  Inputs consumed: {'; '.join(consumes)}")
+    if dep_path:
+        lines.append(f"  Dependency path: {' → '.join(dep_path)}")
+    lines.append(f"  Constraint count: {total}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def build_ai_tutor_context_prompt(
     history: list[dict[str, str]],
     user_prompt: str,
@@ -1179,6 +1256,7 @@ def build_ai_tutor_context_prompt(
     chapter: str,
     syllabus_scope_instruction: str | None = None,
     module_id: str | None = None,
+    provenance_context: str | None = None,
 ) -> str:
     prompt, _meta = build_ai_tutor_context_prompt_details(
         history=history,
@@ -1187,6 +1265,7 @@ def build_ai_tutor_context_prompt(
         chapter=chapter,
         syllabus_scope_instruction=syllabus_scope_instruction,
         module_id=module_id,
+        provenance_context=provenance_context,
     )
     return prompt
 
@@ -1968,6 +2047,7 @@ class AITutorDialogController:
                 tail_gap = max(0.0, upper - page - value)
                 return tail_gap <= max(0.0, float(padding))
             except Exception:
+                log.warning("_is_at_end_of_response: adjustment read failed", exc_info=True)
                 return True
 
         def _scroll_response_end_deferred() -> None:
@@ -2093,13 +2173,16 @@ class AITutorDialogController:
             run_state["stream_render_pending"] = True
 
             def _apply_stream_render() -> bool:
-                run_state["stream_render_pending"] = False
-                force_flag = bool(run_state.get("stream_render_force", False))
-                run_state["stream_render_force"] = False
-                if bool(run_state.get("active", False)):
-                    _append_stream_delta(force_scroll=force_flag)
-                else:
-                    _render_transcript(force_scroll=force_flag)
+                try:
+                    run_state["stream_render_pending"] = False
+                    force_flag = bool(run_state.get("stream_render_force", False))
+                    run_state["stream_render_force"] = False
+                    if bool(run_state.get("active", False)):
+                        _append_stream_delta(force_scroll=force_flag)
+                    else:
+                        _render_transcript(force_scroll=force_flag)
+                except Exception:
+                    pass
                 return False
 
             GLib.idle_add(_apply_stream_render, priority=GLib.PRIORITY_DEFAULT_IDLE)
@@ -2131,6 +2214,7 @@ class AITutorDialogController:
                         try:
                             _append_stream_delta(force_scroll=False)
                         except Exception:
+                            log.warning("_append_stream_delta failed in watchdog", exc_info=True)
                             _render_transcript(force_scroll=False)
                         run_state["stream_last_render_at"] = float(time.monotonic())
                 return True
@@ -2331,19 +2415,22 @@ class AITutorDialogController:
                 models, err = app._ollama_list_models()
 
                 def _finish():
-                    nonlocal model_poll_errors
-                    refresh_btn.set_sensitive(True)
-                    if err:
-                        _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
-                        _set_dropdown_models([])
-                        status_label.set_text(friendly)
-                        return False
-                    model_poll_errors = 0
-                    _set_dropdown_models(models)
-                    if models:
-                        status_label.set_text(f"Loaded {len(models)} model(s).")
-                    else:
-                        status_label.set_text("No local models found in Ollama.")
+                    try:
+                        nonlocal model_poll_errors
+                        refresh_btn.set_sensitive(True)
+                        if err:
+                            _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
+                            _set_dropdown_models([])
+                            status_label.set_text(friendly)
+                            return False
+                        model_poll_errors = 0
+                        _set_dropdown_models(models)
+                        if models:
+                            status_label.set_text(f"Loaded {len(models)} model(s).")
+                        else:
+                            status_label.set_text("No local models found in Ollama.")
+                    except Exception:
+                        pass
                     return False
 
                 GLib.idle_add(_finish)
@@ -2366,21 +2453,24 @@ class AITutorDialogController:
                 models, err = app._ollama_list_models()
 
                 def _finish():
-                    nonlocal model_poll_errors
-                    if err:
-                        model_poll_errors += 1
-                        _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
-                        if model_poll_errors >= 3:
-                            status_label.set_text("Model refresh paused after repeated errors; use Refresh.")
+                    try:
+                        nonlocal model_poll_errors
+                        if err:
+                            model_poll_errors += 1
+                            _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
+                            if model_poll_errors >= 3:
+                                status_label.set_text("Model refresh paused after repeated errors; use Refresh.")
+                                return False
+                            status_label.set_text(friendly)
                             return False
-                        status_label.set_text(friendly)
-                        return True
-                    model_poll_errors = 0
-                    cleaned = [str(m).strip() for m in models if str(m).strip()]
-                    if cleaned and cleaned != current_models:
-                        _set_dropdown_models(cleaned)
-                        status_label.set_text(f"Models updated ({len(cleaned)}).")
-                    return True
+                        model_poll_errors = 0
+                        cleaned = [str(m).strip() for m in models if str(m).strip()]
+                        if cleaned and cleaned != current_models:
+                            _set_dropdown_models(cleaned)
+                            status_label.set_text(f"Models updated ({len(cleaned)}).")
+                    except Exception:
+                        pass
+                    return False
 
                 GLib.idle_add(_finish)
 
@@ -2468,7 +2558,10 @@ class AITutorDialogController:
         _saved_status: list[str] = [""]
 
         def _restore_status() -> None:
-            status_label.set_text(_saved_status[0])
+            try:
+                status_label.set_text(_saved_status[0])
+            except Exception:
+                pass
 
         def _show_copy_toast(msg: str) -> None:
             if _copy_toast_id[0] > 0:
@@ -2926,7 +3019,6 @@ class AITutorDialogController:
             ctx_fp_full = ""
             learning_ctx_omitted = 0
             unchanged_fp = ""
-            str(os.environ.get("STUDYPLAN_TUTOR_CONTEXT_DEDUP", "1") or "1").strip().lower()
             if context_block.strip():
                 ctx_fp_full = hashlib.sha256(context_block.encode("utf-8")).hexdigest()
                 run_state["learning_context_sha256"] = ctx_fp_full
@@ -3034,9 +3126,13 @@ class AITutorDialogController:
                 autopilot_stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
                 eff_topic = _app_effective_tutor_topic(app)
                 credited = str(credited_model or "").strip() or str(model_name or "").strip()
+                actual_model_val = str(
+                    inf_snap[1] if isinstance(inf_snap, (tuple, list)) and len(inf_snap) > 1 else "" or ""
+                ).strip()
                 payload = {
                     "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "model": credited,
+                    "actual_model": actual_model_val,
                     "outcome": str(outcome or "").strip().lower(),
                     "error_class": str(error_class or "").strip().lower(),
                     "purpose": PURPOSE_TUTOR_POPUP,
@@ -3115,6 +3211,7 @@ class AITutorDialogController:
                     "ctx_dropped_sections_count": int(max(0, context_dropped_sections)),
                     "ctx_horizon_days": int(max(1, context_horizon_days)),
                     "context_condensed_turns": int(condensed_count),
+                    "pedagogical_mode": str(prompt_meta.get("pedagogical_mode", "") or "").strip(),
                 }
                 try:
                     app._record_ai_tutor_telemetry(payload, persist=True)
@@ -3230,29 +3327,32 @@ class AITutorDialogController:
 
                 def _on_chunk(piece: str) -> None:
                     def _apply_chunk():
-                        if int(run_state.get("job_id", 0) or 0) != job_id:
-                            return False
-                        if not bool(run_state.get("active", False)):
-                            return False
-                        if int(guard_state.get("first_token_ms", 0) or 0) <= 0:
-                            try:
-                                started = float(guard_state.get("generation_started_at", 0.0) or 0.0)
-                            except Exception:
-                                started = 0.0
-                            if started > 0.0:
-                                guard_state["first_token_ms"] = int(
-                                    max(0.0, (float(time.monotonic()) - started) * 1000.0)
-                                )
-                                guard_state["stream_started_at"] = float(time.monotonic())
-                        draft = str(run_state.get("draft_assistant", "") or "") + str(piece or "")
-                        if len(draft) > int(AI_TUTOR_MAX_RESPONSE_CHARS):
-                            draft = draft[: int(AI_TUTOR_MAX_RESPONSE_CHARS)]
-                            guard_state["truncated"] = True
-                            cancel_event.set()
-                            _request_stream_stop_once()
-                        run_state["draft_assistant"] = draft
-                        run_state["stream_last_chunk_at"] = float(time.monotonic())
-                        _schedule_stream_render(force_scroll=False)
+                        try:
+                            if int(run_state.get("job_id", 0) or 0) != job_id:
+                                return False
+                            if not bool(run_state.get("active", False)):
+                                return False
+                            if int(guard_state.get("first_token_ms", 0) or 0) <= 0:
+                                try:
+                                    started = float(guard_state.get("generation_started_at", 0.0) or 0.0)
+                                except Exception:
+                                    started = 0.0
+                                if started > 0.0:
+                                    guard_state["first_token_ms"] = int(
+                                        max(0.0, (float(time.monotonic()) - started) * 1000.0)
+                                    )
+                                    guard_state["stream_started_at"] = float(time.monotonic())
+                            draft = str(run_state.get("draft_assistant", "") or "") + str(piece or "")
+                            if len(draft) > int(AI_TUTOR_MAX_RESPONSE_CHARS):
+                                draft = draft[: int(AI_TUTOR_MAX_RESPONSE_CHARS)]
+                                guard_state["truncated"] = True
+                                cancel_event.set()
+                                _request_stream_stop_once()
+                            run_state["draft_assistant"] = draft
+                            run_state["stream_last_chunk_at"] = float(time.monotonic())
+                            _schedule_stream_render(force_scroll=False)
+                        except Exception:
+                            pass
                         return False
 
                     GLib.idle_add(_apply_chunk)
@@ -3306,102 +3406,199 @@ class AITutorDialogController:
                 )
 
                 def _finish(inf_snap: tuple[str, str]) -> bool:
-                    if int(run_state.get("job_id", 0) or 0) != job_id:
-                        return False
-                    draft_user = str(run_state.get("draft_user", "") or "").strip()
-                    draft_assistant = str(run_state.get("draft_assistant", "") or "").strip()
-                    run_state["cancel_event"] = None
-                    run_state["draft_user"] = ""
-                    run_state["draft_assistant"] = ""
-                    _set_running(False)
-                    final_text = str(text or "").strip() or draft_assistant
                     try:
-                        postfilter = getattr(app, "_cognitive_tutor_postfilter_response", None)
-                        if callable(postfilter):
-                            final_text = str(
-                                cast(
-                                    Any,
-                                    postfilter(
-                                        final_text,
-                                        permission=str(cognitive_guard.get("permission", "hint_ok") or "hint_ok"),
-                                    ),
-                                )
-                                or ""
-                            ).strip()
-                    except Exception:
-                        pass
-                    action_plan: dict[str, Any] | None = None
-                    try:
-                        action_parser = getattr(app, "_extract_ai_tutor_inline_action", None)
-                        if callable(action_parser):
-                            parsed_result = action_parser(final_text)
-                            if isinstance(parsed_result, tuple) and len(parsed_result) == 2:
-                                cleaned_text, parsed_action = parsed_result
-                                final_text = str(cleaned_text or "").strip()
-                                if isinstance(parsed_action, dict):
-                                    action_plan = parsed_action
-                    except Exception:
-                        action_plan = None
+                        if int(run_state.get("job_id", 0) or 0) != job_id:
+                            return False
+                        draft_user = str(run_state.get("draft_user", "") or "").strip()
+                        draft_assistant = str(run_state.get("draft_assistant", "") or "").strip()
+                        run_state["cancel_event"] = None
+                        run_state["draft_user"] = ""
+                        run_state["draft_assistant"] = ""
+                        _set_running(False)
+                        final_text = str(text or "").strip() or draft_assistant
+                        try:
+                            postfilter = getattr(app, "_cognitive_tutor_postfilter_response", None)
+                            if callable(postfilter):
+                                final_text = str(
+                                    cast(
+                                        Any,
+                                        postfilter(
+                                            final_text,
+                                            permission=str(cognitive_guard.get("permission", "hint_ok") or "hint_ok"),
+                                        ),
+                                    )
+                                    or ""
+                                ).strip()
+                        except Exception:
+                            pass
+                        action_plan: dict[str, Any] | None = None
+                        try:
+                            action_parser = getattr(app, "_extract_ai_tutor_inline_action", None)
+                            if callable(action_parser):
+                                parsed_result = action_parser(final_text)
+                                if isinstance(parsed_result, tuple) and len(parsed_result) == 2:
+                                    cleaned_text, parsed_action = parsed_result
+                                    final_text = str(cleaned_text or "").strip()
+                                    if isinstance(parsed_action, dict):
+                                        action_plan = parsed_action
+                        except Exception:
+                            action_plan = None
 
-                    coverage_eval = assess_tutor_coverage(final_text, coverage_targets)
-                    coverage_state["target_count"] = int(
-                        coverage_eval.get("target_count", coverage_target_count) or coverage_target_count
-                    )
-                    coverage_state["hit_count"] = int(coverage_eval.get("hit_count", 0) or 0)
-                    if not err:
-                        coverage_note = build_tutor_coverage_checklist_note(
-                            final_text,
-                            coverage_targets,
-                            max_items=6,
+                        coverage_eval = assess_tutor_coverage(final_text, coverage_targets)
+                        coverage_state["target_count"] = int(
+                            coverage_eval.get("target_count", coverage_target_count) or coverage_target_count
                         )
-                        if coverage_note:
-                            merged = f"{str(final_text or '').rstrip()}\n\n{coverage_note}".strip()
-                            if len(merged) > int(AI_TUTOR_MAX_RESPONSE_CHARS):
-                                merged = merged[: int(AI_TUTOR_MAX_RESPONSE_CHARS)].rstrip()
-                            final_text = merged
-                    try:
-                        app_stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
-                        app._record_ai_tutor_autopilot_metrics(
-                            {
-                                "coverage_target_count": max(
-                                    int(app_stats.get("coverage_target_count", 0) or 0),
-                                    int(coverage_state["target_count"]),
-                                ),
-                                "coverage_hit_count": max(
-                                    int(app_stats.get("coverage_hit_count", 0) or 0),
-                                    int(coverage_state["hit_count"]),
-                                ),
-                            },
-                            persist=False,
-                        )
-                    except Exception:
-                        pass
-                    credited_model = str(inf_snap[1] or "").strip() or str(model_name or "").strip()
-                    if err == "cancelled":
-                        if bool(guard_state.get("timeout_hit", False)):
-                            telemetry_error = "timeout"
-                        elif bool(guard_state.get("truncated", False)):
-                            telemetry_error = "truncated"
-                        else:
-                            telemetry_error = "cancelled"
-                        _record_turn_telemetry(
-                            outcome="cancelled",
-                            error_class=telemetry_error,
-                            response_text=final_text,
-                            credited_model=credited_model,
-                        )
-                        suffix = "[Stopped]"
-                        if bool(guard_state.get("timeout_hit", False)):
-                            suffix = f"[Timed out after {int(turn_timeout_seconds)}s]"
-                        elif bool(guard_state.get("truncated", False)):
-                            suffix = f"[Truncated at {int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars]"
+                        coverage_state["hit_count"] = int(coverage_eval.get("hit_count", 0) or 0)
+                        if not err:
+                            coverage_note = build_tutor_coverage_checklist_note(
+                                final_text,
+                                coverage_targets,
+                                max_items=6,
+                            )
+                            if coverage_note:
+                                merged = f"{str(final_text or '').rstrip()}\n\n{coverage_note}".strip()
+                                if len(merged) > int(AI_TUTOR_MAX_RESPONSE_CHARS):
+                                    merged = merged[: int(AI_TUTOR_MAX_RESPONSE_CHARS)].rstrip()
+                                final_text = merged
+                        try:
+                            app_stats = dict(getattr(app, "_ai_tutor_autopilot_stats", {}) or {})
+                            app._record_ai_tutor_autopilot_metrics(
+                                {
+                                    "coverage_target_count": max(
+                                        int(app_stats.get("coverage_target_count", 0) or 0),
+                                        int(coverage_state["target_count"]),
+                                    ),
+                                    "coverage_hit_count": max(
+                                        int(app_stats.get("coverage_hit_count", 0) or 0),
+                                        int(coverage_state["hit_count"]),
+                                    ),
+                                },
+                                persist=False,
+                            )
+                        except Exception:
+                            pass
+                        credited_model = str(inf_snap[1] or "").strip() or str(model_name or "").strip()
+                        if err == "cancelled":
+                            if bool(guard_state.get("timeout_hit", False)):
+                                telemetry_error = "timeout"
+                            elif bool(guard_state.get("truncated", False)):
+                                telemetry_error = "truncated"
+                            else:
+                                telemetry_error = "cancelled"
+                            _record_turn_telemetry(
+                                outcome="cancelled",
+                                error_class=telemetry_error,
+                                response_text=final_text,
+                                credited_model=credited_model,
+                            )
+                            suffix = "[Stopped]"
+                            if bool(guard_state.get("timeout_hit", False)):
+                                suffix = f"[Timed out after {int(turn_timeout_seconds)}s]"
+                            elif bool(guard_state.get("truncated", False)):
+                                suffix = f"[Truncated at {int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars]"
+                            if draft_user and final_text:
+                                final_text = clean_ai_tutor_text(final_text) or final_text
+                                history.append({"role": "user", "content": draft_user})
+                                history.append(
+                                    build_ai_tutor_assistant_history_row(
+                                        app,
+                                        f"{final_text}\n\n{suffix}",
+                                        str(model_name or ""),
+                                        inference_snapshot=inf_snap,
+                                    )
+                                )
+                                try:
+                                    note_exchange = getattr(app, "_cognitive_tutor_note_exchange", None)
+                                    if callable(note_exchange):
+                                        cast(Any, note_exchange)("user", draft_user)
+                                        cast(Any, note_exchange)("assistant", f"{final_text}\n\n{suffix}")
+                                except Exception:
+                                    pass
+                                _persist_history()
+                                if bool(guard_state.get("timeout_hit", False)):
+                                    status_label.set_text(
+                                        f"Turn timed out after {int(turn_timeout_seconds)}s ({credited_model})."
+                                    )
+                                elif bool(guard_state.get("truncated", False)):
+                                    status_label.set_text(
+                                        f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars) • turns: {_turn_count()}"
+                                    )
+                                else:
+                                    status_label.set_text(f"Stopped ({credited_model}) • turns: {_turn_count()}")
+                            else:
+                                if bool(guard_state.get("timeout_hit", False)):
+                                    status_label.set_text(
+                                        f"Turn timed out after {int(turn_timeout_seconds)}s ({credited_model})."
+                                    )
+                                elif bool(guard_state.get("truncated", False)):
+                                    status_label.set_text(
+                                        f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars)."
+                                    )
+                                else:
+                                    status_label.set_text(f"Stopped ({credited_model}).")
+                            _render_transcript(force_scroll=True)
+                            return False
+                        if err:
+                            _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
+                            recovery_status = ""
+                            recovery_builder = getattr(app, "_compose_ollama_recovery_status", None)
+                            if callable(recovery_builder):
+                                try:
+                                    recovery_status = str(
+                                        recovery_builder(
+                                            err,
+                                            model=str(model_name or ""),
+                                            attempted_models=[
+                                                str(item or "")
+                                                for item in list(model_candidates or [])
+                                                if str(item or "").strip()
+                                            ],
+                                        )
+                                    ).strip()
+                                except Exception:
+                                    recovery_status = ""
+                            _record_turn_telemetry(
+                                outcome="error",
+                                error_class=_code,
+                                response_text=final_text,
+                                credited_model=credited_model,
+                            )
+                            if draft_user and final_text:
+                                history.append({"role": "user", "content": draft_user})
+                                history.append(
+                                    build_ai_tutor_assistant_history_row(
+                                        app,
+                                        final_text,
+                                        str(model_name or ""),
+                                        inference_snapshot=inf_snap,
+                                    )
+                                )
+                                _persist_history()
+                            status_label.set_text(recovery_status or friendly)
+                            _render_transcript()
+                            return False
                         if draft_user and final_text:
                             final_text = clean_ai_tutor_text(final_text) or final_text
+                            updater = getattr(app, "_update_ai_tutor_working_memory", None)
+                            if callable(updater):
+                                try:
+                                    cast(
+                                        Any,
+                                        updater(
+                                            user_prompt=draft_user,
+                                            tutor_response=final_text,
+                                            current_topic=chapter,
+                                            coverage_targets=coverage_targets,
+                                            persist=False,
+                                        ),
+                                    )
+                                except Exception:
+                                    pass
                             history.append({"role": "user", "content": draft_user})
                             history.append(
                                 build_ai_tutor_assistant_history_row(
                                     app,
-                                    f"{final_text}\n\n{suffix}",
+                                    final_text,
                                     str(model_name or ""),
                                     inference_snapshot=inf_snap,
                                 )
@@ -3410,116 +3607,34 @@ class AITutorDialogController:
                                 note_exchange = getattr(app, "_cognitive_tutor_note_exchange", None)
                                 if callable(note_exchange):
                                     cast(Any, note_exchange)("user", draft_user)
-                                    cast(Any, note_exchange)("assistant", f"{final_text}\n\n{suffix}")
+                                    cast(Any, note_exchange)("assistant", final_text)
                             except Exception:
                                 pass
                             _persist_history()
-                            if bool(guard_state.get("timeout_hit", False)):
-                                status_label.set_text(
-                                    f"Turn timed out after {int(turn_timeout_seconds)}s ({credited_model})."
-                                )
-                            elif bool(guard_state.get("truncated", False)):
-                                status_label.set_text(
-                                    f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars) • turns: {_turn_count()}"
-                                )
-                            else:
-                                status_label.set_text(f"Stopped ({credited_model}) • turns: {_turn_count()}")
-                        else:
-                            if bool(guard_state.get("timeout_hit", False)):
-                                status_label.set_text(
-                                    f"Turn timed out after {int(turn_timeout_seconds)}s ({credited_model})."
-                                )
-                            elif bool(guard_state.get("truncated", False)):
-                                status_label.set_text(
-                                    f"Stopped at max length ({int(AI_TUTOR_MAX_RESPONSE_CHARS)} chars)."
-                                )
-                            else:
-                                status_label.set_text(f"Stopped ({credited_model}).")
-                        _render_transcript(force_scroll=True)
-                        return False
-                    if err:
-                        _code, friendly = classify_ollama_error(err, host=app._normalize_ollama_host())
-                        recovery_status = ""
-                        recovery_builder = getattr(app, "_compose_ollama_recovery_status", None)
-                        if callable(recovery_builder):
+                        if isinstance(action_plan, dict):
                             try:
-                                recovery_status = str(
-                                    recovery_builder(
-                                        err,
-                                        model=str(model_name or ""),
-                                        attempted_models=[
-                                            str(item or "")
-                                            for item in list(model_candidates or [])
-                                            if str(item or "").strip()
-                                        ],
-                                    )
-                                ).strip()
+                                action_plan["source"] = "tutor_dialog"
+                                setter = getattr(app, "_set_ai_tutor_pending_suggestion", None)
+                                if callable(setter):
+                                    setter(action_plan, source="tutor_dialog")
                             except Exception:
-                                recovery_status = ""
+                                pass
                         _record_turn_telemetry(
-                            outcome="error",
-                            error_class=_code,
+                            outcome="success",
+                            error_class="",
                             response_text=final_text,
                             credited_model=credited_model,
                         )
-                        status_label.set_text(recovery_status or friendly)
-                        _render_transcript()
-                        return False
-                    if draft_user and final_text:
-                        final_text = clean_ai_tutor_text(final_text) or final_text
-                        updater = getattr(app, "_update_ai_tutor_working_memory", None)
-                        if callable(updater):
-                            try:
-                                cast(
-                                    Any,
-                                    updater(
-                                        user_prompt=draft_user,
-                                        tutor_response=final_text,
-                                        current_topic=chapter,
-                                        coverage_targets=coverage_targets,
-                                        persist=False,
-                                    ),
-                                )
-                            except Exception:
-                                pass
-                        history.append({"role": "user", "content": draft_user})
-                        history.append(
-                            build_ai_tutor_assistant_history_row(
-                                app,
-                                final_text,
-                                str(model_name or ""),
-                                inference_snapshot=inf_snap,
+                        _render_transcript(force_scroll=True)
+                        if int(coverage_state.get("target_count", 0) or 0) > 1:
+                            status_label.set_text(
+                                f"Done ({credited_model}) • turns: {_turn_count()} • coverage {int(coverage_state.get('hit_count', 0) or 0)}/{int(coverage_state.get('target_count', 0) or 0)}"
                             )
-                        )
-                        try:
-                            note_exchange = getattr(app, "_cognitive_tutor_note_exchange", None)
-                            if callable(note_exchange):
-                                cast(Any, note_exchange)("user", draft_user)
-                                cast(Any, note_exchange)("assistant", final_text)
-                        except Exception:
-                            pass
-                        _persist_history()
-                    if isinstance(action_plan, dict):
-                        try:
-                            action_plan["source"] = "tutor_dialog"
-                            setter = getattr(app, "_set_ai_tutor_pending_suggestion", None)
-                            if callable(setter):
-                                setter(action_plan, source="tutor_dialog")
-                        except Exception:
-                            pass
-                    _record_turn_telemetry(
-                        outcome="success",
-                        error_class="",
-                        response_text=final_text,
-                        credited_model=credited_model,
-                    )
-                    _render_transcript(force_scroll=True)
-                    if int(coverage_state.get("target_count", 0) or 0) > 1:
-                        status_label.set_text(
-                            f"Done ({credited_model}) • turns: {_turn_count()} • coverage {int(coverage_state.get('hit_count', 0) or 0)}/{int(coverage_state.get('target_count', 0) or 0)}"
-                        )
-                    else:
-                        status_label.set_text(f"Done ({credited_model}) • turns: {_turn_count()}")
+                        else:
+                            status_label.set_text(f"Done ({credited_model}) • turns: {_turn_count()}")
+                        return False
+                    except Exception:
+                        pass
                     return False
 
                 GLib.idle_add(_finish, inf_snap)

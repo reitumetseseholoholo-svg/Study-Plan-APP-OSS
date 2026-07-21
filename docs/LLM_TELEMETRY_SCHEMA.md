@@ -37,7 +37,7 @@ Additional routing-level purposes used in `model_routing.py`:
 | `model` | `str` | Model identifier that produced the response |
 | `latency_ms` | `int` | Wall-clock milliseconds for the full turn |
 | `error_code` | `str` | Empty string on success; error label on failure (e.g. `timeout`, `parse_error`, `cancelled`) |
-| `telemetry` | `dict[str, Any]` | Freeform metadata: `purpose`, `prompt_chars`, `response_chars`, `rag_chunks`, `model_source`, `backend`, `stream_stall_count`, etc. |
+| `telemetry` | `dict[str, Any]` | Freeform metadata: `purpose`, `prompt_chars`, `response_chars`, `rag_snippets`, `model_source`, `backend`, `stream_stall_count`, `pedagogical_mode`, etc. |
 
 ## Model Performance Fields
 
@@ -54,6 +54,21 @@ Additional routing-level purposes used in `model_routing.py`:
 | `response_tokens_sum` | `float` | Cumulative response tokens (if available from backend) |
 | `coverage_target_sum` | `int` | Number of coverage targets evaluated |
 | `coverage_hit_sum` | `int` | Number of coverage targets met |
+
+## Telemetry Payload Fields
+
+The following fields appear in the telemetry payload (the `telemetry` dict inside `TutorTurnResult`):
+
+| Key | Type | Description | Present in |
+|-----|------|-------------|------------|
+| `pedagogical_mode` | `str` | Pedagogical mode of the turn (`teach`, `practice`, `revision`, `exam_technique`, `freeform`) — derived from UI flags + mode hint during prompt assembly | embedded, popup |
+| `generation_ms` | `int` | Wall-clock ms from LLM inference start to completion (includes prompt processing + streaming) | embedded, popup |
+| `stream_ms` | `int` | Wall-clock ms from first token arrival to stream completion (time spent streaming tokens) | embedded, popup |
+| `model_first_token_ms` | `int` | Time from LLM inference start to first token arrival (prompt processing / time-to-first-token) | embedded, popup |
+| `rag_snippets` | `int` | Number of RAG snippets used in the turn | embedded, popup |
+| `rag_sources` | `int` | Number of distinct source PDFs the snippets were drawn from | embedded, popup |
+
+**Semantic guarantee**: In both paths, `generation_ms >= stream_ms` must hold. The embedded path computes both from `latency_ms - prompt_build_ms - rag_ms` and `first_token_ms`; the popup path computes them from separate `generation_started_at` and `stream_started_at` guard-state timestamps. Violations of `generation_ms >= stream_ms` indicate a telemetry construction bug.
 
 ## SLO Profile
 

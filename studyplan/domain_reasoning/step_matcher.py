@@ -24,7 +24,7 @@ import math
 import re
 from typing import Any
 
-_STEP_TOLERANCE = 0.02  # 2% relative tolerance for step value comparison
+_STEP_TOLERANCE = 0.02  # 2% relative tolerance for intermediate step matching (wider than final-answer tolerance in evaluator._value_matches which uses 0.005 — intermediate steps have more rounding variance)
 _LABEL_SIMILARITY_MIN = 0.15  # minimum similarity score to consider a match
 
 
@@ -140,10 +140,8 @@ def _extract_from_line(
 def _parse_number(s: str) -> float | None:
     """Parse a number from a string, handling common notation."""
     s = s.strip()
-    # Remove currency symbols and percentage signs
+    # Remove currency symbols, percentage signs, and thousands separators
     s = s.replace(",", "").replace("%", "").replace("$", "").replace("\u00a3", "").replace("\u20ac", "")
-    # Handle "1,000.50" → "1000.50"
-    s = s.replace(",", ".")
     # If there are multiple dots, keep only the last one
     if s.count(".") > 1:
         parts = s.split(".")
@@ -346,19 +344,19 @@ def match_learner_steps(
     return matches
 
 
+from studyplan.domain_reasoning.diagnostics import classify_step_errors
+
+
 def compute_step_error_tags(
     step_matches: list[dict[str, Any]],
 ) -> list[str]:
     """Generate error tags from step match results.
 
-    Returns tags like ``step_pv_year_1_mismatch`` for each
-    step where the learner value does not match.
+    Uses the formal ``ErrorPattern`` taxonomy from
+    ``studyplan.domain_reasoning.diagnostics`` to produce semantic tags
+    (e.g. ``sign_error``, ``wrong_discount_rate``) instead of generic
+    ``step_{id}_mismatch`` strings.
+
+    Falls back to generic ``step_{id}_mismatch`` for unrecognised steps.
     """
-    tags: list[str] = []
-    for m in step_matches:
-        step_id = str(m.get("step_id", "") or "")
-        if not step_id:
-            continue
-        if not m.get("match", False):
-            tags.append(f"step_{step_id}_mismatch")
-    return tags
+    return classify_step_errors(step_matches)
